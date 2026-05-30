@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["baton*"]
+
+[project]
+name = "baton-sdk"
+version = "0.1.0"
+description = "Baton — structured signal capture SDK that wraps a vendor's MCP server. Thin event emitter; Console worker assembles, interprets, dispatches."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.14"
+authors = [
+    { name = "Good Timing" },
+]
+keywords = ["mcp", "agents", "support", "signals", "observability"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "pydantic>=2.0",
+    "httpx>=0.25",
+]
+
+[project.urls]
+Homepage = "https://github.com/good-timing/baton"
+Repository = "https://github.com/good-timing/baton"
+Documentation = "https://github.com/good-timing/baton/tree/main/docs"
+Issues = "https://github.com/good-timing/baton/issues"
+
+# Optional dependencies for opt-in integrations. Vendors install only the
+# integrations they need: `pip install baton-sdk[mcp]` for MCP-wrapping
+# vendors; core SDK (library API + emitter) is always installed. Future
+# integrations (managed-agents, a2a) added here as they land. See
+# docs/design-notes/integration_reorg.md for the rationale.
+[project.optional-dependencies]
+mcp = [
+    "fastmcp>=2.10",
+]
+all = [
+    "baton-sdk[mcp]",
+]
+dev = [
+    "baton-sdk[mcp]",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "pytest-httpserver>=1.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "B",     # flake8-bugbear
+    "UP",    # pyupgrade
+    "RUF",   # ruff-specific
+    "T20",   # flake8-print — guards stdio safety (no print() in SDK code; would
+             # corrupt the MCP JSON-RPC stream when wrapped under stdio transport)
+]
+ignore = [
+    "E501",  # line-too-long — handled by formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["T20"]  # tests may print for debugging
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source_pkgs = ["baton"]
+branch = true
+
+[tool.coverage.report]
+skip_empty = true
+show_missing = true

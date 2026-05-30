@@ -1,0 +1,52 @@
+# Python
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+build/
+dist/
+
+# Test + coverage caches
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+coverage.json
+coverage.xml
+coverage/
+htmlcov/
+
+# Environment
+.env
+.envrc
+*.local.*
+
+# Claude Code session state
+.claude/
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+
+# Local notes (preserve docs/ but ignore scratch)
+scratch/
+events.jsonl
+
+# Local DBs / lockfiles that some spike or future Console-test infra might drop
+*.pid
+*.sqlite
+*.sqlite-journal
+*.db
+.git.old/
