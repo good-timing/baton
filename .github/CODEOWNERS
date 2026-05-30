@@ -1,0 +1,27 @@
+# CODEOWNERS — automatic review requests for PRs touching listed paths.
+#
+# Syntax: <pattern> <owner1> <owner2> ...
+# Patterns match like .gitignore. Owners may be GitHub usernames or @org/team handles.
+# See: https://docs.github.com/en/repositories/managing-your-repositories-settings-and-security/customizing-your-repository/about-code-owners
+#
+# IMPORTANT: GitHub usernames + org-team handles need to be set up before this file
+# is meaningful. Until then, this file documents intent; CODEOWNERS-based review
+# requests are a no-op.
+
+# Default owner for anything not otherwise matched
+# *                            @good-timing/maintainers
+
+# SPEC + CHARTER changes — load-bearing; require maintainer review
+# /docs/SPEC.md                @good-timing/maintainers
+# /docs/CHARTER.md             @good-timing/maintainers
+
+# Wire format + event schema
+# /src/baton/events.py         @good-timing/maintainers
+# /src/baton/sinks.py          @good-timing/maintainers
+
+# Security policy
+# /SECURITY.md                 @good-timing/security
+# /CODE_OF_CONDUCT.md          @good-timing/maintainers
+
+# CI + release workflows
+# /.github/workflows/          @good-timing/maintainers

@@ -1,0 +1,44 @@
+version: 2
+
+# Dependabot watches for updates to the SDK's Python dependencies and to
+# GitHub Actions workflows. See:
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+updates:
+  # Python deps declared in pyproject.toml
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      # Bundle minor + patch updates into one PR per group to reduce noise.
+      runtime:
+        patterns:
+          - "pydantic*"
+          - "httpx*"
+        update-types:
+          - "minor"
+          - "patch"
+      dev-tooling:
+        patterns:
+          - "pytest*"
+          - "ruff"
+          - "mypy"
+          - "coverage*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions used by CI workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels:
+      - "ci"

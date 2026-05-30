@@ -1,0 +1,120 @@
+"""Annotation tool registration — SPEC §5.1.1.
+
+Registers a vendor-namespaced annotation tool (default name
+``{vendor_id}_annotate``) on a FastMCP server. The tool accepts the
+annotation signature (intent / expected_outcome / signal_type / workflow /
+suggested_improvement / context, all optional per SPEC §5.1.1) and emits an
+``annotation`` event when called.
+
+Tool-name validation: enforces ``^[a-zA-Z0-9_-]{1,64}$`` — the strictest known
+client pattern (Claude Desktop). Dots, slashes, and other separators are
+rejected. The underscore-default-separator was validated by the cross-runtime
+spike (Rounds 5/6/7/8).
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
+
+from fastmcp import Context, FastMCP
+
+from baton._state import SessionCounter, resolve_session_id
+from baton.events import AnnotationEvent, AnnotationPayload
+from baton.integrations.mcp.runtime_adapter import detect_agent_runtime
+from baton.scrub import identity_scrub
+from baton.sinks import Sink
+
+_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+# Default tool description — short + descriptive. Tool descriptions describe
+# what a tool does; behavioral guidance for the agent (the MUST/REQUIRED
+# framing motivating proactive + reactive annotation) lives in server
+# ``instructions`` per SPEC §5.1.2, which the runtimes we target (Claude
+# Code, Cursor) surface to the LLM. A prior iteration packed the full
+# MUST/REQUIRED framing into this description hoping to recover annotation
+# behavior on Claude Desktop (which drops ``instructions``); empirically it
+# didn't, and bloating the description for a speculated future benefit isn't
+# worth the per-call context overhead. See SPEC §5.1.3.
+_DEFAULT_DESCRIPTION_TEMPLATE = (
+    "Attach structured signal context — intent, expected outcome, and any "
+    "friction observed — to {vendor_display_name} tool calls. Populate "
+    "before a tool call (intent + expected_outcome + workflow) and again "
+    "after if the result was unhelpful (signal_type + suggested_improvement)."
+)
+
+
+def derive_annotation_tool_name(vendor_id: str, override: str | None = None) -> str:
+    """Resolve the annotation tool name. Default is ``{vendor_id}_annotate``;
+    vendors MAY supply ``override`` to use a different name.
+
+    Raises ``ValueError`` if the resulting name violates the strict
+    cross-runtime client pattern.
+    """
+    name = override or f"{vendor_id}_annotate"
+    if not _TOOL_NAME_PATTERN.match(name):
+        raise ValueError(
+            f"Annotation tool name {name!r} violates the cross-runtime "
+            f"pattern {_TOOL_NAME_PATTERN.pattern!r} (Claude Desktop and others "
+            f"reject names with dots or other separators)."
+        )
+    return name
+
+
+def register_annotation_tool(
+    mcp: FastMCP,
+    *,
+    vendor_id: str,
+    vendor_display_name: str,
+    tenant_id: str,
+    consent_token: str,
+    sink: Sink,
+    counter: SessionCounter,
+    fallback_session_id: str,
+    default_agent_runtime: str = "unknown",
+    annotation_tool_name: str | None = None,
+    scrubber: Callable[[Any], Any] = identity_scrub,
+) -> str:
+    """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
+    name = derive_annotation_tool_name(vendor_id, annotation_tool_name)
+    description = _DEFAULT_DESCRIPTION_TEMPLATE.format(vendor_display_name=vendor_display_name)
+
+    @mcp.tool(name=name, description=description)
+    async def _annotate(
+        ctx: Context,
+        intent: str | None = None,
+        expected_outcome: str | None = None,
+        signal_type: str | None = None,
+        workflow: str | None = None,
+        suggested_improvement: str | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        session_id = resolve_session_id(ctx, fallback_session_id)
+        rc = ctx.request_context if ctx is not None else None
+        runtime = detect_agent_runtime(rc.meta if rc else None) or default_agent_runtime
+        seq = await counter.next(session_id)
+        await sink.write(
+            AnnotationEvent(
+                tenant_id=tenant_id,
+                consent_token=consent_token,
+                session_id=session_id,
+                sequence_number=seq,
+                captured_at=datetime.now(UTC),
+                agent_runtime=runtime,
+                payload=AnnotationPayload(
+                    intent=scrubber(intent) if intent else None,
+                    expected_outcome=(scrubber(expected_outcome) if expected_outcome else None),
+                    signal_type=signal_type,
+                    workflow=workflow,
+                    suggested_improvement=(
+                        scrubber(suggested_improvement) if suggested_improvement else None
+                    ),
+                    context=scrubber(context) if context else None,
+                ),
+            )
+        )
+        return {"ok": True}
+
+    return name
