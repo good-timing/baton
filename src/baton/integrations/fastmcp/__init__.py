@@ -12,7 +12,7 @@ Example:
 
 ```python
 from fastmcp import FastMCP
-from baton.integrations.mcp import install_baton, VendorConfig
+from baton.integrations.fastmcp import install_baton, VendorConfig
 from baton.sinks import StdoutSink
 
 mcp = FastMCP("your-vendor-mcp")
@@ -27,7 +27,7 @@ handle = install_baton(mcp, VendorConfig(
 
 from __future__ import annotations
 
-from baton.integrations.mcp.install import BatonHandle, VendorConfig, install_baton
+from baton.integrations.fastmcp.install import BatonHandle, VendorConfig, install_baton
 
 __all__ = [
     "BatonHandle",

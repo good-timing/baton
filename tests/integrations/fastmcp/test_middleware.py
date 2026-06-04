@@ -14,7 +14,7 @@ from fastmcp import Client, FastMCP
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Response
 
-from baton.integrations.mcp.middleware import BatonMiddleware
+from baton.integrations.fastmcp.middleware import BatonMiddleware
 from baton.sinks import HttpSink, Sink
 
 

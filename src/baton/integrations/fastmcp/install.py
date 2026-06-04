@@ -7,7 +7,7 @@ back at the destination) is handled by the SDK.
 
 ```python
 from fastmcp import FastMCP
-from baton.integrations.mcp import install_baton, VendorConfig
+from baton.integrations.fastmcp import install_baton, VendorConfig
 from baton.sinks import StdoutSink
 
 mcp = FastMCP("your-vendor-mcp")
@@ -38,12 +38,12 @@ from uuid import uuid7
 from fastmcp import FastMCP
 
 from baton._state import SessionCounter
-from baton.integrations.mcp.annotation import (
+from baton.integrations.fastmcp.annotation import (
     derive_annotation_tool_name,
     register_annotation_tool,
 )
-from baton.integrations.mcp.instructions import build_server_instructions
-from baton.integrations.mcp.middleware import BatonMiddleware
+from baton.integrations.fastmcp.instructions import build_server_instructions
+from baton.integrations.fastmcp.middleware import BatonMiddleware
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, StdoutSink
 
@@ -142,10 +142,16 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     )
 
     # Server instructions — load-bearing on instruction-aware runtimes.
-    mcp.instructions = build_server_instructions(
+    # FastMCP >=1.10 made `instructions` a read-only property; fall back to the
+    # backing MCPServer attribute when the public setter isn't available.
+    instructions = build_server_instructions(
         vendor_display_name=config.vendor_display_name,
         annotation_tool_name=annotation_tool_name,
     )
+    try:
+        mcp.instructions = instructions
+    except AttributeError:
+        mcp._mcp_server.instructions = instructions
 
     # Middleware emits tool_call_* events; skips them for the annotation tool
     # (the annotation handler emits its own annotation event).

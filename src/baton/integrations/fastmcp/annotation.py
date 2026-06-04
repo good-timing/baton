@@ -23,7 +23,7 @@ from fastmcp import Context, FastMCP
 
 from baton._state import SessionCounter, resolve_session_id
 from baton.events import AnnotationEvent, AnnotationPayload
-from baton.integrations.mcp.runtime_adapter import detect_agent_runtime
+from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime
 from baton.scrub import identity_scrub
 from baton.sinks import Sink
 

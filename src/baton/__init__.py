@@ -12,9 +12,11 @@ Core (always installed):
 
 Integrations (optional, opt-in via pip extras):
 
-- ``baton.integrations.mcp`` — wraps a vendor's FastMCP server. Install with
-  ``pip install baton-sdk[mcp]``. Exposes ``install_baton``, ``VendorConfig``,
-  ``BatonHandle``.
+- ``baton.integrations.fastmcp`` — wraps a vendor's standalone
+  ``fastmcp.FastMCP`` server. Install with ``pip install baton-sdk[fastmcp]``.
+  Exposes ``install_baton``, ``VendorConfig``, ``BatonHandle``.
+  (The official ``mcp.server.fastmcp.FastMCP`` adapter at
+  ``baton.integrations.mcp`` arrives in the next release.)
 
 Pre-1.0 — public API not yet stable; breaking changes flagged in SPEC §13.
 """

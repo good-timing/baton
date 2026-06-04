@@ -20,7 +20,7 @@ from fastmcp import Client, FastMCP
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Response
 
-from baton.integrations.mcp import VendorConfig, install_baton
+from baton.integrations.fastmcp import VendorConfig, install_baton
 from baton.sinks import HttpSink
 
 

@@ -32,7 +32,7 @@ from baton.events import (
     ToolCallStartEvent,
     ToolCallStartPayload,
 )
-from baton.integrations.mcp.runtime_adapter import detect_agent_runtime
+from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime
 from baton.scrub import identity_scrub
 from baton.sinks import Sink
 
