@@ -12,7 +12,22 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## 0.2.0 — official `mcp` SDK adapter + rename
+## 0.2.1 — re-cut of 0.2.0 (yanked)
+
+`0.2.0` was published from a stale commit due to a release-pipeline race: an
+in-flight workflow run on the original `v0.2.0` tag was approved after we'd
+re-tagged on the fix commit, so the original (pre-fix) wheel landed on PyPI.
+`0.2.0` is yanked; `0.2.1` ships the intended 0.2.0 content (the rename,
+the official-mcp-SDK adapter, the extras split, the mcp>=1.20 requirement)
+with no functional changes from what 0.2.0 should have been.
+
+Lesson and SOP follow-up: when a release tag needs to be re-cut on a fix
+commit, cancel pending publish-approval workflow runs **first** — re-tagging
+alone doesn't invalidate a paused run on the old tag.
+
+---
+
+## 0.2.0 — official `mcp` SDK adapter + rename (yanked)
 
 ### Breaking changes (pre-1.0; allowed per SPEC §13)
 
