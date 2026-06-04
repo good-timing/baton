@@ -44,6 +44,13 @@ logs/
 scratch/
 events.jsonl
 
+# Local spike workspaces — vendor MCP-server clones we instrument for
+# demos / corpus generation. Never published; structurally excluded from
+# the wheel already (packages.find scopes to src/baton*), but ignoring
+# here as defense against accidental `git add .`.
+spikes/
+baton-events.jsonl
+
 # Local DBs / lockfiles that some spike or future Console-test infra might drop
 *.pid
 *.sqlite
