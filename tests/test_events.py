@@ -72,7 +72,7 @@ class TestToolCallStartEvent:
 
     def test_sdk_version_default(self) -> None:
         event = ToolCallStartEvent(**_envelope(), payload=ToolCallStartPayload(tool_name="t"))
-        assert event.sdk_version.startswith("0.1.")
+        assert event.sdk_version.startswith("0.")
 
 
 # =============================================================================
@@ -253,7 +253,7 @@ class TestDiscriminatedUnion:
             "sequence_number": 1,
             "captured_at": "2026-05-19T16:42:03+00:00",
             "consent_token": "ct_test",
-            "sdk_version": "0.1.0",
+            "sdk_version": "0.2.0",
             "agent_runtime": "claude-code",
             "payload": {"tool_name": "t", "params": {}},
         }
@@ -270,7 +270,7 @@ class TestDiscriminatedUnion:
             "sequence_number": 2,
             "captured_at": "2026-05-19T16:42:03+00:00",
             "consent_token": "ct_test",
-            "sdk_version": "0.1.0",
+            "sdk_version": "0.2.0",
             "agent_runtime": "claude-code",
             "payload": {"intent": "x"},
         }
@@ -288,7 +288,7 @@ class TestDiscriminatedUnion:
             "sequence_number": 3,
             "captured_at": "2026-05-19T16:42:03+00:00",
             "consent_token": "ct_test",
-            "sdk_version": "0.1.0",
+            "sdk_version": "0.2.0",
             "agent_runtime": "claude-code",
             "payload": {},
         }
@@ -307,7 +307,7 @@ class TestDiscriminatedUnion:
                 "sequence_number": 4,
                 "captured_at": "2026-05-19T16:42:03+00:00",
                 "consent_token": "ct_test",
-                "sdk_version": "0.1.0",
+                "sdk_version": "0.2.0",
                 "agent_runtime": "claude-code",
                 "payload": {
                     "tool_name": "t",

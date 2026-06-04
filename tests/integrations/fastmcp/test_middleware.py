@@ -247,7 +247,7 @@ class TestEnvelopeFields:
 
         await sink.flush()
         for ev in captured:
-            assert ev["sdk_version"].startswith("0.1.")
+            assert ev["sdk_version"].startswith("0.")
 
     async def test_agent_runtime_default_unknown(
         self, sink: Sink, captured: list[dict[str, Any]]
