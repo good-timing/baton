@@ -2,18 +2,24 @@
 ``mcp.server.fastmcp.FastMCP``.
 
 Mirrors ``baton.integrations.fastmcp.annotation`` but registers via the
-official SDK's ``@mcp.tool(...)`` decorator and uses
-``mcp.server.fastmcp.Context``.
-"""
+official SDK's ``@mcp.tool(...)`` decorator.
 
-from __future__ import annotations
+**Note on `from __future__ import annotations` (intentionally omitted):**
+mcp <=1.20 introspects tool signatures via ``inspect.signature(fn)`` and
+does ``issubclass(param.annotation, Context)`` to detect Context kwargs.
+That ``issubclass`` would crash on stringified annotations (which is what
+``from __future__ import annotations`` produces). Keeping annotations as
+live types lets ``get_origin`` correctly identify union/generic types and
+skip the ``issubclass`` call. Required for mcp 1.10/1.20 support per
+CHANGELOG 0.2.0 + CI matrix.
+"""
 
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import FastMCP
 
 from baton._state import SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
@@ -72,11 +78,14 @@ def register_annotation_tool(
         workflow: str | None = None,
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
-        ctx: Context[Any, Any, Any] | None = None,
     ) -> dict[str, Any]:
-        # Session id: the official SDK Context may not always be passed
-        # through (the runtime decides based on signature). Fall back to
-        # the SDK-process-wide id when absent.
+        # Session id: we don't accept a Context kwarg because (a) we don't
+        # use it (always fall back to fallback_session_id), and (b) older
+        # mcp versions (<1.20) call `issubclass(param.annotation, Context)`
+        # on each kwarg in Tool.from_function — that crashes on
+        # parameterized generics like `Context[Any, Any, Any]`. Threading
+        # Context through is a follow-up when we want true per-session
+        # correlation; until then fallback_session_id is honest.
         session_id = fallback_session_id
         seq = await counter.next(session_id)
         await sink.write(

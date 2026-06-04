@@ -51,7 +51,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mcp-version: ["1.10.1", "1.20.0", "1.27.2"]
+        # Minimum supported version is mcp>=1.20 — earlier versions have an
+        # upstream Tool.from_function bug with stringified annotations from
+        # `from __future__ import annotations`. See pyproject [mcp] extra note.
+        mcp-version: ["1.20.0", "1.25.0", "1.27.2"]
     steps:
       - uses: actions/checkout@v5
 

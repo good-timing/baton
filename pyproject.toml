@@ -43,8 +43,13 @@ Issues = "https://github.com/good-timing/baton/issues"
 [project.optional-dependencies]
 # Adapts the official Anthropic ``mcp`` package's ``mcp.server.fastmcp.FastMCP``
 # (what most production MCP servers use — comes with ``pip install mcp``).
+# Minimum 1.20: earlier versions have a `Tool.from_function` bug that calls
+# `issubclass(param.annotation, Context)` without first checking for
+# stringified annotations from `from __future__ import annotations` (PEP 563),
+# which crashes on any tool fn that uses future-annotations. Fixed upstream
+# pre-1.20; we don't ship a workaround.
 mcp = [
-    "mcp>=1.10",
+    "mcp>=1.20",
 ]
 # Adapts the standalone ``fastmcp`` library's ``fastmcp.FastMCP`` (different
 # project; advanced features like middleware not in the official SDK).
