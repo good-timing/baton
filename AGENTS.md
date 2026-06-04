@@ -37,12 +37,12 @@ Use `make ci` as the canonical gate (matches GitHub Actions).
 
 ## What lives where
 
-- `src/baton/` — the SDK package (Python). Core substrate at the top level (`sinks.py`, `events.py`, `scrub.py`, `_state.py`, `client.py`). Integrations under `src/baton/integrations/*` — today: `mcp/` (`install_baton`, `VendorConfig`, middleware, annotation tool). Pattern: core SDK + opt-in integrations via pip extras.
+- `src/baton/` — the SDK package (Python). Core substrate at the top level (`sinks.py`, `events.py`, `scrub.py`, `_state.py`, `client.py`). Integrations under `src/baton/integrations/*` — today: `mcp/` (adapts the official Anthropic `mcp` SDK's `mcp.server.fastmcp.FastMCP` via tool-handler wrapping) and `fastmcp/` (adapts the standalone `fastmcp` library's `fastmcp.FastMCP` via middleware). Both expose the same `install_baton`, `VendorConfig`, `BatonHandle` surface; vendors pick the adapter that matches their host library. Pattern: core SDK + opt-in integrations via pip extras.
 - `docs/` — canonical strategic and protocol docs: `CHARTER.md`, `SPEC.md`.
 - `examples/` — runnable usage examples (the four-rung sink ladder, the library-API skill demo, the e2e smoke test).
 - `tests/` — test suite. Integration tests live under `tests/integrations/<name>/` mirroring the source layout.
 
-**Public API and the contract:** anything exported from `src/baton/__init__.py` (core: `Client`, `AsyncClient`, `SignalType`, `__version__`), `src/baton/sinks.py` (the `Sink` ABC + implementations), or `src/baton/integrations/<name>/__init__.py` (per-integration; today: `install_baton`, `VendorConfig`, `BatonHandle` under `baton.integrations.mcp`) is what vendors integrate against. Breaking changes require a SPEC §13 changelog entry. MCP-side integrations import directly from `baton.integrations.mcp` — there is no top-level re-export.
+**Public API and the contract:** anything exported from `src/baton/__init__.py` (core: `Client`, `AsyncClient`, `SignalType`, `__version__`), `src/baton/sinks.py` (the `Sink` ABC + implementations), or `src/baton/integrations/<name>/__init__.py` (per-integration; today: `install_baton`, `VendorConfig`, `BatonHandle` under both `baton.integrations.mcp` and `baton.integrations.fastmcp`) is what vendors integrate against. Breaking changes require a SPEC §13 changelog entry. MCP-side integrations import directly from `baton.integrations.<library>` — there is no top-level re-export.
 
 ## When in doubt
 

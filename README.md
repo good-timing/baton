@@ -2,7 +2,7 @@
 
 *Structured signal capture for agent-mediated tool use. Thin event capture surface with pluggable sinks (stdout / file / HTTP / fan-out); a worker on the other side of the sink assembles signals, applies policy, and dispatches.*
 
-**Pre-1.0 (`0.1.0`)** — public API not yet stable; breaking changes flagged in [SPEC §13](docs/SPEC.md). Two integration paths: MCP middleware (`install_baton(mcp, ...)`) and library API (`baton.Client` / `AsyncClient`). Thin SDK + fat collector worker per [CHARTER ADR-4](docs/CHARTER.md). MCP tool-call events captured across Claude Code, Cursor, and Claude Desktop; the proactive + reactive annotation flow works on Claude Code and Cursor (per-runtime support matrix in [SPEC §5.1.3](docs/SPEC.md)). See [`docs/SPEC.md`](docs/SPEC.md) for the wire protocol.
+**Pre-1.0 (`0.2.0`)** — public API not yet stable; breaking changes flagged in [SPEC §13](docs/SPEC.md). Vendor integration via `install_baton(mcp, ...)` against either the official Anthropic `mcp` SDK (`baton.integrations.mcp`) or the standalone `fastmcp` library (`baton.integrations.fastmcp`); library API path (`baton.Client` / `AsyncClient`) for Skill-instrumented code. Thin SDK + fat collector worker per [CHARTER ADR-4](docs/CHARTER.md). MCP tool-call events captured across Claude Code, Cursor, and Claude Desktop; the proactive + reactive annotation flow works on Claude Code and Cursor (per-runtime support matrix in [SPEC §5.1.3](docs/SPEC.md)). See [`docs/SPEC.md`](docs/SPEC.md) for the wire protocol.
 
 ![Baton in action — events streaming to stderr](docs/demo.gif)
 
@@ -77,7 +77,8 @@ Everything downstream of the sink is identical across both paths — same wire e
 
 ```sh
 pip install baton-sdk              # core only — library API for Skill-instrumented code
-pip install baton-sdk[mcp]         # +MCP integration for FastMCP-wrapping vendors
+pip install baton-sdk[mcp]         # +MCP integration for the official `mcp` SDK (Anthropic's)
+pip install baton-sdk[fastmcp]     # +MCP integration for the standalone `fastmcp` library
 pip install baton-sdk[all]         # everything
 ```
 
@@ -85,9 +86,20 @@ Core SDK ships always. Protocol-specific surfaces live under `baton.integrations
 
 ## Minimal MCP integration
 
+Two parallel adapters covering the two production Python MCP libraries. The vendor-facing API (`install_baton`, `VendorConfig`, `BatonHandle`) is identical across both — only the import path differs.
+
+### Which one do I need?
+
+| You import FastMCP via… | Use the adapter at… | Install extra |
+|---|---|---|
+| `from mcp.server.fastmcp import FastMCP` (Anthropic's official `mcp` SDK — the dominant library) | `baton.integrations.mcp` | `baton-sdk[mcp]` |
+| `from fastmcp import FastMCP` (standalone `fastmcp` library, v2.x by jlowin) | `baton.integrations.fastmcp` | `baton-sdk[fastmcp]` |
+
+### Official `mcp` SDK path
+
 ```python
 import os
-from fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 from baton.integrations.mcp import install_baton, VendorConfig
 from baton.sinks import HttpSink   # or StdoutSink / FileSink / MultiSink
 
@@ -106,7 +118,32 @@ install_baton(mcp, VendorConfig(
 async def your_tool(...): ...
 ```
 
-That's the integration. `install_baton` registers a vendor-namespaced annotation tool (`<vendor_id>_annotate`), sets MCP server `instructions` motivating proactive + reactive annotation, installs middleware that captures events at the MCP transport boundary, and hands those events to your sink. The SDK is whitelabeled — no Baton-branded strings reach the calling agent or end user.
+### Standalone `fastmcp` path
+
+```python
+import os
+from fastmcp import FastMCP
+from baton.integrations.fastmcp import install_baton, VendorConfig
+from baton.sinks import HttpSink
+
+mcp = FastMCP("your-vendor-mcp")
+install_baton(mcp, VendorConfig(
+    vendor_id="your-vendor",
+    vendor_display_name="Your Vendor",
+    consent_token=os.environ["BATON_CONSENT_TOKEN"],
+    sink=HttpSink(
+        url=os.environ["BATON_INGEST_URL"],
+        api_key=os.environ["BATON_API_KEY"],
+    ),
+))
+
+@mcp.tool()
+async def your_tool(...): ...
+```
+
+That's the integration. `install_baton` registers a vendor-namespaced annotation tool (`<vendor_id>_annotate`), sets the MCP server `instructions` motivating proactive + reactive annotation, captures events at the MCP transport boundary, and hands those events to your sink. The SDK is whitelabeled — no Baton-branded strings reach the calling agent or end user.
+
+Under the hood the two adapters use different hook mechanisms — the official `mcp` SDK's FastMCP has no middleware system, so its adapter wraps each registered tool handler in place; the standalone `fastmcp` library uses its native middleware chain. The choice doesn't surface to vendors; both emit identical events through the same sink layer.
 
 ## Sinks — where events go
 
@@ -146,13 +183,13 @@ with client.trace(
 
 Worked end-to-end at [`examples/skill_demo/`](examples/skill_demo/); full surface (sync + async parity, `client.annotate(...)`, `trace.annotate(...)`, exception path) covered in `src/baton/client.py` docstrings and validated by [`examples/library_api_smoke_test/`](examples/library_api_smoke_test/).
 
-### Choosing between the two paths
+### Choosing between MCP integration and Library API
 
-| Concern | MCP middleware (`install_baton`) | Library API (`Client`) |
+| Concern | MCP integration (`install_baton`) | Library API (`Client`) |
 |---|---|---|
 | Where instrumentation lives | Vendor side (in MCP server runtime) | Agent side (in agent-generated code) |
 | Setup | Vendor's MCP server adds 5 lines | Vendor publishes a Skill teaching agents the pattern |
-| Reliability | Deterministic — middleware runs on every tool call | Soft — depends on agent following the Skill |
+| Reliability | Deterministic — wrap/middleware runs on every tool call | Soft — depends on agent following the Skill |
 | Annotation surface | MCP tool (`<vendor>_annotate`) with MUST/REQUIRED framing | Python function calls (`trace.annotate(...)`) |
 | Vendor API call captured? | Yes (vendor controls MCP server) | Yes (agent calls vendor API from inside trace context) |
 | Where partner invests | Wire SDK into their MCP server | Author + maintain a Baton-aware Skill |
@@ -180,7 +217,8 @@ baton/
 │   ├── sinks.py                     # Sink ABC + StdoutSink / FileSink / HttpSink / MultiSink
 │   ├── events.py / scrub.py / _state.py  # core substrate
 │   └── integrations/
-│       └── mcp/      # MCP integration (install_baton, VendorConfig, middleware, annotation tool)
+│       ├── mcp/      # Official `mcp` SDK adapter (install_baton, VendorConfig, tool-handler wrapping)
+│       └── fastmcp/  # Standalone `fastmcp` library adapter (install_baton, VendorConfig, middleware)
 ├── docs/
 │   ├── SPEC.md                     # the wire protocol — the hero artifact
 │   └── CHARTER.md                  # load-bearing project decisions
