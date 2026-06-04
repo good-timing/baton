@@ -41,14 +41,22 @@ Issues = "https://github.com/good-timing/baton/issues"
 # integrations (managed-agents, a2a) added here as they land. See
 # Sentry / Datadog / OpenTelemetry pattern: core SDK + opt-in integrations under baton.integrations.* with pip extras.
 [project.optional-dependencies]
+# Adapts the official Anthropic ``mcp`` package's ``mcp.server.fastmcp.FastMCP``
+# (what most production MCP servers use — comes with ``pip install mcp``).
 mcp = [
+    "mcp>=1.10",
+]
+# Adapts the standalone ``fastmcp`` library's ``fastmcp.FastMCP`` (different
+# project; advanced features like middleware not in the official SDK).
+fastmcp = [
     "fastmcp>=2.10",
 ]
 all = [
     "baton-sdk[mcp]",
+    "baton-sdk[fastmcp]",
 ]
 dev = [
-    "baton-sdk[mcp]",
+    "baton-sdk[all]",
     "ruff>=0.6",
     "mypy>=1.10",
     "pytest>=7.0",
