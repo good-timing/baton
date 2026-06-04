@@ -4,9 +4,9 @@ Five-line vendor integration via ``install_baton(mcp, VendorConfig(...))``;
 registers the BatonMiddleware on every MCP tool call and exposes the
 vendor-namespaced annotation tool.
 
-Requires the ``baton[mcp]`` install extra:
+Requires the ``baton-sdk[mcp]`` install extra:
 
-    pip install baton[mcp]
+    pip install baton-sdk[mcp]
 
 Example:
 
