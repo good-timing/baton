@@ -12,7 +12,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## 0.2.2 — runtime_meta on event envelope (in progress)
+## 0.2.2 — runtime_meta on event envelope + mcp adapter refactor
 
 ### Added
 
