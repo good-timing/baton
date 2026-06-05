@@ -23,6 +23,11 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 Additive — null default preserves backward compatibility with 0.2.x consumers that don't know about the field.
 
+### Spec additions (informative for Console implementors)
+
+- **SPEC §11.4.1** — `runtime_meta` field documentation + correlation hierarchy.
+- **SPEC §11.5.1-3** — cycle-vs-session distinction, in-cycle annotation correlation (proactive must come from same cycle as reactive — the bug pattern that breaks PylonChannel when it works off raw event windows), and the normative "Channels MUST consume Signals, not events" rule. Migration guidance for v0.2 Console implementations doing correlation in Channels.
+
 ---
 
 ## 0.2.1 — re-cut of 0.2.0 (yanked)

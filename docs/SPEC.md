@@ -779,11 +779,40 @@ Worker derives the canonical SignalPayload (§3) by:
 
 ### 11.5 Annotation correlation rules (worker-side)
 
-Per SPEC §5.1.1, the worker MUST attach the most-recent annotation to each signal. Concretely:
-- **Proactive annotation:** an `annotation` event with no `signal_type` populated, occurring BEFORE a `tool_call_start` in the same session. Its `intent` / `expected_outcome` / `workflow` fields attach to the resulting signal.
-- **Reactive annotation:** an `annotation` event with `signal_type` populated, occurring AFTER a `tool_call_end` or `tool_call_error` in the same session. Its `signal_type` / `suggested_improvement` / `context` fields create the signal; the preceding tool call provides the `tool_calls[0]` + `observed_outcomes[0]`.
+#### 11.5.1 Cycle-vs-session distinction
 
-If multiple proactive annotations precede a tool call within a session: the most-recent wins per session-stable semantics from SPEC §5.1.1. `workflow` is session-stable; if set in an earlier annotation, persists across subsequent signals in the session.
+`session_id` (§11.4) is the SDK process-lifetime identifier — generated at `install_baton(...)` time and reused for every event the SDK emits from that process. A single Claude Code conversation with N user prompts produces 1 `session_id` covering all N turns. To do annotation correlation accurately, the worker MUST distinguish a "cycle" (one logical proactive→tool→reactive unit, ideally one user-prompt-and-response) from a "session."
+
+The worker derives cycle boundaries using this hierarchy (most-authoritative first):
+
+1. **`runtime_meta` runtime-supplied identifiers** (§11.4.1). When present, these are definitive:
+   - `runtime_meta["claudecode/sessionId"]` (Claude Code conversation, stable across many tool calls in one conversation)
+   - `runtime_meta["cursor/conversationId"]` (Cursor equivalent, when present)
+   - Any other runtime-namespaced "conversation" or "turn" identifier — workers SHOULD apply known-runtime adapters before falling back to generic rules.
+   - The worker MAY use a finer-grained per-call identifier (e.g., `claudecode/toolUseId`) to group multi-tool sequences within a turn.
+
+2. **Proactive-annotation boundaries** (§5.1.2). When `runtime_meta` is absent or lacks a known runtime-conversation field, each proactive annotation (`signal_type` null, `intent` populated) marks the start of a new cycle. The cycle extends until the next proactive annotation or end-of-session, whichever comes first.
+
+3. **Time-gap heuristic.** When neither of the above applies, a contiguous run of events with `captured_at` deltas under N seconds (default N=120) is one cycle; a gap ≥ N seconds breaks into a new cycle. Workers SHOULD make N configurable per tenant and document it. This rule is brittle (long-running tools, human-in-loop pauses) and is the last resort.
+
+Cycles are assembled at correlation time, not at emit time — the SDK does not invent cycle IDs. The worker MUST recompute cycle assignment on event replay so reprocessing remains deterministic.
+
+#### 11.5.2 Annotation correlation within a cycle
+
+Per SPEC §5.1.1, the worker MUST attach the most-recent annotation to each signal *within the cycle*. Concretely:
+
+- **Proactive annotation:** an `annotation` event with no `signal_type` populated. Its `intent` / `expected_outcome` / `workflow` fields attach to the resulting signal.
+- **Reactive annotation:** an `annotation` event with `signal_type` populated, occurring AFTER a `tool_call_end` or `tool_call_error` **in the same cycle**. Its `signal_type` / `suggested_improvement` / `context` fields create the signal; the preceding tool call in the same cycle provides the `tool_calls[0]` + `observed_outcomes[0]`.
+
+**The critical rule:** the proactive annotation and the tool reference attached to a reactive annotation MUST come from the SAME CYCLE as the reactive annotation. Sessions can contain many cycles; treating "first proactive in session" or "first tool call in session" as the pair is incorrect and produces semantically incoherent signals (the v0.2 Console's initial PylonChannel demonstrated this — bug fixed by switching from "first in session" to "latest preceding the reactive" within the cycle).
+
+If multiple proactive annotations precede the reactive within a cycle: the most-recent wins per session-stable semantics from SPEC §5.1.1. `workflow` is cycle-stable; if set in an earlier annotation in the cycle, persists across subsequent signals in the cycle.
+
+#### 11.5.3 Channels MUST consume Signals, not events
+
+Channels (Pylon, Slack, Notion, etc.) MUST receive assembled `SignalPayload` objects from the worker — they MUST NOT do cycle/annotation correlation against raw events themselves. The thin SDK / fat worker split (CHARTER ADR-4) means the worker owns interpretation, and Channels are pure renderers. Channels that walk event windows directly are an anti-pattern; they will produce the same incoherent-ticket bug noted in §11.5.2 above (and consistently, since the bug fix lives in the worker, not in every Channel).
+
+Migration note: Console implementations that currently do correlation in Channels (e.g., a v0.2 `PylonChannel.send_ticket_for_session` reading events from Postgres) MUST migrate to consuming `SignalPayload` from a worker-side store before v0.3. The interim "session-windowed Channels" pattern is acknowledged as v0.2 expedient, not normative.
 
 **Per-event mode (when `correlation_mode=per-event`, §3.4):** the correlation rules above do not apply. Each signal-worthy event becomes its own SignalPayload directly:
 
