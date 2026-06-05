@@ -23,7 +23,7 @@ from fastmcp import Context, FastMCP
 
 from baton._state import SessionCounter, resolve_session_id
 from baton.events import AnnotationEvent, AnnotationPayload
-from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime
+from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime, meta_to_dict
 from baton.scrub import identity_scrub
 from baton.sinks import Sink
 
@@ -93,7 +93,10 @@ def register_annotation_tool(
     ) -> dict[str, Any]:
         session_id = resolve_session_id(ctx, fallback_session_id)
         rc = ctx.request_context if ctx is not None else None
-        runtime = detect_agent_runtime(rc.meta if rc else None) or default_agent_runtime
+        raw_meta = rc.meta if rc else None
+        meta_dict = meta_to_dict(raw_meta)
+        runtime = detect_agent_runtime(raw_meta) or default_agent_runtime
+        scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
         seq = await counter.next(session_id)
         await sink.write(
             AnnotationEvent(
@@ -103,6 +106,7 @@ def register_annotation_tool(
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
+                runtime_meta=scrubbed_meta,
                 payload=AnnotationPayload(
                     intent=scrubber(intent) if intent else None,
                     expected_outcome=(scrubber(expected_outcome) if expected_outcome else None),

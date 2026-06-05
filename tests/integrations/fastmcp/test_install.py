@@ -302,6 +302,96 @@ class TestAnnotationToolEndToEnd:
 
 
 # =============================================================================
+# Runtime-meta capture (SPEC §11.4 — used by worker for cycle correlation)
+# =============================================================================
+
+
+class TestRuntimeMetaCapture:
+    async def test_tool_call_captures_runtime_meta_when_client_provides_it(
+        self,
+        configured_mcp: tuple[FastMCP, Any],
+        captured: list[dict[str, Any]],
+    ) -> None:
+        """``runtime_meta`` field on tool-call events MUST contain the
+        client-supplied ``_meta`` dict (verbatim, or scrubbed). This is what
+        lets the worker derive per-turn correlation downstream of the SDK."""
+        mcp, handle = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.call_tool(
+                "echo",
+                {"text": "hi"},
+                meta={
+                    "claudecode/toolUseId": "tool-use-xyz",
+                    "claudecode/sessionId": "sess-abc",
+                },
+            )
+
+        await handle.flush()
+        starts = [ev for ev in captured if ev["event_type"] == "tool_call_start"]
+        ends = [ev for ev in captured if ev["event_type"] == "tool_call_end"]
+        assert len(starts) == 1 and len(ends) == 1
+
+        for ev in (starts[0], ends[0]):
+            assert ev["runtime_meta"] is not None
+            assert ev["runtime_meta"].get("claudecode/toolUseId") == "tool-use-xyz"
+            assert ev["runtime_meta"].get("claudecode/sessionId") == "sess-abc"
+
+    async def test_annotation_captures_runtime_meta(
+        self,
+        configured_mcp: tuple[FastMCP, Any],
+        captured: list[dict[str, Any]],
+    ) -> None:
+        """Annotation events MUST carry ``runtime_meta`` for the same
+        correlation reason — proactive annotations are turn boundaries; the
+        worker needs the runtime ID alongside them."""
+        mcp, handle = configured_mcp
+
+        async with Client(mcp) as client:
+            await client.call_tool(
+                "test-vendor_annotate",
+                {"intent": "find user"},
+                meta={"claudecode/toolUseId": "tool-use-1"},
+            )
+
+        await handle.flush()
+        annots = [ev for ev in captured if ev["event_type"] == "annotation"]
+        assert len(annots) == 1
+        assert annots[0]["runtime_meta"] is not None
+        assert annots[0]["runtime_meta"].get("claudecode/toolUseId") == "tool-use-1"
+
+    async def test_runtime_meta_captures_wire_level_progresstoken_only(
+        self,
+        configured_mcp: tuple[FastMCP, Any],
+        captured: list[dict[str, Any]],
+    ) -> None:
+        """When the caller doesn't supply ``_meta`` explicitly, FastMCP still
+        injects ``progressToken`` at the wire level. ``runtime_meta`` should
+        capture exactly that — proves we're faithful to what crossed the
+        transport, not what the caller intended."""
+        mcp, handle = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.call_tool("echo", {"text": "hi"})
+
+        await handle.flush()
+        for ev in captured:
+            # progressToken is always present on the wire even without
+            # caller-supplied meta — captures the MCP runtime's own
+            # bookkeeping. Vendor-supplied runtime IDs would also land here.
+            assert ev["runtime_meta"] is not None
+            assert "progressToken" in ev["runtime_meta"]
+
+
+# =============================================================================
 # All four event types in one flow (the full thesis-end-to-end test)
 # =============================================================================
 

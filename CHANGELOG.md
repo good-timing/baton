@@ -12,6 +12,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## 0.2.2 — runtime_meta on event envelope (in progress)
+
+### Added
+
+- **Event envelope `runtime_meta: dict | None` field** per SPEC §11.4.1. Carries the raw MCP `_meta` dict from the request (PII-scrubbed via vendor's scrubber). The Console worker uses this to derive per-turn / per-cycle correlation that's more precise than `session_id` alone (which is only the SDK-process lifetime, not a conversation turn). Examples of meaningful keys captured: `claudecode/toolUseId`, `claudecode/sessionId`, `cursor/conversationId`, `progressToken`. Null when the host runtime didn't surface a meta or the adapter can't access it.
+- `baton.integrations.fastmcp` (middleware + annotation): wires `runtime_meta` from `MiddlewareContext.fastmcp_context.request_context.meta` into every emitted event. Backwards-compatible: existing events that don't read the field are unaffected.
+
+### Wire format
+
+Additive — null default preserves backward compatibility with 0.2.x consumers that don't know about the field.
+
+---
+
 ## 0.2.1 — re-cut of 0.2.0 (yanked)
 
 `0.2.0` was published from a stale commit due to a release-pipeline race: an

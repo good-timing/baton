@@ -731,6 +731,7 @@ Every event has these fields:
   "consent_token": "...",                    // from VendorConfig; see §9
   "sdk_version": "0.1.0",
   "agent_runtime": "claude-code",
+  "runtime_meta": {"claudecode/toolUseId": "...", "progressToken": 1},  // optional; verbatim _meta from MCP request (PII-scrubbed); see §11.4.1
   "trace_context": {"traceparent": "...", "tracestate": null, "baggage": null},  // optional; from _meta if present
   "payload": { ... }                         // event-type-specific fields
 }
@@ -751,6 +752,24 @@ Event types and their payload shapes:
 - **Reactive annotation** — `signal_type` is non-null (one of the §3.1 enum values). Emitted *after* a tool call's outcome is known to flag friction. Carries `signal_type` / `suggested_improvement` / `context` (and may also carry `intent` / `expected_outcome` / `workflow` for self-describing context). This is the "ticket" the Console egresses.
 
 Worker dispatches on `signal_type`'s presence per §11.5 (`Annotation correlation rules`). The wire format is intentionally unified — both flavors share the same envelope so order-preserving stream processors handle them identically — but the semantic split is load-bearing for Console-side correlation and egress routing.
+
+#### 11.4.1 `runtime_meta` (optional) — for worker-side cycle correlation
+
+`session_id` is a process-lifetime identifier (the SDK's fallback UUID, generated at `install_baton(...)` time), NOT a conversation-turn identifier. A single MCP server process across multiple user prompts produces one `session_id`. To recover finer-grained "logical turn" or "cycle" boundaries, the worker MUST read `runtime_meta` when populated.
+
+The SDK populates `runtime_meta` with the raw `_meta` dict from the MCP request, with the vendor's PII scrubber applied. Examples of meaningful keys observed in the wild:
+
+- `claudecode/toolUseId` — per-tool-use identifier from Claude Code (changes per call)
+- `claudecode/sessionId` — Claude Code conversation session (stable across many tool calls in one conversation)
+- `cursor/conversationId` — Cursor's equivalent (when present)
+- `progressToken` — MCP-protocol-standard, every well-formed request includes it
+
+Worker-side correlation hierarchy (most authoritative first):
+1. `runtime_meta.claudecode/sessionId` (or equivalent runtime-supplied conversation id) — definitive turn-group identifier
+2. Proactive-annotation boundaries per §5.1.2 — agent-declared "I'm starting a new intent"
+3. `captured_at` time gaps — heuristic; brittle to long-running tools
+
+The SDK does NOT interpret `runtime_meta` beyond capture; it remains "what the runtime supplied," verbatim. See §11.5 for how the worker derives cycle boundaries from these primitives.
 
 Worker derives the canonical SignalPayload (§3) by:
 - Grouping events by `(tenant_id, session_id)`
@@ -829,6 +848,10 @@ Defined error codes:
 
 - The wire format is **semver** via the SDK's `sdk_version` field. Breaking changes bump the major. Additive fields bump the minor.
 - Until v1.0 is declared, all bumps are minor and breakage is allowed. We're pre-stable; consumers should pin to a known-good SDK range.
+
+### Wire-format changes
+
+- **0.2.2** — added optional `runtime_meta: dict[str, Any] | None` field to the event envelope per §11.4.1. Carries the raw `_meta` dict from the MCP request (PII-scrubbed via vendor's scrubber). Additive; null when absent. Workers SHOULD use it for cycle correlation per §11.5 instead of relying on `session_id` alone.
 
 ---
 

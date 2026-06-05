@@ -32,7 +32,7 @@ from baton.events import (
     ToolCallStartEvent,
     ToolCallStartPayload,
 )
-from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime
+from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime, meta_to_dict
 from baton.scrub import identity_scrub
 from baton.sinks import Sink
 
@@ -76,9 +76,12 @@ class BatonMiddleware(Middleware):
 
         params = dict(msg.arguments or {})
         session_id = self._extract_session_id(context)
-        runtime = (
-            detect_agent_runtime(self._extract_request_meta(context)) or self._default_agent_runtime
-        )
+        raw_meta = self._extract_request_meta(context)
+        meta_dict = meta_to_dict(raw_meta)
+        runtime = detect_agent_runtime(raw_meta) or self._default_agent_runtime
+        # Scrub the meta dict if a scrubber is configured — meta values may
+        # carry runtime-supplied identifiers that vendors want filtered.
+        scrubbed_meta = self._scrubber(meta_dict) if meta_dict is not None else None
 
         # tool_call_start — before invoking the vendor handler
         seq_start = await self._next_seq(session_id)
@@ -90,6 +93,7 @@ class BatonMiddleware(Middleware):
                 sequence_number=seq_start,
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
+                runtime_meta=scrubbed_meta,
                 payload=ToolCallStartPayload(
                     tool_name=tool_name,
                     params=self._scrubber(params),
@@ -111,6 +115,7 @@ class BatonMiddleware(Middleware):
                     sequence_number=seq_err,
                     captured_at=datetime.now(UTC),
                     agent_runtime=runtime,
+                    runtime_meta=scrubbed_meta,
                     payload=ToolCallErrorPayload(
                         tool_name=tool_name,
                         error_type=type(exc).__name__,
@@ -131,6 +136,7 @@ class BatonMiddleware(Middleware):
                 sequence_number=seq_end,
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
+                runtime_meta=scrubbed_meta,
                 payload=ToolCallEndPayload(
                     tool_name=tool_name,
                     result=self._scrubber(self._result_to_jsonable(result)),

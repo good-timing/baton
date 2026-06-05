@@ -109,6 +109,14 @@ class _EventEnvelope(BaseModel):
     consent_token: str
     sdk_version: str = __version__
     agent_runtime: str = "unknown"
+    runtime_meta: dict[str, Any] | None = None
+    """Runtime-supplied ``_meta`` envelope from the MCP request (SPEC §11.4).
+    Per SPEC §11.5 the Console worker uses this to derive turn / cycle
+    boundaries that are more precise than ``session_id`` alone (which is
+    only the SDK-process lifetime, not a conversation turn). Examples:
+    ``claudecode/toolUseId``, ``claudecode/sessionId``, ``progressToken``.
+    Null when the host runtime didn't surface a meta or the adapter can't
+    access it. PII-scrubbed if the vendor's scrubber covers metadata keys."""
 
 
 # =============================================================================
