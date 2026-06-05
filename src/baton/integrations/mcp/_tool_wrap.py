@@ -1,29 +1,39 @@
 """Tool-handler wrapping — the capture mechanism for the official mcp SDK.
 
-``mcp.server.fastmcp.FastMCP`` exposes no middleware hook. Instead, we
-wrap each registered tool's ``fn`` in place. Per the spike, this is stable
-across mcp v1.10 → v1.27.
+``mcp.server.fastmcp.FastMCP`` exposes no middleware hook. Instead, we wrap
+each registered ``Tool.run`` method in place. Per the spike, this is stable
+across mcp v1.10 → v1.27 (verified by the CI matrix).
+
+Why wrap ``Tool.run`` (instead of ``Tool.fn`` as the 0.2.x adapter did):
+- We receive the raw ``arguments`` dict directly — no inspect.signature
+  binding gymnastics to map positional args back to parameter names.
+- We receive the request ``context`` directly — that's where the MCP
+  ``_meta`` lives, which we forward as the event envelope's ``runtime_meta``
+  field per SPEC §11.4.1 (the primitive the Console worker uses for cycle
+  correlation more precise than session_id alone).
+- ``Tool.run`` is always async — no sync→async bridging via
+  ``asyncio.to_thread``, no need to flip ``Tool.is_async``.
+- The original ``Tool.run`` already handles sync vs. async ``fn`` dispatch
+  through ``fn_metadata.call_fn_with_arg_validation`` — we instrument
+  around it without owning that dispatch.
 
 Strategy:
-1. After ``install_baton``, iterate ``_tool_manager._tools`` and wrap each
-   ``Tool.fn`` with an async wrapper that emits Baton events.
+1. After ``install_baton``, iterate ``_tool_manager._tools`` and replace each
+   ``tool.run`` with a wrapper that emits Baton events around the original.
 2. Monkey-patch ``_tool_manager.add_tool`` so tools registered AFTER
    ``install_baton`` are also wrapped automatically.
-3. For tools whose original ``fn`` was sync, the wrapper is async (so we
-   can ``await sink.write(...)``), runs the original via
-   ``asyncio.to_thread``, and we flip ``Tool.is_async = True`` so the
-   ``Tool.run`` dispatcher invokes it via ``await``.
 
-The wrapped fn emits ``tool_call_start`` before invocation,
+The wrapped run emits ``tool_call_start`` before invocation,
 ``tool_call_end`` on success, ``tool_call_error`` on exception. Re-raises
-the exception so the caller's error path is unchanged.
+the exception so the caller's error path is unchanged. When ``Tool.run``
+wraps the original exception in ``ToolError`` (which it does), the event
+records the unwrapped ``__cause__`` so ``error_type`` reflects the real
+exception class (e.g., ``RuntimeError``, not ``ToolError``).
 """
 
 from __future__ import annotations
 
-import asyncio
 import functools
-import inspect
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from time import monotonic
@@ -42,7 +52,7 @@ from baton.integrations.mcp._registry import get_tool_manager, get_tool_registry
 from baton.scrub import identity_scrub
 from baton.sinks import Sink
 
-# Sentinel attribute set on wrapped fns so repeated re-scans don't
+# Sentinel attribute set on wrapped run methods so repeated re-scans don't
 # double-wrap. Tools added via the patched add_tool are checked against
 # this before wrapping.
 _WRAPPED_SENTINEL = "_baton_wrapped"
@@ -76,12 +86,16 @@ def install_wraps(
         # event with the structured payload.
         if annotation_tool_name is not None and name == annotation_tool_name:
             return
-        if getattr(tool.fn, _WRAPPED_SENTINEL, False):
+        if getattr(tool.run, _WRAPPED_SENTINEL, False):
             return
-        wrapped = _wrap_tool_fn(name, tool, emit_before, emit_after, emit_error)
-        tool.fn = wrapped
-        # Force async dispatch regardless of original; the wrapper is async.
-        tool.is_async = True
+        # mcp's Tool is a Pydantic BaseModel; `run` is a method, not a field,
+        # so plain attribute assignment is rejected. Bypass Pydantic with
+        # object.__setattr__ to install an instance-level shadow.
+        object.__setattr__(
+            tool,
+            "run",
+            _wrap_tool_run(name, tool, emit_before, emit_after, emit_error, scrubber),
+        )
 
     # 1. Wrap all currently-registered tools.
     registry = get_tool_registry(mcp)
@@ -95,8 +109,8 @@ def install_wraps(
     @functools.wraps(original_add_tool)
     def add_tool_with_wrap(*args: Any, **kwargs: Any) -> Any:
         result = original_add_tool(*args, **kwargs)
-        # Walk the full registry afterwards — add_tool may insert under
-        # a derived name we can't predict from the args alone.
+        # Walk the full registry afterwards — add_tool may insert under a
+        # derived name we can't predict from the args alone.
         for name, tool in list(registry.items()):
             _maybe_wrap_entry(name, tool)
         return result
@@ -109,45 +123,80 @@ def install_wraps(
 # =============================================================================
 
 
-def _wrap_tool_fn(
+def _wrap_tool_run(
     name: str,
     tool: Any,
-    emit_before: Callable[[str, dict[str, Any]], Awaitable[None]],
-    emit_after: Callable[[str, Any, float], Awaitable[None]],
-    emit_error: Callable[[str, BaseException, float], Awaitable[None]],
+    emit_before: Callable[[str, dict[str, Any], dict[str, Any] | None], Awaitable[None]],
+    emit_after: Callable[[str, Any, float, dict[str, Any] | None], Awaitable[None]],
+    emit_error: Callable[[str, BaseException, float, dict[str, Any] | None], Awaitable[None]],
+    scrubber: Callable[[Any], Any],
 ) -> Callable[..., Awaitable[Any]]:
-    """Build an async wrapper around ``tool.fn`` that emits Baton events.
+    """Build an async wrapper around ``tool.run`` that emits Baton events.
 
-    Sync originals are bridged to async via ``asyncio.to_thread`` so we
-    can ``await`` sink writes around the call.
+    Signature mirrors mcp's ``Tool.run``: ``(arguments, context=None,
+    convert_result=False) -> Any``. We instrument around the original; we
+    do not own argument validation or sync/async dispatch.
     """
-    original = tool.fn
-    was_async = bool(getattr(tool, "is_async", False))
-    # Capture the original signature so we can bind *args back to parameter
-    # names — the mcp SDK calls validated handlers via positional args, so
-    # the wrapper's **kwargs alone would miss most of the params.
-    sig = inspect.signature(original)
+    original_run = tool.run  # bound method on this tool instance
 
-    @functools.wraps(original)
-    async def wrapper(*args: Any, **kwargs: Any) -> Any:
-        await emit_before(name, _bind_params(sig, args, kwargs))
+    async def wrapper(
+        arguments: dict[str, Any] | None = None,
+        context: Any = None,
+        convert_result: bool = False,
+    ) -> Any:
+        params = dict(arguments or {})
+        meta_dict = _extract_meta_from_context(context)
+        scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
+
+
+
+        await emit_before(name, scrubber(params), scrubbed_meta)
         called_at = monotonic()
         try:
-            if was_async:
-                result = await original(*args, **kwargs)
-            else:
-                # Bridge sync original into async context for emission.
-                # Bind kwargs into a no-arg callable so to_thread can run it.
-                bound: Callable[[], Any] = functools.partial(original, *args, **kwargs)
-                result = await asyncio.to_thread(bound)
+            result = await original_run(arguments, context=context, convert_result=convert_result)
         except BaseException as exc:
-            await emit_error(name, exc, monotonic() - called_at)
+            # mcp's Tool.run does `raise ToolError(...) from e` — surface the
+            # original __cause__ when present so error_type reflects the real
+            # exception class the vendor's fn actually raised.
+            original_exc = exc.__cause__ if exc.__cause__ is not None else exc
+            await emit_error(name, original_exc, monotonic() - called_at, scrubbed_meta)
             raise
-        await emit_after(name, result, monotonic() - called_at)
+        await emit_after(name, result, monotonic() - called_at, scrubbed_meta)
         return result
 
     setattr(wrapper, _WRAPPED_SENTINEL, True)
     return wrapper
+
+
+def _extract_meta_from_context(context: Any) -> dict[str, Any] | None:
+    """Pull the wire ``_meta`` dict from ``mcp.server.fastmcp.Context``.
+
+    Context is None when no client meta is available (rare; the MCP wire
+    protocol normally surfaces at least a ``progressToken``). Returns None
+    safely on any attribute miss — meta capture is best-effort.
+    """
+    if context is None:
+        return None
+    try:
+        rc = context.request_context
+        if rc is None:
+            return None
+        meta = rc.meta
+    except (AttributeError, ValueError):
+        # `request_context` raises ValueError when accessed outside a real
+        # MCP request (e.g., when the wrapped tool is invoked via
+        # mcp.call_tool() from test or programmatic code with no live wire).
+        # Treat as "no meta available" — best-effort capture per SPEC §11.4.1.
+        return None
+    if meta is None:
+        return None
+    # mcp's RequestParams.Meta is a pydantic model; dump as dict using aliases
+    # so namespaced keys (e.g., "claudecode/toolUseId") survive intact.
+    if isinstance(meta, dict):
+        return meta
+    if hasattr(meta, "model_dump"):
+        return meta.model_dump(by_alias=True)  # type: ignore[no-any-return]
+    return None
 
 
 def _make_emitters(
@@ -160,26 +209,23 @@ def _make_emitters(
     default_agent_runtime: str,
     scrubber: Callable[[Any], Any],
 ) -> tuple[
-    Callable[[str, dict[str, Any]], Awaitable[None]],
-    Callable[[str, Any, float], Awaitable[None]],
-    Callable[[str, BaseException, float], Awaitable[None]],
+    Callable[[str, dict[str, Any], dict[str, Any] | None], Awaitable[None]],
+    Callable[[str, Any, float, dict[str, Any] | None], Awaitable[None]],
+    Callable[[str, BaseException, float, dict[str, Any] | None], Awaitable[None]],
 ]:
     """Build three async emitters: ``tool_call_start`` / ``_end`` / ``_error``.
 
-    Session-id: the official ``mcp.server.fastmcp`` Context exposes a
-    session via ``ctx.request_context.session`` but the Tool.fn we wrap
-    doesn't receive the Context unless the original opted in. To stay
-    correct without overreaching the spike scope, we use the SDK fallback
-    session-id for every event. Vendors who need true per-session
-    correlation can pass an explicit ``default_agent_runtime`` and rely on
-    downstream session-id derivation. (Follow-up: thread Context through
-    the wrapper when the tool's signature includes a Context kwarg.)
+    Session-id: still the SDK fallback per-process UUID. The Console worker
+    uses ``runtime_meta`` (now populated below) to derive finer per-cycle
+    correlation per SPEC §11.5 — this adapter no longer needs to invent it.
     """
 
     async def _seq() -> int:
         return await counter.next(fallback_session_id)
 
-    async def emit_before(name: str, params: dict[str, Any]) -> None:
+    async def emit_before(
+        name: str, params: dict[str, Any], runtime_meta: dict[str, Any] | None
+    ) -> None:
         await sink.write(
             ToolCallStartEvent(
                 tenant_id=tenant_id,
@@ -188,14 +234,17 @@ def _make_emitters(
                 sequence_number=await _seq(),
                 captured_at=datetime.now(UTC),
                 agent_runtime=default_agent_runtime,
+                runtime_meta=runtime_meta,
                 payload=ToolCallStartPayload(
                     tool_name=name,
-                    params=scrubber(params),
+                    params=params,
                 ),
             )
         )
 
-    async def emit_after(name: str, result: Any, duration_s: float) -> None:
+    async def emit_after(
+        name: str, result: Any, duration_s: float, runtime_meta: dict[str, Any] | None
+    ) -> None:
         await sink.write(
             ToolCallEndEvent(
                 tenant_id=tenant_id,
@@ -204,6 +253,7 @@ def _make_emitters(
                 sequence_number=await _seq(),
                 captured_at=datetime.now(UTC),
                 agent_runtime=default_agent_runtime,
+                runtime_meta=runtime_meta,
                 payload=ToolCallEndPayload(
                     tool_name=name,
                     result=scrubber(_result_to_jsonable(result)),
@@ -212,7 +262,9 @@ def _make_emitters(
             )
         )
 
-    async def emit_error(name: str, exc: BaseException, duration_s: float) -> None:
+    async def emit_error(
+        name: str, exc: BaseException, duration_s: float, runtime_meta: dict[str, Any] | None
+    ) -> None:
         await sink.write(
             ToolCallErrorEvent(
                 tenant_id=tenant_id,
@@ -221,6 +273,7 @@ def _make_emitters(
                 sequence_number=await _seq(),
                 captured_at=datetime.now(UTC),
                 agent_runtime=default_agent_runtime,
+                runtime_meta=runtime_meta,
                 payload=ToolCallErrorPayload(
                     tool_name=name,
                     error_type=type(exc).__name__,
@@ -233,25 +286,25 @@ def _make_emitters(
     return emit_before, emit_after, emit_error
 
 
-def _bind_params(
-    sig: inspect.Signature, args: tuple[Any, ...], kwargs: dict[str, Any]
-) -> dict[str, Any]:
-    """Map positional + keyword args back to {param_name: value}.
-
-    Falls back to a plain kwargs dict if binding fails (e.g., extra args
-    the signature doesn't declare); never raises into the emission path.
-    """
-    try:
-        bound = sig.bind_partial(*args, **kwargs)
-        return dict(bound.arguments)
-    except TypeError:
-        return dict(kwargs)
-
-
 def _result_to_jsonable(result: Any) -> Any:
-    """Best-effort conversion of any tool result to a JSON-serializable shape."""
+    """Best-effort conversion of any tool result to a JSON-serializable shape.
+
+    When ``Tool.run`` is called with ``convert_result=True`` (which mcp's
+    ``FastMCP.call_tool`` does), the return is the wire-format tuple
+    ``(content_list, structured_result_dict)`` where ``structured_result_dict``
+    typically looks like ``{"result": <the fn's return value>}``. Unwrap the
+    structured value so the ``tool_call_end.result`` field captures the
+    developer-meaningful return, not the MCP wire envelope.
+    """
     if result is None:
         return None
+    # Unwrap (content, structured_result) tuples from convert_result=True path.
+    if isinstance(result, tuple) and len(result) == 2:
+        content, structured = result
+        if isinstance(structured, dict) and "result" in structured:
+            return _result_to_jsonable(structured["result"])
+        # Fallback: serialize the content list.
+        return _result_to_jsonable(content)
     if hasattr(result, "model_dump"):
         return result.model_dump(mode="json")
     if isinstance(result, (str, int, float, bool, list, dict)):
