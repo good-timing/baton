@@ -8,7 +8,7 @@ include = ["baton*"]
 
 [project]
 name = "baton-sdk"
-version = "0.2.2"
+version = "0.2.3"
 description = "Baton — structured signal capture SDK that wraps a vendor's MCP server. Thin event emitter; Console worker assembles, interprets, dispatches."
 readme = "README.md"
 license = { file = "LICENSE" }

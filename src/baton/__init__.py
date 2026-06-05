@@ -23,7 +23,7 @@ Pre-1.0 — public API not yet stable; breaking changes flagged in SPEC §13.
 
 from __future__ import annotations
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 """SDK version. Embedded in every emitted event's ``sdk_version`` field."""
 
 __all__ = [

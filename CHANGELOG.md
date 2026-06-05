@@ -12,6 +12,18 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## 0.2.3 — re-cut of 0.2.2 (CI format-check fix)
+
+v0.2.2 was tagged but never published — GitHub Actions `core` job failed
+at `ruff format --check src/ tests/` because local `make ci` wasn't
+running format-check (only `ruff check`). v0.2.3 ships the formatter
+fix + a Makefile correction so future `make ci` mirrors the workflow's
+gate exactly.
+
+No functional changes from what 0.2.2 should have been.
+
+---
+
 ## 0.2.2 — runtime_meta on event envelope + mcp adapter refactor
 
 ### Added

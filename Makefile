@@ -27,11 +27,16 @@ lint:
 format:
 	$(BIN)/ruff format src/ tests/
 
+format-check:
+	$(BIN)/ruff format --check src/ tests/
+
 typecheck:
 	$(BIN)/mypy src/baton
 
-# CI gate — lint + typecheck + test. GitHub Actions runs this directly.
-ci: lint typecheck test
+# CI gate — lint + format-check + typecheck + test. Mirrors what
+# .github/workflows/ci.yml runs so a green local `make ci` predicts a
+# green PR.
+ci: lint format-check typecheck test
 
 build:
 	$(BIN)/python -m build

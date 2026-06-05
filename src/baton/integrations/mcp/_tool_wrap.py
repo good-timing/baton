@@ -148,8 +148,6 @@ def _wrap_tool_run(
         meta_dict = _extract_meta_from_context(context)
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
 
-
-
         await emit_before(name, scrubber(params), scrubbed_meta)
         called_at = monotonic()
         try:
@@ -182,7 +180,7 @@ def _extract_meta_from_context(context: Any) -> dict[str, Any] | None:
         if rc is None:
             return None
         meta = rc.meta
-    except (AttributeError, ValueError):
+    except AttributeError, ValueError:
         # `request_context` raises ValueError when accessed outside a real
         # MCP request (e.g., when the wrapped tool is invoked via
         # mcp.call_tool() from test or programmatic code with no live wire).
