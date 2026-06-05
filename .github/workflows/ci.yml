@@ -1,7 +1,10 @@
 # Baton SDK CI — lint + typecheck + test on every PR and push to main.
 #
 # Two jobs:
-#   - `core`       — lint + typecheck + tests against the latest pinned mcp.
+#   - `core`       — lint + typecheck + tests across the supported Python
+#                    versions (3.11-3.14). Catches version-pin and stdlib-API
+#                    regressions like the one that shipped 0.2.3 effectively
+#                    uninstallable.
 #   - `mcp-matrix` — tests-only against multiple `mcp` package versions, since
 #                    `baton.integrations.mcp` reaches into private internals
 #                    (`_tool_manager._tools`, `Tool.fn`, `Tool.is_async`) per
@@ -17,12 +20,16 @@ on:
 jobs:
   core:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: pyproject.toml
 

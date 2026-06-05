@@ -33,9 +33,9 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
-from uuid import uuid7
 
 from fastmcp import FastMCP
+from uuid6 import uuid7
 
 from baton._state import SessionCounter
 from baton.integrations.fastmcp.annotation import (

@@ -18,9 +18,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Annotated, Any, Literal
-from uuid import UUID, uuid7
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+from uuid6 import uuid7
 
 from baton import __version__
 

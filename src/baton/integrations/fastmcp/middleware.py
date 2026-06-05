@@ -18,10 +18,10 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
-from uuid import uuid7
 
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from mcp.types import CallToolRequestParams
+from uuid6 import uuid7
 
 from baton._state import SessionCounter, resolve_session_id
 from baton.events import (
