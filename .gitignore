@@ -53,3 +53,8 @@ baton-events.jsonl
 *.sqlite-journal
 *.db
 .git.old/
+
+# Local workflow state (per-effort state files; not source-controlled)
+STATE.md
+INDEX.md
+.state-link
