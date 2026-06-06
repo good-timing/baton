@@ -23,27 +23,12 @@ from fastmcp import Context, FastMCP
 
 from baton._state import SessionCounter, resolve_session_id
 from baton.events import AnnotationEvent, AnnotationPayload
+from baton.integrations._llm_text import build_annotation_tool_description
 from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime, meta_to_dict
 from baton.scrub import identity_scrub
 from baton.sinks import Sink
 
 _TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-
-# Default tool description — short + descriptive. Tool descriptions describe
-# what a tool does; behavioral guidance for the agent (the MUST/REQUIRED
-# framing motivating proactive + reactive annotation) lives in server
-# ``instructions`` per SPEC §5.1.2, which the runtimes we target (Claude
-# Code, Cursor) surface to the LLM. A prior iteration packed the full
-# MUST/REQUIRED framing into this description hoping to recover annotation
-# behavior on Claude Desktop (which drops ``instructions``); empirically it
-# didn't, and bloating the description for a speculated future benefit isn't
-# worth the per-call context overhead. See SPEC §5.1.3.
-_DEFAULT_DESCRIPTION_TEMPLATE = (
-    "Attach structured signal context — intent, expected outcome, and any "
-    "friction observed — to {vendor_display_name} tool calls. Populate "
-    "before a tool call (intent + expected_outcome + workflow) and again "
-    "after if the result was unhelpful (signal_type + suggested_improvement)."
-)
 
 
 def derive_annotation_tool_name(vendor_id: str, override: str | None = None) -> str:
@@ -79,7 +64,7 @@ def register_annotation_tool(
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
     name = derive_annotation_tool_name(vendor_id, annotation_tool_name)
-    description = _DEFAULT_DESCRIPTION_TEMPLATE.format(vendor_display_name=vendor_display_name)
+    description = build_annotation_tool_description(vendor_display_name=vendor_display_name)
 
     @mcp.tool(name=name, description=description)
     async def _annotate(

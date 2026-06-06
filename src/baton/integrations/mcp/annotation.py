@@ -23,17 +23,11 @@ from mcp.server.fastmcp import FastMCP
 
 from baton._state import SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
+from baton.integrations._llm_text import build_annotation_tool_description
 from baton.scrub import identity_scrub
 from baton.sinks import Sink
 
 _TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-
-_DEFAULT_DESCRIPTION_TEMPLATE = (
-    "Attach structured signal context — intent, expected outcome, and any "
-    "friction observed — to {vendor_display_name} tool calls. Populate "
-    "before a tool call (intent + expected_outcome + workflow) and again "
-    "after if the result was unhelpful (signal_type + suggested_improvement)."
-)
 
 
 def derive_annotation_tool_name(vendor_id: str, override: str | None = None) -> str:
@@ -68,7 +62,7 @@ def register_annotation_tool(
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
     name = derive_annotation_tool_name(vendor_id, annotation_tool_name)
-    description = _DEFAULT_DESCRIPTION_TEMPLATE.format(vendor_display_name=vendor_display_name)
+    description = build_annotation_tool_description(vendor_display_name=vendor_display_name)
 
     @mcp.tool(name=name, description=description)
     async def _annotate(
