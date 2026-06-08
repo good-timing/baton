@@ -27,11 +27,9 @@ handle = install_baton(mcp, VendorConfig(
 
 from __future__ import annotations
 
-from baton.extension import BatonExtension, BatonHandle
-from baton.integrations.fastmcp.install import VendorConfig, install_baton
+from baton.integrations.fastmcp.install import BatonHandle, VendorConfig, install_baton
 
 __all__ = [
-    "BatonExtension",
     "BatonHandle",
     "VendorConfig",
     "install_baton",

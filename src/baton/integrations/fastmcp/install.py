@@ -38,7 +38,6 @@ from fastmcp import FastMCP
 from uuid6 import uuid7
 
 from baton._state import SessionCounter
-from baton.extension import BatonExtension, BatonHandle
 from baton.integrations.fastmcp.annotation import (
     derive_annotation_tool_name,
     register_annotation_tool,
@@ -93,11 +92,28 @@ class VendorConfig:
     """PII scrubber per SPEC §7. Default (None) uses the identity-scrub
     placeholder; vendors handling sensitive data should supply their own."""
 
-    extensions: list[BatonExtension] = field(default_factory=list)
-    """Composable vendor extensions (``BatonExtension`` subclasses). Each
-    extension can register additional tools, contribute to server instructions,
-    append a description directive to the annotation tool, and receive the
-    ``BatonHandle`` post-install. See ``baton.extension.BatonExtension``."""
+
+class BatonHandle:
+    """Handle returned from ``install_baton`` for graceful shutdown."""
+
+    def __init__(
+        self,
+        *,
+        sink: Sink,
+        annotation_tool_name: str,
+        vendor_id: str,
+    ) -> None:
+        self.sink = sink
+        self.annotation_tool_name = annotation_tool_name
+        self.vendor_id = vendor_id
+
+    async def flush(self) -> None:
+        """Flush any pending events held by the sink."""
+        await self.sink.flush()
+
+    async def aclose(self) -> None:
+        """Flush and release sink resources. Subsequent writes raise."""
+        await self.sink.aclose()
 
 
 def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
@@ -125,17 +141,12 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         config.vendor_id, config.annotation_tool_name
     )
 
-    # Gather extension contributions before building LLM-facing text.
-    instr_slices = [s for e in config.extensions if (s := e.instructions_slice()) is not None]
-    desc_directives = [d for e in config.extensions if (d := e.description_directive()) is not None]
-
     # Server instructions — load-bearing on instruction-aware runtimes.
     # FastMCP >=1.10 made `instructions` a read-only property; fall back to the
     # backing MCPServer attribute when the public setter isn't available.
     instructions = build_server_instructions(
         vendor_display_name=config.vendor_display_name,
         annotation_tool_name=annotation_tool_name,
-        extra_slices=instr_slices or None,
     )
     try:
         mcp.instructions = instructions
@@ -157,11 +168,6 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         )
     )
 
-    # Extension tools — registered after middleware so they are captured.
-    for ext in config.extensions:
-        ext.register_tools(mcp)
-
-    # Annotation tool registered last; the middleware skips it by name match.
     register_annotation_tool(
         mcp,
         vendor_id=config.vendor_id,
@@ -174,17 +180,10 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         default_agent_runtime=config.default_agent_runtime,
         annotation_tool_name=config.annotation_tool_name,
         scrubber=scrubber,
-        extra_directives=desc_directives or None,
     )
 
-    handle = BatonHandle(
+    return BatonHandle(
         sink=sink,
         annotation_tool_name=annotation_tool_name,
         vendor_id=config.vendor_id,
-        session_id=fallback_session_id,
     )
-
-    for ext in config.extensions:
-        ext.on_handle(handle)
-
-    return handle

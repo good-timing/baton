@@ -29,8 +29,6 @@ __version__ = "0.2.4"
 __all__ = [
     "AsyncClient",
     "AsyncTrace",
-    "BatonExtension",
-    "BatonHandle",
     "Client",
     "SignalType",
     "Trace",
@@ -43,4 +41,3 @@ __all__ = [
 # Trace + AsyncTrace are re-exported so typed callers can write
 # ``def f(t: baton.Trace) -> ...`` without reaching into ``baton.client``.
 from baton.client import AsyncClient, AsyncTrace, Client, SignalType, Trace  # noqa: E402
-from baton.extension import BatonExtension, BatonHandle  # noqa: E402

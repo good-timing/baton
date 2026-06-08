@@ -11,13 +11,12 @@ truncation cap):**
   (BEFORE/AFTER pattern, signal_type enum, "annotation doesn't replace
   answering"). Claude Code truncates ``InitializeResult.instructions`` at
   ~2087 chars, so this template is kept under ~1000 chars to leave headroom
-  for vendor extensions (``BatonExtension.instructions_slice``).
+  for vendor extensions.
 - *Annotation tool description* carries the field-level reference (what
   belongs in intent / expected_outcome / workflow / suggested_improvement /
-  context) PLUS any ``BatonExtension.description_directive`` contributions.
-  Tool descriptions are loaded on every call to the central annotation tool,
-  so this is the right place for the just-in-time dictionary and any
-  condition-action directives that must fire at annotation time.
+  context). Tool descriptions are loaded on every call to the central
+  annotation tool, so this is the right place for the just-in-time
+  dictionary.
 
 Why not put both in instructions: empirically the cap drops the tail
 silently. Why not put the behavioral framing in the description: per-call
@@ -26,8 +25,6 @@ drive the first proactive annotation.
 """
 
 from __future__ import annotations
-
-import logging
 
 _DEFAULT_SERVER_INSTRUCTIONS_TEMPLATE = (
     "This server is wrapped in the {vendor_display_name} support-signal SDK. "
@@ -74,67 +71,20 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
 )
 
 
-_INSTRUCTIONS_SOFT_CAP = 2000
-"""Soft warning threshold for combined server-instructions length.
-
-Claude Code empirically truncates at ~2087 chars. We warn at 2000 to leave
-a safety margin; the base template uses ~1.1K chars, leaving ~900 chars for
-``BatonExtension.instructions_slice`` contributions.
-"""
-
-_log = logging.getLogger(__name__)
-
-
 def build_server_instructions(
     *,
     vendor_display_name: str,
     annotation_tool_name: str,
-    extra_slices: list[str] | None = None,
 ) -> str:
-    """Build the server-instructions text for the MCP ``instructions`` field.
-
-    ``extra_slices``: text contributed by ``BatonExtension.instructions_slice``
-    implementations. Each slice is appended with a blank-line separator.
-    Emits a ``logging.WARNING`` if the combined length exceeds
-    ``_INSTRUCTIONS_SOFT_CAP`` — prefer ``BatonExtension.description_directive``
-    for behavioural guidance that has no truncation risk.
-    """
-    base = _DEFAULT_SERVER_INSTRUCTIONS_TEMPLATE.format(
+    """Build the server-instructions text for the MCP ``instructions`` field."""
+    return _DEFAULT_SERVER_INSTRUCTIONS_TEMPLATE.format(
         vendor_display_name=vendor_display_name,
         annotation_tool_name=annotation_tool_name,
     )
-    if not extra_slices:
-        return base
-    combined = base + "".join(f"\n\n{s}" for s in extra_slices)
-    if len(combined) > _INSTRUCTIONS_SOFT_CAP:
-        _log.warning(
-            "build_server_instructions: combined instructions length %d chars "
-            "exceeds soft cap %d — Claude Code truncates at ~2087; "
-            "BatonExtension.instructions_slice contributions may be cut off. "
-            "Use BatonExtension.description_directive instead for directives "
-            "that must reach the agent reliably.",
-            len(combined),
-            _INSTRUCTIONS_SOFT_CAP,
-        )
-    return combined
 
 
-def build_annotation_tool_description(
-    *,
-    vendor_display_name: str,
-    extra_directives: list[str] | None = None,
-) -> str:
-    """Build the annotation tool's ``description``.
-
-    ``extra_directives``: condition-action directives contributed by
-    ``BatonExtension.description_directive`` implementations. Each directive
-    is appended as its own paragraph. The annotation tool description is
-    loaded on every call (not subject to the server-instructions truncation
-    cap), making this the strongest reliable channel for behavioural guidance.
-    """
-    base = _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
+def build_annotation_tool_description(*, vendor_display_name: str) -> str:
+    """Build the annotation tool's ``description``."""
+    return _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
         vendor_display_name=vendor_display_name,
     )
-    if not extra_directives:
-        return base
-    return base + "\n\n" + "\n\n".join(extra_directives)

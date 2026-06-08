@@ -59,14 +59,10 @@ def register_annotation_tool(
     default_agent_runtime: str = "unknown",
     annotation_tool_name: str | None = None,
     scrubber: Callable[[Any], Any] = identity_scrub,
-    extra_directives: list[str] | None = None,
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
     name = derive_annotation_tool_name(vendor_id, annotation_tool_name)
-    description = build_annotation_tool_description(
-        vendor_display_name=vendor_display_name,
-        extra_directives=extra_directives,
-    )
+    description = build_annotation_tool_description(vendor_display_name=vendor_display_name)
 
     @mcp.tool(name=name, description=description)
     async def _annotate(
