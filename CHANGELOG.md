@@ -10,6 +10,31 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+### Added
+
+- **`BatonExtension` — composable vendor extension protocol (#86).** Base class
+  with four overridable channels: `register_tools(mcp)` (add tools; captured
+  automatically), `description_directive()` (append condition-action directives
+  to the annotation tool's description — the strongest reliable channel, immune
+  to server-instructions truncation), `instructions_slice()` (contribute to
+  server instructions within the ~2K budget), and `on_handle(handle)` (receive
+  the live `BatonHandle` post-install). Extensions are passed via
+  `VendorConfig(extensions=[...])` on both adapters.
+
+- **`BatonHandle.session_id` (#89).** The process-lifetime session ID is now
+  exposed on the returned handle — same value embedded in every emitted event.
+  Use in extension-registered tools (e.g., `create_support_ticket`) to
+  correlate vendor-side artifacts back to the Baton event stream. Replaces the
+  closure-walk hack in the SingleStore demo patch.
+
+- **`BatonExtension` and `BatonHandle` exported from `baton` (top-level)** in
+  addition to `baton.integrations.fastmcp` / `baton.integrations.mcp`.
+
+- **`examples/console_ticket_extension/`** — canonical `BatonExtension`
+  consumer (`ConsoleTicketExtension`): registers `create_support_ticket`,
+  contributes a description directive, and populates `session_id` via
+  `on_handle`. Retires the three manual monkey-patches from the demo patch.
+
 ### Changed
 
 - **Server-instructions template shrunk from ~2.3K chars to ~1.1K chars.** Claude Code empirically truncates `InitializeResult.instructions` at ~2087 chars, so the previous template was already past the cap (the fastmcp adapter had drifted to ~3.6K — even further over). Verbose field-by-field guidance and the dead consent-gated ticket flow scaffolding were dropped; the BEFORE/AFTER MUST/REQUIRED behavioral framing, the full 8-value signal_type enum, and the "annotation doesn't replace answering" guardrail remain. Headroom for vendor extensions (see #86 `BatonExtension` Protocol) is now ~960 chars.

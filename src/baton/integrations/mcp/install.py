@@ -34,6 +34,7 @@ from mcp.server.fastmcp import FastMCP
 from uuid6 import uuid7
 
 from baton._state import SessionCounter
+from baton.extension import BatonExtension, BatonHandle
 from baton.integrations.mcp._tool_wrap import install_wraps
 from baton.integrations.mcp.annotation import (
     derive_annotation_tool_name,
@@ -57,29 +58,8 @@ class VendorConfig:
     annotation_tool_name: str | None = None
     default_agent_runtime: str = "unknown"
     scrubber: Callable[[Any], Any] | None = None
-
-
-class BatonHandle:
-    """Handle returned from ``install_baton`` for graceful shutdown."""
-
-    def __init__(
-        self,
-        *,
-        sink: Sink,
-        annotation_tool_name: str,
-        vendor_id: str,
-    ) -> None:
-        self.sink = sink
-        self.annotation_tool_name = annotation_tool_name
-        self.vendor_id = vendor_id
-
-    async def flush(self) -> None:
-        """Flush pending events held by the sink."""
-        await self.sink.flush()
-
-    async def aclose(self) -> None:
-        """Flush and release sink resources. Subsequent writes raise."""
-        await self.sink.aclose()
+    extensions: list[BatonExtension] = field(default_factory=list)
+    """Composable vendor extensions. See ``baton.extension.BatonExtension``."""
 
 
 def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
@@ -107,12 +87,17 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         config.vendor_id, config.annotation_tool_name
     )
 
+    # Gather extension contributions before building LLM-facing text.
+    instr_slices = [s for e in config.extensions if (s := e.instructions_slice()) is not None]
+    desc_directives = [d for e in config.extensions if (d := e.description_directive()) is not None]
+
     # Server instructions — load-bearing on instruction-aware runtimes.
     # The official ``FastMCP.instructions`` is a read-only property; the
     # backing storage lives on ``_mcp_server.instructions``.
     instructions = build_server_instructions(
         vendor_display_name=config.vendor_display_name,
         annotation_tool_name=annotation_tool_name,
+        extra_slices=instr_slices or None,
     )
     try:
         mcp.instructions = instructions  # type: ignore[misc]
@@ -132,8 +117,13 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         annotation_tool_name=annotation_tool_name,
     )
 
-    # Register the annotation tool LAST so the wrap layer's add_tool patch
-    # knows to skip wrapping it (by name match).
+    # Extension tools — registered after install_wraps so the patched add_tool
+    # wraps them automatically (their calls emit tool_call_* events).
+    for ext in config.extensions:
+        ext.register_tools(mcp)
+
+    # Annotation tool registered LAST; the wrap layer's add_tool patch
+    # knows to skip it by name match.
     register_annotation_tool(
         mcp,
         vendor_id=config.vendor_id,
@@ -146,10 +136,17 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         default_agent_runtime=config.default_agent_runtime,
         annotation_tool_name=config.annotation_tool_name,
         scrubber=scrubber,
+        extra_directives=desc_directives or None,
     )
 
-    return BatonHandle(
+    handle = BatonHandle(
         sink=sink,
         annotation_tool_name=annotation_tool_name,
         vendor_id=config.vendor_id,
+        session_id=fallback_session_id,
     )
+
+    for ext in config.extensions:
+        ext.on_handle(handle)
+
+    return handle

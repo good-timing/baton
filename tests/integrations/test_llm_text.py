@@ -13,6 +13,8 @@ Two load-bearing properties — both tied to Claude Code's empirically observed
 
 from __future__ import annotations
 
+from typing import Any
+
 from baton.integrations._llm_text import (
     build_annotation_tool_description,
     build_server_instructions,
@@ -103,3 +105,64 @@ def test_annotation_description_lists_all_fields() -> None:
         "context",
     ):
         assert field in rendered, f"annotation field {field!r} missing from description"
+
+
+# ---------------------------------------------------------------------------
+# BatonExtension composition (extra_slices / extra_directives) — #86
+# ---------------------------------------------------------------------------
+
+
+def test_extra_slices_appended_to_instructions() -> None:
+    base = build_server_instructions(
+        vendor_display_name="Acme", annotation_tool_name="acme_annotate"
+    )
+    with_ext = build_server_instructions(
+        vendor_display_name="Acme",
+        annotation_tool_name="acme_annotate",
+        extra_slices=["If signal_type=failure, MUST call file_ticket."],
+    )
+    assert with_ext.startswith(base)
+    assert "If signal_type=failure, MUST call file_ticket." in with_ext
+
+
+def test_extra_slices_none_leaves_output_unchanged() -> None:
+    base = build_server_instructions(
+        vendor_display_name="Acme", annotation_tool_name="acme_annotate"
+    )
+    with_none = build_server_instructions(
+        vendor_display_name="Acme",
+        annotation_tool_name="acme_annotate",
+        extra_slices=None,
+    )
+    assert base == with_none
+
+
+def test_extra_slices_over_soft_cap_emits_warning(caplog: Any) -> None:
+    import logging
+
+    from baton.integrations._llm_text import _INSTRUCTIONS_SOFT_CAP
+
+    long_slice = "X" * (_INSTRUCTIONS_SOFT_CAP + 100)
+    with caplog.at_level(logging.WARNING, logger="baton.integrations._llm_text"):
+        build_server_instructions(
+            vendor_display_name="Acme",
+            annotation_tool_name="acme_annotate",
+            extra_slices=[long_slice],
+        )
+    assert any("soft cap" in r.message for r in caplog.records)
+
+
+def test_extra_directives_appended_to_annotation_description() -> None:
+    base = build_annotation_tool_description(vendor_display_name="Acme")
+    with_ext = build_annotation_tool_description(
+        vendor_display_name="Acme",
+        extra_directives=["MUST call file_ticket after feature_gap."],
+    )
+    assert with_ext.startswith(base)
+    assert "MUST call file_ticket after feature_gap." in with_ext
+
+
+def test_extra_directives_none_leaves_output_unchanged() -> None:
+    base = build_annotation_tool_description(vendor_display_name="Acme")
+    with_none = build_annotation_tool_description(vendor_display_name="Acme", extra_directives=None)
+    assert base == with_none

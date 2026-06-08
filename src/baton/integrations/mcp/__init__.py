@@ -41,9 +41,11 @@ wrapping.
 
 from __future__ import annotations
 
-from baton.integrations.mcp.install import BatonHandle, VendorConfig, install_baton
+from baton.extension import BatonExtension, BatonHandle
+from baton.integrations.mcp.install import VendorConfig, install_baton
 
 __all__ = [
+    "BatonExtension",
     "BatonHandle",
     "VendorConfig",
     "install_baton",
