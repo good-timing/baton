@@ -10,9 +10,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+### Added
+
+- **`BatonHandle.session_id` (#89).** The process-lifetime session ID is now
+  a public attribute on the handle returned by `install_baton`. It carries the
+  same value baked into every emitted event. Vendor tools that need to
+  correlate external artifacts with the Baton event stream can read it directly
+  from the handle instead of extracting it through internal closures.
+
 ### Changed
 
-- **Server-instructions template shrunk from ~2.3K chars to ~1.1K chars.** Claude Code empirically truncates `InitializeResult.instructions` at ~2087 chars, so the previous template was already past the cap (the fastmcp adapter had drifted to ~3.6K — even further over). Verbose field-by-field guidance and the dead consent-gated ticket flow scaffolding were dropped; the BEFORE/AFTER MUST/REQUIRED behavioral framing, the full 8-value signal_type enum, and the "annotation doesn't replace answering" guardrail remain. Headroom for vendor extensions (see #86 `BatonExtension` Protocol) is now ~960 chars.
+- **Server-instructions template shrunk from ~2.3K chars to ~1.1K chars.** Claude Code empirically truncates `InitializeResult.instructions` at ~2087 chars, so the previous template was already past the cap (the fastmcp adapter had drifted to ~3.6K — even further over). Verbose field-by-field guidance and the dead consent-gated ticket flow scaffolding were dropped; the BEFORE/AFTER MUST/REQUIRED behavioral framing, the full 8-value signal_type enum, and the "annotation doesn't replace answering" guardrail remain. Headroom for vendor use is now ~960 chars.
 - **Annotation tool description expanded** to absorb the field-level reference that left the instructions block (intent / expected_outcome / workflow / signal_type / suggested_improvement / context keys). Annotation is the central, always-loaded tool — its description is read at call time, which is the right home for the just-in-time dictionary.
 - **Canonical templates moved to `baton.integrations._llm_text`.** Both adapter modules (`baton.integrations.fastmcp`, `baton.integrations.mcp`) now re-export from this shared module so the two surfaces cannot drift.
 
