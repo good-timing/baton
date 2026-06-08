@@ -94,7 +94,14 @@ class VendorConfig:
 
 
 class BatonHandle:
-    """Handle returned from ``install_baton`` for graceful shutdown."""
+    """Handle returned from ``install_baton`` for graceful shutdown and
+    session correlation.
+
+    ``session_id`` is the process-lifetime identifier baked into every emitted
+    event. Vendor tools that need to correlate external artifacts (e.g., a
+    Console-issued support ticket) with the Baton event stream should include
+    this value in their payloads.
+    """
 
     def __init__(
         self,
@@ -102,10 +109,12 @@ class BatonHandle:
         sink: Sink,
         annotation_tool_name: str,
         vendor_id: str,
+        session_id: str,
     ) -> None:
         self.sink = sink
         self.annotation_tool_name = annotation_tool_name
         self.vendor_id = vendor_id
+        self.session_id = session_id
 
     async def flush(self) -> None:
         """Flush any pending events held by the sink."""
@@ -186,4 +195,5 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         sink=sink,
         annotation_tool_name=annotation_tool_name,
         vendor_id=config.vendor_id,
+        session_id=fallback_session_id,
     )
