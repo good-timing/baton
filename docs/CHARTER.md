@@ -78,6 +78,8 @@ The SDK is a minimal event emitter; the Console worker is where interpretation, 
 
 **What the thin SDK preserves:** the four-things-in-one-context payload (intent + tool_calls + observed_outcomes + expected_outcomes + friction signals) still reaches the vendor with full agent authorship. The SDK emits each thing as events; the Console worker stitches them into the canonical SignalPayload. Same rich content, same fidelity, same vendor-facing shape — assembly just happens at a different layer.
 
+**Action surface boundary (2026-06-08).** The SDK MAY surface Console-provided tools as stateless proxies on the vendor's MCP server. This is infrastructure, not business logic: the proxy handlers forward calls to Console verbatim and return results verbatim. The SDK MUST NOT contain logic that decides when to invoke Console tools or interprets their results — that remains Console's responsibility. The distinction that preserves ADR-4 is *no business logic in the SDK*, not *no functionality*. See SPEC §14 (Console-provided tool proxy) for the open design questions.
+
 ---
 
 ## 5. Known limitations + deferred work

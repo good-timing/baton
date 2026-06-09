@@ -623,10 +623,62 @@ The vendor's Console triggers an email / Slack DM / push notification / similar 
 
 - **No SDK-side disk persistence.** The SDK MUST NOT persist signal state to disk; any cache (when one lands) MUST be in-memory only. Cross-vendor sharding and remote MCP topologies make disk persistence useless as a unified view.
 
-### 8.3 Deferred (see §14)
+### 8.3 Client-triggered escalation — planned sync path
 
-- **Synchronous return channel — agent-side autopickup.** Original sketch: the SDK caches outstanding `signal_id`s and checks for responses before subsequent tool calls in the same session via `GET /v0/signals?session_id=<sid>&since=<last_check>`. Surfacing semantics via a `retry_instructions.recommended_action` enum (`retry_now` / `retry_after` / `do_not_retry` / `use_new_params`) and `status == "documented"` with `doc_pointer`. Not implemented; benefits from integrator feedback on response-shape before being locked in.
-- **Runtime-memory adapters.** A `MemoryAdapter` interface (`write(scope, summary)`) for persisting response context to the agent runtime's own memory store. Mechanism not yet defined.
+Two escalation paths are planned. The Console-driven path (§11 Channels) is the
+primary flow: Console worker applies vendor policy and dispatches to ticketing
+systems asynchronously. The client-triggered path — where the end user asks the
+agent to file a ticket in-session — requires in-channel confirmation and is
+handled differently.
+
+**Planned: `POST /v0/escalate` (Console sync endpoint)**
+
+A dedicated Console endpoint separate from the event ingest path (`/v0/events`).
+Accepts a request from a vendor-side tool call, calls the vendor's configured
+ticketing Channel (e.g., Pylon) synchronously, and returns the result in the
+same HTTP response.
+
+```
+POST /v0/escalate
+Authorization: Bearer <vendor-api-key>
+{
+  "session_id": "sdk-...",
+  "title": "...",
+  "body": "..."
+}
+→ 200 { "ticket_id": "1042", "ticket_url": "https://..." }
+→ 503 if the downstream ticketing system is unavailable
+```
+
+The Console MUST also write an event to the event stream when it handles an
+escalation (same `session_id`, event type TBD in §14) so the audit trail is
+complete without the vendor emitting separately.
+
+The `session_id` field is sourced from `BatonHandle.session_id` (§11.4), which
+is the same value baked into every emitted event. This is the correlation
+primitive that lets the Console link the ticket back to the full signal history
+for that session.
+
+**SDK surface:**
+The SDK provides a `handle.escalate(title, body)` helper that calls this
+endpoint using the sink's base URL and API key. In dev mode (non-`HttpSink`),
+the helper returns `{"queued": True}` without making a network call. Not yet
+implemented; deferred until the Console endpoint is ready.
+
+**Why not agent-side polling (original §8.3 sketch):**
+Polling (`GET /v0/signals?session_id=...`) requires the SDK to cache
+outstanding IDs, adds two round-trips, and still can't guarantee in-turn
+confirmation. The sync Console endpoint provides a clean single round-trip with
+a deterministic response shape.
+
+### 8.4 Deferred (see §14)
+
+- **`handle.escalate()` SDK helper.** Calls `POST /v0/escalate`; falls back to
+  `{"queued": True}` in non-Console sinks. Blocked on Console endpoint
+  implementation.
+- **Runtime-memory adapters.** A `MemoryAdapter` interface (`write(scope, summary)`)
+  for persisting response context to the agent runtime's own memory store.
+  Mechanism not yet defined.
 
 ---
 
@@ -901,6 +953,8 @@ Open spec-level design questions. Resolutions land in subsequent minor versions 
 - **Richer PII scrub interface.** The current `VendorConfig.scrubber: Callable` (§7) puts all the burden on the vendor — they have to know what shapes to expect, recursively walk dicts, and reimplement common patterns (emails, API-key shapes, credential param keys). A richer interface would ship declarative rules — `scrub_rules: list[Rule]` with rule kinds `redact_key` / `mask_key` / `regex_mask`, targeting `params` / `error_body` / `result_content` / `intent` / `expected_outcome` — plus sensible defaults for common patterns. A typed `Scrubber` protocol (`scrub_params(tool_name, params)` / `scrub_result(tool_name, result)` / etc.) and a `DefaultScrubber(extra_key_denylist=..., extra_regex_rules=...)` baseline would let most vendors say `VendorConfig(scrub_keys=["password", "email"])` and be done. Sentry / OpenTelemetry pattern. The current `Callable` shape would become an escape hatch alongside the richer surface.
 - **Cost knobs for annotation turn-count overhead.** Each annotation call is its own LLM inference turn, so proactive + reactive annotation around one real tool call triples the turn count. This is not extra reasoning load per turn — by the time the agent decides to call a tool, it has already internally answered what the user wants (`intent`), what the call should return (`expected_outcome`), and what bigger task this is part of (`workflow`). Annotation transcribes that existing state; the fields are deliberately scoped so the model emits known conclusions, not new analysis. What costs is the turn structure itself — each call re-tokenizes context and round-trips through inference regardless of how short the output is. The four-things-in-one-context payload is unobtainable without that turn overhead, so it's an inherent design tax. Open: is a cost knob needed? Every candidate targets turn count, not content: annotation-on-signal-only (skip proactive; keep `intent`/`expected_outcome` on failure traces only), per-tool toggles (vendor opts in only high-value tools), sampling.
 - **Inline annotation via reserved tool-param prefix.** One alternative to the separate annotation tool (§5.1) is letting the agent pass `intent` / `expected_outcome` as arguments on the regular tool call — e.g., `vendor_tool(query="...", _baton_intent="...", _baton_expected="...")` — with the SDK extracting and stripping the reserved-prefix params before forwarding to the vendor handler. Single round-trip instead of two; nudges agents toward populating intent by exposing the fields directly on the tool schemas they're already looking at. Tradeoffs not yet evaluated: collision with vendor-owned param namespaces, whether agents actually populate the fields when threaded inline, schema-pollution concerns. Not implemented; revisit if the §5.1 path's turn-count cost becomes a blocker.
+- **Console-provided tool proxy (SDK action surface).** The SDK MAY register Console-provided tools as stateless proxies on the vendor's MCP server. Vendors opt in via `VendorConfig`; the SDK fetches the Console's tool catalogue at install time and registers handlers that forward calls to Console verbatim. The SDK contains no business logic about when to invoke these tools or how to interpret results — all of that lives in Console (ADR-4 preserved). Open design questions: catalogue fetch auth (same API key as the sink?), startup resilience (static snapshot fallback when Console unreachable at install time?), tool description/schema serving (dynamic from Console vs. baked into SDK release?), event written by Console on each proxy call for audit trail. Deferred until Console tool catalogue design is ready. Companion to §8.3 (`POST /v0/escalate`) — `create_support_ticket` is the first planned Console-provided tool.
+
 - **Customer-side capture via agent-runtime plugins.** The two emission surfaces in §5 (MCP middleware, library API) both run on the vendor's side and require the vendor to integrate. A third path — plugins inside the agent runtime itself (Claude Code hooks, Cursor extensions, etc.) — would capture tool usage from the customer's side, complementing the vendor-side paths when the vendor hasn't integrated. Same `Sink` ABC and same event envelope (§11.4); the plugin translates runtime-native hook events into Baton events and hands them to a sink. Open design questions: per-event vendor inference (parsing `mcp__<vendor>__<tool>` namespaces or similar), multi-vendor consent model (one plugin captures across many vendors per session — who consents to what?), sink routing across multiple vendor collectors, dual-source dedup when a Baton-wrapped MCP server is also installed (likely keyed on `_meta.claudecode/toolUseId` or equivalent). Payload completeness: a plugin sees user prompt + tool call + observed outcome but **not** agent-emitted `expected_outcome` — the four-things-in-one-context payload is incomplete on this path unless a synthesizer is added. **Implementation note:** when this lands, it will ship as a **separate package** (e.g., `baton-claude-code`), not as an integration under `baton.integrations.*`, because the deployer (end user, not vendor), install mechanism (runtime plugin system, not pip), and release cadence (couples to the runtime's hook API, not the wire spec) all differ. The wire envelope is the contract that binds the separate package back to this spec — which is why this §14 entry exists rather than being deferred entirely.
 
 ---
