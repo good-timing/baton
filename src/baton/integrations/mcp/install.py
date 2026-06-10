@@ -77,10 +77,14 @@ class BatonHandle:
         vendor_id: str,
         session_id: str,
     ) -> None:
+        from baton.sinks import HttpSink
+
         self.sink = sink
         self.annotation_tool_name = annotation_tool_name
         self.vendor_id = vendor_id
         self.session_id = session_id
+        self._console_url: str | None = sink.url if isinstance(sink, HttpSink) else None
+        self._console_api_key: str | None = sink.api_key if isinstance(sink, HttpSink) else None
 
     async def flush(self) -> None:
         """Flush pending events held by the sink."""
@@ -89,6 +93,55 @@ class BatonHandle:
     async def aclose(self) -> None:
         """Flush and release sink resources. Subsequent writes raise."""
         await self.sink.aclose()
+
+    async def escalate(
+        self,
+        annotation_seq: int | None = None,
+        *,
+        timeout_seconds: float = 10.0,
+    ) -> dict[str, str | None]:
+        """File a support ticket for the current session via the Console.
+
+        Calls ``POST {console_url}/v0/escalate`` synchronously and returns
+        ``{"ticket_id": "...", "ticket_url": "..."}`` so the calling tool can
+        surface the ticket URL to the user in the same response turn.
+
+        ``annotation_seq`` is the sequence number of the reactive annotation to
+        escalate. If omitted, the Console resolves to the latest reactive
+        annotation in the session.
+
+        Falls back to ``{"ticket_id": "queued", "ticket_url": None}`` when no
+        Console URL is configured (dev mode — StdoutSink / FileSink).
+        """
+        import logging
+
+        import httpx
+
+        if self._console_url is None:
+            logging.getLogger("baton").warning(
+                "handle.escalate() called but sink has no Console URL "
+                "(dev mode — using StdoutSink or FileSink). "
+                "Switch to HttpSink to file real tickets."
+            )
+            return {"ticket_id": "queued", "ticket_url": None}
+
+        body: dict[str, object] = {"session_id": self.session_id}
+        if annotation_seq is not None:
+            body["annotation_seq"] = annotation_seq
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds)) as client:
+            response = await client.post(
+                f"{self._console_url}/v0/escalate",
+                json=body,
+                headers={"Authorization": f"Bearer {self._console_api_key}"},
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        return {
+            "ticket_id": str(data.get("ticket_id", "")),
+            "ticket_url": data.get("ticket_url"),
+        }
 
 
 def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:

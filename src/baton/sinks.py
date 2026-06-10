@@ -222,6 +222,16 @@ class HttpSink(Sink):
         self._drain_task: asyncio.Task[None] | None = None
         self._closed = False
 
+    @property
+    def url(self) -> str:
+        """Base Console URL (no trailing slash)."""
+        return self._url
+
+    @property
+    def api_key(self) -> str:
+        """Bearer token used to authenticate with the Console."""
+        return self._api_key
+
     async def write(self, event: Event) -> None:
         if self._closed:
             raise RuntimeError("HttpSink is closed")

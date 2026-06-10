@@ -454,3 +454,67 @@ class TestAllFourEventTypesInOneFlow:
             "sequence numbers must be monotonic across annotation + tool_call events"
         )
         assert len(set(seqs)) == len(seqs), "sequence numbers must be unique"
+
+
+# =============================================================================
+# handle.escalate()
+# =============================================================================
+
+
+class TestEscalate:
+    async def test_escalate_calls_console_and_returns_ticket(
+        self,
+        httpserver: HTTPServer,
+    ) -> None:
+        """escalate() POSTs to /v0/escalate and surfaces ticket_id + ticket_url."""
+        httpserver.expect_request("/v0/events", method="POST").respond_with_data("", status=201)
+        httpserver.expect_request("/v0/escalate", method="POST").respond_with_data(
+            '{"ticket_id": "1042", "ticket_url": "https://example.com/issues/1042"}',
+            content_type="application/json",
+            status=201,
+        )
+
+        mcp = FastMCP("test-vendor")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="test-vendor",
+                vendor_display_name="Test Vendor",
+                consent_token="ct_test",
+                sink=HttpSink(url=httpserver.url_for(""), api_key="test-key"),
+            ),
+        )
+
+        result = await handle.escalate(annotation_seq=3)
+        await handle.aclose()
+
+        assert result["ticket_id"] == "1042"
+        assert result["ticket_url"] == "https://example.com/issues/1042"
+
+        # Verify the request shape sent to Console.
+        escalate_requests = [r for r in httpserver.log if r[0].path == "/v0/escalate"]
+        assert len(escalate_requests) == 1
+        body = escalate_requests[0][0].get_json()
+        assert body["session_id"] == handle.session_id
+        assert body["annotation_seq"] == 3
+
+    async def test_escalate_dev_mode_returns_queued(self) -> None:
+        """escalate() returns a dev-mode sentinel when sink has no Console URL."""
+        from baton.sinks import StdoutSink
+
+        mcp = FastMCP("test-vendor")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="test-vendor",
+                vendor_display_name="Test Vendor",
+                consent_token="ct_test",
+                sink=StdoutSink(),
+            ),
+        )
+
+        result = await handle.escalate()
+        await handle.aclose()
+
+        assert result["ticket_id"] == "queued"
+        assert result["ticket_url"] is None
