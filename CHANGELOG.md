@@ -10,23 +10,22 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+---
+
+## 0.2.5 — handle.escalate() + instructions shrink + session_id
+
 ### Added
 
-- **`BatonHandle.session_id` (#89).** The process-lifetime session ID is now
-  a public attribute on the handle returned by `install_baton`. It carries the
-  same value baked into every emitted event. Vendor tools that need to
-  correlate external artifacts with the Baton event stream can read it directly
-  from the handle instead of extracting it through internal closures.
+- **`BatonHandle.escalate(annotation_seq=None)` (S3).** Calls `POST {console_url}/v0/escalate` synchronously and returns `{"ticket_id": ..., "ticket_url": ...}` in-turn, so vendor tools can surface the ticket URL to the user in the same response. Extracts Console URL and API key from `HttpSink` automatically. Falls back to `{"ticket_id": "queued", "ticket_url": None}` in dev mode (StdoutSink / FileSink) with a logged warning.
+- **`BatonHandle.session_id` (#89).** The process-lifetime session ID is now a public attribute on the handle returned by `install_baton`. Vendor tools that need to correlate external artifacts with the Baton event stream can read it directly from the handle instead of extracting it through internal closures.
+- **`HttpSink.url` and `HttpSink.api_key` properties.** Public read-only accessors for the Console URL and bearer token configured on the sink.
 
 ### Changed
 
-- **Server-instructions template shrunk from ~2.3K chars to ~1.1K chars.** Claude Code empirically truncates `InitializeResult.instructions` at ~2087 chars, so the previous template was already past the cap (the fastmcp adapter had drifted to ~3.6K — even further over). Verbose field-by-field guidance and the dead consent-gated ticket flow scaffolding were dropped; the BEFORE/AFTER MUST/REQUIRED behavioral framing, the full 8-value signal_type enum, and the "annotation doesn't replace answering" guardrail remain. Headroom for vendor use is now ~960 chars.
-- **Annotation tool description expanded** to absorb the field-level reference that left the instructions block (intent / expected_outcome / workflow / signal_type / suggested_improvement / context keys). Annotation is the central, always-loaded tool — its description is read at call time, which is the right home for the just-in-time dictionary.
-- **Canonical templates moved to `baton.integrations._llm_text`.** Both adapter modules (`baton.integrations.fastmcp`, `baton.integrations.mcp`) now re-export from this shared module so the two surfaces cannot drift.
-
-### Tests
-
-- Added `tests/integrations/test_llm_text.py` with regression guards: rendered-instructions length cap (`<= 1500` chars), full signal_type enum present, BEFORE/AFTER MUST/REQUIRED framing intact, "does NOT replace answering" guardrail intact, both adapters render identical text.
+- **Server-instructions template shrunk from ~2.3K chars to ~1.1K chars (#85).** Claude Code empirically truncates `InitializeResult.instructions` at ~2087 chars. Verbose field-by-field guidance and the consent-gated ticket flow scaffolding were dropped; the BEFORE/AFTER MUST/REQUIRED behavioral framing, full 8-value signal_type enum, and "annotation doesn't replace answering" guardrail remain. Headroom for vendor extensions is now ~960 chars.
+- **Annotation tool description expanded** to absorb the field-level reference (intent / expected_outcome / workflow / signal_type / suggested_improvement / context keys). Tool descriptions are loaded at call time — the right place for the just-in-time field dictionary.
+- **`build_server_instructions` raises `ValueError`** if the rendered output exceeds the 1500-char safety cap. Vendors with very long `vendor_display_name` values get a clear error at install time rather than silent truncation in production.
+- **Canonical templates moved to `baton.integrations._llm_text`** (internal). Both adapter modules import from this shared module; per-adapter re-export shims removed.
 
 ### Wire format
 
