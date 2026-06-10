@@ -71,16 +71,30 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
 )
 
 
+# Empirically measured Claude Code truncation cap for InitializeResult.instructions.
+# Reserve headroom for vendor extensions composed on top.
+_CLAUDE_CODE_TRUNCATION_CAP = 2087
+_INSTRUCTIONS_LENGTH_CAP = 1500
+
+
 def build_server_instructions(
     *,
     vendor_display_name: str,
     annotation_tool_name: str,
 ) -> str:
     """Build the server-instructions text for the MCP ``instructions`` field."""
-    return _DEFAULT_SERVER_INSTRUCTIONS_TEMPLATE.format(
+    rendered = _DEFAULT_SERVER_INSTRUCTIONS_TEMPLATE.format(
         vendor_display_name=vendor_display_name,
         annotation_tool_name=annotation_tool_name,
     )
+    if len(rendered) > _INSTRUCTIONS_LENGTH_CAP:
+        raise ValueError(
+            f"Rendered server instructions are {len(rendered)} chars, which exceeds "
+            f"the {_INSTRUCTIONS_LENGTH_CAP}-char safety cap "
+            f"(Claude Code truncates at ~{_CLAUDE_CODE_TRUNCATION_CAP}). "
+            f"Shorten vendor_display_name or annotation_tool_name."
+        )
+    return rendered
 
 
 def build_annotation_tool_description(*, vendor_display_name: str) -> str:

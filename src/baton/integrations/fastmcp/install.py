@@ -38,11 +38,11 @@ from fastmcp import FastMCP
 from uuid6 import uuid7
 
 from baton._state import SessionCounter
+from baton.integrations._llm_text import build_server_instructions
 from baton.integrations.fastmcp.annotation import (
     derive_annotation_tool_name,
     register_annotation_tool,
 )
-from baton.integrations.fastmcp.instructions import build_server_instructions
 from baton.integrations.fastmcp.middleware import BatonMiddleware
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, StdoutSink

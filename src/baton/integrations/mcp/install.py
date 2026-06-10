@@ -34,12 +34,12 @@ from mcp.server.fastmcp import FastMCP
 from uuid6 import uuid7
 
 from baton._state import SessionCounter
+from baton.integrations._llm_text import build_server_instructions
 from baton.integrations.mcp._tool_wrap import install_wraps
 from baton.integrations.mcp.annotation import (
     derive_annotation_tool_name,
     register_annotation_tool,
 )
-from baton.integrations.mcp.instructions import build_server_instructions
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, StdoutSink
 
