@@ -133,6 +133,7 @@ class BatonHandle:
         self,
         annotation_seq: int | None = None,
         *,
+        session_id: str | None = None,
         timeout_seconds: float = 10.0,
     ) -> dict[str, str | None]:
         """File a support ticket for the current session via the Console.
@@ -144,6 +145,12 @@ class BatonHandle:
         ``annotation_seq`` is the sequence number of the reactive annotation to
         escalate. If omitted, the Console resolves to the latest reactive
         annotation in the session.
+
+        ``session_id`` — the session identifier under which events were emitted.
+        For the FastMCP adapter, pass ``ctx.session_id`` from the tool's
+        ``Context`` argument so the ID matches what the middleware filed events
+        under. If omitted, falls back to ``self.session_id`` (safe for the MCP
+        adapter which always uses the fallback ID, and for dev/test).
 
         Falls back to ``{"ticket_id": "queued", "ticket_url": None}`` when no
         Console URL is configured (dev mode — StdoutSink / FileSink).
@@ -160,7 +167,8 @@ class BatonHandle:
             )
             return {"ticket_id": "queued", "ticket_url": None}
 
-        body: dict[str, object] = {"session_id": self.session_id}
+        resolved_session_id = session_id if session_id else self.session_id
+        body: dict[str, object] = {"session_id": resolved_session_id}
         if annotation_seq is not None:
             body["annotation_seq"] = annotation_seq
 

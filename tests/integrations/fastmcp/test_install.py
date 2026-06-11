@@ -495,8 +495,43 @@ class TestEscalate:
         escalate_requests = [r for r in httpserver.log if r[0].path == "/v0/escalate"]
         assert len(escalate_requests) == 1
         body = escalate_requests[0][0].get_json()
-        assert body["session_id"] == handle.session_id
+        assert body["session_id"] == handle.session_id  # fallback when no ctx session_id
         assert body["annotation_seq"] == 3
+
+    async def test_escalate_explicit_session_id_overrides_handle(
+        self,
+        httpserver: HTTPServer,
+    ) -> None:
+        """session_id kwarg overrides handle.session_id — used when fastmcp ctx
+        provides a runtime MCP session UUID different from the SDK fallback."""
+        httpserver.expect_request("/v0/events", method="POST").respond_with_data("", status=201)
+        httpserver.expect_request("/v0/escalate", method="POST").respond_with_data(
+            '{"ticket_id": "9999", "ticket_url": "https://example.com/issues/9999"}',
+            content_type="application/json",
+            status=201,
+        )
+
+        mcp = FastMCP("test-vendor")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="test-vendor",
+                vendor_display_name="Test Vendor",
+                consent_token="ct_test",
+                sink=HttpSink(url=httpserver.url_for(""), api_key="test-key"),
+            ),
+        )
+
+        runtime_session_id = "mcp-runtime-session-abc123"
+        assert runtime_session_id != handle.session_id  # confirm they differ
+
+        result = await handle.escalate(session_id=runtime_session_id)
+        await handle.aclose()
+
+        assert result["ticket_id"] == "9999"
+        escalate_requests = [r for r in httpserver.log if r[0].path == "/v0/escalate"]
+        body = escalate_requests[0][0].get_json()
+        assert body["session_id"] == runtime_session_id  # runtime ID used, not fallback
 
     async def test_escalate_dev_mode_returns_queued(self) -> None:
         """escalate() returns a dev-mode sentinel when sink has no Console URL."""
