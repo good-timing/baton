@@ -12,6 +12,22 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## 0.2.6 — fix escalate() session_id mismatch
+
+### Fixed
+
+- **`handle.escalate()` sent wrong `session_id` to Console.** The FastMCP
+  adapter resolves the runtime MCP session UUID from `fastmcp_context` for
+  every emitted event, but `handle.session_id` always held the SDK-generated
+  fallback UUID. `escalate()` was therefore sending a session_id that the
+  Console had no events for, resulting in 401 on every call from a live
+  Claude session. Fix: `escalate()` now accepts an optional `session_id`
+  keyword arg. FastMCP vendor tools should pass `ctx.session_id` from their
+  tool handler's `Context`; the mcp adapter and dev mode can omit it and
+  continue using the fallback.
+
+---
+
 ## 0.2.5 — handle.escalate() + instructions shrink + session_id
 
 ### Added
