@@ -23,8 +23,20 @@ Pre-1.0 — public API not yet stable; breaking changes flagged in SPEC §13.
 
 from __future__ import annotations
 
-__version__ = "0.2.4"
-"""SDK version. Embedded in every emitted event's ``sdk_version`` field."""
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
+# Embedded in every emitted event's ``sdk_version`` field. Derived from
+# pyproject.toml via importlib.metadata — single source of truth, no
+# hand-bumped constant to drift against the package version. The
+# "0.0.0+local" fallback only applies when running from a checkout
+# without `pip install -e .` present; CI/pip/sdist installs all carry
+# the resolved dist-info version.
+__version__: str
+try:
+    __version__ = _pkg_version("baton-sdk")
+except PackageNotFoundError:
+    __version__ = "0.0.0+local"
 
 __all__ = [
     "AsyncClient",
@@ -40,4 +52,4 @@ __all__ = [
 # to events.py (which imports it via ``from baton import __version__``).
 # Trace + AsyncTrace are re-exported so typed callers can write
 # ``def f(t: baton.Trace) -> ...`` without reaching into ``baton.client``.
-from baton.client import AsyncClient, AsyncTrace, Client, SignalType, Trace  # noqa: E402
+from baton.client import AsyncClient, AsyncTrace, Client, SignalType, Trace
