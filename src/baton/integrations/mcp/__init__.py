@@ -41,7 +41,9 @@ wrapping.
 
 from __future__ import annotations
 
-from baton.integrations.mcp.install import BatonHandle, VendorConfig, install_baton
+from baton.integrations._config import VendorConfig
+from baton.integrations._handle import BatonHandle
+from baton.integrations.mcp.install import install_baton
 
 __all__ = [
     "BatonHandle",
