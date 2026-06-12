@@ -12,6 +12,23 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## 0.2.7 — fail-open at the capture boundary
+
+### Fixed
+
+- **`safe_write` makes sink failures non-fatal at the capture boundary (SPEC §11.2).** Previously every `await self._sink.write(...)` propagated up out of the middleware on a sink-side failure (closed sink, transport error, warnings-as-errors promoting a buffer-overflow `UserWarning`, `BrokenPipeError` from `StdoutSink`, etc.) — taking down the vendor's tool call so the bug looked like a vendor outage rather than Baton instrumentation. `baton.sinks.safe_write(sink, event, logger)` now wraps the seven `sink.write` call sites across both adapters (fastmcp middleware/annotation + mcp `_tool_wrap`/annotation). Catches `Exception`, not `BaseException` — `KeyboardInterrupt` / `SystemExit` still propagate for clean shutdown. Surfaced by reviewing the SDK under the same trust lens as baton-proxy (which structurally fails open).
+- **`__version__` now derives from package metadata** (`importlib.metadata.version("baton-sdk")`) instead of a hand-bumped string. The hardcoded constant in `src/baton/__init__.py` had silently drifted — it was missed in both the 0.2.5 and 0.2.6 release commits, so events emitted by those releases carry a stale `sdk_version="0.2.4"` payload. After this release `pyproject.toml` is the single source of truth; the SDK version, the PyPI version, and the `sdk_version` field on every emitted event are guaranteed to agree. Any user upgrading from 0.2.5/0.2.6 will see the field jump to `"0.2.7"`.
+
+### Changed
+
+- **`BatonHandle` and `VendorConfig` extracted to shared modules.** Both adapter `install.py` files held identical definitions; moved to `baton.integrations._handle` (`BatonHandle` + `escalate()`) and `baton.integrations._config` (`VendorConfig` + validation). Public APIs (`from baton.integrations.{mcp,fastmcp} import VendorConfig, ...`) are preserved via re-export; no breaking changes.
+
+### Wire format
+
+No changes (event schema unchanged; the `sdk_version` field value corrects as noted above).
+
+---
+
 ## 0.2.6 — fix escalate() session_id mismatch
 
 ### Fixed
