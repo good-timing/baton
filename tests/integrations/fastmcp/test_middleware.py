@@ -14,6 +14,7 @@ from fastmcp import Client, FastMCP
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Response
 
+from baton.events import Event
 from baton.integrations.fastmcp.middleware import BatonMiddleware
 from baton.sinks import HttpSink, Sink
 
@@ -149,6 +150,63 @@ class TestFailedToolCall:
         assert error_event["payload"]["error_type"]
         assert "specific message" in error_event["payload"]["error_body"]
         assert isinstance(error_event["payload"]["duration_ms"], int)
+
+
+class _RaisingSink(Sink):
+    """Sink that always raises on write — for fail-open testing."""
+
+    def __init__(self, exc: BaseException | None = None) -> None:
+        self._exc = exc if exc is not None else RuntimeError("sink dead")
+        self.write_attempts = 0
+
+    async def write(self, event: Event) -> None:
+        self.write_attempts += 1
+        raise self._exc
+
+    async def flush(self) -> None:
+        return
+
+    async def aclose(self) -> None:
+        return
+
+
+class TestSinkFailureDoesNotBreakToolCall:
+    """SPEC §11.2: fail-open at the capture boundary. A sink-side failure
+    (closed sink, transport error, etc.) MUST NOT propagate through the
+    middleware and break the vendor's tool call."""
+
+    async def test_raising_sink_does_not_block_successful_tool(self) -> None:
+        raising = _RaisingSink()
+        mcp = FastMCP("test-vendor")
+        mcp.add_middleware(BatonMiddleware(tenant_id="t", consent_token="c", sink=raising))
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            result = await client.call_tool("echo", {"text": "hello"})
+
+        # Tool ran and returned even though every sink.write raised.
+        assert raising.write_attempts >= 2  # start + end
+        assert result is not None
+
+    async def test_raising_sink_preserves_vendor_exception_on_failure(self) -> None:
+        raising = _RaisingSink()
+        mcp = FastMCP("test-vendor")
+        mcp.add_middleware(BatonMiddleware(tenant_id="t", consent_token="c", sink=raising))
+
+        @mcp.tool()
+        def boom() -> None:
+            raise ValueError("vendor error")
+
+        async with Client(mcp) as client:
+            with pytest.raises(Exception):  # noqa: B017 fastmcp may wrap
+                await client.call_tool("boom", {})
+
+        # start + error emit both attempted; both raised; neither hid the
+        # vendor's ValueError from the caller.
+        assert raising.write_attempts >= 2
 
 
 # =============================================================================

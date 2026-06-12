@@ -14,6 +14,7 @@ spike (Rounds 5/6/7/8).
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -26,7 +27,9 @@ from baton.events import AnnotationEvent, AnnotationPayload
 from baton.integrations._llm_text import build_annotation_tool_description
 from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime, meta_to_dict
 from baton.scrub import identity_scrub
-from baton.sinks import Sink
+from baton.sinks import Sink, safe_write
+
+logger = logging.getLogger(__name__)
 
 _TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
@@ -83,7 +86,8 @@ def register_annotation_tool(
         runtime = detect_agent_runtime(raw_meta) or default_agent_runtime
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
         seq = await counter.next(session_id)
-        await sink.write(
+        await safe_write(
+            sink,
             AnnotationEvent(
                 tenant_id=tenant_id,
                 consent_token=consent_token,
@@ -102,7 +106,8 @@ def register_annotation_tool(
                     ),
                     context=scrubber(context) if context else None,
                 ),
-            )
+            ),
+            logger,
         )
         return {"ok": True}
 

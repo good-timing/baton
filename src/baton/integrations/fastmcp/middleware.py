@@ -14,6 +14,7 @@ and lets the Console worker assemble signals downstream.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 from time import monotonic
@@ -34,7 +35,9 @@ from baton.events import (
 )
 from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime, meta_to_dict
 from baton.scrub import identity_scrub
-from baton.sinks import Sink
+from baton.sinks import Sink, safe_write
+
+logger = logging.getLogger(__name__)
 
 
 class BatonMiddleware(Middleware):
@@ -83,9 +86,11 @@ class BatonMiddleware(Middleware):
         # carry runtime-supplied identifiers that vendors want filtered.
         scrubbed_meta = self._scrubber(meta_dict) if meta_dict is not None else None
 
-        # tool_call_start — before invoking the vendor handler
+        # tool_call_start — before invoking the vendor handler. safe_write
+        # so a sink failure doesn't break the vendor's tool call (SPEC §11.2).
         seq_start = await self._next_seq(session_id)
-        await self._sink.write(
+        await safe_write(
+            self._sink,
             ToolCallStartEvent(
                 tenant_id=self._tenant_id,
                 consent_token=self._consent_token,
@@ -98,7 +103,8 @@ class BatonMiddleware(Middleware):
                     tool_name=tool_name,
                     params=self._scrubber(params),
                 ),
-            )
+            ),
+            logger,
         )
 
         called_at = monotonic()
@@ -107,7 +113,8 @@ class BatonMiddleware(Middleware):
         except BaseException as exc:
             duration_ms = int((monotonic() - called_at) * 1000)
             seq_err = await self._next_seq(session_id)
-            await self._sink.write(
+            await safe_write(
+                self._sink,
                 ToolCallErrorEvent(
                     tenant_id=self._tenant_id,
                     consent_token=self._consent_token,
@@ -122,13 +129,15 @@ class BatonMiddleware(Middleware):
                         error_body=str(self._scrubber(str(exc)))[:2000],
                         duration_ms=duration_ms,
                     ),
-                )
+                ),
+                logger,
             )
             raise
 
         duration_ms = int((monotonic() - called_at) * 1000)
         seq_end = await self._next_seq(session_id)
-        await self._sink.write(
+        await safe_write(
+            self._sink,
             ToolCallEndEvent(
                 tenant_id=self._tenant_id,
                 consent_token=self._consent_token,
@@ -142,7 +151,8 @@ class BatonMiddleware(Middleware):
                     result=self._scrubber(self._result_to_jsonable(result)),
                     duration_ms=duration_ms,
                 ),
-            )
+            ),
+            logger,
         )
         return result
 

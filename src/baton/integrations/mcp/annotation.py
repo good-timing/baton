@@ -14,6 +14,7 @@ skip the ``issubclass`` call. Required for mcp 1.10/1.20 support per
 CHANGELOG 0.2.0 + CI matrix.
 """
 
+import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -25,7 +26,9 @@ from baton._state import SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
 from baton.integrations._llm_text import build_annotation_tool_description
 from baton.scrub import identity_scrub
-from baton.sinks import Sink
+from baton.sinks import Sink, safe_write
+
+logger = logging.getLogger(__name__)
 
 _TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
@@ -82,7 +85,8 @@ def register_annotation_tool(
         # correlation; until then fallback_session_id is honest.
         session_id = fallback_session_id
         seq = await counter.next(session_id)
-        await sink.write(
+        await safe_write(
+            sink,
             AnnotationEvent(
                 tenant_id=tenant_id,
                 consent_token=consent_token,
@@ -100,7 +104,8 @@ def register_annotation_tool(
                     ),
                     context=scrubber(context) if context else None,
                 ),
-            )
+            ),
+            logger,
         )
         return {"ok": True}
 

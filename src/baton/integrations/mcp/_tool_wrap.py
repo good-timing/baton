@@ -34,6 +34,7 @@ exception class (e.g., ``RuntimeError``, not ``ToolError``).
 from __future__ import annotations
 
 import functools
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from time import monotonic
@@ -50,7 +51,9 @@ from baton.events import (
 )
 from baton.integrations.mcp._registry import get_tool_manager, get_tool_registry
 from baton.scrub import identity_scrub
-from baton.sinks import Sink
+from baton.sinks import Sink, safe_write
+
+logger = logging.getLogger(__name__)
 
 # Sentinel attribute set on wrapped run methods so repeated re-scans don't
 # double-wrap. Tools added via the patched add_tool are checked against
@@ -224,7 +227,8 @@ def _make_emitters(
     async def emit_before(
         name: str, params: dict[str, Any], runtime_meta: dict[str, Any] | None
     ) -> None:
-        await sink.write(
+        await safe_write(
+            sink,
             ToolCallStartEvent(
                 tenant_id=tenant_id,
                 consent_token=consent_token,
@@ -237,13 +241,15 @@ def _make_emitters(
                     tool_name=name,
                     params=params,
                 ),
-            )
+            ),
+            logger,
         )
 
     async def emit_after(
         name: str, result: Any, duration_s: float, runtime_meta: dict[str, Any] | None
     ) -> None:
-        await sink.write(
+        await safe_write(
+            sink,
             ToolCallEndEvent(
                 tenant_id=tenant_id,
                 consent_token=consent_token,
@@ -257,13 +263,15 @@ def _make_emitters(
                     result=scrubber(_result_to_jsonable(result)),
                     duration_ms=int(duration_s * 1000),
                 ),
-            )
+            ),
+            logger,
         )
 
     async def emit_error(
         name: str, exc: BaseException, duration_s: float, runtime_meta: dict[str, Any] | None
     ) -> None:
-        await sink.write(
+        await safe_write(
+            sink,
             ToolCallErrorEvent(
                 tenant_id=tenant_id,
                 consent_token=consent_token,
@@ -278,7 +286,8 @@ def _make_emitters(
                     error_body=str(scrubber(str(exc)))[:2000],
                     duration_ms=int(duration_s * 1000),
                 ),
-            )
+            ),
+            logger,
         )
 
     return emit_before, emit_after, emit_error

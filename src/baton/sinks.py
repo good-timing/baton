@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 import warnings
 from abc import ABC, abstractmethod
@@ -36,6 +37,26 @@ from typing import IO, Self
 import httpx
 
 from baton.events import Event
+
+
+async def safe_write(sink: Sink, event: Event, logger: logging.Logger) -> None:
+    """Fail-open wrapper around ``sink.write``.
+
+    SDK middleware sits BEFORE the vendor's tool handler. A raise from
+    ``sink.write`` (closed sink, transport error, ``warnings.filterwarnings
+    ("error")`` promoting an overflow ``UserWarning``, ``BrokenPipeError``
+    from ``StdoutSink``, etc.) would otherwise propagate up and break the
+    vendor's tool call — making Baton instrumentation look like a vendor
+    bug. SPEC §11.2 mandates fail-open at the capture boundary; this wrapper
+    enforces it.
+
+    Catches ``Exception``, NOT ``BaseException`` — ``KeyboardInterrupt``
+    and ``SystemExit`` must still propagate for clean shutdown.
+    """
+    try:
+        await sink.write(event)
+    except Exception:
+        logger.exception("baton: sink.write failed; event dropped, tool call continues")
 
 
 class Sink(ABC):
