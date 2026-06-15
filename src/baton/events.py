@@ -98,12 +98,20 @@ class _EventEnvelope(BaseModel):
     ``consent_token`` is REQUIRED per SPEC §2.3 + §3.1 — the Console MUST
     reject any event missing it. v0 form: a single UUID granted at SDK init;
     v0.x will extend to per-end-user OAuth-scoped tokens (CHARTER ADR-1).
+
+    ``vendor_id`` is REQUIRED — the wrapped vendor identifier (matches the
+    SDK's ``VendorConfig.vendor_id`` / ``Client(vendor_id=...)``). For
+    customer-mode tenants the Console uses ``(tenant_id, vendor_id)`` to
+    group friction per wrapped vendor under a single customer; for
+    vendor-mode tenants ``vendor_id`` matches ``tenants.vendor_id``. The
+    Console rejects envelopes missing it (fail-loud per `tenant_type` design).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     event_id: UUID = Field(default_factory=uuid7)
     tenant_id: str
+    vendor_id: str
     session_id: str
     sequence_number: int = Field(ge=0)
     captured_at: datetime

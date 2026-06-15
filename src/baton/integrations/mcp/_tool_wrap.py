@@ -65,6 +65,7 @@ def install_wraps(
     mcp: Any,
     *,
     tenant_id: str,
+    vendor_id: str,
     consent_token: str,
     sink: Sink,
     counter: SessionCounter,
@@ -76,6 +77,7 @@ def install_wraps(
     """Wrap all currently-registered tools AND future registrations on ``mcp``."""
     emit_before, emit_after, emit_error = _make_emitters(
         tenant_id=tenant_id,
+        vendor_id=vendor_id,
         consent_token=consent_token,
         sink=sink,
         counter=counter,
@@ -203,6 +205,7 @@ def _extract_meta_from_context(context: Any) -> dict[str, Any] | None:
 def _make_emitters(
     *,
     tenant_id: str,
+    vendor_id: str,
     consent_token: str,
     sink: Sink,
     counter: SessionCounter,
@@ -231,6 +234,7 @@ def _make_emitters(
             sink,
             ToolCallStartEvent(
                 tenant_id=tenant_id,
+                vendor_id=vendor_id,
                 consent_token=consent_token,
                 session_id=fallback_session_id,
                 sequence_number=await _seq(),
@@ -252,6 +256,7 @@ def _make_emitters(
             sink,
             ToolCallEndEvent(
                 tenant_id=tenant_id,
+                vendor_id=vendor_id,
                 consent_token=consent_token,
                 session_id=fallback_session_id,
                 sequence_number=await _seq(),
@@ -274,6 +279,7 @@ def _make_emitters(
             sink,
             ToolCallErrorEvent(
                 tenant_id=tenant_id,
+                vendor_id=vendor_id,
                 consent_token=consent_token,
                 session_id=fallback_session_id,
                 sequence_number=await _seq(),

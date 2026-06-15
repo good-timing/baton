@@ -47,6 +47,7 @@ class BatonMiddleware(Middleware):
         self,
         *,
         tenant_id: str,
+        vendor_id: str,
         consent_token: str,
         sink: Sink,
         default_agent_runtime: str = "unknown",
@@ -56,6 +57,7 @@ class BatonMiddleware(Middleware):
         annotation_tool_name: str | None = None,
     ) -> None:
         self._tenant_id = tenant_id
+        self._vendor_id = vendor_id
         self._consent_token = consent_token
         self._sink = sink
         self._default_agent_runtime = default_agent_runtime
@@ -93,6 +95,7 @@ class BatonMiddleware(Middleware):
             self._sink,
             ToolCallStartEvent(
                 tenant_id=self._tenant_id,
+                vendor_id=self._vendor_id,
                 consent_token=self._consent_token,
                 session_id=session_id,
                 sequence_number=seq_start,
@@ -117,6 +120,7 @@ class BatonMiddleware(Middleware):
                 self._sink,
                 ToolCallErrorEvent(
                     tenant_id=self._tenant_id,
+                    vendor_id=self._vendor_id,
                     consent_token=self._consent_token,
                     session_id=session_id,
                     sequence_number=seq_err,
@@ -140,6 +144,7 @@ class BatonMiddleware(Middleware):
             self._sink,
             ToolCallEndEvent(
                 tenant_id=self._tenant_id,
+                vendor_id=self._vendor_id,
                 consent_token=self._consent_token,
                 session_id=session_id,
                 sequence_number=seq_end,

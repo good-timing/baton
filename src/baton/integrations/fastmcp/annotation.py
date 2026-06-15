@@ -90,6 +90,7 @@ def register_annotation_tool(
             sink,
             AnnotationEvent(
                 tenant_id=tenant_id,
+                vendor_id=vendor_id,
                 consent_token=consent_token,
                 session_id=session_id,
                 sequence_number=seq,

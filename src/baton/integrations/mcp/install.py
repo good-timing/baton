@@ -69,6 +69,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     install_wraps(
         mcp,
         tenant_id=config.vendor_id,
+        vendor_id=config.vendor_id,
         consent_token=config.consent_token,
         sink=sink,
         counter=counter,

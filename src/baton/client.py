@@ -395,6 +395,7 @@ class Trace:
         self._start_seq = self._client._next_seq(self._session_id)
         start_event = ToolCallStartEvent(
             tenant_id=self._client._vendor_id,
+            vendor_id=self._client._vendor_id,
             session_id=self._session_id,
             sequence_number=self._start_seq,
             captured_at=datetime.now(UTC),
@@ -411,6 +412,7 @@ class Trace:
             ann_seq = self._client._next_seq(self._session_id)
             ann_event = AnnotationEvent(
                 tenant_id=self._client._vendor_id,
+                vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=ann_seq,
                 captured_at=datetime.now(UTC),
@@ -437,6 +439,7 @@ class Trace:
         if exc is not None:
             error_event = ToolCallErrorEvent(
                 tenant_id=self._client._vendor_id,
+                vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=end_seq,
                 captured_at=datetime.now(UTC),
@@ -467,6 +470,7 @@ class Trace:
             error_type, error_body = self._observed_error
             error_event = ToolCallErrorEvent(
                 tenant_id=self._client._vendor_id,
+                vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=end_seq,
                 captured_at=datetime.now(UTC),
@@ -483,6 +487,7 @@ class Trace:
         else:
             end_event = ToolCallEndEvent(
                 tenant_id=self._client._vendor_id,
+                vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=end_seq,
                 captured_at=datetime.now(UTC),
@@ -610,6 +615,7 @@ class Client:
         signal_type_str = _resolve_signal_type(signal_type)
         event = AnnotationEvent(
             tenant_id=self._vendor_id,
+            vendor_id=self._vendor_id,
             session_id=resolved_session,
             sequence_number=seq,
             captured_at=datetime.now(UTC),
@@ -779,6 +785,7 @@ class AsyncTrace:
         self._start_seq = self._client._next_seq(self._session_id)
         start_event = ToolCallStartEvent(
             tenant_id=self._client._vendor_id,
+            vendor_id=self._client._vendor_id,
             session_id=self._session_id,
             sequence_number=self._start_seq,
             captured_at=datetime.now(UTC),
@@ -794,6 +801,7 @@ class AsyncTrace:
             ann_seq = self._client._next_seq(self._session_id)
             ann_event = AnnotationEvent(
                 tenant_id=self._client._vendor_id,
+                vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=ann_seq,
                 captured_at=datetime.now(UTC),
@@ -824,6 +832,7 @@ class AsyncTrace:
         if exc is not None:
             error_event = ToolCallErrorEvent(
                 tenant_id=self._client._vendor_id,
+                vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=end_seq,
                 captured_at=datetime.now(UTC),
@@ -852,6 +861,7 @@ class AsyncTrace:
             error_type, error_body = self._observed_error
             error_event = ToolCallErrorEvent(
                 tenant_id=self._client._vendor_id,
+                vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=end_seq,
                 captured_at=datetime.now(UTC),
@@ -868,6 +878,7 @@ class AsyncTrace:
         else:
             end_event = ToolCallEndEvent(
                 tenant_id=self._client._vendor_id,
+                vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=end_seq,
                 captured_at=datetime.now(UTC),
@@ -966,6 +977,7 @@ class AsyncClient:
         signal_type_str = _resolve_signal_type(signal_type)
         event = AnnotationEvent(
             tenant_id=self._vendor_id,
+            vendor_id=self._vendor_id,
             session_id=resolved_session,
             sequence_number=seq,
             captured_at=datetime.now(UTC),

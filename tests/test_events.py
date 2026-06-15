@@ -33,6 +33,7 @@ def _envelope() -> dict[str, Any]:
     event_type are set by defaults on the concrete model."""
     return {
         "tenant_id": "ten_01H4F",
+        "vendor_id": "ten_01H4F",
         "session_id": "sess_01H4F",
         "sequence_number": 1,
         "captured_at": datetime.now(UTC),
@@ -166,6 +167,40 @@ class TestAnnotationEvent:
 # =============================================================================
 
 
+class TestVendorId:
+    """Per SPEC §11.4 + the 2026-06-14 envelope amendment: ``vendor_id`` is
+    REQUIRED on every event. For SDK-mode (vendor wraps own MCP server)
+    ``vendor_id == tenant_id``; for proxy customer-mode the two diverge
+    (``tenant_id`` = customer tenant, ``vendor_id`` = wrapped vendor)."""
+
+    def test_required(self) -> None:
+        envelope = _envelope()
+        envelope.pop("vendor_id")
+        with pytest.raises(ValidationError):
+            ToolCallStartEvent(**envelope, payload=ToolCallStartPayload(tool_name="t"))
+
+    def test_round_trip(self) -> None:
+        event = ToolCallStartEvent(
+            **_envelope(),
+            payload=ToolCallStartPayload(tool_name="t"),
+        )
+        rebuilt = ToolCallStartEvent.model_validate_json(event.model_dump_json())
+        assert rebuilt.vendor_id == event.vendor_id
+
+    def test_distinct_from_tenant_id_preserved(self) -> None:
+        """Proxy customer-mode shape — the envelope MUST faithfully carry
+        a vendor_id distinct from tenant_id (customer tenant vs wrapped vendor)."""
+        envelope = _envelope()
+        envelope["tenant_id"] = "customer-acme"
+        envelope["vendor_id"] = "notion"
+        event = AnnotationEvent(**envelope, payload=AnnotationPayload(intent="x"))
+        assert event.tenant_id == "customer-acme"
+        assert event.vendor_id == "notion"
+        rebuilt = AnnotationEvent.model_validate_json(event.model_dump_json())
+        assert rebuilt.tenant_id == "customer-acme"
+        assert rebuilt.vendor_id == "notion"
+
+
 class TestSequenceNumber:
     def test_non_negative_allowed(self) -> None:
         envelope = _envelope()
@@ -249,6 +284,7 @@ class TestDiscriminatedUnion:
             "event_id": "01970000-0000-7000-8000-000000000000",
             "event_type": "tool_call_start",
             "tenant_id": "t",
+            "vendor_id": "t",
             "session_id": "s",
             "sequence_number": 1,
             "captured_at": "2026-05-19T16:42:03+00:00",
@@ -266,6 +302,7 @@ class TestDiscriminatedUnion:
             "event_id": "01970000-0000-7000-8000-000000000001",
             "event_type": "annotation",
             "tenant_id": "t",
+            "vendor_id": "t",
             "session_id": "s",
             "sequence_number": 2,
             "captured_at": "2026-05-19T16:42:03+00:00",
@@ -284,6 +321,7 @@ class TestDiscriminatedUnion:
             "event_id": "01970000-0000-7000-8000-000000000002",
             "event_type": "made_up_event",
             "tenant_id": "t",
+            "vendor_id": "t",
             "session_id": "s",
             "sequence_number": 3,
             "captured_at": "2026-05-19T16:42:03+00:00",
@@ -303,6 +341,7 @@ class TestDiscriminatedUnion:
                 "event_id": "01970000-0000-7000-8000-000000000003",
                 "event_type": "tool_call_error",
                 "tenant_id": "t",
+                "vendor_id": "t",
                 "session_id": "s",
                 "sequence_number": 4,
                 "captured_at": "2026-05-19T16:42:03+00:00",

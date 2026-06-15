@@ -25,6 +25,7 @@ from baton.sinks import HttpSink
 def _make_event(sequence_number: int = 1) -> ToolCallStartEvent:
     return ToolCallStartEvent(
         tenant_id="ten_test",
+        vendor_id="ten_test",
         session_id="sess_test",
         sequence_number=sequence_number,
         captured_at=datetime.now(UTC),

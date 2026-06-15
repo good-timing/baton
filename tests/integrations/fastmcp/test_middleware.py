@@ -45,6 +45,7 @@ def _build_mcp(sink: Sink, **mw_kwargs: Any) -> FastMCP:
     mcp.add_middleware(
         BatonMiddleware(
             tenant_id="ten_test",
+            vendor_id="ten_test",
             consent_token="ct_test",
             sink=sink,
             **mw_kwargs,
@@ -178,7 +179,9 @@ class TestSinkFailureDoesNotBreakToolCall:
     async def test_raising_sink_does_not_block_successful_tool(self) -> None:
         raising = _RaisingSink()
         mcp = FastMCP("test-vendor")
-        mcp.add_middleware(BatonMiddleware(tenant_id="t", consent_token="c", sink=raising))
+        mcp.add_middleware(
+            BatonMiddleware(tenant_id="t", vendor_id="t", consent_token="c", sink=raising)
+        )
 
         @mcp.tool()
         def echo(text: str) -> str:
@@ -194,7 +197,9 @@ class TestSinkFailureDoesNotBreakToolCall:
     async def test_raising_sink_preserves_vendor_exception_on_failure(self) -> None:
         raising = _RaisingSink()
         mcp = FastMCP("test-vendor")
-        mcp.add_middleware(BatonMiddleware(tenant_id="t", consent_token="c", sink=raising))
+        mcp.add_middleware(
+            BatonMiddleware(tenant_id="t", vendor_id="t", consent_token="c", sink=raising)
+        )
 
         @mcp.tool()
         def boom() -> None:
