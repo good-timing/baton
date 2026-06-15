@@ -5,7 +5,7 @@ PYTHON ?= $(shell command -v python3.14 >/dev/null 2>&1 && echo python3.14 || ec
 VENV ?= .venv
 BIN = $(VENV)/bin
 
-.PHONY: install test test-watch test-cov lint format typecheck ci clean build spec-check
+.PHONY: install test test-fast test-watch test-cov lint format format-check typecheck ci clean build spec-check
 
 install:
 	$(PYTHON) -m venv $(VENV)
@@ -14,6 +14,11 @@ install:
 
 test:
 	$(BIN)/pytest -q
+
+# Fast subset for tight iteration loops — skips tests marked `slow` or
+# `integration`. Equivalent to `make test` until those markers are applied.
+test-fast:
+	$(BIN)/pytest -q -m "not slow and not integration"
 
 test-watch:
 	$(BIN)/pytest-watch -q
