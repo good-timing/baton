@@ -51,8 +51,10 @@ class VendorConfig:
     into a known runtime (e.g., ``"claude-code"`` for a Claude Code plugin)."""
 
     scrubber: Callable[[Any], Any] | None = None
-    """PII scrubber per SPEC §7. Default (None) uses the identity-scrub
-    placeholder; vendors handling sensitive data should supply their own."""
+    """PII scrubber per SPEC §7. Default (None) uses ``baton.scrub.Scrubber``
+    — recursive walker with email/Bearer/sk-*/AKIA*/JWT/CC-Luhn/phone
+    patterns + field-name overrides on by default. Pass
+    ``baton.scrub.identity_scrub`` to opt out, or supply your own."""
 
 
 def _validate_vendor_config(config: VendorConfig) -> None:

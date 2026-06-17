@@ -89,7 +89,7 @@ from baton.events import (
     ToolCallStartEvent,
     ToolCallStartPayload,
 )
-from baton.scrub import identity_scrub
+from baton.scrub import Scrubber, identity_scrub  # noqa: F401  identity_scrub kept exported
 from baton.sinks import Sink
 
 T = TypeVar("T")
@@ -524,7 +524,7 @@ class Client:
         vendor_id: str | None = None,
         consent_token: str | None = None,
         agent_runtime: str = "python-library",
-        scrubber: Any = identity_scrub,
+        scrubber: Any = None,
     ) -> None:
         vendor_id_resolved = _resolve_config_value(
             vendor_id, "BATON_VENDOR_ID", required=True, name="vendor_id"
@@ -539,7 +539,11 @@ class Client:
         self._vendor_id: str = vendor_id_resolved
         self._consent_token: str = consent_token_resolved
         self._agent_runtime: str = agent_runtime
-        self._scrubber = scrubber
+        # Default to a fresh Scrubber per Client so the per-category
+        # counter is owned by the client instance (and not shared across
+        # processes via a class-level singleton). Pass identity_scrub
+        # explicitly to opt out of scrubbing.
+        self._scrubber = scrubber if scrubber is not None else Scrubber()
 
         # Sync mode uses a background thread + persistent loop bridge so the
         # sink's async primitives (locks, background drain tasks, httpx
@@ -910,7 +914,7 @@ class AsyncClient:
         vendor_id: str | None = None,
         consent_token: str | None = None,
         agent_runtime: str = "python-library",
-        scrubber: Any = identity_scrub,
+        scrubber: Any = None,
     ) -> None:
         vendor_id_resolved = _resolve_config_value(
             vendor_id, "BATON_VENDOR_ID", required=True, name="vendor_id"
@@ -925,7 +929,11 @@ class AsyncClient:
         self._vendor_id: str = vendor_id_resolved
         self._consent_token: str = consent_token_resolved
         self._agent_runtime: str = agent_runtime
-        self._scrubber = scrubber
+        # Default to a fresh Scrubber per AsyncClient — see Client
+        # docstring for the rationale (per-client counter, no
+        # cross-process sharing). Pass identity_scrub explicitly to opt
+        # out.
+        self._scrubber = scrubber if scrubber is not None else Scrubber()
 
         self._sink: Sink = sink
         self._seq_counters: dict[str, int] = {}

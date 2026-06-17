@@ -37,14 +37,17 @@ from baton.integrations.mcp.annotation import (
     derive_annotation_tool_name,
     register_annotation_tool,
 )
-from baton.scrub import identity_scrub
+from baton.scrub import Scrubber
 
 
 def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     """Install Baton into an official-SDK FastMCP server. See module docstring for usage."""
     _validate_vendor_config(config)
 
-    scrubber = config.scrubber or identity_scrub
+    # Default to a fresh Scrubber per install so PII redaction is on out
+    # of the box; vendors needing raw payloads pass ``identity_scrub``
+    # via ``VendorConfig.scrubber``.
+    scrubber = config.scrubber or Scrubber()
     fallback_session_id = f"sdk-{uuid7()}"
     counter = SessionCounter()
     sink = config.sink
