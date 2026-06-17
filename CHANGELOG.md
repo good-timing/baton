@@ -10,8 +10,20 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+---
+
+## 0.2.8 — vendor_id + scrubber-on + intent-required + trigger discipline
+
+One tightening pass on the wire contract and the annotation surface, landing
+ahead of the first real SDK consumer. Four load-bearing changes that hang
+together: `vendor_id` makes every event self-attributing on the wire; the
+scrubber default-on makes payloads safe to ship; `intent` becomes required
+so proactives can't land empty; and the trigger discipline matches the
+mechanical-trigger correction the proxy shipped in 0.1.3.
+
 ### Added
 
+- **`vendor_id` field on `_EventEnvelope` (REQUIRED).** Every emitted event now carries the wrapped vendor's identifier in a dedicated envelope field, mirroring `baton-proxy`'s `BATON_VENDOR_ID` envelope stamping (proxy commit `ba7af35`). The Console's `IncomingEvent` ingest schema requires it — events from 0.2.7 and earlier are rejected with 422 on the upgraded Console. In SDK-mode (a vendor wrapping their own MCP server) `vendor_id == tenant_id`; the additive field exists so customer-mode proxy emitters can carry both — `tenant_id` identifying the customer paying for the dashboard, `vendor_id` identifying which wrapped vendor's events these are. Wired at every event construction site in `client.Client` / `client.AsyncClient`, `integrations.fastmcp.{middleware,annotation}`, and `integrations.mcp.{_tool_wrap,annotation}`. `BatonMiddleware.__init__` and `install_wraps` gain a required `vendor_id: str` keyword; both adapter `install.py` modules already had `VendorConfig.vendor_id` in scope and pass it through.
 - **PII scrubber on by default.** `baton.scrub.Scrubber` ported from `baton-proxy` (same regex set: email / Bearer / `sk-*` / `AKIA*` / JWT / Luhn-validated CC / NA phone, plus field-name overrides on `email/phone/ssn/api_key/token/secret/password`; recursive walker with 10-level depth cap; per-instance redaction counter). `Client`, `AsyncClient`, `install_baton` (both adapters) now default to a fresh `Scrubber()` per construction site. `VendorConfig.scrubber=None` resolves to `Scrubber()`; pass `baton.scrub.identity_scrub` to opt out. Mirrors `baton-proxy/src/baton_proxy/scrub.py` so the two surfaces stay rule-equivalent until the shared package extraction lands (Persona B P2). 22 new tests in `tests/test_scrub.py` mirror the proxy's matrix.
 - **Three mechanical IF triggers in the rendered server instructions** (`_llm_text.py`): in addition to "lacks a structured field", the prompt now surfaces "intent satisfied via workaround because no tool matched" and "user asked for something this server can't do". All three are observable states Claude can check at the end of a tool call — vigilance triggers ("notice X") lose to task completion. Ported from baton-proxy 0.1.3's 2026-06-12 live-Claude discipline correction.
 - **`SIGNAL_TYPES` constant** in `_llm_text` so adapter schemas and rendered prose key off the same source of truth.
@@ -21,17 +33,13 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 - **`intent` is now required on the annotation tool schema** (both `mcp` and `fastmcp` adapters). Mirrors `baton-proxy/src/baton_proxy/proxy.py:93`'s explicit `required: ["intent"]`. Was previously optional (`intent: str | None = None`) which let agents emit payloadless annotations. The Console worker's proactive-bounded turn segmenter (per SPEC §11.5.1 step 2, since Claude Code's `runtime_meta.claudecode/sessionId` is per-session not per-turn) relies on proactives carrying intent — without this every SDK-instrumented vendor's session rendered as a single no-intent trailing turn on the dashboard.
 - **`signal_type` and `suggested_improvement` marked reactive-only in the annotation tool description.** Agents were populating them on proactives just because the fields existed, inflating friction counts. Ported from baton-proxy 0.1.3.
 
----
-
-## 0.2.8 — `vendor_id` on the event envelope
-
-### Added
-
-- **`vendor_id` field on `_EventEnvelope` (REQUIRED).** Every emitted event now carries the wrapped vendor's identifier in a dedicated envelope field, mirroring `baton-proxy`'s `BATON_VENDOR_ID` envelope stamping (proxy commit `ba7af35`). The Console's `IncomingEvent` ingest schema requires it — events from 0.2.7 and earlier are rejected with 422 on the upgraded Console. In SDK-mode (a vendor wrapping their own MCP server) `vendor_id == tenant_id`; the additive field exists so customer-mode proxy emitters can carry both — `tenant_id` identifying the customer paying for the dashboard, `vendor_id` identifying which wrapped vendor's events these are. Wired at every event construction site in `client.Client` / `client.AsyncClient`, `integrations.fastmcp.{middleware,annotation}`, and `integrations.mcp.{_tool_wrap,annotation}`. `BatonMiddleware.__init__` and `install_wraps` gain a required `vendor_id: str` keyword; both adapter `install.py` modules already had `VendorConfig.vendor_id` in scope and pass it through.
-
 ### Wire format
 
 Breaking for any consumer at the JSON envelope level — `vendor_id` is required. The Console rejected pre-0.2.8 envelopes from a 6afe0d4 deploy onward, so the migration is fail-loud rather than carrying a soft-shim. Per the 2026-06-14 cross-repo decision: zero live SDK consumers means a tight contract is cleaner than a multi-version optional-then-required ladder.
+
+### Tool surface
+
+The annotation tool's JSON Schema gains `required: ["intent"]` (was `[]`). MCP clients that previously called the tool without intent will get a `missing_argument` validation error. No live consumers known.
 
 ---
 
