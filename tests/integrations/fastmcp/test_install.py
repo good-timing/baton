@@ -143,8 +143,7 @@ class TestInstallation:
             annotate = next(t for t in tools if t.name == "v_annotate").to_mcp_tool()
             required = annotate.inputSchema.get("required", [])
             assert "intent" in required, (
-                f"intent must be required on annotation tool schema; "
-                f"required={required}"
+                f"intent must be required on annotation tool schema; required={required}"
             )
             # signal_type + suggested_improvement stay optional — the
             # tool description marks them reactive-only and they're
