@@ -119,6 +119,41 @@ class TestInstallation:
         finally:
             await handle.aclose()
 
+    async def test_annotation_tool_requires_intent(self, httpserver: HTTPServer) -> None:
+        """``intent`` is the one load-bearing field on every annotation —
+        proactives describe what's being attempted, reactives describe
+        what the failed attempt was attempting. Without it the annotation
+        is a payloadless event. Mirrors baton-proxy 0.1.3 (proxy.py:93)
+        which made ``required: ["intent"]`` an explicit schema property
+        instead of relying on Python's None default to leave it optional."""
+        mcp = FastMCP("x")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="v",
+                vendor_display_name="V",
+                consent_token="ct_test",
+                sink=HttpSink(url=httpserver.url_for(""), api_key="k"),
+            ),
+        )
+        try:
+            tools = await mcp.list_tools()
+            # FastMCP exposes a FunctionTool wrapper; convert to the
+            # MCP-native shape so the schema check matches the mcp adapter.
+            annotate = next(t for t in tools if t.name == "v_annotate").to_mcp_tool()
+            required = annotate.inputSchema.get("required", [])
+            assert "intent" in required, (
+                f"intent must be required on annotation tool schema; "
+                f"required={required}"
+            )
+            # signal_type + suggested_improvement stay optional — the
+            # tool description marks them reactive-only and they're
+            # absent on every proactive annotation.
+            assert "signal_type" not in required
+            assert "suggested_improvement" not in required
+        finally:
+            await handle.aclose()
+
     async def test_annotation_tool_name_override(self, httpserver: HTTPServer) -> None:
         mcp = FastMCP("x")
         handle = install_baton(
@@ -244,6 +279,7 @@ class TestAnnotationToolEndToEnd:
             await client.call_tool(
                 "test-vendor_annotate",
                 {
+                    "intent": "fetch the search results",
                     "signal_type": "dead_end",
                     "suggested_improvement": "surface clearer error",
                     "context": {"likely_cause": "content_filter"},
@@ -254,6 +290,7 @@ class TestAnnotationToolEndToEnd:
         annotation_events = [ev for ev in captured if ev["event_type"] == "annotation"]
         assert len(annotation_events) == 1
         payload = annotation_events[0]["payload"]
+        assert payload["intent"] == "fetch the search results"
         assert payload["signal_type"] == "dead_end"
         assert payload["suggested_improvement"] == "surface clearer error"
         assert payload["context"]["likely_cause"] == "content_filter"
@@ -418,10 +455,15 @@ class TestAllFourEventTypesInOneFlow:
             )
             # 2. Real tool call
             await client.call_tool("lookup", {"name": "alice"})
-            # 3. Reactive annotate
+            # 3. Reactive annotate — intent restated so the reactive
+            # carries the same task framing the proactive opened.
             await client.call_tool(
                 "test-vendor_annotate",
-                {"signal_type": "dead_end", "suggested_improvement": "..."},
+                {
+                    "intent": "find user",
+                    "signal_type": "dead_end",
+                    "suggested_improvement": "...",
+                },
             )
 
         await handle.flush()

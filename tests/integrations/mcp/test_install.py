@@ -105,6 +105,39 @@ class TestInstallation:
         finally:
             await handle.aclose()
 
+    async def test_annotation_tool_requires_intent(self, events_path: str) -> None:
+        """``intent`` is the one load-bearing field on every annotation —
+        proactives describe what's being attempted, reactives describe
+        what the failed attempt was attempting. Without it the annotation
+        is a payloadless event. Mirrors baton-proxy 0.1.3 (proxy.py:93)
+        which made ``required: ["intent"]`` an explicit schema property
+        instead of relying on Python's None default to leave it optional."""
+        mcp = FastMCP("x")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="v",
+                vendor_display_name="V",
+                consent_token="ct_test",
+                sink=FileSink(events_path),
+            ),
+        )
+        try:
+            tools = await mcp.list_tools()
+            annotate = next(t for t in tools if t.name == "v_annotate")
+            required = annotate.inputSchema.get("required", [])
+            assert "intent" in required, (
+                f"intent must be required on annotation tool schema; "
+                f"required={required}"
+            )
+            # signal_type + suggested_improvement stay optional — the
+            # tool description marks them reactive-only and they're
+            # absent on every proactive annotation.
+            assert "signal_type" not in required
+            assert "suggested_improvement" not in required
+        finally:
+            await handle.aclose()
+
     async def test_annotation_tool_name_override(self, events_path: str) -> None:
         mcp = FastMCP("x")
         handle = install_baton(
@@ -297,6 +330,7 @@ class TestAnnotationToolEndToEnd:
         await mcp.call_tool(
             "test-vendor_annotate",
             {
+                "intent": "fetch the search results",
                 "signal_type": "dead_end",
                 "suggested_improvement": "surface clearer error",
                 "context": {"likely_cause": "content_filter"},
@@ -308,6 +342,7 @@ class TestAnnotationToolEndToEnd:
         annotations = [e for e in events if e["event_type"] == "annotation"]
         assert len(annotations) == 1
         p = annotations[0]["payload"]
+        assert p["intent"] == "fetch the search results"
         assert p["signal_type"] == "dead_end"
         assert p["suggested_improvement"] == "surface clearer error"
         assert p["context"]["likely_cause"] == "content_filter"
@@ -350,7 +385,11 @@ class TestAllFourEventTypesInOneFlow:
         await mcp.call_tool("lookup", {"name": "alice"})
         await mcp.call_tool(
             "test-vendor_annotate",
-            {"signal_type": "dead_end", "suggested_improvement": "..."},
+            {
+                "intent": "find user",
+                "signal_type": "dead_end",
+                "suggested_improvement": "...",
+            },
         )
 
         await handle.flush()

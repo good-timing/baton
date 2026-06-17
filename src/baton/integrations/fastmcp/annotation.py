@@ -72,7 +72,7 @@ def register_annotation_tool(
     @mcp.tool(name=name, description=description)
     async def _annotate(
         ctx: Context,
-        intent: str | None = None,
+        intent: str,
         expected_outcome: str | None = None,
         signal_type: str | None = None,
         workflow: str | None = None,
