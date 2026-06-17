@@ -93,3 +93,48 @@ def test_annotation_description_lists_all_fields() -> None:
         "context",
     ):
         assert field in rendered, f"annotation field {field!r} missing from description"
+
+
+def test_instructions_carry_three_mechanical_triggers() -> None:
+    """Per the 2026-06-12 live-Claude finding (ported from baton-proxy
+    0.1.3), every signal_type prompt needs a mechanical trigger — an
+    observable state Claude can check at the end of a tool call —
+    rather than a vigilance trigger. The IF block must surface all
+    three triggers: (1) lacks structured field, (2) intent satisfied
+    via workaround because no tool matched, (3) user asked for
+    something this server can't do."""
+    rendered = build_server_instructions(
+        vendor_display_name="Acme",
+        annotation_tool_name="acme_annotate",
+    )
+    assert "lacks a structured field" in rendered
+    assert "workaround because no tool matched" in rendered
+    assert "asked for something this server can't do" in rendered
+
+
+def test_annotation_description_marks_signal_type_reactive_only() -> None:
+    """``signal_type`` and ``suggested_improvement`` are reactive-only
+    fields — populating them on a proactive annotation makes the
+    annotation read as a friction signal it isn't. Proxy 0.1.3 made
+    this explicit in the description; SDK must match so the same
+    discipline lands in SDK-instrumented vendors' agent transcripts."""
+    rendered = build_annotation_tool_description(vendor_display_name="Acme")
+    assert "signal_type: reactive-only" in rendered
+    assert "suggested_improvement: reactive-only" in rendered
+
+
+def test_signal_types_constant_matches_spec() -> None:
+    """Canonical SPEC §3.1 enum tuple — annotation tool schemas key off
+    this constant so they can't drift from the rendered prose."""
+    from baton.integrations._llm_text import SIGNAL_TYPES
+
+    assert SIGNAL_TYPES == (
+        "failure",
+        "retry_loop",
+        "dead_end",
+        "parameter_confusion",
+        "slow_performance",
+        "abandonment",
+        "feature_gap",
+        "other",
+    )

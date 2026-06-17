@@ -7,11 +7,13 @@ copy so they cannot drift.
 **Split of responsibility (load-bearing for §5.1.2 under Claude Code's
 truncation cap):**
 
-- *Server instructions* carry the MUST/REQUIRED behavioral framing
-  (BEFORE/AFTER pattern, signal_type enum, "annotation doesn't replace
-  answering"). Claude Code truncates ``InitializeResult.instructions`` at
-  ~2087 chars, so this template is kept under ~1000 chars to leave headroom
-  for vendor extensions.
+- *Server instructions* carry the MUST/REQUIRED behavioral framing —
+  the BEFORE/AFTER/IF triggers, the signal_type enum, and the
+  "annotation doesn't replace answering" guardrail. Claude Code
+  truncates ``InitializeResult.instructions`` at ~2087 chars, so this
+  template is kept under ~1500 chars to leave headroom for vendor
+  extensions. Loaded once at session init, which is the only point that
+  can drive the *first* proactive annotation before any tool is called.
 - *Annotation tool description* carries the field-level reference (what
   belongs in intent / expected_outcome / workflow / suggested_improvement /
   context). Tool descriptions are loaded on every call to the central
@@ -22,6 +24,19 @@ Why not put both in instructions: empirically the cap drops the tail
 silently. Why not put the behavioral framing in the description: per-call
 context overhead, and the description is read at *call* time — too late to
 drive the first proactive annotation.
+
+**Trigger discipline.** A live-Claude proxy test on 2026-06-12 surfaced
+an asymmetry the original templates baked in: only the "if a call
+returned an error" trigger was mechanical (an observable state Claude
+could check at the end of any tool call); the feature-gap path
+required vigilance, and vigilance loses to task completion every time.
+Three mechanical triggers now sit alongside each other in the IF
+block: (1) tool response lacks a structured field for what the user
+asked about, (2) intent satisfied via workaround because no tool
+matched, (3) user asked for something this server can't do. Each is a
+state Claude can check deterministically against its own behavior, on
+par with "the call returned an error". Ported from baton-proxy 0.1.3
+to the SDK on 2026-06-16.
 """
 
 from __future__ import annotations
@@ -42,9 +57,12 @@ _DEFAULT_SERVER_INSTRUCTIONS_TEMPLATE = (
     "slow_performance, abandonment, feature_gap, other — and "
     "suggested_improvement (REQUIRED whenever you can articulate one).\n\n"
     "IF a {vendor_display_name} tool response lacks a structured field for "
-    "what the user asked about, you MUST call `{annotation_tool_name}` with "
-    "signal_type='feature_gap' AND still answer the user with your best "
-    "inference. Filing the annotation does NOT replace answering."
+    "what the user asked about, OR you satisfied the user's intent via a "
+    "workaround because no tool matched what they asked for, OR the user "
+    "asked for something this server can't do — you MUST call "
+    "`{annotation_tool_name}` with signal_type='feature_gap' AND still "
+    "answer the user with your best inference. Filing the annotation does "
+    "NOT replace answering."
 )
 
 
@@ -60,10 +78,12 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
     "  - workflow: the broader task this call is part of, e.g., 'morning "
     "meeting prep', 'pre-outreach research', 'personal scheduling'. Skip "
     "when the call doesn't fit a recognizable broader task.\n"
-    "  - signal_type: one of failure, retry_loop, dead_end, "
-    "parameter_confusion, slow_performance, abandonment, feature_gap, other.\n"
-    "  - suggested_improvement: a concrete sentence about what product "
-    "change would have helped.\n"
+    "  - signal_type: reactive-only — omit on a proactive annotation. "
+    "Set only once a tool call has returned an unhelpful result. One of "
+    "failure, retry_loop, dead_end, parameter_confusion, "
+    "slow_performance, abandonment, feature_gap, other.\n"
+    "  - suggested_improvement: reactive-only — omit on a proactive. "
+    "A concrete sentence about what product change would have helped.\n"
     "  - context: supplementary info not covered above. Common keys: plan, "
     "alternatives_considered, likely_cause, user_impact, error_class, "
     "downstream_blocked, confidence_in_intent. For signal_type='feature_gap' "
@@ -75,6 +95,24 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
 # Reserve headroom for vendor extensions composed on top.
 _CLAUDE_CODE_TRUNCATION_CAP = 2087
 _INSTRUCTIONS_LENGTH_CAP = 1500
+
+
+# Canonical signal_type values per SPEC §3.1. Stable and additive-only
+# until v1.0 (SPEC §13). The annotation tool's inputSchema enum and the
+# instructions text reference the same eight values; downstream
+# escalation taxonomies (e.g., the priority mapping in the report
+# synthesizer) key off these strings. Ported from baton-proxy on
+# 2026-06-16 so both surfaces share one source of truth.
+SIGNAL_TYPES: tuple[str, ...] = (
+    "failure",
+    "retry_loop",
+    "dead_end",
+    "parameter_confusion",
+    "slow_performance",
+    "abandonment",
+    "feature_gap",
+    "other",
+)
 
 
 def build_server_instructions(
