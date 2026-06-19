@@ -767,7 +767,9 @@ A conforming Console MUST:
 7. **Be idempotent under reprocessing.** Re-running the worker against the same events MUST produce the same signals (or in-place update of existing signal rows; no duplicates).
 8. **Support replay.** "Reprocess all events since timestamp T" MUST be a supported operation, for fixing bad-worker bugs retroactively.
 
-### 11.4 Event schema (normative, additive-only until v1.0)
+### 11.4 Event schema (normative)
+
+Additive-only after v1.0; pre-1.0, required-field additions are permitted per §13 (see the `vendor_id` change in the §13 changelog).
 
 Every event has these fields:
 
@@ -777,7 +779,8 @@ Every event has these fields:
   "event_type": "tool_call_end",             // see enum below
   "session_id": "...",                       // from layered fallback per §3.4
   "correlation_mode": "session-stitched",    // "session-stitched" | "per-event"; see §3.4
-  "tenant_id": "...",                        // from VendorConfig
+  "tenant_id": "...",                        // the account/customer; from VendorConfig
+  "vendor_id": "...",                        // the wrapped vendor; matches VendorConfig.vendor_id (see note below)
   "sequence_number": 42,                     // monotonic per session (session-stitched mode); 1 (per-event mode)
   "captured_at": "2026-05-19T16:42:03Z",     // SDK timestamp at emission
   "consent_token": "...",                    // from VendorConfig; see §9
@@ -788,6 +791,8 @@ Every event has these fields:
   "payload": { ... }                         // event-type-specific fields
 }
 ```
+
+**`tenant_id` vs `vendor_id`.** Both are required and they are not synonyms. `tenant_id` identifies the **account** the events belong to (the Baton customer). `vendor_id` identifies the **wrapped vendor** the SDK is instrumenting, and matches `VendorConfig.vendor_id`. In vendor-mode the account corresponds to a single wrapped vendor (the SDK currently sets `tenant_id` to the vendor's own id). In customer-mode a single account wraps several vendors under a distinct `tenant_id`, and the collector groups friction per wrapped vendor with `(tenant_id, vendor_id)`. Implementations MUST NOT assume `tenant_id == vendor_id` in general. The collector MUST reject envelopes missing either field.
 
 Event types and their payload shapes:
 
@@ -932,6 +937,7 @@ Defined error codes:
 
 ### Wire-format changes
 
+- **0.2.8** — added **required** `vendor_id` field to the event envelope (§11.4). Identifies the wrapped vendor distinctly from `tenant_id` (the account); the collector groups customer-mode friction with `(tenant_id, vendor_id)`. This is a pre-1.0 **breaking** change (a required field, not additive) — permitted per §13, which allows breakage until v1.0. Producers MUST send it; the collector rejects envelopes that omit it.
 - **0.2.2** — added optional `runtime_meta: dict[str, Any] | None` field to the event envelope per §11.4.1. Carries the raw `_meta` dict from the MCP request (PII-scrubbed via vendor's scrubber). Additive; null when absent. Workers SHOULD use it for cycle correlation per §11.5 instead of relying on `session_id` alone.
 
 ---
