@@ -337,11 +337,11 @@ The SDK MUST register an annotation tool on the vendor's MCP server AND MUST set
 
 #### 5.1.1 Annotation tool
 
-- **Tool name** (convention): `<vendor_id>.annotate` (e.g., `acme.annotate`). Dot namespacing per the MCP tool-naming convention (`docs.search`, `git.commit`, etc.). Vendor MAY override via `VendorConfig.annotation_tool_name` if their internal naming differs, but the dot convention SHOULD be preserved.
+- **Tool name** (convention): `<vendor_id>_annotate` (e.g., `acme_annotate`). Underscore namespacing — the name MUST match `^[a-zA-Z0-9_-]{1,64}$`. Dots are NOT permitted: Claude Desktop and other runtimes reject tool names containing dots, so the dot-namespaced form (`acme.annotate`) is unusable cross-runtime even though it reads naturally. Vendor MAY override via `VendorConfig.annotation_tool_name` if their internal naming differs, but the override MUST satisfy the same pattern.
 - **Tool description**: vendor-branded, templated from `VendorConfig.vendor_display_name`. MUST NOT contain the string "Baton" or any reference to the SDK by name. See §5.4.
 - **Signature:**
   ```
-  <vendor>.annotate(
+  <vendor>_annotate(
     intent: string | null = null,
     expected_outcome: string | null = null,
     signal_type: string | null = null,
@@ -372,6 +372,8 @@ The SDK MUST set the FastMCP server's `instructions` to motivate annotation tool
 - If the vendor HAS set `instructions`: SDK appends its template *below* the vendor's existing text (vendor's instructions stay primary; SDK's are additive).
 
 The instructions text MUST be templated from `VendorConfig.vendor_display_name`. It MUST NOT contain the string "Baton" or reference the SDK by name. The default template is in §5.4.
+
+**Truncation hazard (length cap).** Some runtimes truncate the surfaced `instructions` string: Claude Code cuts it at ~2087 characters, which can drop the rendered text mid-sentence and silently disable the load-bearing motivation. Because `vendor_display_name` and `annotation_tool_name` are interpolated into the template, a long value can push a rendered instructions block over that limit. The SDK MUST fail loudly at install time rather than ship a truncated block: it enforces a 1500-character safety cap on the rendered output (margin below the ~2087 runtime limit) and raises a `ValueError` directing the integrator to shorten `vendor_display_name` / `annotation_tool_name`. Implementations that append to an upstream server's existing `instructions` (rather than replacing it) apply the same cap to their appended suffix.
 
 **Why both pieces are required (empirically validated):**
 - Tool description alone: in the spike, Claude Code did not call the annotation tool across multiple unprompted attempts. Tool descriptions are read at tool-selection time, not at tool-use-decision time.
@@ -453,7 +455,7 @@ Where SDK-branded strings MAY appear:
 
 | Surface | Whitelabel required? | Rationale |
 |---|---|---|
-| Tool name (`<vendor_id>.annotate`) | yes | Visible in `tools/list` |
+| Tool name (`<vendor_id>_annotate`) | yes | Visible in `tools/list` |
 | Tool description | yes | Read by the LLM |
 | **Server `instructions`** (§5.1.2) | **yes** | **Folded into the LLM's context by compliant clients (Claude Code confirmed). Load-bearing for §5.1 — without it, agents don't call the annotation tool.** |
 | Elicitation prompts | yes | Shown to the end user |
