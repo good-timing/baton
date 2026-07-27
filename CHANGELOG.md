@@ -12,6 +12,23 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## 0.3.0 — end-user identity (user_id) on the wire
+
+Wire-schema addition, kept in lockstep with baton-proxy 0.5.0.
+
+- **`user_id` on the event envelope** (`_EventEnvelope`) — a hashed end-user
+  actor (HMAC-SHA256, per-tenant, hashed at the capture edge; the raw principal
+  is never transmitted). Additive and nullable, so pre-`user_id` consumers are
+  unaffected. Lets the Console group by `(tenant_id, vendor_id, user_id)`.
+  Recorded in SPEC §11.4 / §13.
+- **`baton.identity`** module — `hash_user_id()` + `Principal` /
+  `IdentityResolver`, mirroring `baton_proxy.identity` (kept as parallel copies
+  until the shared package lands). Population from FastMCP context / per-trace
+  kwargs is staged for a follow-up; this release lands the schema + util.
+- **Scrubber** redacts the `user_name` field name (not `name`).
+
+---
+
 ## 0.2.8 — vendor_id + scrubber-on + intent-required + trigger discipline
 
 One tightening pass on the wire contract and the annotation surface, landing

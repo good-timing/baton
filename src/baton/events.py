@@ -118,6 +118,13 @@ class _EventEnvelope(BaseModel):
     consent_token: str
     sdk_version: str = __version__
     agent_runtime: str = "unknown"
+    user_id: str | None = None
+    """Hashed end-user actor (SPEC §11.4 + §9 per-user path).
+    HMAC-SHA256, per-tenant, hashed AT THE EDGE by the capture layer — the raw
+    principal is never transmitted. Console groups by
+    ``(tenant_id, vendor_id, user_id)``. Null when no identity resolved or no
+    HMAC key configured; additive + nullable so pre-user_id consumers are
+    unaffected."""
     runtime_meta: dict[str, Any] | None = None
     """Runtime-supplied ``_meta`` envelope from the MCP request (SPEC §11.4).
     Per SPEC §11.5 the Console worker uses this to derive turn / cycle
