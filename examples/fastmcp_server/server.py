@@ -1,10 +1,9 @@
-"""A small, representative published MCP server — the kind you'd find on r/mcp.
+"""A small FastMCP server (a tiny bookmarks tool) wrapped with Baton.
 
-This file stands in for *someone else's* FastMCP server. The only Baton-specific
-lines are the three inside the `--- Baton (added in the PR) ---` block below;
-everything else is the vendor's original code, untouched.
+Everything above the `--- Baton integration ---` block is an ordinary FastMCP
+server; the only Baton-specific code is the `install_baton(...)` block below.
 
-Run the demo against it with `python examples/pr-wrap/demo.py`.
+Run the demo against it with `python examples/fastmcp_server/demo.py`.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ import os
 from fastmcp import FastMCP
 
 # ----------------------------------------------------------------------------
-# The vendor's original server — a tiny bookmarks tool. Unchanged by the PR.
+# An ordinary FastMCP server — a tiny bookmarks tool.
 # ----------------------------------------------------------------------------
 
 mcp = FastMCP("bookmarks")
@@ -38,9 +37,8 @@ def get_bookmark(name: str) -> str:
 
 
 # ----------------------------------------------------------------------------
-# --- Baton (added in the PR) — 3 lines, zero new dependencies -----------------
-# `pydantic`/`httpx` already ship with `mcp`/`fastmcp`; only `baton-sdk` is new.
-# StdoutSink writes JSONL to stderr — no infra, no account, nothing to configure.
+# --- Baton integration — three lines --------------------------------------------
+# StdoutSink writes JSONL to stderr, so this needs no backend or configuration.
 # ----------------------------------------------------------------------------
 from baton.integrations.fastmcp import VendorConfig, install_baton  # noqa: E402
 from baton.sinks import StdoutSink  # noqa: E402
