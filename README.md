@@ -79,10 +79,13 @@ Everything downstream of the sink is identical across both paths — same wire e
 pip install baton-sdk              # core only — library API for Skill-instrumented code
 pip install baton-sdk[mcp]         # +MCP integration for the official `mcp` SDK (Anthropic's)
 pip install baton-sdk[fastmcp]     # +MCP integration for the standalone `fastmcp` library
+pip install baton-sdk[http]        # +HttpSink (POST events to a Console); needs httpx
 pip install baton-sdk[all]         # everything
 ```
 
 Core SDK ships always. Protocol-specific surfaces live under `baton.integrations.*` and require opt-in extras — the same pattern Sentry / Datadog / OpenTelemetry use.
+
+**Dependency footprint — near-zero for the vendor.** The core installs one runtime dependency (`pydantic`), and UUIDv7 is generated in-tree (no `uuid6`). Crucially, when you wrap an existing MCP server the *marginal* cost is **zero**: the official `mcp` package and standalone `fastmcp` already require `pydantic` and `httpx`, so `baton-sdk` (and `baton-sdk[http]` for the Console path) add nothing your server doesn't already have. The stdlib-only demo path (`StdoutSink` / `FileSink`) needs no extras at all.
 
 ## Minimal MCP integration
 

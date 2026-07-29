@@ -13,6 +13,9 @@ from baton.sinks import Sink, StdoutSink
 # annotation tool names. Reject dots so the default tool name is valid.
 _VENDOR_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 
+# Per-tool intent-param injection modes (mirrors baton-proxy's BATON_INTENT_PARAM).
+_INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required", "off"})
+
 
 @dataclass
 class VendorConfig:
@@ -56,6 +59,15 @@ class VendorConfig:
     patterns + field-name overrides on by default. Pass
     ``baton.scrub.identity_scrub`` to opt out, or supply your own."""
 
+    intent_param_mode: str = "optional"
+    """Per-tool intent-param injection (mirrors baton-proxy's
+    ``BATON_INTENT_PARAM``). ``"optional"`` (default) injects a ``baton_intent``
+    string param on every wrapped tool's input schema; ``"required"`` also adds
+    it to each tool's ``required`` list; ``"off"`` disables injection. The param
+    is stripped before the vendor handler runs, so the tool never sees it. This
+    is what captures intent on runtimes that drop ``instructions`` (notably
+    Claude Desktop) — where the annotation tool alone yields nothing."""
+
 
 def _validate_vendor_config(config: VendorConfig) -> None:
     if not _VENDOR_ID_PATTERN.match(config.vendor_id):
@@ -70,4 +82,9 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             "VendorConfig.consent_token is required per SPEC §2.3 — events "
             "without a valid consent_token MUST be rejected by the consumer. "
             "v0 form: a single UUID granted at SDK init."
+        )
+    if config.intent_param_mode not in _INTENT_PARAM_MODES:
+        raise ValueError(
+            f"VendorConfig.intent_param_mode {config.intent_param_mode!r} must be "
+            f"one of {sorted(_INTENT_PARAM_MODES)}."
         )

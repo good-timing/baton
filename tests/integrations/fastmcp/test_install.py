@@ -594,3 +594,71 @@ class TestEscalate:
 
         assert result["ticket_id"] == "queued"
         assert result["ticket_url"] is None
+
+
+# =============================================================================
+# Intent-param injection wired end-to-end via install_baton
+# =============================================================================
+
+
+class TestIntentInjectionInstalled:
+    async def test_param_injected_and_captured_through_install(
+        self, configured_mcp: tuple[FastMCP, Any], captured: list[dict[str, Any]]
+    ) -> None:
+        """install_baton wires injection on by default; a call carrying
+        baton_intent captures call_intent and synthesises a proactive."""
+        mcp, handle = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+            names = {t.name for t in tools}
+            echo_tool = next(t for t in tools if t.name == "echo")
+            await client.call_tool("echo", {"text": "x", "baton_intent": "the why"})
+
+        await handle.flush()
+
+        # annotation tool is NOT injected with baton_intent
+        annotate_tool = next(t for t in tools if t.name == "test-vendor_annotate")
+        assert "baton_intent" not in annotate_tool.inputSchema.get("properties", {})
+        assert "baton_intent" in echo_tool.inputSchema["properties"]
+        assert "test-vendor_annotate" in names
+
+        start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
+        assert start["payload"]["call_intent"] == "the why"
+        anns = [ev for ev in captured if ev["event_type"] == "annotation"]
+        assert len(anns) == 1
+        assert anns[0]["payload"]["intent_source"] == "injected_param"
+
+    async def test_real_proactive_suppresses_synthesised_one(
+        self, configured_mcp: tuple[FastMCP, Any], captured: list[dict[str, Any]]
+    ) -> None:
+        """When the agent calls the annotation tool proactively first, the
+        middleware must NOT also synthesise a proactive from the injected param
+        (shared ProactiveTracker) — but the tool call still rides its intent."""
+        mcp, handle = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            # Agent's real proactive annotation (no signal_type) fires first.
+            await client.call_tool(
+                "test-vendor_annotate", {"intent": "real proactive intent"}
+            )
+            # Then the wrapped tool call carrying an injected intent.
+            await client.call_tool("echo", {"text": "x", "baton_intent": "param intent"})
+
+        await handle.flush()
+
+        anns = [ev for ev in captured if ev["event_type"] == "annotation"]
+        assert len(anns) == 1, "the real proactive suppresses the synthesised one"
+        assert anns[0]["payload"]["intent"] == "real proactive intent"
+        assert anns[0]["payload"].get("intent_source") is None  # real, not injected
+        # the param intent is not lost — it still rides tool_call_start
+        start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
+        assert start["payload"]["call_intent"] == "param intent"

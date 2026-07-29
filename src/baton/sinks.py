@@ -32,11 +32,31 @@ from collections import deque
 from pathlib import Path
 from time import monotonic
 from types import TracebackType
-from typing import IO, Self
-
-import httpx
+from typing import IO, TYPE_CHECKING, Any, Self
 
 from baton.events import Event
+
+if TYPE_CHECKING:
+    import httpx
+
+
+def _require_httpx() -> Any:
+    """Import httpx or raise a pointed install hint.
+
+    httpx is an optional ``[http]`` extra — only ``HttpSink`` needs it. The
+    stdlib sinks (``StdoutSink`` / ``FileSink``) carry no dependency, so the
+    zero-infra demo path installs nothing. httpx (not urllib) because the SDK
+    emits from inside the event loop, where a blocking client would stall it.
+    """
+    try:
+        import httpx
+    except ImportError as e:  # pragma: no cover - exercised via the [http] extra
+        raise ImportError(
+            "HttpSink requires the 'http' extra. Install with: "
+            "pip install 'baton-sdk[http]' (httpx is already present in any "
+            "mcp/fastmcp server's dependency tree)."
+        ) from e
+    return httpx
 
 
 async def safe_write(sink: Sink, event: Event, logger: logging.Logger) -> None:
@@ -235,10 +255,11 @@ class HttpSink(Sink):
         self._backoff_base = backoff_base_seconds
         self._backoff_max = backoff_max_seconds
         self._circuit = _CircuitBreaker(circuit_breaker_threshold, circuit_breaker_reset_seconds)
-        self._http_client = _http_client or httpx.AsyncClient(
-            timeout=httpx.Timeout(request_timeout_seconds),
-        )
         self._owns_client = _http_client is None
+        if _http_client is None:
+            httpx = _require_httpx()
+            _http_client = httpx.AsyncClient(timeout=httpx.Timeout(request_timeout_seconds))
+        self._http_client = _http_client
         self._flush_lock = asyncio.Lock()
         self._drain_task: asyncio.Task[None] | None = None
         self._closed = False
@@ -321,6 +342,8 @@ class HttpSink(Sink):
                 return
 
     async def _send_with_retry(self, event: Event) -> str:
+        import httpx  # installed — construction of this sink required the [http] extra
+
         url = f"{self._url}/v0/events"
         headers = {"Authorization": f"Bearer {self._api_key}"}
         body = event.model_dump(mode="json")

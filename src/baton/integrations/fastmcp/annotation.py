@@ -22,7 +22,7 @@ from typing import Any
 
 from fastmcp import Context, FastMCP
 
-from baton._state import SessionCounter, resolve_session_id
+from baton._state import ProactiveTracker, SessionCounter, resolve_session_id
 from baton.events import AnnotationEvent, AnnotationPayload
 from baton.integrations._llm_text import build_annotation_tool_description
 from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime, meta_to_dict
@@ -64,8 +64,10 @@ def register_annotation_tool(
     default_agent_runtime: str = "unknown",
     annotation_tool_name: str | None = None,
     scrubber: Callable[[Any], Any] = identity_scrub,
+    proactive_tracker: ProactiveTracker | None = None,
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
+    tracker = proactive_tracker or ProactiveTracker()
     name = derive_annotation_tool_name(vendor_id, annotation_tool_name)
     description = build_annotation_tool_description(vendor_display_name=vendor_display_name)
 
@@ -80,6 +82,10 @@ def register_annotation_tool(
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         session_id = resolve_session_id(ctx, fallback_session_id)
+        # A proactive annotation (no signal_type) claims the session's proactive
+        # slot so the middleware won't also synthesise one from an injected param.
+        if signal_type is None:
+            tracker.mark(session_id)
         rc = ctx.request_context if ctx is not None else None
         raw_meta = rc.meta if rc else None
         meta_dict = meta_to_dict(raw_meta)

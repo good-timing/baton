@@ -29,12 +29,14 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
+    # pydantic is the wire model. It is "free" for the PR-wrap GTM: the official
+    # ``mcp`` package and ``fastmcp`` both already require it, so a wrapped vendor
+    # inherits nothing new. UUIDv7 (event_id / session_id) is generated in-tree by
+    # ``baton._uuid`` — stdlib ``uuid.uuid7`` on 3.14+, a monotonic RFC-9562
+    # fallback below — so we take no ``uuid6`` dependency. ``httpx`` is an optional
+    # ``[http]`` extra (see below): only ``HttpSink`` needs it, and it too is free
+    # on any mcp/fastmcp server.
     "pydantic>=2.0",
-    "httpx>=0.25",
-    # Stdlib added uuid7 in 3.14. We support 3.11+, so we use uuid6 — pure-Python,
-    # MIT, actively maintained, implements RFC 9562 v6/v7/v8 with same-millisecond
-    # monotonicity (which the stdlib polyfill we briefly wrote did not).
-    "uuid6>=2025.0",
 ]
 
 [project.urls]
@@ -64,9 +66,19 @@ mcp = [
 fastmcp = [
     "fastmcp>=2.10",
 ]
+# ``HttpSink`` (the production path — POST events to a Baton Console) needs an
+# async HTTP client. httpx is required (not urllib): the SDK emits from inside
+# the event loop, where a blocking client would stall it. Kept as an extra so
+# the zero-infra demo path (stdout/file sinks, pure stdlib) installs nothing;
+# httpx is already in any mcp/fastmcp server's tree, so this costs a real vendor
+# nothing.
+http = [
+    "httpx>=0.25",
+]
 all = [
     "baton-sdk[mcp]",
     "baton-sdk[fastmcp]",
+    "baton-sdk[http]",
 ]
 dev = [
     "baton-sdk[all]",

@@ -7,10 +7,12 @@ identical). Both adapters now import from here.
 from __future__ import annotations
 
 import logging
-
-import httpx
+from typing import TYPE_CHECKING
 
 from baton.sinks import Sink
+
+if TYPE_CHECKING:
+    import httpx
 
 _log = logging.getLogger("baton")
 
@@ -97,6 +99,8 @@ class BatonHandle:
 
         # Reuse a shared client across calls — avoids a TCP+TLS handshake per escalation.
         if self._http_client is None:
+            import httpx  # console_url is set ⇒ HttpSink in use ⇒ [http] extra installed
+
             self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds))
 
         response = await self._http_client.post(

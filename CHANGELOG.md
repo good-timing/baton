@@ -10,6 +10,43 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+### Added
+
+- **Per-tool intent-param injection (FastMCP adapter).** `BatonMiddleware` now
+  injects a `baton_intent` string parameter into every wrapped tool's input
+  schema at `tools/list` and strips it at `tools/call` before the vendor handler
+  runs — so intent is captured even on runtimes that drop
+  `InitializeResult.instructions` (notably Claude Desktop), where the annotation
+  tool alone yields nothing. The session's first injected intent also
+  synthesises one proactive annotation (deduped against a real annotation-tool
+  proactive via a shared `ProactiveTracker`); every call's intent rides
+  `tool_call_start.payload.call_intent` with `intent_source="injected_param"`.
+  Mode via `VendorConfig.intent_param_mode`: `optional` (default) | `required` |
+  `off`. Tools that already declare `baton_intent` are left untouched (`native`
+  disposition — never stripped). Ports baton-proxy 0.3.0's design (D1–D6) to the
+  SDK. The official `mcp` adapter injection is a follow-up. New module
+  `baton._uuid`; new `baton._state.ProactiveTracker`.
+
+### Wire format
+
+- **`call_intent` + `intent_source` on `ToolCallStartPayload`** and
+  **`intent_source` + `tool_name` on `AnnotationPayload`** — additive, nullable,
+  omitted when unset (output byte-identical when the injected param is unused).
+  Matches baton-proxy's emitter output; the Console already reads
+  `payload.call_intent` / `intent_source`. Recorded in SPEC §13.
+
+### Packaging
+
+- **Dropped the `uuid6` runtime dependency.** UUIDv7 is now generated in-tree by
+  `baton._uuid` (stdlib `uuid.uuid7` on 3.14+, a monotonic RFC-9562 fallback
+  below), preserving same-millisecond monotonicity. One fewer dep inherited by a
+  wrapped vendor.
+- **`httpx` moved to an optional `[http]` extra.** Only `HttpSink` needs it;
+  the stdlib `StdoutSink`/`FileSink` demo path installs nothing. Base runtime
+  deps are now just `pydantic`. Both `pydantic` and `httpx` are already required
+  by `mcp`/`fastmcp`, so wrapping a real MCP server adds **zero** marginal
+  dependencies. `pip install baton-sdk[http]` for the Console path.
+
 ---
 
 ## 0.3.0 — end-user identity (user_id) on the wire
