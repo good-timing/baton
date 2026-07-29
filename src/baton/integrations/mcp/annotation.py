@@ -22,7 +22,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from baton._state import SessionCounter
+from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
 from baton.integrations._llm_text import build_annotation_tool_description
 from baton.scrub import identity_scrub
@@ -62,8 +62,10 @@ def register_annotation_tool(
     default_agent_runtime: str = "unknown",
     annotation_tool_name: str | None = None,
     scrubber: Callable[[Any], Any] = identity_scrub,
+    proactive_tracker: ProactiveTracker | None = None,
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
+    tracker = proactive_tracker or ProactiveTracker()
     name = derive_annotation_tool_name(vendor_id, annotation_tool_name)
     description = build_annotation_tool_description(vendor_display_name=vendor_display_name)
 
@@ -84,6 +86,10 @@ def register_annotation_tool(
         # Context through is a follow-up when we want true per-session
         # correlation; until then fallback_session_id is honest.
         session_id = fallback_session_id
+        # A proactive annotation (no signal_type) claims the session's proactive
+        # slot so the wrap layer won't also synthesise one from an injected param.
+        if signal_type is None:
+            tracker.mark(session_id)
         seq = await counter.next(session_id)
         await safe_write(
             sink,
