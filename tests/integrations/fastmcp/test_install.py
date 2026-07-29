@@ -647,9 +647,7 @@ class TestIntentInjectionInstalled:
 
         async with Client(mcp) as client:
             # Agent's real proactive annotation (no signal_type) fires first.
-            await client.call_tool(
-                "test-vendor_annotate", {"intent": "real proactive intent"}
-            )
+            await client.call_tool("test-vendor_annotate", {"intent": "real proactive intent"})
             # Then the wrapped tool call carrying an injected intent.
             await client.call_tool("echo", {"text": "x", "baton_intent": "param intent"})
 
