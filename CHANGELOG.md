@@ -10,11 +10,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+---
+
+## 0.4.0 — intent-param injection on both MCP adapters + near-zero-dep
+
+Kept in lockstep with baton-proxy 0.3.0's intent-injection design (D1–D6).
+
 ### Added
 
-- **Per-tool intent-param injection (FastMCP adapter).** `BatonMiddleware` now
-  injects a `baton_intent` string parameter into every wrapped tool's input
-  schema at `tools/list` and strips it at `tools/call` before the vendor handler
+- **Per-tool intent-param injection (both adapters).** Both adapters now
+  inject a `baton_intent` string parameter into every wrapped tool's input
+  schema at `tools/list` and strip it at `tools/call` before the vendor handler
   runs — so intent is captured even on runtimes that drop
   `InitializeResult.instructions` (notably Claude Desktop), where the annotation
   tool alone yields nothing. The session's first injected intent also
@@ -24,8 +30,11 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   Mode via `VendorConfig.intent_param_mode`: `optional` (default) | `required` |
   `off`. Tools that already declare `baton_intent` are left untouched (`native`
   disposition — never stripped). Ports baton-proxy 0.3.0's design (D1–D6) to the
-  SDK. The official `mcp` adapter injection is a follow-up. New module
-  `baton._uuid`; new `baton._state.ProactiveTracker`.
+  SDK. The FastMCP adapter (`BatonMiddleware`) injects per-request in
+  `on_list_tools`; the official `mcp` adapter — which has no middleware hook —
+  mutates each `Tool.parameters` schema once at install and strips in the wrapped
+  `Tool.run`, reaching the same wire output. New module `baton._uuid`; new
+  `baton._state.ProactiveTracker`.
 
 ### Wire format
 
