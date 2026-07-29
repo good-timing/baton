@@ -30,9 +30,9 @@ shutdown.
 from __future__ import annotations
 
 from fastmcp import FastMCP
-from uuid6 import uuid7
 
-from baton._state import SessionCounter
+from baton._state import ProactiveTracker, SessionCounter
+from baton._uuid import uuid7
 from baton.integrations._config import VendorConfig, _validate_vendor_config
 from baton.integrations._handle import BatonHandle
 from baton.integrations._llm_text import build_server_instructions
@@ -54,6 +54,10 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     scrubber = config.scrubber or Scrubber()
     fallback_session_id = f"sdk-{uuid7()}"
     counter = SessionCounter()
+    # Shared across the middleware (synthesises a proactive from the first
+    # injected intent) and the annotation tool (emits one when called
+    # proactively) so a session opens at most one proactive.
+    proactive_tracker = ProactiveTracker()
     sink = config.sink
 
     annotation_tool_name = derive_annotation_tool_name(
@@ -85,6 +89,8 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
             default_agent_runtime=config.default_agent_runtime,
             scrubber=scrubber,
             annotation_tool_name=annotation_tool_name,
+            intent_param_mode=config.intent_param_mode,
+            proactive_tracker=proactive_tracker,
         )
     )
 
@@ -100,6 +106,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         default_agent_runtime=config.default_agent_runtime,
         annotation_tool_name=config.annotation_tool_name,
         scrubber=scrubber,
+        proactive_tracker=proactive_tracker,
     )
 
     return BatonHandle(

@@ -26,9 +26,9 @@ tool-handler wrapping).
 from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP
-from uuid6 import uuid7
 
 from baton._state import SessionCounter
+from baton._uuid import uuid7
 from baton.integrations._config import VendorConfig, _validate_vendor_config
 from baton.integrations._handle import BatonHandle
 from baton.integrations._llm_text import build_server_instructions

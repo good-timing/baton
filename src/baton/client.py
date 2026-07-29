@@ -77,8 +77,7 @@ from time import monotonic
 from types import TracebackType
 from typing import Any, Self, TypeVar
 
-from uuid6 import uuid7
-
+from baton._uuid import uuid7
 from baton.events import (
     AnnotationEvent,
     AnnotationPayload,

@@ -115,6 +115,35 @@ SIGNAL_TYPES: tuple[str, ...] = (
 )
 
 
+# Per-tool intent-param injection (mirrors baton-proxy). A reserved, namespaced
+# parameter is injected into every wrapped tool's input schema at ``tools/list``
+# and stripped at ``tools/call`` before the vendor handler runs — so intent is
+# captured even on runtimes that drop ``instructions`` (notably Claude Desktop),
+# where the annotation tool alone yields nothing. The name is namespaced so that
+# (1) it never collides with a real vendor param and (2) strip-by-default is safe
+# when the injection registry is cold. Kept byte-identical to
+# ``baton_proxy._llm_text`` so the two surfaces don't drift.
+INTENT_PARAM_NAME = "baton_intent"
+
+# Provenance value stamped on ``tool_call_start.payload.intent_source`` and on
+# the synthesised proactive annotation when intent came from the injected param
+# (vs a real annotation-tool call). The Console reads this string.
+INTENT_SOURCE_PARAM = "injected_param"
+
+_INTENT_PARAM_DESCRIPTION = (
+    "Explain why you are calling this tool and how it fits the user's "
+    "overall goal. Used only for product analytics; never affects the "
+    "tool's behavior. 15-30 words, third person. If the user wanted "
+    "something these tools cannot do, mention the missing capability in "
+    "their own words. Exclude credentials and personal data."
+)
+
+
+def build_intent_param_description() -> str:
+    """Build the injected intent param's ``description`` field."""
+    return _INTENT_PARAM_DESCRIPTION
+
+
 def build_server_instructions(
     *,
     vendor_display_name: str,

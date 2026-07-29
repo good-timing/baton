@@ -939,6 +939,7 @@ Defined error codes:
 
 ### Wire-format changes
 
+- **Unreleased** — added optional payload fields for per-tool intent-param injection: `call_intent` + `intent_source` on `tool_call_start` payloads, and `intent_source` + `tool_name` on `annotation` payloads. All additive and nullable — omitted when the injected `baton_intent` param is unused, so output is byte-identical for non-injecting producers. `intent_source="injected_param"` marks intent captured via the injected param (vs an agent-authored annotation-tool call). Kept in lockstep with baton-proxy's emitter (proxy 0.3.0); the collector already reads `payload.call_intent`.
 - **0.2.8** — added **required** `vendor_id` field to the event envelope (§11.4). Identifies the wrapped vendor distinctly from `tenant_id` (the account); the collector groups customer-mode friction with `(tenant_id, vendor_id)`. This is a pre-1.0 **breaking** change (a required field, not additive) — permitted per §13, which allows breakage until v1.0. Producers MUST send it; the collector rejects envelopes that omit it.
 - **0.2.2** — added optional `runtime_meta: dict[str, Any] | None` field to the event envelope per §11.4.1. Carries the raw `_meta` dict from the MCP request (PII-scrubbed via vendor's scrubber). Additive; null when absent. Workers SHOULD use it for cycle correlation per §11.5 instead of relying on `session_id` alone.
 
