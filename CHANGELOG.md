@@ -12,6 +12,33 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## 0.5.0 — mcp 2.0 support
+
+### Added
+
+- **The official `mcp` adapter now supports mcp 2.0.** mcp 2.0 renamed the
+  server class `mcp.server.fastmcp.FastMCP` → `mcp.server.mcpserver.MCPServer`
+  and moved the instructions backing `_mcp_server` → `_lowlevel_server`. A new
+  `baton.integrations.mcp._compat` resolves the class across both, and
+  `install_baton` routes instruction-setting through it — so
+  `from mcp.server.mcpserver import MCPServer` servers wrap identically to 1.x.
+  The tool-registry internals the adapter depends on (`_tool_manager._tools`,
+  `Tool.run`/`parameters`/`fn`/`is_async`, `add_tool`, `list_tools`) are
+  preserved byte-for-byte across the rename, so injection + wrapping are
+  unchanged. The `tool_call_end.result` unwrap also handles 2.0's
+  `CallToolResult` return object (1.x returned a `(content, structured)` tuple).
+  CI's `mcp-matrix` now tests `2.0.0` alongside 1.20/1.25/1.27. The standalone
+  `fastmcp` adapter is unaffected (that library still pins `mcp<2`).
+
+### Packaging
+
+- **`[mcp]` extra pinned `mcp>=1.20,<3`** (was unbounded `>=1.20`). 2.x is now
+  supported and CI-tested; the `<3` cap guards against an untested future major.
+  This also fixes clean `pip install baton-sdk[mcp]` resolving to mcp 2.0.0
+  against the pre-2.0 adapter.
+
+---
+
 ## 0.4.0 — intent-param injection on both MCP adapters + near-zero-dep
 
 Kept in lockstep with baton-proxy 0.3.0's intent-injection design (D1–D6).
