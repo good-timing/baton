@@ -15,11 +15,20 @@ import json
 from typing import Any
 
 import pytest
-from mcp.server.fastmcp import FastMCP
 
 from baton.integrations._llm_text import INTENT_PARAM_NAME, INTENT_SOURCE_PARAM
 from baton.integrations.mcp import VendorConfig, install_baton
+from baton.integrations.mcp._compat import MCPServerClass as FastMCP
 from baton.sinks import FileSink
+
+
+def _input_schema(tool: Any) -> dict[str, Any]:
+    """The tool's advertised input JSON schema, across the mcp 1.x/2.0 rename.
+
+    mcp 2.0 renamed the Python attr ``Tool.inputSchema`` → ``input_schema`` but
+    kept the wire alias ``inputSchema``; dumping by alias reads the same on both.
+    """
+    return tool.model_dump(by_alias=True)["inputSchema"]
 
 
 @pytest.fixture
@@ -72,11 +81,11 @@ class TestListInjection:
         try:
             tools = await mcp.list_tools()
             echo_tool = next(t for t in tools if t.name == "echo")
-            props = echo_tool.inputSchema["properties"]
+            props = _input_schema(echo_tool)["properties"]
             assert INTENT_PARAM_NAME in props
             assert props[INTENT_PARAM_NAME]["type"] == "string"
             # optional → NOT added to required
-            assert INTENT_PARAM_NAME not in echo_tool.inputSchema.get("required", [])
+            assert INTENT_PARAM_NAME not in _input_schema(echo_tool).get("required", [])
         finally:
             await handle.aclose()
 
@@ -100,8 +109,8 @@ class TestListInjection:
         try:
             tools = await mcp.list_tools()
             echo_tool = next(t for t in tools if t.name == "echo")
-            assert INTENT_PARAM_NAME in echo_tool.inputSchema["properties"]
-            assert INTENT_PARAM_NAME in echo_tool.inputSchema["required"]
+            assert INTENT_PARAM_NAME in _input_schema(echo_tool)["properties"]
+            assert INTENT_PARAM_NAME in _input_schema(echo_tool)["required"]
         finally:
             await handle.aclose()
 
@@ -125,7 +134,7 @@ class TestListInjection:
         try:
             tools = await mcp.list_tools()
             echo_tool = next(t for t in tools if t.name == "echo")
-            assert INTENT_PARAM_NAME not in echo_tool.inputSchema.get("properties", {})
+            assert INTENT_PARAM_NAME not in _input_schema(echo_tool).get("properties", {})
         finally:
             await handle.aclose()
 
@@ -136,7 +145,7 @@ class TestListInjection:
         try:
             tools = await mcp.list_tools()
             annotate = next(t for t in tools if t.name == "test-vendor_annotate")
-            assert INTENT_PARAM_NAME not in annotate.inputSchema.get("properties", {})
+            assert INTENT_PARAM_NAME not in _input_schema(annotate).get("properties", {})
         finally:
             await handle.aclose()
 
@@ -152,7 +161,7 @@ class TestListInjection:
 
             tools = await mcp.list_tools()
             post_tool = next(t for t in tools if t.name == "post")
-            assert INTENT_PARAM_NAME in post_tool.inputSchema["properties"]
+            assert INTENT_PARAM_NAME in _input_schema(post_tool)["properties"]
         finally:
             await handle.aclose()
 

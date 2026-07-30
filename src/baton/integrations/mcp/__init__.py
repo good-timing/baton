@@ -4,12 +4,17 @@ Five-line vendor integration via ``install_baton(mcp, VendorConfig(...))``;
 wraps each registered tool's handler to emit ``tool_call_*`` events around
 the vendor's tool fn, and exposes the vendor-namespaced annotation tool.
 
-Targets the official Anthropic ``mcp`` package's ``FastMCP``:
+Targets the official Anthropic ``mcp`` package's server class — on mcp 1.x::
 
     from mcp.server.fastmcp import FastMCP
 
-For the standalone ``fastmcp`` library, use ``baton.integrations.fastmcp``
-(different library, different hook mechanism).
+or on mcp 2.0 (renamed; same API)::
+
+    from mcp.server.mcpserver import MCPServer
+
+``install_baton`` supports both (see ``_compat.py``). For the standalone
+``fastmcp`` library, use ``baton.integrations.fastmcp`` (different library,
+different hook mechanism).
 
 Requires the ``baton-sdk[mcp]`` install extra:
 

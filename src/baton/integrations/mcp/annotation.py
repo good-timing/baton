@@ -20,11 +20,10 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
-
 from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
 from baton.integrations._llm_text import build_annotation_tool_description
+from baton.integrations.mcp._compat import MCPServerClass as FastMCP
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
 

@@ -53,7 +53,9 @@ jobs:
   mcp-matrix:
     # Verifies the baton.integrations.mcp adapter works against multiple
     # `mcp` package versions. The API spike found internals are bit-stable
-    # across v1.10 → v1.27; this matrix proves it on every commit.
+    # across v1.10 → v2.0; this matrix proves it on every commit. mcp 2.0
+    # renamed the server class + instructions backing (handled in _compat.py)
+    # but preserved the tool-registry internals the adapter wraps.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -61,7 +63,10 @@ jobs:
         # Minimum supported version is mcp>=1.20 — earlier versions have an
         # upstream Tool.from_function bug with stringified annotations from
         # `from __future__ import annotations`. See pyproject [mcp] extra note.
-        mcp-version: ["1.20.0", "1.25.0", "1.27.2"]
+        # 2.0.0 conflicts with fastmcp's mcp<2 pin, but the override install
+        # below forces it; this leg only runs the mcp-adapter tests, which
+        # never import the standalone fastmcp library.
+        mcp-version: ["1.20.0", "1.25.0", "1.27.2", "2.0.0"]
     steps:
       - uses: actions/checkout@v5
 

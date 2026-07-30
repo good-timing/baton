@@ -476,22 +476,38 @@ def _make_emitters(
 def _result_to_jsonable(result: Any) -> Any:
     """Best-effort conversion of any tool result to a JSON-serializable shape.
 
-    When ``Tool.run`` is called with ``convert_result=True`` (which mcp's
-    ``FastMCP.call_tool`` does), the return is the wire-format tuple
-    ``(content_list, structured_result_dict)`` where ``structured_result_dict``
-    typically looks like ``{"result": <the fn's return value>}``. Unwrap the
-    structured value so the ``tool_call_end.result`` field captures the
-    developer-meaningful return, not the MCP wire envelope.
+    ``Tool.run`` is called with ``convert_result=True`` (which mcp's
+    ``call_tool`` does), and the wire envelope it returns changed shape across
+    the mcp 1.x → 2.0 rename:
+
+    - **mcp 1.x** returns the tuple ``(content_list, structured_result_dict)``
+      where ``structured_result_dict`` typically looks like
+      ``{"result": <the fn's return value>}``.
+    - **mcp 2.0** returns a ``CallToolResult`` object exposing the same values
+      as ``.content`` / ``.structured_content``.
+
+    Either way we unwrap the developer-meaningful return so
+    ``tool_call_end.result`` captures it, not the MCP wire envelope.
     """
     if result is None:
         return None
-    # Unwrap (content, structured_result) tuples from convert_result=True path.
+    # mcp 1.x: (content, structured_result) tuple from convert_result=True.
     if isinstance(result, tuple) and len(result) == 2:
         content, structured = result
         if isinstance(structured, dict) and "result" in structured:
             return _result_to_jsonable(structured["result"])
         # Fallback: serialize the content list.
         return _result_to_jsonable(content)
+    # mcp 2.0: CallToolResult object from convert_result=True. ``structured_content``
+    # is the marker attribute; unwrap ``{"result": ...}`` like the 1.x tuple, else
+    # fall back to the content list before the generic model_dump below.
+    if hasattr(result, "structured_content"):
+        structured = result.structured_content
+        if isinstance(structured, dict) and "result" in structured:
+            return _result_to_jsonable(structured["result"])
+        content = getattr(result, "content", None)
+        if content is not None:
+            return _result_to_jsonable(content)
     if hasattr(result, "model_dump"):
         return result.model_dump(mode="json")
     if isinstance(result, (str, int, float, bool, list, dict)):

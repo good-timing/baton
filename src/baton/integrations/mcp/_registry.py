@@ -1,14 +1,17 @@
 """Resolver for the official ``mcp.server.fastmcp`` tool registry.
 
 Centralizes access to ``mcp._tool_manager._tools`` so the rest of the
-adapter doesn't reach into private internals directly. When upstream PR
-#1951 lands (``FastMCP`` → ``MCPServer``, ``mcp.server.fastmcp.*`` →
-``mcp.server.mcpserver.*``), only this file changes — the internal struct
-(``_tool_manager``, ``_tools`` dict, ``Tool.fn``/``Tool.is_async``) is
-preserved byte-for-byte across the rename.
+adapter doesn't reach into private internals directly. Upstream PR #1951
+(shipped in mcp 2.0: ``FastMCP`` → ``MCPServer``, ``mcp.server.fastmcp.*``
+→ ``mcp.server.mcpserver.*``) preserved the internal struct
+(``_tool_manager``, ``_tools`` dict, ``Tool.fn``/``Tool.is_async``)
+byte-for-byte across the rename — so this file needs no change for 2.0;
+only the class *import* moved (see ``_compat.py``).
 
-Per spike: the internal struct has been bit-stable across mcp v1.10 →
-v1.27 (one year, six tagged releases checked). No churn.
+Per spike + verification: the internal struct has been bit-stable across
+mcp v1.10 → v2.0.0 (the only 2.0 breaks were the module/class rename and
+the instructions backing ``_mcp_server`` → ``_lowlevel_server``, both
+handled in ``_compat.py``). No churn to the tool registry itself.
 """
 
 from __future__ import annotations

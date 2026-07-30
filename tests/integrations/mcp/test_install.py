@@ -17,10 +17,19 @@ import json
 from typing import Any
 
 import pytest
-from mcp.server.fastmcp import FastMCP
 
 from baton.integrations.mcp import VendorConfig, install_baton
+from baton.integrations.mcp._compat import MCPServerClass as FastMCP
 from baton.sinks import FileSink
+
+
+def _input_schema(tool: Any) -> dict[str, Any]:
+    """The tool's advertised input JSON schema, across the mcp 1.x/2.0 rename.
+
+    mcp 2.0 renamed the Python attr ``Tool.inputSchema`` → ``input_schema`` but
+    kept the wire alias ``inputSchema``; dumping by alias reads the same on both.
+    """
+    return tool.model_dump(by_alias=True)["inputSchema"]
 
 
 @pytest.fixture
@@ -125,7 +134,7 @@ class TestInstallation:
         try:
             tools = await mcp.list_tools()
             annotate = next(t for t in tools if t.name == "v_annotate")
-            required = annotate.inputSchema.get("required", [])
+            required = _input_schema(annotate).get("required", [])
             assert "intent" in required, (
                 f"intent must be required on annotation tool schema; required={required}"
             )

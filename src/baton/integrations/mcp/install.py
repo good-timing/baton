@@ -25,13 +25,17 @@ tool-handler wrapping).
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
-
 from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
 from baton.integrations._config import VendorConfig, _validate_vendor_config
 from baton.integrations._handle import BatonHandle
 from baton.integrations._llm_text import build_server_instructions
+from baton.integrations.mcp._compat import (
+    MCPServerClass as FastMCP,
+)
+from baton.integrations.mcp._compat import (
+    set_server_instructions,
+)
 from baton.integrations.mcp._tool_wrap import install_wraps
 from baton.integrations.mcp.annotation import (
     derive_annotation_tool_name,
@@ -60,17 +64,15 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         config.vendor_id, config.annotation_tool_name
     )
 
-    # Server instructions — load-bearing on instruction-aware runtimes.
-    # The official ``FastMCP.instructions`` is a read-only property; the
-    # backing storage lives on ``_mcp_server.instructions``.
+    # Server instructions — load-bearing on instruction-aware runtimes. The
+    # ``instructions`` property is read-only on both mcp 1.x and 2.0; the
+    # writable backing differs across the rename (``_mcp_server`` →
+    # ``_lowlevel_server``), so route through the compat helper.
     instructions = build_server_instructions(
         vendor_display_name=config.vendor_display_name,
         annotation_tool_name=annotation_tool_name,
     )
-    try:
-        mcp.instructions = instructions  # type: ignore[misc]
-    except AttributeError:
-        mcp._mcp_server.instructions = instructions
+    set_server_instructions(mcp, instructions)
 
     # Wrap currently-registered tools + patch add_tool for future ones.
     install_wraps(
