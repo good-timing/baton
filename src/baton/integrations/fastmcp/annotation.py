@@ -21,9 +21,15 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastmcp import Context, FastMCP
+from fastmcp.server.dependencies import get_http_headers
 
 from baton._state import ProactiveTracker, SessionCounter, resolve_session_id
 from baton.events import AnnotationEvent, AnnotationPayload
+from baton.integrations._config import (
+    ResolveSessionIdHook,
+    SessionResolutionContext,
+    resolve_via_hook,
+)
 from baton.integrations._llm_text import build_annotation_tool_description
 from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime, meta_to_dict
 from baton.scrub import identity_scrub
@@ -65,6 +71,7 @@ def register_annotation_tool(
     annotation_tool_name: str | None = None,
     scrubber: Callable[[Any], Any] = identity_scrub,
     proactive_tracker: ProactiveTracker | None = None,
+    resolve_session_id_hook: ResolveSessionIdHook | None = None,
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
     tracker = proactive_tracker or ProactiveTracker()
@@ -81,16 +88,41 @@ def register_annotation_tool(
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        session_id = resolve_session_id(ctx, fallback_session_id)
-        # A proactive annotation (no signal_type) claims the session's proactive
-        # slot so the middleware won't also synthesise one from an injected param.
-        if signal_type is None:
-            tracker.mark(session_id)
         rc = ctx.request_context if ctx is not None else None
         raw_meta = rc.meta if rc else None
         meta_dict = meta_to_dict(raw_meta)
         runtime = detect_agent_runtime(raw_meta) or default_agent_runtime
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
+
+        # Rung 0 (a configured VendorConfig.resolve_session_id hook), same
+        # priority as the middleware's tool-call path — see design note
+        # docs/design-notes/session_resolver_hook.md. Falls back to FastMCP's
+        # own Context.session_id, same as before this hook existed.
+        session_id: str | None = None
+        if resolve_session_id_hook is not None:
+            headers = get_http_headers(include_all=True) or None
+            session_id = await resolve_via_hook(
+                resolve_session_id_hook,
+                SessionResolutionContext(
+                    headers=headers,
+                    meta=meta_dict,
+                    tool_name=name,
+                    arguments={
+                        "intent": intent,
+                        "expected_outcome": expected_outcome,
+                        "signal_type": signal_type,
+                        "workflow": workflow,
+                        "suggested_improvement": suggested_improvement,
+                        "context": context,
+                    },
+                ),
+            )
+        if session_id is None:
+            session_id = resolve_session_id(ctx, fallback_session_id)
+        # A proactive annotation (no signal_type) claims the session's proactive
+        # slot so the middleware won't also synthesise one from an injected param.
+        if signal_type is None:
+            tracker.mark(session_id)
         seq = await counter.next(session_id)
         await safe_write(
             sink,

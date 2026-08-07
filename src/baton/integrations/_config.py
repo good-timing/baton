@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import inspect
+import logging
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from baton.sinks import Sink, StdoutSink
+
+logger = logging.getLogger(__name__)
 
 # Vendor IDs become annotation tool name prefixes; same client-pattern as
 # annotation tool names. Reject dots so the default tool name is valid.
@@ -15,6 +19,45 @@ _VENDOR_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 
 # Per-tool intent-param injection modes (mirrors baton-proxy's BATON_INTENT_PARAM).
 _INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required", "off"})
+
+
+@dataclass(frozen=True)
+class SessionResolutionContext:
+    """Normalized input to ``VendorConfig.resolve_session_id``.
+
+    Deliberately does not carry the raw SDK ``Context`` object — the
+    official ``mcp`` and standalone ``fastmcp`` libraries expose different,
+    adapter-specific ``Context`` types. This shape is what's already
+    extracted for both adapters (headers, meta), so one hook works
+    unmodified regardless of which adapter a vendor is on.
+    """
+
+    headers: Mapping[str, str] | None
+    meta: dict[str, Any] | None
+    tool_name: str
+    arguments: dict[str, Any]
+
+
+ResolveSessionIdHook = Callable[[SessionResolutionContext], "Awaitable[str | None] | str | None"]
+
+
+async def resolve_via_hook(
+    hook: ResolveSessionIdHook, context: SessionResolutionContext
+) -> str | None:
+    """Call a vendor's ``resolve_session_id`` hook and normalize its result.
+
+    Never raises — an exception is logged and treated as a miss so the
+    caller falls through to the SPEC §3.4 ladder unchanged. Accepts sync or
+    async hooks (mirrors ``VendorConfig.scrubber``'s calling convention).
+    """
+    try:
+        result = hook(context)
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception:
+        logger.warning("baton: resolve_session_id hook raised; falling through", exc_info=True)
+        return None
+    return result if isinstance(result, str) and result else None
 
 
 @dataclass
@@ -68,6 +111,18 @@ class VendorConfig:
     stripped before the vendor handler runs, so the tool never sees them. This
     is what captures intent on runtimes that drop ``instructions`` (notably
     Claude Desktop) — where the annotation tool alone yields nothing."""
+
+    resolve_session_id: ResolveSessionIdHook | None = None
+    """Optional vendor-supplied session-id resolver, checked BEFORE the SPEC
+    §3.4 ladder (rung 0) — a vendor who already has their own session/auth
+    concept can hand Baton a real correlation key directly, bypassing MCP
+    transport/meta entirely. The only mechanism that works on new-spec
+    (SEP-2567) and true-stateless HTTP, where nothing MCP-native is
+    observable by protocol design. A non-empty string return wins outright;
+    ``None``/empty or a raised exception (logged, never propagated) falls
+    through to the ladder unchanged. Return an opaque, non-PII id —
+    passed through raw, not hashed; hashing/derivation is the vendor's
+    responsibility if the raw value is sensitive. Sync or async."""
 
 
 def _validate_vendor_config(config: VendorConfig) -> None:

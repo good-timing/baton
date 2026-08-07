@@ -91,6 +91,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
             annotation_tool_name=annotation_tool_name,
             intent_param_mode=config.intent_param_mode,
             proactive_tracker=proactive_tracker,
+            resolve_session_id_hook=config.resolve_session_id,
         )
     )
 
@@ -107,6 +108,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         annotation_tool_name=config.annotation_tool_name,
         scrubber=scrubber,
         proactive_tracker=proactive_tracker,
+        resolve_session_id_hook=config.resolve_session_id,
     )
 
     return BatonHandle(

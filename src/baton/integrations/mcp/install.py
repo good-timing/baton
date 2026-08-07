@@ -88,6 +88,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         annotation_tool_name=annotation_tool_name,
         intent_param_mode=config.intent_param_mode,
         proactive_tracker=proactive_tracker,
+        resolve_session_id_hook=config.resolve_session_id,
     )
 
     # Register the annotation tool LAST so the wrap layer's add_tool patch

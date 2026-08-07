@@ -84,6 +84,16 @@ def register_annotation_tool(
         # parameterized generics like `Context[Any, Any, Any]`. Threading
         # Context through is a follow-up when we want true per-session
         # correlation; until then fallback_session_id is honest.
+        #
+        # Known gap: because of the above, this tool does NOT check
+        # VendorConfig.resolve_session_id either (unlike _tool_wrap.py's
+        # rung 0) — there's no headers/meta to build a
+        # SessionResolutionContext from without the same Context threading.
+        # A vendor's explicit (reactive) annotation calls on this adapter
+        # won't stitch to the hook-resolved session id their tool calls get;
+        # synthesised proactives are unaffected (those emit from inside the
+        # wrap layer, which does have the hook). Tracked on the sdk-hardening
+        # thread alongside the Context-threading follow-up above.
         session_id = fallback_session_id
         # A proactive annotation (no signal_type) claims the session's proactive
         # slot so the wrap layer won't also synthesise one from an injected param.

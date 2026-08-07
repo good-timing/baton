@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import functools
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
@@ -65,6 +65,11 @@ from baton.events import (
     ToolCallErrorPayload,
     ToolCallStartEvent,
     ToolCallStartPayload,
+)
+from baton.integrations._config import (
+    ResolveSessionIdHook,
+    SessionResolutionContext,
+    resolve_via_hook,
 )
 from baton.integrations._llm_text import (
     EXPECTED_RESULT_PARAM_NAME,
@@ -99,6 +104,7 @@ def install_wraps(
     annotation_tool_name: str | None = None,
     intent_param_mode: str = "optional",
     proactive_tracker: ProactiveTracker | None = None,
+    resolve_session_id_hook: ResolveSessionIdHook | None = None,
 ) -> None:
     """Inject + wrap all currently-registered tools AND future registrations."""
     tracker = proactive_tracker or ProactiveTracker()
@@ -154,6 +160,7 @@ def install_wraps(
                 param_registry=param_registry,
                 tracker=tracker,
                 fallback_session_id=fallback_session_id,
+                resolve_session_id_hook=resolve_session_id_hook,
             ),
         )
 
@@ -294,6 +301,7 @@ def _wrap_tool_run(
     param_registry: dict[str, dict[str, str]],
     tracker: ProactiveTracker,
     fallback_session_id: str,
+    resolve_session_id_hook: ResolveSessionIdHook | None,
 ) -> Callable[..., Awaitable[Any]]:
     """Build an async wrapper around ``tool.run`` that strips the injected
     intent param and emits Baton events.
@@ -326,7 +334,14 @@ def _wrap_tool_run(
         params = dict(arguments or {})
         meta_dict = _extract_meta_from_context(context)
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
-        call_session_id = _resolve_call_session_id(context, meta_dict, fallback_session_id)
+        call_session_id = await _resolve_call_session_id(
+            context,
+            meta_dict,
+            fallback_session_id,
+            resolve_hook=resolve_session_id_hook,
+            tool_name=name,
+            arguments=params,
+        )
 
         # The session's FIRST injected intent also becomes a proactive
         # annotation (carrying expected_result too, if present), sequenced
@@ -399,12 +414,41 @@ def _resolve_session_id_from_meta(meta: dict[str, Any] | None) -> str | None:
     return None
 
 
-def _resolve_call_session_id(context: Any, meta: dict[str, Any] | None, fallback: str) -> str:
-    """Real per-call session id, SPEC §3.4's layered fallback in priority
-    order: (1) ``_meta.traceparent``, (2) ``_meta["io.baton/session_id"]``,
-    (4) the ``mcp-session-id`` HTTP header, else (5) ``fallback`` (the
-    install-time process-wide id). Rung 3 (a future runtime-specific
-    ``_meta`` key) isn't defined for any runtime yet, so it's skipped.
+def _extract_headers_from_context(context: Any) -> Mapping[str, str] | None:
+    """Best-effort HTTP header extraction, shared by rung 0 (the vendor hook's
+    ``SessionResolutionContext.headers``) and rung 4 below. ``None`` on stdio,
+    outside a live request, or any attribute miss; never raises."""
+    if context is None:
+        return None
+    try:
+        headers = getattr(context, "headers", None)
+        if not headers:
+            rc = context.request_context
+            request = getattr(rc, "request", None) if rc is not None else None
+            headers = getattr(request, "headers", None) if request is not None else None
+    except (AttributeError, ValueError):
+        return None
+    return headers if headers else None
+
+
+async def _resolve_call_session_id(
+    context: Any,
+    meta: dict[str, Any] | None,
+    fallback: str,
+    *,
+    resolve_hook: ResolveSessionIdHook | None,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> str:
+    """Real per-call session id. Rung 0 (a configured
+    ``VendorConfig.resolve_session_id`` hook) is checked first and, on a
+    non-empty return, wins outright — see ``docs/design-notes/
+    session_resolver_hook.md``. Below that, SPEC §3.4's layered fallback in
+    priority order: (1) ``_meta.traceparent``, (2)
+    ``_meta["io.baton/session_id"]``, (4) the ``mcp-session-id`` HTTP header,
+    else (5) ``fallback`` (the install-time process-wide id). Rung 3 (a
+    future runtime-specific ``_meta`` key) isn't defined for any runtime yet,
+    so it's skipped.
 
     The header rung (4) is stateful-HTTP-only and protocol-version-sensitive:
     ``stateless_http`` defaults to ``False`` on both mcp 1.x and 2.0, so the
@@ -422,28 +466,29 @@ def _resolve_call_session_id(context: Any, meta: dict[str, Any] | None, fallback
     for why that needs a vendor-configurable resolver instead.
 
     mcp 2.0's ``Context`` exposes ``.headers`` directly; mcp 1.x has no such
-    accessor, so we also try reaching through
-    ``request_context.request.headers`` (a raw transport request object on
-    HTTP transports, ``None`` on stdio). Never raises — best-effort like
-    ``_extract_meta_from_context`` below, including outside a live request
-    (``request_context`` raises ``ValueError`` there on both SDK versions).
+    accessor, so ``_extract_headers_from_context`` also tries reaching
+    through ``request_context.request.headers`` (a raw transport request
+    object on HTTP transports, ``None`` on stdio). Never raises —
+    best-effort like ``_extract_meta_from_context`` below, including outside
+    a live request (``request_context`` raises ``ValueError`` there on both
+    SDK versions).
     """
+    headers = _extract_headers_from_context(context)
+    if resolve_hook is not None:
+        hook_result = await resolve_via_hook(
+            resolve_hook,
+            SessionResolutionContext(
+                headers=headers, meta=meta, tool_name=tool_name, arguments=arguments
+            ),
+        )
+        if hook_result is not None:
+            return hook_result
     from_meta = _resolve_session_id_from_meta(meta)
     if from_meta is not None:
         return from_meta
-    if context is None:
+    if headers is None:
         return fallback
-    try:
-        headers = getattr(context, "headers", None)
-        if not headers:
-            rc = context.request_context
-            request = getattr(rc, "request", None) if rc is not None else None
-            headers = getattr(request, "headers", None) if request is not None else None
-        if not headers:
-            return fallback
-        session_id = headers.get("mcp-session-id")
-    except (AttributeError, ValueError):
-        return fallback
+    session_id = headers.get("mcp-session-id")
     return session_id if isinstance(session_id, str) and session_id else fallback
 
 

@@ -720,6 +720,192 @@ class TestMetaBasedSessionResolution:
         assert start["session_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
 
 
+class TestResolveSessionIdHook:
+    """Item 3 (sdk-hardening thread): ``VendorConfig.resolve_session_id`` —
+    rung 0, checked before the SPEC §3.4 ladder. See
+    ``docs/design-notes/session_resolver_hook.md``."""
+
+    @staticmethod
+    def _install(events_path: str, *, resolve_session_id: Any) -> tuple[Any, Any]:
+        mcp = FastMCP("test-vendor-mcp")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="test-vendor",
+                vendor_display_name="Test Vendor",
+                consent_token="ct_test",
+                sink=FileSink(events_path),
+                resolve_session_id=resolve_session_id,
+            ),
+        )
+        return mcp, handle
+
+    async def test_sync_hook_wins_over_header_ladder(self, events_path: str) -> None:
+        mcp, handle = self._install(events_path, resolve_session_id=lambda ctx: "vendor-resolved")
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        await tool.run({"msg": "a"}, context=_FakeContextV2({"mcp-session-id": "from-header"}))
+        await handle.flush()
+        await handle.aclose()
+
+        events = _read_events(events_path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == "vendor-resolved"
+
+    async def test_async_hook_wins_over_header_ladder(self, events_path: str) -> None:
+        async def resolver(ctx: Any) -> str:
+            return "vendor-resolved-async"
+
+        mcp, handle = self._install(events_path, resolve_session_id=resolver)
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        await tool.run({"msg": "a"}, context=_FakeContextV2({"mcp-session-id": "from-header"}))
+        await handle.flush()
+        await handle.aclose()
+
+        events = _read_events(events_path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == "vendor-resolved-async"
+
+    async def test_hook_wins_over_traceparent(self, events_path: str) -> None:
+        """Rung 0 beats rung 1 even when ``_meta.traceparent`` is present."""
+        mcp, handle = self._install(events_path, resolve_session_id=lambda ctx: "vendor-wins")
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        await tool.run(
+            {"msg": "a"},
+            context=_FakeContextV2(
+                {"mcp-session-id": "from-header"}, meta={"traceparent": traceparent}
+            ),
+        )
+        await handle.flush()
+        await handle.aclose()
+
+        events = _read_events(events_path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == "vendor-wins"
+
+    async def test_none_return_falls_through_to_ladder(self, events_path: str) -> None:
+        mcp, handle = self._install(events_path, resolve_session_id=lambda ctx: None)
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        await tool.run({"msg": "a"}, context=_FakeContextV2({"mcp-session-id": "from-header"}))
+        await handle.flush()
+        await handle.aclose()
+
+        events = _read_events(events_path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == "from-header"
+
+    async def test_empty_string_falls_through_to_ladder(self, events_path: str) -> None:
+        mcp, handle = self._install(events_path, resolve_session_id=lambda ctx: "")
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        await tool.run({"msg": "a"}, context=_FakeContextV2({"mcp-session-id": "from-header"}))
+        await handle.flush()
+        await handle.aclose()
+
+        events = _read_events(events_path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == "from-header"
+
+    async def test_raising_hook_falls_through_and_does_not_propagate(
+        self, events_path: str
+    ) -> None:
+        def broken(ctx: Any) -> str:
+            raise RuntimeError("vendor lookup failed")
+
+        mcp, handle = self._install(events_path, resolve_session_id=broken)
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        result = await tool.run(
+            {"msg": "a"}, context=_FakeContextV2({"mcp-session-id": "from-header"})
+        )
+        assert result is not None
+        await handle.flush()
+        await handle.aclose()
+
+        events = _read_events(events_path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == "from-header"
+
+    async def test_stdio_falls_back_to_process_wide_id_when_hook_misses(
+        self, events_path: str
+    ) -> None:
+        """A configured hook that returns ``None`` on stdio (no HTTP context
+        at all) still falls all the way through to the fallback id."""
+        mcp, handle = self._install(events_path, resolve_session_id=lambda ctx: None)
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        await tool.run({"msg": "a"}, context=None)
+        await handle.flush()
+        await handle.aclose()
+
+        events = _read_events(events_path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == handle.session_id
+
+    async def test_context_shape_headers_meta_tool_name_arguments(self, events_path: str) -> None:
+        captured: dict[str, Any] = {}
+
+        def capture(ctx: Any) -> str:
+            captured["headers"] = dict(ctx.headers) if ctx.headers else ctx.headers
+            captured["meta"] = ctx.meta
+            captured["tool_name"] = ctx.tool_name
+            captured["arguments"] = ctx.arguments
+            return "captured"
+
+        mcp, handle = self._install(events_path, resolve_session_id=capture)
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        await tool.run(
+            {"msg": "hello"},
+            context=_FakeContextV2(
+                {"mcp-session-id": "from-header"}, meta={"io.baton/session_id": "app-handle"}
+            ),
+        )
+        await handle.flush()
+        await handle.aclose()
+
+        assert captured["headers"] == {"mcp-session-id": "from-header"}
+        assert captured["meta"] == {"io.baton/session_id": "app-handle"}
+        assert captured["tool_name"] == "echo"
+        assert captured["arguments"] == {"msg": "hello"}
+
+
 class TestSequenceNumbers:
     async def test_sequence_numbers_monotonic_across_event_types(
         self, configured_mcp: tuple[Any, Any, str]

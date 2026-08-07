@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import copy
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
 
+from fastmcp.server.dependencies import get_http_headers
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools import Tool
 from mcp.types import CallToolRequestParams, ListToolsRequest
@@ -36,6 +37,11 @@ from baton.events import (
     ToolCallErrorPayload,
     ToolCallStartEvent,
     ToolCallStartPayload,
+)
+from baton.integrations._config import (
+    ResolveSessionIdHook,
+    SessionResolutionContext,
+    resolve_via_hook,
 )
 from baton.integrations._llm_text import (
     EXPECTED_RESULT_PARAM_NAME,
@@ -68,6 +74,7 @@ class BatonMiddleware(Middleware):
         annotation_tool_name: str | None = None,
         intent_param_mode: str = "optional",
         proactive_tracker: ProactiveTracker | None = None,
+        resolve_session_id_hook: ResolveSessionIdHook | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._vendor_id = vendor_id
@@ -80,6 +87,7 @@ class BatonMiddleware(Middleware):
         self._annotation_tool_name = annotation_tool_name
         self._intent_param_mode = intent_param_mode
         self._proactive = proactive_tracker or ProactiveTracker()
+        self._resolve_session_id_hook = resolve_session_id_hook
         # tool_name -> {param_name: "injected" | "native"}. Populated at
         # on_list_tools; read at on_call_tool to decide strip-vs-forward, per
         # param, independently. A plain dict (no lock) is safe: all access is
@@ -155,7 +163,10 @@ class BatonMiddleware(Middleware):
         if not isinstance(new_props, dict):
             return tool, dispositions
         new_props.update(to_inject)
-        if dispositions[USER_GOAL_PARAM_NAME] == "injected" and self._intent_param_mode == "required":
+        if (
+            dispositions[USER_GOAL_PARAM_NAME] == "injected"
+            and self._intent_param_mode == "required"
+        ):
             required = new_schema.get("required")
             if isinstance(required, list):
                 if USER_GOAL_PARAM_NAME not in required:
@@ -175,7 +186,9 @@ class BatonMiddleware(Middleware):
         if self._intent_param_mode == "off":
             return None, None
         dispositions = self._param_registry.get(tool_name)
-        goal = self._extract_one_goal_param(tool_name, arguments, USER_GOAL_PARAM_NAME, dispositions)
+        goal = self._extract_one_goal_param(
+            tool_name, arguments, USER_GOAL_PARAM_NAME, dispositions
+        )
         expected = self._extract_one_goal_param(
             tool_name, arguments, EXPECTED_RESULT_PARAM_NAME, dispositions
         )
@@ -221,8 +234,6 @@ class BatonMiddleware(Middleware):
         if self._annotation_tool_name is not None and tool_name == self._annotation_tool_name:
             return await call_next(context)
 
-        session_id = self._extract_session_id(context)
-
         # Strip the injected goal params IN PLACE, before copying params —
         # ``msg.arguments`` is the same object forwarded to the vendor handler,
         # so the strip keeps ``user_goal``/``expected_result`` off the tool AND
@@ -242,6 +253,12 @@ class BatonMiddleware(Middleware):
         # Scrub the meta dict if a scrubber is configured — meta values may
         # carry runtime-supplied identifiers that vendors want filtered.
         scrubbed_meta = self._scrubber(meta_dict) if meta_dict is not None else None
+
+        # Resolved AFTER the goal-param strip + meta extraction above so a
+        # configured hook sees vendor-visible ``params`` and unscrubbed
+        # ``meta_dict`` — the same shape ``SessionResolutionContext`` carries
+        # on the mcp-adapter path.
+        session_id = await self._extract_session_id(context, meta_dict, tool_name, params)
 
         # The session's FIRST injected-param intent also becomes a proactive
         # annotation, sequenced BEFORE the tool_call_start it explains (so
@@ -355,10 +372,48 @@ class BatonMiddleware(Middleware):
         """Atomically increment + return the per-session sequence counter."""
         return await self._counter.next(session_id)
 
-    def _extract_session_id(self, context: MiddlewareContext[CallToolRequestParams]) -> str:
-        """Get the session_id from FastMCP's Context, falling back to the
-        process-wide UUID if no session info is available."""
+    async def _extract_session_id(
+        self,
+        context: MiddlewareContext[CallToolRequestParams],
+        meta: dict[str, Any] | None,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> str:
+        """Real per-call session id. Rung 0 (a configured
+        ``VendorConfig.resolve_session_id`` hook) is checked first and, on a
+        non-empty return, wins outright — see ``docs/design-notes/
+        session_resolver_hook.md``. Below that, falls back to FastMCP's own
+        ``Context.session_id``, then the process-wide UUID if no session info
+        is available.
+
+        Note: unlike the mcp-adapter path, this adapter doesn't implement
+        SPEC §3.4 rungs 1-2/4 (``_meta``/header based) below rung 0 — it only
+        ever resolves via the standalone ``fastmcp`` library's own session
+        concept. See design note D3 for why that gap isn't closed here.
+        """
+        if self._resolve_session_id_hook is not None:
+            headers = self._extract_headers()
+            hook_result = await resolve_via_hook(
+                self._resolve_session_id_hook,
+                SessionResolutionContext(
+                    headers=headers, meta=meta, tool_name=tool_name, arguments=arguments
+                ),
+            )
+            if hook_result is not None:
+                return hook_result
         return resolve_session_id(context.fastmcp_context, self._fallback_session_id)
+
+    @staticmethod
+    def _extract_headers() -> Mapping[str, str] | None:
+        """Best-effort HTTP header extraction via FastMCP's context-var-backed
+        ``get_http_headers`` (set by ``RequestContextMiddleware`` around the
+        whole request, so it's populated by the time ``on_call_tool`` runs).
+        Never raises — empty outside a live HTTP request (e.g. stdio).
+        ``include_all=True`` so a vendor's hook can read headers the default
+        view strips (e.g. ``authorization``, which a session-lookup hook may
+        need)."""
+        headers = get_http_headers(include_all=True)
+        return headers if headers else None
 
     @staticmethod
     def _extract_request_meta(context: MiddlewareContext[CallToolRequestParams]) -> Any:

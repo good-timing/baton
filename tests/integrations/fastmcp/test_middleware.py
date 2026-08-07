@@ -11,7 +11,9 @@ from typing import Any
 
 import pytest
 from fastmcp import Client, FastMCP
+from fastmcp.server.http import set_http_request
 from pytest_httpserver import HTTPServer
+from starlette.requests import Request
 from werkzeug.wrappers import Response
 
 from baton.events import Event
@@ -38,6 +40,19 @@ async def sink(
     s = HttpSink(url=httpserver.url_for(""), api_key="k")
     yield s
     await s.aclose()
+
+
+def _fake_http_request(headers: dict[str, str]) -> Request:
+    """A minimal ASGI-scope-backed Starlette ``Request`` carrying only
+    headers — enough to drive ``get_http_headers()``'s real contextvar path
+    (via ``set_http_request``) without a real network socket."""
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+    }
+    return Request(scope)
 
 
 def _build_mcp(sink: Sink, **mw_kwargs: Any) -> FastMCP:
@@ -395,3 +410,153 @@ class TestEnvelopeFields:
         await sink.flush()
         for ev in captured:
             assert ev["agent_runtime"] == "my-custom-runtime"
+
+
+# =============================================================================
+# resolve_session_id hook — rung 0
+# =============================================================================
+
+
+class TestResolveSessionIdHook:
+    """Item 3 (sdk-hardening thread): ``VendorConfig.resolve_session_id`` —
+    rung 0, checked before this adapter's own FastMCP-native session
+    resolution. See ``docs/design-notes/session_resolver_hook.md``. Unlike
+    the mcp-adapter path, this adapter has no ``_meta``/header ladder below
+    rung 0 (design note D3) — the fallback is FastMCP's own
+    ``Context.session_id``."""
+
+    async def test_sync_hook_wins_over_native_resolution(
+        self, sink: Sink, captured: list[dict[str, Any]]
+    ) -> None:
+        mcp = _build_mcp(sink, resolve_session_id_hook=lambda ctx: "vendor-resolved")
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.call_tool("echo", {"text": "x"})
+
+        await sink.flush()
+        assert captured, "no events captured"
+        for ev in captured:
+            assert ev["session_id"] == "vendor-resolved"
+
+    async def test_async_hook_wins_over_native_resolution(
+        self, sink: Sink, captured: list[dict[str, Any]]
+    ) -> None:
+        async def resolver(ctx: Any) -> str:
+            return "vendor-resolved-async"
+
+        mcp = _build_mcp(sink, resolve_session_id_hook=resolver)
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.call_tool("echo", {"text": "x"})
+
+        await sink.flush()
+        for ev in captured:
+            assert ev["session_id"] == "vendor-resolved-async"
+
+    async def test_none_return_falls_through_to_native_resolution(
+        self, sink: Sink, captured: list[dict[str, Any]]
+    ) -> None:
+        mcp = _build_mcp(sink, resolve_session_id_hook=lambda ctx: None)
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.call_tool("echo", {"text": "x"})
+
+        await sink.flush()
+        session_ids = {ev["session_id"] for ev in captured}
+        assert len(session_ids) == 1
+        assert next(iter(session_ids)) != "vendor-resolved"
+
+    async def test_empty_string_falls_through_to_native_resolution(
+        self, sink: Sink, captured: list[dict[str, Any]]
+    ) -> None:
+        mcp = _build_mcp(sink, resolve_session_id_hook=lambda ctx: "")
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.call_tool("echo", {"text": "x"})
+
+        await sink.flush()
+        session_ids = {ev["session_id"] for ev in captured}
+        assert len(session_ids) == 1
+
+    async def test_raising_hook_falls_through_and_does_not_propagate(
+        self, sink: Sink, captured: list[dict[str, Any]]
+    ) -> None:
+        def broken(ctx: Any) -> str:
+            raise RuntimeError("vendor lookup failed")
+
+        mcp = _build_mcp(sink, resolve_session_id_hook=broken)
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            result = await client.call_tool("echo", {"text": "x"})
+
+        assert result is not None
+        await sink.flush()
+        assert captured, "no events captured despite hook raising"
+
+    async def test_context_shape_meta_tool_name_arguments(
+        self, sink: Sink, captured: list[dict[str, Any]]
+    ) -> None:
+        seen: dict[str, Any] = {}
+
+        def capture(ctx: Any) -> str:
+            seen["headers"] = ctx.headers
+            seen["meta"] = ctx.meta
+            seen["tool_name"] = ctx.tool_name
+            seen["arguments"] = ctx.arguments
+            return "captured"
+
+        mcp = _build_mcp(sink, resolve_session_id_hook=capture)
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.call_tool("echo", {"text": "hello"})
+
+        await sink.flush()
+        assert seen["tool_name"] == "echo"
+        assert seen["arguments"] == {"text": "hello"}
+        # No live HTTP request behind the in-process Client — headers is
+        # None, consistent with the mcp-adapter's stdio case.
+        assert seen["headers"] is None
+
+    async def test_extract_headers_reads_a_real_http_request(self) -> None:
+        """``_extract_headers`` (called by rung 0) wraps FastMCP's
+        ``get_http_headers()`` — exercised here against a real Starlette
+        ``Request`` via ``set_http_request``, not mocked. (The full
+        middleware dispatch can't be driven through this path in-process:
+        FastMCP's in-process ``Client`` spawns the server-side call in a task
+        created before any ``with set_http_request(...):`` block in the
+        caller, so the contextvar set there never reaches it — a testing-
+        harness limitation of in-process transport, not of the header
+        extraction itself.)"""
+        request = _fake_http_request({"x-vendor-session": "real-header-value"})
+        with set_http_request(request):
+            headers = BatonMiddleware._extract_headers()
+
+        assert headers is not None
+        assert headers.get("x-vendor-session") == "real-header-value"
+
+    async def test_extract_headers_none_outside_a_live_request(self) -> None:
+        assert BatonMiddleware._extract_headers() is None
