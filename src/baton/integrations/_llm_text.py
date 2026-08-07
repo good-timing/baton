@@ -125,11 +125,11 @@ SIGNAL_TYPES: tuple[str, ...] = (
 # not ``baton_*`` — anything the customer's agent can see on an instrumented
 # surface must speak the vendor's voice, never Baton's (white-label rule).
 # Diverged from baton-proxy's ``baton_intent`` on 2026-08-06 to match
-# baton-extmcp's spike-proven neutral names (see
-# docs/design-notes/intent_param_injection.md D1 for the superseded
-# namespaced-collision-safety rationale, and the divergence note added
-# alongside it). baton-proxy still uses ``baton_intent``; porting proxy to
-# match is a separate follow-up, not done here.
+# baton-extmcp's spike-proven neutral names. baton-proxy's namespaced choice
+# was originally a collision-safety call — it sits in front of upstream
+# tools it doesn't own, a constraint that doesn't apply to a vendor wrapping
+# their own server. baton-proxy still uses ``baton_intent``; porting proxy
+# to match is a separate follow-up, not done here.
 USER_GOAL_PARAM_NAME = "user_goal"
 EXPECTED_RESULT_PARAM_NAME = "expected_result"
 
