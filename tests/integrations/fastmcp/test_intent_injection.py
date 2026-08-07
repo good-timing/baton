@@ -249,7 +249,9 @@ class TestProactiveSynthesis:
             return text
 
         async with Client(mcp) as client:
-            await client.call_tool("echo", {"text": "x", USER_GOAL_PARAM_NAME: "why the user called"})
+            await client.call_tool(
+                "echo", {"text": "x", USER_GOAL_PARAM_NAME: "why the user called"}
+            )
 
         await sink.flush()
         types = [ev["event_type"] for ev in captured]
