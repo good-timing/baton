@@ -31,6 +31,8 @@ from baton._uuid import uuid7
 from baton.events import (
     AnnotationEvent,
     AnnotationPayload,
+    SurfaceSnapshotEvent,
+    SurfaceSnapshotPayload,
     ToolCallEndEvent,
     ToolCallEndPayload,
     ToolCallErrorEvent,
@@ -50,6 +52,7 @@ from baton.integrations._llm_text import (
     build_expected_result_param_description,
     build_user_goal_param_description,
 )
+from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime, meta_to_dict
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
@@ -75,6 +78,7 @@ class BatonMiddleware(Middleware):
         intent_param_mode: str = "optional",
         proactive_tracker: ProactiveTracker | None = None,
         resolve_session_id_hook: ResolveSessionIdHook | None = None,
+        server_meta: dict[str, Any] | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._vendor_id = vendor_id
@@ -88,11 +92,16 @@ class BatonMiddleware(Middleware):
         self._intent_param_mode = intent_param_mode
         self._proactive = proactive_tracker or ProactiveTracker()
         self._resolve_session_id_hook = resolve_session_id_hook
+        self._server_meta = server_meta or {}
         # tool_name -> {param_name: "injected" | "native"}. Populated at
         # on_list_tools; read at on_call_tool to decide strip-vs-forward, per
         # param, independently. A plain dict (no lock) is safe: all access is
         # on the one asyncio loop, so no statement interleaves.
         self._param_registry: dict[str, dict[str, str]] = {}
+        # Surface hashes already emitted this process — dedupe per
+        # integrations._surface. Plain set (no lock): single asyncio loop,
+        # no await between the membership check and the add.
+        self._surface_seen: set[str] = set()
 
     async def on_list_tools(
         self,
@@ -112,6 +121,7 @@ class BatonMiddleware(Middleware):
         rather than dropping it from the listing.
         """
         tools = await call_next(context)
+        await self._maybe_emit_surface_snapshot(tools)
         if self._intent_param_mode == "off":
             return tools
         out: list[Tool] = []
@@ -174,6 +184,78 @@ class BatonMiddleware(Middleware):
             else:
                 new_schema["required"] = [USER_GOAL_PARAM_NAME]
         return tool.model_copy(update={"parameters": new_schema}), dispositions
+
+    async def _maybe_emit_surface_snapshot(self, tools: Sequence[Tool]) -> None:
+        """Snapshot the vendor-true surface from a ``tools/list`` response and
+        emit ``surface_snapshot``, deduped on the surface hash for the process
+        lifetime. Fail-open: any error is logged and the response flows on
+        untouched — this must never block the vendor's tools/list.
+
+        Runs on the tools ``call_next`` just returned, i.e. BEFORE this
+        method's own goal-param injection loop below — so ``tools`` here is
+        the vendor's real advertised schema, unmutated (each injected tool is
+        a ``model_copy``, never an in-place edit of the originals).
+        """
+        try:
+            # Sorted by name before hashing (matches the mcp-adapter's
+            # _SurfaceState.build_snapshot) — call_next()'s list order isn't
+            # a meaningful part of the surface's identity, so a pure
+            # reordering (e.g. remove+re-add) must not flip surface_hash.
+            surface_tools = sorted(
+                (
+                    t.to_mcp_tool().model_dump(mode="json", exclude_none=True)
+                    for t in tools
+                    if t.name != self._annotation_tool_name
+                ),
+                key=lambda t: t["name"],
+            )
+            surface = assemble_surface(self._server_meta, surface_tools)
+            digest = surface_hash(surface)
+            if digest in self._surface_seen:
+                return
+
+            seam = build_seam_augmentations(
+                injected_tool_names=(
+                    [self._annotation_tool_name] if self._annotation_tool_name else []
+                ),
+                intent_param_names=[USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME],
+                intent_param_mode=self._intent_param_mode,
+            )
+            seq = await self._next_seq(self._fallback_session_id)
+            event = SurfaceSnapshotEvent(
+                tenant_id=self._tenant_id,
+                vendor_id=self._vendor_id,
+                consent_token=self._consent_token,
+                session_id=self._fallback_session_id,
+                sequence_number=seq,
+                captured_at=datetime.now(UTC),
+                agent_runtime=self._default_agent_runtime,
+                payload=SurfaceSnapshotPayload(
+                    surface_hash=digest,
+                    server_info=surface["server_info"],
+                    capabilities=surface["capabilities"],
+                    instructions=surface["instructions"],
+                    tools=surface_tools,
+                    seam_augmentations=seam,
+                ),
+            )
+            # Mark seen only AFTER a successful write — the Console's
+            # vendor_surfaces upsert is idempotent on surface_hash, so an
+            # occasional duplicate send (e.g. two concurrent tools/list
+            # calls racing before either marks it) is harmless; marking
+            # seen before the write, by contrast, would permanently drop
+            # this surface on a single transient sink failure with no retry
+            # (unlike every other event type, which gets a fresh attempt
+            # next time). ``self._sink.write`` directly, not ``safe_write``
+            # — this block needs to observe success/failure, not swallow it.
+            try:
+                await self._sink.write(event)
+            except Exception:
+                logger.exception("baton: surface snapshot capture failed")
+                return
+            self._surface_seen.add(digest)
+        except Exception:
+            logger.exception("baton: surface snapshot capture failed")
 
     def _extract_goal_params(
         self, tool_name: str, arguments: dict[str, Any]

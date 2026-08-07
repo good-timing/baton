@@ -22,6 +22,7 @@ from werkzeug.wrappers import Response
 
 from baton.integrations.fastmcp import VendorConfig, install_baton
 from baton.sinks import HttpSink
+from tests._event_helpers import without_surface_snapshots
 
 
 @pytest.fixture
@@ -357,7 +358,12 @@ class TestResolveSessionIdHookOnAnnotationTool:
         await handle.flush()
         await handle.aclose()
 
-        session_ids = {ev["session_id"] for ev in captured}
+        # surface_snapshot is a process-level event (proxy parity — see
+        # integrations._surface) and intentionally does NOT go through the
+        # per-call resolve_session_id hook; every other event type must.
+        non_surface = [ev for ev in captured if ev["event_type"] != "surface_snapshot"]
+        assert non_surface
+        session_ids = {ev["session_id"] for ev in non_surface}
         assert session_ids == {"vendor-resolved"}
 
     async def test_annotation_detects_claude_code_from_meta(
@@ -465,7 +471,7 @@ class TestRuntimeMetaCapture:
             await client.call_tool("echo", {"text": "hi"})
 
         await handle.flush()
-        for ev in captured:
+        for ev in without_surface_snapshots(captured):
             # progressToken is always present on the wire even without
             # caller-supplied meta — captures the MCP runtime's own
             # bookkeeping. Vendor-supplied runtime IDs would also land here.
@@ -536,11 +542,115 @@ class TestAllFourEventTypesInOneFlow:
             await client.call_tool("echo", {"text": "y"})
 
         await handle.flush()
-        seqs = [ev["sequence_number"] for ev in captured]
+        # surface_snapshot sits on its own (fallback) session/counter — see
+        # tests._event_helpers — excluded here, which is about the
+        # annotation-tool and middleware paths sharing ONE counter.
+        seqs = [ev["sequence_number"] for ev in without_surface_snapshots(captured)]
         assert seqs == sorted(seqs), (
             "sequence numbers must be monotonic across annotation + tool_call events"
         )
         assert len(set(seqs)) == len(seqs), "sequence numbers must be unique"
+
+
+# =============================================================================
+# surface_snapshot — item 2, sdk-hardening thread (see integrations._surface)
+# =============================================================================
+
+
+class TestSurfaceSnapshot:
+    async def test_emits_on_first_tools_list_excludes_annotation_tool(
+        self,
+        configured_mcp: tuple[FastMCP, Any],
+        captured: list[dict[str, Any]],
+    ) -> None:
+        mcp, handle = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.list_tools()
+
+        await handle.flush()
+        snapshots = [ev for ev in captured if ev["event_type"] == "surface_snapshot"]
+        assert len(snapshots) == 1
+        payload = snapshots[0]["payload"]
+        assert [t["name"] for t in payload["tools"]] == ["echo"]
+        assert payload["seam_augmentations"]["injected_tools"] == ["test-vendor_annotate"]
+        assert payload["surface_hash"].startswith("sha256:")
+
+    async def test_dedupes_across_repeated_tools_list(
+        self,
+        configured_mcp: tuple[FastMCP, Any],
+        captured: list[dict[str, Any]],
+    ) -> None:
+        mcp, handle = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.list_tools()
+            await client.list_tools()
+            await client.call_tool("echo", {"text": "x"})
+
+        await handle.flush()
+        snapshots = [ev for ev in captured if ev["event_type"] == "surface_snapshot"]
+        assert len(snapshots) == 1
+
+    async def test_tools_are_vendor_true_pre_injection(
+        self,
+        configured_mcp: tuple[FastMCP, Any],
+        captured: list[dict[str, Any]],
+    ) -> None:
+        """The surface snapshot's ``tools`` must reflect the vendor's real
+        schema, not Baton's injected ``user_goal``/``expected_result`` — the
+        hash is the identity change specs are authored against and must not
+        drift when e.g. ``intent_param_mode`` is toggled."""
+        mcp, handle = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.list_tools()
+            # The AGENT-visible schema, post-injection — proves the snapshot
+            # (asserted below) differs from what's actually advertised.
+            advertised = await client.list_tools()
+
+        await handle.flush()
+        advertised_echo = next(t for t in advertised if t.name == "echo")
+        assert "user_goal" in (advertised_echo.inputSchema.get("properties") or {})
+
+        snapshot = next(ev for ev in captured if ev["event_type"] == "surface_snapshot")["payload"]
+        echo_tool = next(t for t in snapshot["tools"] if t["name"] == "echo")
+        assert "user_goal" not in echo_tool["inputSchema"].get("properties", {})
+        assert "expected_result" not in echo_tool["inputSchema"].get("properties", {})
+
+    async def test_instructions_are_vendor_true(
+        self,
+        configured_mcp: tuple[FastMCP, Any],
+        captured: list[dict[str, Any]],
+    ) -> None:
+        """``configured_mcp`` never sets vendor instructions before
+        ``install_baton`` — the snapshot must capture that (``None``), not
+        Baton's own suffixed ``mcp.instructions``."""
+        mcp, handle = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.list_tools()
+
+        await handle.flush()
+        assert mcp.instructions is not None  # Baton did set something
+        snapshot = next(ev for ev in captured if ev["event_type"] == "surface_snapshot")["payload"]
+        assert snapshot["instructions"] is None
 
 
 # =============================================================================

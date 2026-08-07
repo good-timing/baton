@@ -26,6 +26,7 @@ from baton.integrations._llm_text import (
 from baton.integrations.mcp import VendorConfig, install_baton
 from baton.integrations.mcp._compat import MCPServerClass as FastMCP
 from baton.sinks import FileSink
+from tests._event_helpers import without_surface_snapshots
 
 
 def _input_schema(tool: Any) -> dict[str, Any]:
@@ -334,7 +335,7 @@ class TestProactiveSynthesis:
         finally:
             await handle.aclose()
 
-        events = _read_events(events_path)
+        events = without_surface_snapshots(_read_events(events_path))
         assert events[0]["event_type"] == "annotation", "proactive must be sequenced first"
         ann = events[0]
         assert ann["payload"]["intent"] == "why the user called"

@@ -24,6 +24,7 @@ from baton.integrations._llm_text import (
 )
 from baton.integrations.fastmcp.middleware import BatonMiddleware
 from baton.sinks import HttpSink, Sink
+from tests._event_helpers import without_surface_snapshots
 
 
 @pytest.fixture
@@ -254,14 +255,15 @@ class TestProactiveSynthesis:
             )
 
         await sink.flush()
-        types = [ev["event_type"] for ev in captured]
+        tool_events = without_surface_snapshots(captured)
+        types = [ev["event_type"] for ev in tool_events]
         assert types[0] == "annotation", "proactive must be sequenced first"
-        ann = captured[0]
+        ann = tool_events[0]
         assert ann["payload"]["intent"] == "why the user called"
         assert ann["payload"]["intent_source"] == INTENT_SOURCE_PARAM
         assert ann["payload"]["tool_name"] == "echo"
         # sequence: annotation < start
-        start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
+        start = next(ev for ev in tool_events if ev["event_type"] == "tool_call_start")
         assert ann["sequence_number"] < start["sequence_number"]
 
     async def test_only_one_proactive_per_session(

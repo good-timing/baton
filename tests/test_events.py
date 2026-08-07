@@ -19,6 +19,8 @@ from baton.events import (
     AnnotationEvent,
     AnnotationPayload,
     Event,
+    SurfaceSnapshotEvent,
+    SurfaceSnapshotPayload,
     ToolCallEndEvent,
     ToolCallEndPayload,
     ToolCallErrorEvent,
@@ -160,6 +162,50 @@ class TestAnnotationEvent:
         assert event.payload.signal_type == "dead_end"
         assert event.payload.context is not None
         assert event.payload.context["likely_cause"] == "content_filter"
+
+
+# =============================================================================
+# surface_snapshot
+# =============================================================================
+
+
+class TestSurfaceSnapshotEvent:
+    def test_defaults(self) -> None:
+        """Only ``surface_hash`` is required — mirrors baton-proxy's
+        ``enqueue_surface_snapshot`` payload shape byte-for-byte so the
+        Console worker materializes both into ``vendor_surfaces`` the same
+        way."""
+        event = SurfaceSnapshotEvent(
+            **_envelope(), payload=SurfaceSnapshotPayload(surface_hash="sha256:abc")
+        )
+        assert event.payload.server_info is None
+        assert event.payload.capabilities is None
+        assert event.payload.instructions is None
+        assert event.payload.tools == []
+        assert event.payload.seam_augmentations == {}
+
+    def test_full_shape(self) -> None:
+        event = SurfaceSnapshotEvent(
+            **_envelope(),
+            payload=SurfaceSnapshotPayload(
+                surface_hash="sha256:abc",
+                server_info={"name": "acme", "version": "1.0"},
+                capabilities={"tools": {"listChanged": False}},
+                instructions="Use these tools to help the user.",
+                tools=[{"name": "echo", "description": "", "inputSchema": {}}],
+                seam_augmentations={
+                    "injected_tools": ["acme_annotate"],
+                    "intent_param": {"names": ["user_goal", "expected_result"], "mode": "optional"},
+                    "instructions_suffix": True,
+                },
+            ),
+        )
+        assert event.payload.tools[0]["name"] == "echo"
+        assert event.payload.seam_augmentations["injected_tools"] == ["acme_annotate"]
+
+    def test_extra_field_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            SurfaceSnapshotPayload(surface_hash="sha256:abc", unexpected="x")  # type: ignore[call-arg]
 
 
 # =============================================================================
@@ -314,6 +360,25 @@ class TestDiscriminatedUnion:
         parsed = adapter.validate_python(data)
         assert isinstance(parsed, AnnotationEvent)
         assert parsed.payload.intent == "x"
+
+    def test_parse_surface_snapshot(self) -> None:
+        adapter: TypeAdapter[Event] = TypeAdapter(Event)
+        data = {
+            "event_id": "01970000-0000-7000-8000-000000000003",
+            "event_type": "surface_snapshot",
+            "tenant_id": "t",
+            "vendor_id": "t",
+            "session_id": "s",
+            "sequence_number": 1,
+            "captured_at": "2026-05-19T16:42:03+00:00",
+            "consent_token": "ct_test",
+            "sdk_version": "0.2.3",
+            "agent_runtime": "unknown",
+            "payload": {"surface_hash": "sha256:abc"},
+        }
+        parsed = adapter.validate_python(data)
+        assert isinstance(parsed, SurfaceSnapshotEvent)
+        assert parsed.payload.surface_hash == "sha256:abc"
 
     def test_unknown_event_type_rejected(self) -> None:
         adapter: TypeAdapter[Event] = TypeAdapter(Event)

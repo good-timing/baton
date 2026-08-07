@@ -25,15 +25,19 @@ tool-handler wrapping).
 
 from __future__ import annotations
 
+import logging
+
 from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
 from baton.integrations._config import VendorConfig, _validate_vendor_config
 from baton.integrations._handle import BatonHandle
 from baton.integrations._llm_text import build_server_instructions
+from baton.integrations._surface import build_server_meta
 from baton.integrations.mcp._compat import (
     MCPServerClass as FastMCP,
 )
 from baton.integrations.mcp._compat import (
+    get_lowlevel_server,
     set_server_instructions,
 )
 from baton.integrations.mcp._tool_wrap import install_wraps
@@ -42,6 +46,8 @@ from baton.integrations.mcp.annotation import (
     register_annotation_tool,
 )
 from baton.scrub import Scrubber
+
+logger = logging.getLogger(__name__)
 
 
 def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
@@ -63,6 +69,20 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     annotation_tool_name = derive_annotation_tool_name(
         config.vendor_id, config.annotation_tool_name
     )
+
+    # Captured BEFORE any Baton mutation below — the vendor-true baseline the
+    # surface-snapshot hash is authored against. See integrations._surface.
+    # Best-effort: unlike set_server_instructions below (load-bearing, fails
+    # loud), a capture failure here must not block install — the vendor's
+    # server still needs to start even on a future/unknown mcp layout where
+    # get_lowlevel_server can't find the low-level server. Degrades to an
+    # empty server_meta (surface_snapshot's server_info/capabilities/
+    # instructions come through as null; tool capture is unaffected).
+    try:
+        server_meta = build_server_meta(get_lowlevel_server(mcp))
+    except AttributeError:
+        logger.exception("baton: surface-snapshot server_meta capture failed at install")
+        server_meta = {}
 
     # Server instructions — load-bearing on instruction-aware runtimes. The
     # ``instructions`` property is read-only on both mcp 1.x and 2.0; the
@@ -89,6 +109,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         intent_param_mode=config.intent_param_mode,
         proactive_tracker=proactive_tracker,
         resolve_session_id_hook=config.resolve_session_id,
+        server_meta=server_meta,
     )
 
     # Register the annotation tool LAST so the wrap layer's add_tool patch

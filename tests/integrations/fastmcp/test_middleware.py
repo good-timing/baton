@@ -19,6 +19,7 @@ from werkzeug.wrappers import Response
 from baton.events import Event
 from baton.integrations.fastmcp.middleware import BatonMiddleware
 from baton.sinks import HttpSink, Sink
+from tests._event_helpers import without_surface_snapshots
 
 
 @pytest.fixture
@@ -86,7 +87,7 @@ class TestSuccessfulToolCall:
             await client.call_tool("echo", {"text": "hello"})
 
         await sink.flush()
-        types = [ev["event_type"] for ev in captured]
+        types = [ev["event_type"] for ev in without_surface_snapshots(captured)]
         assert types == ["tool_call_start", "tool_call_end"]
 
     async def test_tool_name_and_params_in_start_event(
@@ -229,6 +230,49 @@ class TestSinkFailureDoesNotBreakToolCall:
         assert raising.write_attempts >= 2
 
 
+class _FlakyOnceSink(Sink):
+    """Raises on the first write, then succeeds on every write after —
+    simulates a transient sink failure recovering."""
+
+    def __init__(self) -> None:
+        self.write_attempts = 0
+        self.written: list[Event] = []
+
+    async def write(self, event: Event) -> None:
+        self.write_attempts += 1
+        if self.write_attempts == 1:
+            raise RuntimeError("transient sink failure")
+        self.written.append(event)
+
+    async def flush(self) -> None:
+        return
+
+    async def aclose(self) -> None:
+        return
+
+
+class TestSurfaceSnapshotSinkFailureRetries:
+    """A transient sink failure on surface_snapshot must not permanently
+    drop that surface — unlike a genuine dedup skip (unchanged surface,
+    already delivered), a write failure must retry on the next tools/list."""
+
+    async def test_transient_failure_retries_on_next_tools_list(self) -> None:
+        flaky = _FlakyOnceSink()
+        mcp = _build_mcp(flaky)
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.list_tools()  # write #1: raises, not recorded
+            await client.list_tools()  # write #2: same digest, retried, succeeds
+
+        assert flaky.write_attempts == 2
+        snapshots = [e for e in flaky.written if e.event_type == "surface_snapshot"]
+        assert len(snapshots) == 1
+
+
 # =============================================================================
 # Sequence numbers
 # =============================================================================
@@ -248,8 +292,11 @@ class TestSequenceNumbers:
             await client.call_tool("echo", {"text": "3"})
 
         await sink.flush()
-        # 3 tool calls x 2 events each = 6 events
-        seqs = [ev["sequence_number"] for ev in captured]
+        # 3 tool calls x 2 events each = 6 events. surface_snapshot lands on a
+        # different (fallback) session, so it's excluded here — it has its
+        # own independent per-session counter, not part of this sequence.
+        tool_events = without_surface_snapshots(captured)
+        seqs = [ev["sequence_number"] for ev in tool_events]
         # Same session → must be strictly increasing
         assert seqs == sorted(seqs)
         assert len(set(seqs)) == len(seqs), "sequence numbers must be unique"
@@ -308,7 +355,7 @@ class TestEnvelopeFields:
             await client.call_tool("echo", {"text": "x"})
 
         await sink.flush()
-        session_ids = {ev["session_id"] for ev in captured}
+        session_ids = {ev["session_id"] for ev in without_surface_snapshots(captured)}
         assert len(session_ids) == 1, "start + end of same tool call must share session_id"
 
     async def test_spec_and_sdk_versions_present(
@@ -386,8 +433,9 @@ class TestEnvelopeFields:
             )
 
         await sink.flush()
-        assert captured, "no events captured"
-        for ev in captured:
+        tool_events = without_surface_snapshots(captured)
+        assert tool_events, "no events captured"
+        for ev in tool_events:
             assert ev["agent_runtime"] == "claude-code"
 
     async def test_explicit_baton_override_in_meta(
@@ -408,7 +456,7 @@ class TestEnvelopeFields:
             )
 
         await sink.flush()
-        for ev in captured:
+        for ev in without_surface_snapshots(captured):
             assert ev["agent_runtime"] == "my-custom-runtime"
 
 
@@ -438,8 +486,9 @@ class TestResolveSessionIdHook:
             await client.call_tool("echo", {"text": "x"})
 
         await sink.flush()
-        assert captured, "no events captured"
-        for ev in captured:
+        tool_events = without_surface_snapshots(captured)
+        assert tool_events, "no events captured"
+        for ev in tool_events:
             assert ev["session_id"] == "vendor-resolved"
 
     async def test_async_hook_wins_over_native_resolution(
@@ -458,7 +507,7 @@ class TestResolveSessionIdHook:
             await client.call_tool("echo", {"text": "x"})
 
         await sink.flush()
-        for ev in captured:
+        for ev in without_surface_snapshots(captured):
             assert ev["session_id"] == "vendor-resolved-async"
 
     async def test_none_return_falls_through_to_native_resolution(
@@ -474,7 +523,7 @@ class TestResolveSessionIdHook:
             await client.call_tool("echo", {"text": "x"})
 
         await sink.flush()
-        session_ids = {ev["session_id"] for ev in captured}
+        session_ids = {ev["session_id"] for ev in without_surface_snapshots(captured)}
         assert len(session_ids) == 1
         assert next(iter(session_ids)) != "vendor-resolved"
 
@@ -491,7 +540,7 @@ class TestResolveSessionIdHook:
             await client.call_tool("echo", {"text": "x"})
 
         await sink.flush()
-        session_ids = {ev["session_id"] for ev in captured}
+        session_ids = {ev["session_id"] for ev in without_surface_snapshots(captured)}
         assert len(session_ids) == 1
 
     async def test_raising_hook_falls_through_and_does_not_propagate(

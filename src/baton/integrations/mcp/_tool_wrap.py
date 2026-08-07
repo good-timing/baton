@@ -61,6 +61,7 @@ a shared ``ProactiveTracker`` so a session opens at most one proactive.
 
 from __future__ import annotations
 
+import copy
 import functools
 import logging
 from collections.abc import Awaitable, Callable, Mapping
@@ -72,6 +73,8 @@ from baton._state import ProactiveTracker, SessionCounter
 from baton.events import (
     AnnotationEvent,
     AnnotationPayload,
+    SurfaceSnapshotEvent,
+    SurfaceSnapshotPayload,
     ToolCallEndEvent,
     ToolCallEndPayload,
     ToolCallErrorEvent,
@@ -91,6 +94,7 @@ from baton.integrations._llm_text import (
     build_expected_result_param_description,
     build_user_goal_param_description,
 )
+from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 from baton.integrations.mcp._registry import get_tool_manager, get_tool_registry
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
@@ -101,6 +105,47 @@ logger = logging.getLogger(__name__)
 # double-wrap. Tools added via the patched add_tool are checked against
 # this before wrapping.
 _WRAPPED_SENTINEL = "_baton_wrapped"
+
+
+class _SurfaceState:
+    """Tracks the vendor-true (pre-injection) tool surface for this install,
+    for ``surface_snapshot`` capture. Unlike the FastMCP middleware — which
+    has a live ``tools/list`` hook — the official SDK exposes no such
+    interception point (see ``project_sdk_sensor_parity_gap`` memory), so
+    this is built from data already in hand at install/add_tool time and
+    lazily hashed+emitted on the next tool call, the first point execution
+    is guaranteed to be inside an async context.
+
+    ``raw_tools`` is keyed by tool name, capturing each tool's wire shape
+    BEFORE ``_inject_goal_params`` mutates ``tool.parameters`` in place —
+    the annotation tool is never added here (``_maybe_wrap_entry`` returns
+    before this runs for it), matching proxy's split of vendor tools vs.
+    ``seam_augmentations.injected_tools``.
+    """
+
+    def __init__(self, server_meta: dict[str, Any]) -> None:
+        self.server_meta = server_meta
+        self.raw_tools: dict[str, dict[str, Any]] = {}
+        self.emitted_hashes: set[str] = set()
+        self.dirty = False
+
+    def note_tool(self, name: str, tool: Any) -> None:
+        # Deep-copy: ``tool.parameters`` is the SAME dict object
+        # ``_inject_goal_params`` mutates in place immediately after this
+        # call — a reference here would let that mutation silently corrupt
+        # the vendor-true snapshot too.
+        schema = tool.parameters
+        self.raw_tools[name] = {
+            "name": name,
+            "description": tool.description,
+            "inputSchema": copy.deepcopy(schema) if isinstance(schema, dict) else {},
+        }
+        self.dirty = True
+
+    def build_snapshot(self) -> dict[str, Any]:
+        return assemble_surface(
+            self.server_meta, [self.raw_tools[name] for name in sorted(self.raw_tools)]
+        )
 
 
 def install_wraps(
@@ -118,6 +163,7 @@ def install_wraps(
     intent_param_mode: str = "optional",
     proactive_tracker: ProactiveTracker | None = None,
     resolve_session_id_hook: ResolveSessionIdHook | None = None,
+    server_meta: dict[str, Any] | None = None,
 ) -> None:
     """Inject + wrap all currently-registered tools AND future registrations."""
     tracker = proactive_tracker or ProactiveTracker()
@@ -126,7 +172,8 @@ def install_wraps(
     # independently. A plain dict (no lock) is safe: all access is on the one
     # asyncio loop, so no statement interleaves.
     param_registry: dict[str, dict[str, str]] = {}
-    emit_before, emit_after, emit_error, emit_proactive = _make_emitters(
+    surface_state = _SurfaceState(server_meta or {})
+    emit_before, emit_after, emit_error, emit_proactive, emit_surface = _make_emitters(
         tenant_id=tenant_id,
         vendor_id=vendor_id,
         consent_token=consent_token,
@@ -142,6 +189,24 @@ def install_wraps(
         # so it needs no injected goal params.
         if annotation_tool_name is not None and name == annotation_tool_name:
             return
+        # A tool whose `run` already carries our sentinel is THIS EXACT
+        # object, already fully processed. add_tool_with_wrap re-walks the
+        # FULL registry on every add_tool call, so this check must come
+        # first and gate everything below it — re-running note_tool on an
+        # already-wrapped tool would capture its schema AFTER injection
+        # mutated `tool.parameters` in place, corrupting the vendor-true
+        # snapshot. A tool object without the sentinel is either brand new
+        # or a genuine re-registration under an existing name (a fresh
+        # ``Tool`` instance replacing the old one, e.g. a vendor's hot
+        # reload) — either way its schema is pre-injection and must be
+        # (re-)captured, which is why this is a re-registration check, not
+        # just a first-time-install check.
+        if getattr(tool.run, _WRAPPED_SENTINEL, False):
+            return
+        # Captured BEFORE injection mutates ``tool.parameters`` in place, so
+        # the surface snapshot reflects the vendor's real advertised schema.
+        # Unconditional here (no `name not in raw_tools` guard) — see above.
+        surface_state.note_tool(name, tool)
         # Inject BEFORE wrapping so the advertised schema carries the params on
         # the very first tools/list. Idempotent: a re-scan (via add_tool) skips
         # tools already in the registry rather than re-detecting them "native".
@@ -153,8 +218,6 @@ def install_wraps(
             else:
                 if dispositions:
                     param_registry[name] = dispositions
-        if getattr(tool.run, _WRAPPED_SENTINEL, False):
-            return
         # mcp's Tool is a Pydantic BaseModel; `run` is a method, not a field,
         # so plain attribute assignment is rejected. Bypass Pydantic with
         # object.__setattr__ to install an instance-level shadow.
@@ -174,6 +237,9 @@ def install_wraps(
                 tracker=tracker,
                 fallback_session_id=fallback_session_id,
                 resolve_session_id_hook=resolve_session_id_hook,
+                surface_state=surface_state,
+                emit_surface=emit_surface,
+                annotation_tool_name=annotation_tool_name,
             ),
         )
 
@@ -196,6 +262,20 @@ def install_wraps(
         return result
 
     manager.add_tool = add_tool_with_wrap
+
+    # 3. Patch remove_tool so a runtime removal prunes the surface snapshot
+    # too — otherwise raw_tools (append-only, keyed by name) keeps reporting
+    # a phantom tool the live tools/list no longer advertises.
+    original_remove_tool = manager.remove_tool
+
+    @functools.wraps(original_remove_tool)
+    def remove_tool_with_prune(name: str, *args: Any, **kwargs: Any) -> Any:
+        result = original_remove_tool(name, *args, **kwargs)
+        if surface_state.raw_tools.pop(name, None) is not None:
+            surface_state.dirty = True
+        return result
+
+    manager.remove_tool = remove_tool_with_prune
 
 
 # =============================================================================
@@ -315,6 +395,9 @@ def _wrap_tool_run(
     tracker: ProactiveTracker,
     fallback_session_id: str,
     resolve_session_id_hook: ResolveSessionIdHook | None,
+    surface_state: _SurfaceState,
+    emit_surface: Callable[[str, str, dict[str, Any]], Awaitable[None]],
+    annotation_tool_name: str | None,
 ) -> Callable[..., Awaitable[Any]]:
     """Build an async wrapper around ``tool.run`` that strips the injected
     intent param and emits Baton events.
@@ -330,6 +413,45 @@ def _wrap_tool_run(
         context: Any = None,
         convert_result: bool = False,
     ) -> Any:
+        # Surface snapshot — lazy: the official SDK has no tools/list hook to
+        # capture on (see _SurfaceState docstring), so this is the first point
+        # every install is guaranteed to reach an async context. ``dirty``
+        # keeps this a no-op on every call after the first stable surface.
+        # Fail-open, mirroring the fastmcp adapter's on_list_tools capture —
+        # this must never block the vendor's tool call. ``dirty`` is cleared
+        # FIRST so a hashing/serialization error (deterministic — would just
+        # re-throw identically every call) is one attempt per surface
+        # change, not a retry storm. A WRITE failure is different — sink
+        # health can recover — so that path re-sets ``dirty = True`` to
+        # retry on the next call, and ``emitted_hashes`` is only updated
+        # AFTER a successful write (a transient failure must not
+        # permanently drop this surface, unlike a genuine dedup skip).
+        if surface_state.dirty:
+            surface_state.dirty = False
+            try:
+                snapshot = surface_state.build_snapshot()
+                digest = surface_hash(snapshot)
+            except Exception:
+                logger.exception("baton: surface snapshot capture failed")
+            else:
+                if digest not in surface_state.emitted_hashes:
+                    seam = build_seam_augmentations(
+                        injected_tool_names=(
+                            [annotation_tool_name] if annotation_tool_name else []
+                        ),
+                        intent_param_names=[USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME],
+                        intent_param_mode=intent_param_mode,
+                    )
+                    try:
+                        await emit_surface(
+                            fallback_session_id, digest, {**snapshot, "seam_augmentations": seam}
+                        )
+                    except Exception:
+                        logger.exception("baton: surface snapshot capture failed")
+                        surface_state.dirty = True
+                    else:
+                        surface_state.emitted_hashes.add(digest)
+
         # Strip the injected goal params IN PLACE, before snapshotting params —
         # ``arguments`` is the same object forwarded to the vendor handler, so
         # the strip keeps ``user_goal``/``expected_result`` off the tool AND out
@@ -596,9 +718,10 @@ def _make_emitters(
     Callable[[str, str, Any, float, dict[str, Any] | None], Awaitable[None]],
     Callable[[str, str, BaseException, float, dict[str, Any] | None], Awaitable[None]],
     Callable[[str, str, str, str | None, dict[str, Any] | None], Awaitable[None]],
+    Callable[[str, str, dict[str, Any]], Awaitable[None]],
 ]:
-    """Build four async emitters: ``tool_call_start`` / ``_end`` / ``_error``
-    plus the synthesised-proactive ``annotation``.
+    """Build five async emitters: ``tool_call_start`` / ``_end`` / ``_error``,
+    the synthesised-proactive ``annotation``, and ``surface_snapshot``.
 
     Each takes the per-call ``session_id`` resolved by
     ``_resolve_call_session_id`` as its first argument — real on stateful
@@ -721,7 +844,33 @@ def _make_emitters(
             logger,
         )
 
-    return emit_before, emit_after, emit_error, emit_proactive
+    async def emit_surface(session_id: str, digest: str, snapshot: dict[str, Any]) -> None:
+        # NOT safe_write — this deliberately lets a write failure propagate so
+        # the caller (_wrap_tool_run) can tell success from failure and retry
+        # on the next call rather than silently treating the surface as
+        # emitted. The caller still fails open overall (SPEC §11.2): it
+        # catches this and never lets it reach the vendor's tool call.
+        await sink.write(
+            SurfaceSnapshotEvent(
+                tenant_id=tenant_id,
+                vendor_id=vendor_id,
+                consent_token=consent_token,
+                session_id=session_id,
+                sequence_number=await _seq(session_id),
+                captured_at=datetime.now(UTC),
+                agent_runtime=default_agent_runtime,
+                payload=SurfaceSnapshotPayload(
+                    surface_hash=digest,
+                    server_info=snapshot["server_info"],
+                    capabilities=snapshot["capabilities"],
+                    instructions=snapshot["instructions"],
+                    tools=snapshot["tools"],
+                    seam_augmentations=snapshot["seam_augmentations"],
+                ),
+            )
+        )
+
+    return emit_before, emit_after, emit_error, emit_proactive, emit_surface
 
 
 def _result_to_jsonable(result: Any) -> Any:

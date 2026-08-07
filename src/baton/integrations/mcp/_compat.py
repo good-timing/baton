@@ -29,7 +29,28 @@ except ImportError:  # mcp >=2.0 renamed the module + class
         MCPServer as MCPServerClass,
     )
 
-__all__ = ["MCPServerClass", "set_server_instructions"]
+__all__ = ["MCPServerClass", "get_lowlevel_server", "set_server_instructions"]
+
+
+def get_lowlevel_server(mcp: Any) -> Any:
+    """Return the official low-level ``mcp.server.lowlevel.server.Server``
+    backing this ``FastMCP``/``MCPServer`` instance, across the mcp 1.x/2.0
+    attribute rename (``_mcp_server`` → ``_lowlevel_server``).
+
+    Fails loud on an unknown layout, same rationale as
+    ``set_server_instructions`` below — callers (surface-snapshot capture,
+    instructions writes) depend on finding the real backing object.
+    """
+    backing = getattr(mcp, "_mcp_server", None)
+    if backing is None:
+        backing = getattr(mcp, "_lowlevel_server", None)
+    if backing is None:
+        raise AttributeError(
+            "baton: cannot locate the low-level server backing on this mcp "
+            "version (tried ``_mcp_server`` and ``_lowlevel_server``). Pin a "
+            "supported mcp release."
+        )
+    return backing
 
 
 def set_server_instructions(mcp: Any, instructions: str) -> None:
@@ -47,13 +68,4 @@ def set_server_instructions(mcp: Any, instructions: str) -> None:
         return
     except AttributeError:
         pass
-    backing = getattr(mcp, "_mcp_server", None)
-    if backing is None:
-        backing = getattr(mcp, "_lowlevel_server", None)
-    if backing is None:
-        raise AttributeError(
-            "baton: cannot locate the server-instructions backing on this mcp "
-            "version (tried the public setter, ``_mcp_server``, and "
-            "``_lowlevel_server``). Pin a supported mcp release."
-        )
-    backing.instructions = instructions
+    get_lowlevel_server(mcp).instructions = instructions

@@ -30,6 +30,7 @@ EventType = Literal[
     "tool_call_end",
     "tool_call_error",
     "annotation",
+    "surface_snapshot",
 ]
 
 
@@ -102,6 +103,37 @@ class AnnotationPayload(BaseModel):
     tool_name: str | None = None
     """The tool whose injected intent seeded this synthesised proactive. Null
     for agent-authored annotations."""
+
+
+class SurfaceSnapshotPayload(BaseModel):
+    """The vendor-true upstream surface (pre-injection) — mirrors baton-proxy's
+    ``enqueue_surface_snapshot`` payload's top-level fields (see
+    ``baton_proxy.emitter.Emitter.enqueue_surface_snapshot``) so the Console
+    worker materializes both into the same ``vendor_surfaces`` table. Emitted
+    at most once per observed ``surface_hash`` per process.
+
+    ``tools`` excludes Baton's own injected tool(s) (e.g. the annotation
+    tool) — those are recorded in ``seam_augmentations.injected_tools``
+    instead, matching proxy's split. ``surface_hash`` is the identity change
+    specs are authored against (proxy's ``base_surface_hash``); it must NOT
+    include anything Baton adds, or toggling e.g. ``intent_param_mode`` would
+    invalidate every recipe pinned to the vendor's real surface.
+
+    ``seam_augmentations.intent_param`` is NOT byte-for-byte with proxy: the
+    SDK injects two params (``user_goal`` + ``expected_result``), so it emits
+    plural ``names: list[str]``, where proxy (one injected param) emits
+    singular ``name: str``. Console-side consumers MUST handle both shapes —
+    see ``baton_console.dashboard.queries.build_surface_view``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    surface_hash: str
+    server_info: dict[str, Any] | None = None
+    capabilities: dict[str, Any] | None = None
+    instructions: str | None = None
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+    seam_augmentations: dict[str, Any] = Field(default_factory=dict)
 
 
 # =============================================================================
@@ -178,12 +210,21 @@ class AnnotationEvent(_EventEnvelope):
     payload: AnnotationPayload
 
 
+class SurfaceSnapshotEvent(_EventEnvelope):
+    event_type: Literal["surface_snapshot"] = "surface_snapshot"
+    payload: SurfaceSnapshotPayload
+
+
 # =============================================================================
 # Discriminated union — worker reads JSON, dispatches to concrete type
 # =============================================================================
 
 Event = Annotated[
-    ToolCallStartEvent | ToolCallEndEvent | ToolCallErrorEvent | AnnotationEvent,
+    ToolCallStartEvent
+    | ToolCallEndEvent
+    | ToolCallErrorEvent
+    | AnnotationEvent
+    | SurfaceSnapshotEvent,
     Field(discriminator="event_type"),
 ]
 
@@ -193,6 +234,8 @@ __all__ = [
     "AnnotationPayload",
     "Event",
     "EventType",
+    "SurfaceSnapshotEvent",
+    "SurfaceSnapshotPayload",
     "ToolCallEndEvent",
     "ToolCallEndPayload",
     "ToolCallErrorEvent",

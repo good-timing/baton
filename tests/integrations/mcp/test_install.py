@@ -14,14 +14,17 @@ covered by ``tests/test_sinks.py``.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import pytest
 
+from baton.events import Event
 from baton.integrations.mcp import VendorConfig, install_baton
 from baton.integrations.mcp._compat import MCPServerClass as FastMCP
 from baton.integrations.mcp._registry import get_tool_registry
-from baton.sinks import FileSink
+from baton.sinks import FileSink, Sink
+from tests._event_helpers import without_surface_snapshots
 
 
 def _input_schema(tool: Any) -> dict[str, Any]:
@@ -242,7 +245,7 @@ class TestEndToEndToolCall:
         await mcp.call_tool("add", {"a": 2, "b": 3})
         await handle.flush()
 
-        events = _read_events(path)
+        events = without_surface_snapshots(_read_events(path))
         types = [e["event_type"] for e in events]
         assert types == ["tool_call_start", "tool_call_end"]
 
@@ -270,7 +273,7 @@ class TestEndToEndToolCall:
         await mcp.call_tool("echo", {"msg": "hi", "repeat": 2})
         await handle.flush()
 
-        events = _read_events(path)
+        events = without_surface_snapshots(_read_events(path))
         types = [e["event_type"] for e in events]
         assert types == ["tool_call_start", "tool_call_end"]
 
@@ -293,7 +296,7 @@ class TestEndToEndToolCall:
 
         await handle.flush()
 
-        events = _read_events(path)
+        events = without_surface_snapshots(_read_events(path))
         types = [e["event_type"] for e in events]
         assert types == ["tool_call_start", "tool_call_error"]
 
@@ -407,6 +410,268 @@ class TestAllFourEventTypesInOneFlow:
         assert types.count("annotation") == 2
         assert types.count("tool_call_start") == 1
         assert types.count("tool_call_end") == 1
+
+
+# =============================================================================
+# surface_snapshot — item 2, sdk-hardening thread (see integrations._surface)
+# =============================================================================
+
+
+class _FlakyOnceSink(Sink):
+    """Delegates to a real sink, but raises on the first ``surface_snapshot``
+    write only — simulates a transient sink failure recovering. Other event
+    types (tool_call_start/end, which share the same sink) are unaffected,
+    so the counter below tracks surface_snapshot attempts specifically."""
+
+    def __init__(self, inner: Sink) -> None:
+        self._inner = inner
+        self.write_attempts = 0
+
+    async def write(self, event: Event) -> None:
+        if event.event_type != "surface_snapshot":
+            await self._inner.write(event)
+            return
+        self.write_attempts += 1
+        if self.write_attempts == 1:
+            raise RuntimeError("transient sink failure")
+        await self._inner.write(event)
+
+    async def flush(self) -> None:
+        await self._inner.flush()
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+class TestSurfaceSnapshot:
+    async def test_no_snapshot_until_first_tool_call(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        """Unlike the fastmcp adapter (a real ``tools/list`` hook), the
+        official SDK has no such interception point — the snapshot is
+        deliberately lazy, captured on the first tool call. See
+        ``_tool_wrap._SurfaceState``."""
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        await handle.flush()
+        # FileSink doesn't create the file until its first write.
+        assert not os.path.exists(path) or _read_events(path) == []
+
+    async def test_hashing_failure_fails_open(
+        self, configured_mcp: tuple[Any, Any, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The surface-hash block sits directly on the tool-call hot path (no
+        ``tools/list`` hook to isolate it in, unlike the fastmcp adapter) — a
+        hashing/serialization error there must fail open (SPEC §11.2) rather
+        than take the vendor's tool call down with it."""
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        def _boom(surface: Any) -> str:
+            raise ValueError("simulated unserializable schema")
+
+        monkeypatch.setattr("baton.integrations.mcp._tool_wrap.surface_hash", _boom)
+
+        result = await mcp.call_tool("echo", {"text": "x"})
+        await handle.flush()
+        assert result is not None
+        # tool_call_start/end still landed — only the snapshot attempt failed.
+        types = [e["event_type"] for e in without_surface_snapshots(_read_events(path))]
+        assert types == ["tool_call_start", "tool_call_end"]
+
+    async def test_emits_on_first_tool_call_excludes_annotation_tool(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        await mcp.call_tool("echo", {"text": "x"})
+        await handle.flush()
+
+        snapshots = [e for e in _read_events(path) if e["event_type"] == "surface_snapshot"]
+        assert len(snapshots) == 1
+        payload = snapshots[0]["payload"]
+        assert [t["name"] for t in payload["tools"]] == ["echo"]
+        assert payload["seam_augmentations"]["injected_tools"] == ["test-vendor_annotate"]
+        assert payload["surface_hash"].startswith("sha256:")
+
+    async def test_dedupes_across_repeated_tool_calls(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        await mcp.call_tool("echo", {"text": "x"})
+        await mcp.call_tool("echo", {"text": "y"})
+        await handle.flush()
+
+        snapshots = [e for e in _read_events(path) if e["event_type"] == "surface_snapshot"]
+        assert len(snapshots) == 1
+
+    async def test_new_tool_added_after_first_call_triggers_a_new_snapshot(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        await mcp.call_tool("echo", {"text": "x"})
+
+        @mcp.tool()
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        await mcp.call_tool("echo", {"text": "y"})
+        await handle.flush()
+
+        snapshots = [e for e in _read_events(path) if e["event_type"] == "surface_snapshot"]
+        assert len(snapshots) == 2
+        assert [t["name"] for t in snapshots[0]["payload"]["tools"]] == ["echo"]
+        assert sorted(t["name"] for t in snapshots[1]["payload"]["tools"]) == ["add", "echo"]
+        assert snapshots[0]["payload"]["surface_hash"] != snapshots[1]["payload"]["surface_hash"]
+
+    async def test_removed_and_re_registered_tool_schema_is_recaptured(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        """A tool removed then re-registered under the same name with a
+        DIFFERENT schema must produce a fresh snapshot with the new schema —
+        not silently keep reporting the original one forever."""
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        await mcp.call_tool("echo", {"text": "x"})
+
+        mcp.remove_tool("echo")
+
+        @mcp.tool(name="echo")
+        def echo_v2(text: str, loud: bool = False) -> str:
+            return text
+
+        await mcp.call_tool("echo", {"text": "y"})
+        await handle.flush()
+
+        snapshots = [e for e in _read_events(path) if e["event_type"] == "surface_snapshot"]
+        assert len(snapshots) == 2
+        v1_props = snapshots[0]["payload"]["tools"][0]["inputSchema"].get("properties", {})
+        v2_props = snapshots[1]["payload"]["tools"][0]["inputSchema"].get("properties", {})
+        assert "loud" not in v1_props
+        assert "loud" in v2_props
+        assert snapshots[0]["payload"]["surface_hash"] != snapshots[1]["payload"]["surface_hash"]
+
+    async def test_removed_tool_is_pruned_not_left_as_a_phantom(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        @mcp.tool()
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        await mcp.call_tool("echo", {"text": "x"})  # snapshot #1: [add, echo]
+
+        mcp.remove_tool("add")
+        await mcp.call_tool("echo", {"text": "y"})  # snapshot #2: [echo] only
+        await handle.flush()
+
+        snapshots = [e for e in _read_events(path) if e["event_type"] == "surface_snapshot"]
+        assert len(snapshots) == 2
+        assert sorted(t["name"] for t in snapshots[0]["payload"]["tools"]) == ["add", "echo"]
+        assert [t["name"] for t in snapshots[1]["payload"]["tools"]] == ["echo"]
+
+    async def test_write_failure_retries_on_next_call_not_dropped_forever(
+        self, events_path: str
+    ) -> None:
+        """A sink-write failure on the surface_snapshot attempt must retry on
+        the next tool call, not permanently drop the surface the way a
+        genuine dedup skip (already-delivered, unchanged) does."""
+        flaky = _FlakyOnceSink(FileSink(events_path))
+        mcp = FastMCP("test-vendor-mcp")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="test-vendor",
+                vendor_display_name="Test Vendor",
+                consent_token="ct_test",
+                sink=flaky,
+            ),
+        )
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        result1 = await mcp.call_tool("echo", {"text": "x"})  # write #1: raises
+        result2 = await mcp.call_tool("echo", {"text": "y"})  # write #2: same digest, retried
+        await handle.flush()
+        await handle.aclose()
+
+        assert result1 is not None
+        assert result2 is not None
+        assert flaky.write_attempts == 2
+        snapshots = [e for e in _read_events(events_path) if e["event_type"] == "surface_snapshot"]
+        assert len(snapshots) == 1
+
+    async def test_tools_are_vendor_true_pre_injection(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        await mcp.call_tool("echo", {"text": "x"})
+        await handle.flush()
+
+        # The AGENT-visible schema, post-injection — proves the snapshot
+        # (asserted below) differs from what's actually advertised.
+        advertised = get_tool_registry(mcp)["echo"]
+        assert "user_goal" in (advertised.parameters.get("properties") or {})
+
+        snapshot = next(e for e in _read_events(path) if e["event_type"] == "surface_snapshot")[
+            "payload"
+        ]
+        echo_tool = next(t for t in snapshot["tools"] if t["name"] == "echo")
+        assert "user_goal" not in echo_tool["inputSchema"].get("properties", {})
+        assert "expected_result" not in echo_tool["inputSchema"].get("properties", {})
+
+    async def test_instructions_are_vendor_true(self, configured_mcp: tuple[Any, Any, str]) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        await mcp.call_tool("echo", {"text": "x"})
+        await handle.flush()
+
+        assert mcp.instructions is not None  # Baton did set something
+        snapshot = next(e for e in _read_events(path) if e["event_type"] == "surface_snapshot")[
+            "payload"
+        ]
+        assert snapshot["instructions"] is None
 
 
 class _FakeRequest:
@@ -1027,7 +1292,9 @@ class TestMRTRHandling:
         types = [e["event_type"] for e in events]
         assert types.count("tool_call_start") == 1
         assert types.count("tool_call_end") == 1
-        session_ids = {e["session_id"] for e in events}
+        # surface_snapshot sits on the process-level fallback session, not
+        # the per-call "sess-1" header — see tests._event_helpers.
+        session_ids = {e["session_id"] for e in without_surface_snapshots(events)}
         assert session_ids == {"sess-1"}
 
     async def test_goal_params_still_stripped_on_a_continuation_round(

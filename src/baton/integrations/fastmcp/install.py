@@ -29,6 +29,8 @@ shutdown.
 
 from __future__ import annotations
 
+import logging
+
 from fastmcp import FastMCP
 
 from baton._state import ProactiveTracker, SessionCounter
@@ -36,12 +38,15 @@ from baton._uuid import uuid7
 from baton.integrations._config import VendorConfig, _validate_vendor_config
 from baton.integrations._handle import BatonHandle
 from baton.integrations._llm_text import build_server_instructions
+from baton.integrations._surface import build_server_meta
 from baton.integrations.fastmcp.annotation import (
     derive_annotation_tool_name,
     register_annotation_tool,
 )
 from baton.integrations.fastmcp.middleware import BatonMiddleware
 from baton.scrub import Scrubber
+
+logger = logging.getLogger(__name__)
 
 
 def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
@@ -63,6 +68,20 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     annotation_tool_name = derive_annotation_tool_name(
         config.vendor_id, config.annotation_tool_name
     )
+
+    # Captured BEFORE any Baton mutation below — the vendor-true baseline the
+    # surface-snapshot hash is authored against. See integrations._surface.
+    # Best-effort: unlike the instructions write below (load-bearing), a
+    # capture failure here must not block install — the vendor's server
+    # still needs to start even on a future fastmcp layout that drops or
+    # renames the private ``_mcp_server`` attribute. Degrades to an empty
+    # server_meta (surface_snapshot's server_info/capabilities/instructions
+    # come through as null; tool capture is unaffected).
+    try:
+        server_meta = build_server_meta(mcp._mcp_server)
+    except AttributeError:
+        logger.exception("baton: surface-snapshot server_meta capture failed at install")
+        server_meta = {}
 
     # Server instructions — load-bearing on instruction-aware runtimes.
     # FastMCP >=1.10 made `instructions` a read-only property; fall back to the
@@ -92,6 +111,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
             intent_param_mode=config.intent_param_mode,
             proactive_tracker=proactive_tracker,
             resolve_session_id_hook=config.resolve_session_id,
+            server_meta=server_meta,
         )
     )
 
