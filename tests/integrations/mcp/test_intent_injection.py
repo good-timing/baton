@@ -2,11 +2,13 @@
 
 Mirrors ``tests/integrations/fastmcp/test_intent_injection.py`` but targets the
 official ``mcp.server.fastmcp.FastMCP``: the adapter has no ``on_list_tools``
-middleware hook, so it injects ``baton_intent`` into each ``Tool.parameters``
-dict at install time (that dict is what ``FastMCP.list_tools`` advertises as
-``inputSchema``) and strips it in the wrapped ``Tool.run``. Same contract as the
-middleware — inject on list, strip on call, ride ``call_intent`` on
-``tool_call_start``, synthesise one proactive per session.
+middleware hook, so it injects ``user_goal``/``expected_result`` into each
+``Tool.parameters`` dict at install time (that dict is what
+``FastMCP.list_tools`` advertises as ``inputSchema``) and strips both in the
+wrapped ``Tool.run``. Same contract as the middleware — inject on list, strip
+on call, ride ``user_goal`` as ``call_intent`` on ``tool_call_start``,
+synthesise one proactive per session (carrying ``expected_result`` too, if
+present).
 """
 
 from __future__ import annotations
@@ -16,7 +18,11 @@ from typing import Any
 
 import pytest
 
-from baton.integrations._llm_text import INTENT_PARAM_NAME, INTENT_SOURCE_PARAM
+from baton.integrations._llm_text import (
+    EXPECTED_RESULT_PARAM_NAME,
+    INTENT_SOURCE_PARAM,
+    USER_GOAL_PARAM_NAME,
+)
 from baton.integrations.mcp import VendorConfig, install_baton
 from baton.integrations.mcp._compat import MCPServerClass as FastMCP
 from baton.sinks import FileSink
@@ -82,10 +88,10 @@ class TestListInjection:
             tools = await mcp.list_tools()
             echo_tool = next(t for t in tools if t.name == "echo")
             props = _input_schema(echo_tool)["properties"]
-            assert INTENT_PARAM_NAME in props
-            assert props[INTENT_PARAM_NAME]["type"] == "string"
+            assert USER_GOAL_PARAM_NAME in props
+            assert props[USER_GOAL_PARAM_NAME]["type"] == "string"
             # optional → NOT added to required
-            assert INTENT_PARAM_NAME not in _input_schema(echo_tool).get("required", [])
+            assert USER_GOAL_PARAM_NAME not in _input_schema(echo_tool).get("required", [])
         finally:
             await handle.aclose()
 
@@ -109,8 +115,8 @@ class TestListInjection:
         try:
             tools = await mcp.list_tools()
             echo_tool = next(t for t in tools if t.name == "echo")
-            assert INTENT_PARAM_NAME in _input_schema(echo_tool)["properties"]
-            assert INTENT_PARAM_NAME in _input_schema(echo_tool)["required"]
+            assert USER_GOAL_PARAM_NAME in _input_schema(echo_tool)["properties"]
+            assert USER_GOAL_PARAM_NAME in _input_schema(echo_tool)["required"]
         finally:
             await handle.aclose()
 
@@ -134,18 +140,18 @@ class TestListInjection:
         try:
             tools = await mcp.list_tools()
             echo_tool = next(t for t in tools if t.name == "echo")
-            assert INTENT_PARAM_NAME not in _input_schema(echo_tool).get("properties", {})
+            assert USER_GOAL_PARAM_NAME not in _input_schema(echo_tool).get("properties", {})
         finally:
             await handle.aclose()
 
     async def test_annotation_tool_not_injected(self, events_path: str) -> None:
         """The annotation tool takes ``intent`` explicitly — no redundant
-        ``baton_intent`` should be injected into its schema."""
+        goal params should be injected into its schema."""
         mcp, handle = _install(events_path)
         try:
             tools = await mcp.list_tools()
             annotate = next(t for t in tools if t.name == "test-vendor_annotate")
-            assert INTENT_PARAM_NAME not in _input_schema(annotate).get("properties", {})
+            assert USER_GOAL_PARAM_NAME not in _input_schema(annotate).get("properties", {})
         finally:
             await handle.aclose()
 
@@ -161,19 +167,19 @@ class TestListInjection:
 
             tools = await mcp.list_tools()
             post_tool = next(t for t in tools if t.name == "post")
-            assert INTENT_PARAM_NAME in _input_schema(post_tool)["properties"]
+            assert USER_GOAL_PARAM_NAME in _input_schema(post_tool)["properties"]
         finally:
             await handle.aclose()
 
     async def test_native_param_left_untouched(self, events_path: str) -> None:
-        """A tool that already declares ``baton_intent`` keeps its own — the
+        """A tool that already declares ``user_goal`` keeps its own — the
         injector records it ``native`` and the caller's value is forwarded, not
         stripped."""
         mcp = FastMCP("test-vendor-mcp")
 
         @mcp.tool()
-        def echo(text: str, baton_intent: str = "") -> str:
-            return f"{text}|{baton_intent}"
+        def echo(text: str, user_goal: str = "") -> str:
+            return f"{text}|{user_goal}"
 
         handle = install_baton(
             mcp,
@@ -185,7 +191,7 @@ class TestListInjection:
             ),
         )
         try:
-            result = await mcp.call_tool("echo", {"text": "x", "baton_intent": "vendor-value"})
+            result = await mcp.call_tool("echo", {"text": "x", "user_goal": "vendor-value"})
             await handle.flush()
         finally:
             await handle.aclose()
@@ -198,6 +204,35 @@ class TestListInjection:
         assert start["payload"].get("call_intent") is None
         # native param means no synthesised proactive either
         assert not any(e["event_type"] == "annotation" for e in events)
+
+    async def test_expected_result_injected_optional_even_in_required_mode(
+        self, events_path: str
+    ) -> None:
+        """``required`` mode escalates only ``user_goal`` — ``expected_result``
+        stays optional regardless."""
+        mcp = FastMCP("test-vendor-mcp")
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="test-vendor",
+                vendor_display_name="Test Vendor",
+                consent_token="ct_test",
+                sink=FileSink(events_path),
+                intent_param_mode="required",
+            ),
+        )
+        try:
+            tools = await mcp.list_tools()
+            echo_tool = next(t for t in tools if t.name == "echo")
+            assert EXPECTED_RESULT_PARAM_NAME in _input_schema(echo_tool)["properties"]
+            assert EXPECTED_RESULT_PARAM_NAME not in _input_schema(echo_tool).get("required", [])
+        finally:
+            await handle.aclose()
 
 
 # =============================================================================
@@ -212,7 +247,7 @@ class TestCallStripAndCapture:
 
         @mcp.tool()
         def echo(text: str) -> str:
-            # If baton_intent leaked to the handler, mcp would reject the call
+            # If user_goal leaked to the handler, mcp would reject the call
             # (unexpected kwarg) — reaching here proves it was stripped.
             seen["text"] = text
             return text
@@ -228,18 +263,18 @@ class TestCallStripAndCapture:
         )
         try:
             await mcp.call_tool(
-                "echo", {"text": "hello", INTENT_PARAM_NAME: "user wants a greeting"}
+                "echo", {"text": "hello", USER_GOAL_PARAM_NAME: "user wants a greeting"}
             )
             await handle.flush()
         finally:
             await handle.aclose()
 
-        assert seen == {"text": "hello"}  # vendor handler never saw baton_intent
+        assert seen == {"text": "hello"}  # vendor handler never saw user_goal
         events = _read_events(events_path)
         start = next(e for e in events if e["event_type"] == "tool_call_start")
         assert start["payload"]["call_intent"] == "user wants a greeting"
         assert start["payload"]["intent_source"] == INTENT_SOURCE_PARAM
-        # params captured == vendor-visible args, no baton_intent
+        # params captured == vendor-visible args, no user_goal
         assert start["payload"]["params"] == {"text": "hello"}
 
     async def test_no_intent_leaves_call_intent_null(self, events_path: str) -> None:
@@ -294,7 +329,7 @@ class TestProactiveSynthesis:
             ),
         )
         try:
-            await mcp.call_tool("echo", {"text": "x", INTENT_PARAM_NAME: "why the user called"})
+            await mcp.call_tool("echo", {"text": "x", USER_GOAL_PARAM_NAME: "why the user called"})
             await handle.flush()
         finally:
             await handle.aclose()
@@ -325,8 +360,8 @@ class TestProactiveSynthesis:
             ),
         )
         try:
-            await mcp.call_tool("echo", {"text": "1", INTENT_PARAM_NAME: "first why"})
-            await mcp.call_tool("echo", {"text": "2", INTENT_PARAM_NAME: "second why"})
+            await mcp.call_tool("echo", {"text": "1", USER_GOAL_PARAM_NAME: "first why"})
+            await mcp.call_tool("echo", {"text": "2", USER_GOAL_PARAM_NAME: "second why"})
             await handle.flush()
         finally:
             await handle.aclose()
@@ -359,7 +394,7 @@ class TestProactiveSynthesis:
         )
         try:
             await mcp.call_tool("test-vendor_annotate", {"intent": "real proactive"})
-            await mcp.call_tool("echo", {"text": "x", INTENT_PARAM_NAME: "injected why"})
+            await mcp.call_tool("echo", {"text": "x", USER_GOAL_PARAM_NAME: "injected why"})
             await handle.flush()
         finally:
             await handle.aclose()
@@ -371,3 +406,42 @@ class TestProactiveSynthesis:
         # the injected intent still rides the start event
         start = next(e for e in events if e["event_type"] == "tool_call_start")
         assert start["payload"]["call_intent"] == "injected why"
+
+    async def test_expected_result_rides_proactive_only_not_start(self, events_path: str) -> None:
+        """``expected_result`` feeds the proactive annotation's
+        ``expected_outcome`` (mirrors baton-extmcp) — it does not ride
+        ``tool_call_start``, which only ever carries ``call_intent``."""
+        mcp = FastMCP("test-vendor-mcp")
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="test-vendor",
+                vendor_display_name="Test Vendor",
+                consent_token="ct_test",
+                sink=FileSink(events_path),
+            ),
+        )
+        try:
+            await mcp.call_tool(
+                "echo",
+                {
+                    "text": "x",
+                    USER_GOAL_PARAM_NAME: "why the user called",
+                    EXPECTED_RESULT_PARAM_NAME: "a successful echo",
+                },
+            )
+            await handle.flush()
+        finally:
+            await handle.aclose()
+
+        events = _read_events(events_path)
+        ann = next(e for e in events if e["event_type"] == "annotation")
+        assert ann["payload"]["expected_outcome"] == "a successful echo"
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert "expected_outcome" not in start["payload"]
+        assert "expected_result" not in start["payload"]["params"]

@@ -6,12 +6,13 @@ captured event prints as JSONL to stderr.
     python examples/fastmcp_server/demo.py
 
 Watch for two things in the output:
-  1. `annotation` (intent_source=injected_param) — the *why*, captured from the
-     `baton_intent` param even though this client never read server instructions.
-     That's the Claude Desktop case: instructions are ignored, intent still lands.
+  1. `annotation` (intent_source=injected_param) — the *why* (and *what success
+     looks like*), captured from the `user_goal`/`expected_result` params even
+     though this client never read server instructions. That's the Claude
+     Desktop case: instructions are ignored, intent still lands.
   2. `tool_call_start` / `tool_call_end` — the *what*, with `call_intent` riding
      the start event and `params` holding exactly the vendor-visible arguments
-     (no `baton_intent` — it was stripped before the tool ran).
+     (no `user_goal`/`expected_result` — both were stripped before the tool ran).
 """
 
 from __future__ import annotations
@@ -26,21 +27,23 @@ from server import mcp  # type: ignore[import-not-found]
 
 async def main() -> None:
     async with Client(mcp) as client:
-        # `baton_intent` is the param Baton injected into every tool's schema.
-        # A real agent fills it; here we pass it explicitly to simulate that.
+        # `user_goal`/`expected_result` are the params Baton injected into every
+        # tool's schema. A real agent fills them; here we pass them explicitly
+        # to simulate that.
         await client.call_tool(
             "save_bookmark",
             {
                 "name": "onboarding",
                 "url": "https://example.com/onboarding",
-                "baton_intent": "user is bookmarking the onboarding guide to find it later",
+                "user_goal": "user is bookmarking the onboarding guide to find it later",
+                "expected_result": "the bookmark is saved and retrievable by name",
             },
         )
         await client.call_tool(
             "get_bookmark",
             {
                 "name": "onboarding",
-                "baton_intent": "user is retrieving the onboarding guide they saved",
+                "user_goal": "user is retrieving the onboarding guide they saved",
             },
         )
 

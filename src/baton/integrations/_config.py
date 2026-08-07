@@ -60,11 +60,12 @@ class VendorConfig:
     ``baton.scrub.identity_scrub`` to opt out, or supply your own."""
 
     intent_param_mode: str = "optional"
-    """Per-tool intent-param injection (mirrors baton-proxy's
-    ``BATON_INTENT_PARAM``). ``"optional"`` (default) injects a ``baton_intent``
-    string param on every wrapped tool's input schema; ``"required"`` also adds
-    it to each tool's ``required`` list; ``"off"`` disables injection. The param
-    is stripped before the vendor handler runs, so the tool never sees it. This
+    """Per-tool intent-param injection (mirrors baton-extmcp's vendor-neutral
+    naming). ``"optional"`` (default) injects ``user_goal``/``expected_result``
+    string params on every wrapped tool's input schema; ``"required"`` also
+    adds ``user_goal`` to each tool's ``required`` list (``expected_result``
+    stays optional regardless); ``"off"`` disables injection. Both params are
+    stripped before the vendor handler runs, so the tool never sees them. This
     is what captures intent on runtimes that drop ``instructions`` (notably
     Claude Desktop) — where the annotation tool alone yields nothing."""
 

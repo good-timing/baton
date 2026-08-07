@@ -1,9 +1,11 @@
 """Tests for per-tool intent-param injection in the FastMCP middleware.
 
-Mirrors baton-proxy's intent-injection matrix, adapted to the in-process
-FastMCP Client harness: inject on ``tools/list``, strip on ``tools/call``, ride
-the value on ``tool_call_start.payload.call_intent``, and synthesise one
-proactive annotation from the session's first injected intent.
+Mirrors baton-extmcp's vendor-neutral intent-injection matrix, adapted to the
+in-process FastMCP Client harness: inject ``user_goal``/``expected_result`` on
+``tools/list``, strip both on ``tools/call``, ride ``user_goal`` on
+``tool_call_start.payload.call_intent``, and synthesise one proactive
+annotation (carrying ``expected_result`` too, if present) from the session's
+first injected intent.
 """
 
 from __future__ import annotations
@@ -15,7 +17,11 @@ from fastmcp import Client, FastMCP
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Response
 
-from baton.integrations._llm_text import INTENT_PARAM_NAME, INTENT_SOURCE_PARAM
+from baton.integrations._llm_text import (
+    EXPECTED_RESULT_PARAM_NAME,
+    INTENT_SOURCE_PARAM,
+    USER_GOAL_PARAM_NAME,
+)
 from baton.integrations.fastmcp.middleware import BatonMiddleware
 from baton.sinks import HttpSink, Sink
 
@@ -69,10 +75,10 @@ class TestListInjection:
 
         (echo_tool,) = tools
         props = echo_tool.inputSchema["properties"]
-        assert INTENT_PARAM_NAME in props
-        assert props[INTENT_PARAM_NAME]["type"] == "string"
+        assert USER_GOAL_PARAM_NAME in props
+        assert props[USER_GOAL_PARAM_NAME]["type"] == "string"
         # optional → NOT added to required
-        assert INTENT_PARAM_NAME not in echo_tool.inputSchema.get("required", [])
+        assert USER_GOAL_PARAM_NAME not in echo_tool.inputSchema.get("required", [])
 
     async def test_required_mode_adds_to_required(self, sink: Sink) -> None:
         mcp = _build_mcp(sink, intent_param_mode="required")
@@ -85,8 +91,8 @@ class TestListInjection:
             tools = await client.list_tools()
 
         (echo_tool,) = tools
-        assert INTENT_PARAM_NAME in echo_tool.inputSchema["properties"]
-        assert INTENT_PARAM_NAME in echo_tool.inputSchema["required"]
+        assert USER_GOAL_PARAM_NAME in echo_tool.inputSchema["properties"]
+        assert USER_GOAL_PARAM_NAME in echo_tool.inputSchema["required"]
 
     async def test_off_mode_no_injection(self, sink: Sink) -> None:
         mcp = _build_mcp(sink, intent_param_mode="off")
@@ -99,23 +105,23 @@ class TestListInjection:
             tools = await client.list_tools()
 
         (echo_tool,) = tools
-        assert INTENT_PARAM_NAME not in echo_tool.inputSchema.get("properties", {})
+        assert USER_GOAL_PARAM_NAME not in echo_tool.inputSchema.get("properties", {})
 
     async def test_native_param_left_untouched(
         self, sink: Sink, captured: list[dict[str, Any]]
     ) -> None:
-        """A tool that already declares ``baton_intent`` keeps its own — the
+        """A tool that already declares ``user_goal`` keeps its own — the
         injector records it ``native`` and the caller's value is forwarded, not
         stripped."""
         mcp = _build_mcp(sink)
 
         @mcp.tool()
-        def echo(text: str, baton_intent: str = "") -> str:
+        def echo(text: str, user_goal: str = "") -> str:
             # Vendor's own param — echo it back so the test can assert it arrived.
-            return f"{text}|{baton_intent}"
+            return f"{text}|{user_goal}"
 
         async with Client(mcp) as client:
-            result = await client.call_tool("echo", {"text": "x", "baton_intent": "vendor-value"})
+            result = await client.call_tool("echo", {"text": "x", "user_goal": "vendor-value"})
 
         await sink.flush()
         # forwarded to the vendor handler (not stripped)
@@ -123,6 +129,58 @@ class TestListInjection:
         # and never captured as call_intent (disposition = native)
         start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
         assert start["payload"].get("call_intent") is None
+
+    async def test_expected_result_injected_optional_even_in_required_mode(
+        self, sink: Sink
+    ) -> None:
+        """``required`` mode escalates only ``user_goal`` — ``expected_result``
+        stays optional regardless (a bigger surface mutation than the signal
+        warrants)."""
+        mcp = _build_mcp(sink, intent_param_mode="required")
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+
+        (echo_tool,) = tools
+        assert EXPECTED_RESULT_PARAM_NAME in echo_tool.inputSchema["properties"]
+        assert EXPECTED_RESULT_PARAM_NAME not in echo_tool.inputSchema.get("required", [])
+
+    async def test_native_expected_result_left_untouched_independently(
+        self, sink: Sink, captured: list[dict[str, Any]]
+    ) -> None:
+        """A tool with its own ``expected_result`` param is forwarded untouched
+        for that param, while ``user_goal`` injection still proceeds normally —
+        dispositions are tracked per param, not per tool."""
+        mcp = _build_mcp(sink)
+
+        @mcp.tool()
+        def echo(text: str, expected_result: str = "") -> str:
+            return f"{text}|{expected_result}"
+
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+            (echo_tool,) = tools
+            assert USER_GOAL_PARAM_NAME in echo_tool.inputSchema["properties"]
+
+            result = await client.call_tool(
+                "echo",
+                {
+                    "text": "x",
+                    "expected_result": "vendor-value",
+                    USER_GOAL_PARAM_NAME: "why the user called",
+                },
+            )
+
+        await sink.flush()
+        # vendor's own expected_result forwarded, not stripped
+        assert "vendor-value" in str(result.content[0].text)  # type: ignore[union-attr]
+        # user_goal still stripped + captured normally
+        start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
+        assert start["payload"]["call_intent"] == "why the user called"
 
 
 # =============================================================================
@@ -139,22 +197,22 @@ class TestCallStripAndCapture:
 
         @mcp.tool()
         def echo(text: str) -> str:
-            # If baton_intent leaked to the handler, FastMCP would have rejected
+            # If user_goal leaked to the handler, FastMCP would have rejected
             # the call (unexpected kwarg) — reaching here proves it was stripped.
             seen["text"] = text
             return text
 
         async with Client(mcp) as client:
             await client.call_tool(
-                "echo", {"text": "hello", INTENT_PARAM_NAME: "user wants a greeting"}
+                "echo", {"text": "hello", USER_GOAL_PARAM_NAME: "user wants a greeting"}
             )
 
         await sink.flush()
-        assert seen == {"text": "hello"}  # vendor handler never saw baton_intent
+        assert seen == {"text": "hello"}  # vendor handler never saw user_goal
         start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
         assert start["payload"]["call_intent"] == "user wants a greeting"
         assert start["payload"]["intent_source"] == INTENT_SOURCE_PARAM
-        # params captured == vendor-visible args, no baton_intent
+        # params captured == vendor-visible args, no user_goal
         assert start["payload"]["params"] == {"text": "hello"}
 
     async def test_no_intent_leaves_call_intent_null(
@@ -191,7 +249,7 @@ class TestProactiveSynthesis:
             return text
 
         async with Client(mcp) as client:
-            await client.call_tool("echo", {"text": "x", INTENT_PARAM_NAME: "why the user called"})
+            await client.call_tool("echo", {"text": "x", USER_GOAL_PARAM_NAME: "why the user called"})
 
         await sink.flush()
         types = [ev["event_type"] for ev in captured]
@@ -214,8 +272,8 @@ class TestProactiveSynthesis:
             return text
 
         async with Client(mcp) as client:
-            await client.call_tool("echo", {"text": "1", INTENT_PARAM_NAME: "first why"})
-            await client.call_tool("echo", {"text": "2", INTENT_PARAM_NAME: "second why"})
+            await client.call_tool("echo", {"text": "1", USER_GOAL_PARAM_NAME: "first why"})
+            await client.call_tool("echo", {"text": "2", USER_GOAL_PARAM_NAME: "second why"})
 
         await sink.flush()
         annotations = [ev for ev in captured if ev["event_type"] == "annotation"]
@@ -223,3 +281,32 @@ class TestProactiveSynthesis:
         # but the second call still rides its intent on the start event
         starts = [ev for ev in captured if ev["event_type"] == "tool_call_start"]
         assert starts[1]["payload"]["call_intent"] == "second why"
+
+    async def test_expected_result_rides_proactive_only_not_start(
+        self, sink: Sink, captured: list[dict[str, Any]]
+    ) -> None:
+        """``expected_result`` feeds the proactive annotation's
+        ``expected_outcome`` (mirrors baton-extmcp) — it does not ride
+        ``tool_call_start``, which only ever carries ``call_intent``."""
+        mcp = _build_mcp(sink)
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.call_tool(
+                "echo",
+                {
+                    "text": "x",
+                    USER_GOAL_PARAM_NAME: "why the user called",
+                    EXPECTED_RESULT_PARAM_NAME: "a successful echo",
+                },
+            )
+
+        await sink.flush()
+        ann = next(ev for ev in captured if ev["event_type"] == "annotation")
+        assert ann["payload"]["expected_outcome"] == "a successful echo"
+        start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
+        assert "expected_outcome" not in start["payload"]
+        assert "expected_result" not in start["payload"]["params"]

@@ -38,9 +38,11 @@ from baton.events import (
     ToolCallStartPayload,
 )
 from baton.integrations._llm_text import (
-    INTENT_PARAM_NAME,
+    EXPECTED_RESULT_PARAM_NAME,
     INTENT_SOURCE_PARAM,
-    build_intent_param_description,
+    USER_GOAL_PARAM_NAME,
+    build_expected_result_param_description,
+    build_user_goal_param_description,
 )
 from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime, meta_to_dict
 from baton.scrub import identity_scrub
@@ -78,23 +80,25 @@ class BatonMiddleware(Middleware):
         self._annotation_tool_name = annotation_tool_name
         self._intent_param_mode = intent_param_mode
         self._proactive = proactive_tracker or ProactiveTracker()
-        # tool_name -> "injected" | "native". Populated at on_list_tools; read at
-        # on_call_tool to decide strip-vs-forward. A plain dict (no lock) is safe:
-        # all access is on the one asyncio loop, so no statement interleaves.
-        self._param_registry: dict[str, str] = {}
+        # tool_name -> {param_name: "injected" | "native"}. Populated at
+        # on_list_tools; read at on_call_tool to decide strip-vs-forward, per
+        # param, independently. A plain dict (no lock) is safe: all access is
+        # on the one asyncio loop, so no statement interleaves.
+        self._param_registry: dict[str, dict[str, str]] = {}
 
     async def on_list_tools(
         self,
         context: MiddlewareContext[ListToolsRequest],
         call_next: CallNext[ListToolsRequest, Sequence[Tool]],
     ) -> Sequence[Tool]:
-        """Inject the ``baton_intent`` param into every wrapped tool's schema.
+        """Inject ``user_goal``/``expected_result`` into every wrapped tool's schema.
 
         Runs on the vendor-true tool list returned by the server; each tool's
-        input schema gains an optional (or required) ``baton_intent`` string.
-        The value is stripped again in ``on_call_tool`` before the vendor
-        handler runs, so the tool never sees it. This is the capture path that
-        survives runtimes which drop ``instructions`` (Claude Desktop).
+        input schema gains optional (``user_goal`` additionally required if
+        configured) ``user_goal``/``expected_result`` strings. Both are stripped
+        again in ``on_call_tool`` before the vendor handler runs, so the tool
+        never sees them. This is the capture path that survives runtimes which
+        drop ``instructions`` (Claude Desktop).
 
         Fail-open: an injection error on one tool leaves that tool untouched
         rather than dropping it from the listing.
@@ -104,75 +108,102 @@ class BatonMiddleware(Middleware):
             return tools
         out: list[Tool] = []
         for tool in tools:
-            # The annotation tool takes ``intent`` explicitly — don't inject a
-            # redundant ``baton_intent`` into it.
+            # The annotation tool takes ``intent`` explicitly — don't inject
+            # redundant goal params into it.
             if tool.name == self._annotation_tool_name:
                 out.append(tool)
                 continue
             try:
-                new_tool, disposition = self._inject_intent_param(tool)
+                new_tool, dispositions = self._inject_goal_params(tool)
             except Exception:
                 logger.exception("baton: intent-param injection failed for a tool")
                 out.append(tool)
                 continue
-            if disposition is not None:
-                self._param_registry[tool.name] = disposition
+            if dispositions:
+                self._param_registry[tool.name] = dispositions
             out.append(new_tool)
         return out
 
-    def _inject_intent_param(self, tool: Tool) -> tuple[Tool, str | None]:
-        """Return a copy of ``tool`` with ``baton_intent`` injected, plus the
-        disposition (``"injected"``/``"native"``/``None`` when unschemable).
-
-        A tool that already declares ``baton_intent`` is left untouched and
-        recorded ``"native"`` so ``on_call_tool`` forwards the param to the
-        vendor rather than stripping it. Mirrors the proxy's injector."""
+    def _inject_goal_params(self, tool: Tool) -> tuple[Tool, dict[str, str]]:
+        """Return a copy of ``tool`` with ``user_goal``/``expected_result``
+        injected, plus each param's disposition (``"injected"``/``"native"``),
+        keyed independently — a tool that already declares one of the two names
+        is left untouched for that name only, and ``on_call_tool`` forwards the
+        vendor's own value for it instead of stripping it. Mirrors
+        baton-extmcp's injector."""
         schema = tool.parameters
         if not isinstance(schema, dict):
-            return tool, None
+            return tool, {}
         props = schema.get("properties")
-        if isinstance(props, dict) and INTENT_PARAM_NAME in props:
-            return tool, "native"
+        existing = props if isinstance(props, dict) else {}
+        dispositions: dict[str, str] = {}
+        to_inject: dict[str, dict[str, str]] = {}
+        for name, build_desc in (
+            (USER_GOAL_PARAM_NAME, build_user_goal_param_description),
+            (EXPECTED_RESULT_PARAM_NAME, build_expected_result_param_description),
+        ):
+            if name in existing:
+                dispositions[name] = "native"
+            else:
+                dispositions[name] = "injected"
+                to_inject[name] = {"type": "string", "description": build_desc()}
+        if not to_inject:
+            return tool, dispositions
         # Deep-copy so we never mutate the server's canonical registered schema.
         new_schema = copy.deepcopy(schema)
         new_props = new_schema.setdefault("properties", {})
         if not isinstance(new_props, dict):
-            return tool, None
-        new_props[INTENT_PARAM_NAME] = {
-            "type": "string",
-            "description": build_intent_param_description(),
-        }
-        if self._intent_param_mode == "required":
+            return tool, dispositions
+        new_props.update(to_inject)
+        if dispositions[USER_GOAL_PARAM_NAME] == "injected" and self._intent_param_mode == "required":
             required = new_schema.get("required")
             if isinstance(required, list):
-                if INTENT_PARAM_NAME not in required:
-                    required.append(INTENT_PARAM_NAME)
+                if USER_GOAL_PARAM_NAME not in required:
+                    required.append(USER_GOAL_PARAM_NAME)
             else:
-                new_schema["required"] = [INTENT_PARAM_NAME]
-        return tool.model_copy(update={"parameters": new_schema}), "injected"
+                new_schema["required"] = [USER_GOAL_PARAM_NAME]
+        return tool.model_copy(update={"parameters": new_schema}), dispositions
 
-    def _extract_intent_param(self, tool_name: str, arguments: dict[str, Any]) -> str | None:
-        """Pop the injected intent from ``arguments`` in place; return its value.
+    def _extract_goal_params(
+        self, tool_name: str, arguments: dict[str, Any]
+    ) -> tuple[str | None, str | None]:
+        """Pop the injected ``user_goal``/``expected_result`` from ``arguments``
+        in place; return their values independently (either may be absent).
 
-        Mutating in place is what keeps the value off the vendor handler — the
-        same dict is forwarded downstream. Registry dispositions mirror the
-        proxy: ``"native"`` → the param is the vendor's, forward untouched;
-        unknown (cold registry — a call arrived before we listed) → strip with
-        a warning, safe only because the name is namespaced. Never raises."""
+        Mutating in place is what keeps them off the vendor handler — the same
+        dict is forwarded downstream."""
         if self._intent_param_mode == "off":
+            return None, None
+        dispositions = self._param_registry.get(tool_name)
+        goal = self._extract_one_goal_param(tool_name, arguments, USER_GOAL_PARAM_NAME, dispositions)
+        expected = self._extract_one_goal_param(
+            tool_name, arguments, EXPECTED_RESULT_PARAM_NAME, dispositions
+        )
+        return goal, expected
+
+    def _extract_one_goal_param(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        param_name: str,
+        dispositions: dict[str, str] | None,
+    ) -> str | None:
+        """Registry dispositions mirror baton-extmcp: ``"native"`` → the param
+        is the vendor's, forward untouched; unknown (cold registry — a call
+        arrived before we listed) → strip with a warning, safe only because
+        the names are reserved. Never raises."""
+        if param_name not in arguments:
             return None
-        if INTENT_PARAM_NAME not in arguments:
-            return None
-        disposition = self._param_registry.get(tool_name)
+        disposition = dispositions.get(param_name) if dispositions is not None else None
         if disposition == "native":
             return None
         if disposition is None:
             logger.warning(
                 "baton: stripping %s from unlisted tool %r (cold registry)",
-                INTENT_PARAM_NAME,
+                param_name,
                 tool_name,
             )
-        raw = arguments.pop(INTENT_PARAM_NAME, None)
+        raw = arguments.pop(param_name, None)
         if isinstance(raw, str) and raw.strip():
             return raw
         return None
@@ -192,14 +223,17 @@ class BatonMiddleware(Middleware):
 
         session_id = self._extract_session_id(context)
 
-        # Strip the injected intent param IN PLACE, before copying params —
+        # Strip the injected goal params IN PLACE, before copying params —
         # ``msg.arguments`` is the same object forwarded to the vendor handler,
-        # so the strip keeps ``baton_intent`` off the tool AND out of the
-        # captured ``params`` (which must equal the vendor-visible arguments).
+        # so the strip keeps ``user_goal``/``expected_result`` off the tool AND
+        # out of the captured ``params`` (which must equal the vendor-visible
+        # arguments).
         call_intent: str | None = None
+        call_expected: str | None = None
         if isinstance(msg.arguments, dict):
-            call_intent = self._extract_intent_param(tool_name, msg.arguments)
+            call_intent, call_expected = self._extract_goal_params(tool_name, msg.arguments)
         scrubbed_intent = self._scrubber(call_intent) if call_intent is not None else None
+        scrubbed_expected = self._scrubber(call_expected) if call_expected is not None else None
 
         params = dict(msg.arguments or {})
         raw_meta = self._extract_request_meta(context)
@@ -230,6 +264,7 @@ class BatonMiddleware(Middleware):
                     runtime_meta=scrubbed_meta,
                     payload=AnnotationPayload(
                         intent=scrubbed_intent,
+                        expected_outcome=scrubbed_expected,
                         intent_source=INTENT_SOURCE_PARAM,
                         tool_name=tool_name,
                     ),

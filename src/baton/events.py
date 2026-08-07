@@ -43,7 +43,7 @@ class ToolCallStartPayload(BaseModel):
     emit-time per SPEC §7.
 
     ``call_intent`` is the per-tool intent the SDK stripped from the injected
-    ``baton_intent`` param (see ``integrations._llm_text.INTENT_PARAM_NAME``);
+    ``user_goal`` param (see ``integrations._llm_text.USER_GOAL_PARAM_NAME``);
     it rides as a SIBLING of ``params`` — ``params`` stays exactly the
     vendor-visible arguments. ``intent_source`` records provenance
     (``"injected_param"``). Both null when the param wasn't used. The Console
@@ -96,9 +96,9 @@ class AnnotationPayload(BaseModel):
     context: dict[str, Any] | None = None
     intent_source: str | None = None
     """Provenance for synthesised proactives — ``"injected_param"`` when this
-    annotation was generated from a stripped ``baton_intent`` param rather than
-    a real annotation-tool call. Null for agent-authored annotations. Mirrors
-    the proxy's ``enqueue_annotation`` output."""
+    annotation was generated from a stripped ``user_goal``/``expected_result``
+    param rather than a real annotation-tool call. Null for agent-authored
+    annotations. Mirrors the proxy's ``enqueue_annotation`` output."""
     tool_name: str | None = None
     """The tool whose injected intent seeded this synthesised proactive. Null
     for agent-authored annotations."""

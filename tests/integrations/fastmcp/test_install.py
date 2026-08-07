@@ -606,7 +606,7 @@ class TestIntentInjectionInstalled:
         self, configured_mcp: tuple[FastMCP, Any], captured: list[dict[str, Any]]
     ) -> None:
         """install_baton wires injection on by default; a call carrying
-        baton_intent captures call_intent and synthesises a proactive."""
+        user_goal captures call_intent and synthesises a proactive."""
         mcp, handle = configured_mcp
 
         @mcp.tool()
@@ -617,14 +617,14 @@ class TestIntentInjectionInstalled:
             tools = await client.list_tools()
             names = {t.name for t in tools}
             echo_tool = next(t for t in tools if t.name == "echo")
-            await client.call_tool("echo", {"text": "x", "baton_intent": "the why"})
+            await client.call_tool("echo", {"text": "x", "user_goal": "the why"})
 
         await handle.flush()
 
-        # annotation tool is NOT injected with baton_intent
+        # annotation tool is NOT injected with user_goal
         annotate_tool = next(t for t in tools if t.name == "test-vendor_annotate")
-        assert "baton_intent" not in annotate_tool.inputSchema.get("properties", {})
-        assert "baton_intent" in echo_tool.inputSchema["properties"]
+        assert "user_goal" not in annotate_tool.inputSchema.get("properties", {})
+        assert "user_goal" in echo_tool.inputSchema["properties"]
         assert "test-vendor_annotate" in names
 
         start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
@@ -649,7 +649,7 @@ class TestIntentInjectionInstalled:
             # Agent's real proactive annotation (no signal_type) fires first.
             await client.call_tool("test-vendor_annotate", {"intent": "real proactive intent"})
             # Then the wrapped tool call carrying an injected intent.
-            await client.call_tool("echo", {"text": "x", "baton_intent": "param intent"})
+            await client.call_tool("echo", {"text": "x", "user_goal": "param intent"})
 
         await handle.flush()
 

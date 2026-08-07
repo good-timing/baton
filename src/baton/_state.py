@@ -41,7 +41,7 @@ class ProactiveTracker:
 
     Coordinates the two proactive sources so a session opens at most one:
     the ``BatonMiddleware`` synthesises a proactive from the first injected
-    ``baton_intent`` it sees, and the annotation tool emits one when the agent
+    ``user_goal`` it sees, and the annotation tool emits one when the agent
     calls it proactively (``signal_type is None``). On instruction-aware
     runtimes both fire; on Claude Desktop only the injected-param path does.
 

@@ -10,6 +10,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+### Changed
+
+- **Intent-param injection renamed to vendor-neutral names, and now also captures an expected result.** The injected params on both adapters are now `user_goal` + `expected_result` (was the single `baton_intent`). Names are vendor-neutral because anything an instrumented customer's agent can see must speak the vendor's voice, not Baton's (white-label rule) — matches baton-extmcp's spike-proven naming, which diverged from baton-proxy's `baton_intent` for the same reason. `user_goal` still rides `tool_call_start.payload.call_intent`; `expected_result` is new and rides only the session's first synthesised proactive annotation, as `AnnotationPayload.expected_outcome` (a field that already existed in the wire schema, previously reachable only via a real annotation-tool call). `required` mode escalates only `user_goal` to the tool's `required` list — `expected_result` stays optional regardless, since forcing it on every tool is a bigger surface mutation than the signal warrants. Disposition tracking (`injected`/`native`, skip-if-the-tool-already-declares-the-name) is now per param, not per tool, so a vendor tool can own one name natively while the other is still injected. **Breaking, no dual-support**: `baton_intent` is no longer recognized by either adapter; a tool that declared it as its own param is unaffected (it was never Baton's to strip), but any caller relying on the old injected name to carry intent will stop being captured. baton-proxy and baton-extmcp are unaffected — proxy still injects `baton_intent` (see `docs/design-notes/intent_param_injection.md` D1 for why, and its added divergence note); porting proxy is a separate follow-up, not done here.
+
 ---
 
 ## 0.5.0 — mcp 2.0 support

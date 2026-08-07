@@ -19,8 +19,9 @@ Why wrap ``Tool.run`` (instead of ``Tool.fn`` as the 0.2.x adapter did):
 
 Strategy:
 1. After ``install_baton``, iterate ``_tool_manager._tools`` and (a) inject the
-   ``baton_intent`` param into each tool's advertised schema and (b) replace
-   ``tool.run`` with a wrapper that strips the param and emits Baton events.
+   ``user_goal``/``expected_result`` params into each tool's advertised schema
+   and (b) replace ``tool.run`` with a wrapper that strips them and emits
+   Baton events.
 2. Monkey-patch ``_tool_manager.add_tool`` so tools registered AFTER
    ``install_baton`` are also injected + wrapped automatically.
 
@@ -31,17 +32,18 @@ wraps the original exception in ``ToolError`` (which it does), the event
 records the unwrapped ``__cause__`` so ``error_type`` reflects the real
 exception class (e.g., ``RuntimeError``, not ``ToolError``).
 
-**Intent-param injection (mirrors the FastMCP middleware + baton-proxy).**
+**Intent-param injection (mirrors the FastMCP middleware + baton-extmcp).**
 The official SDK exposes no ``on_list_tools`` middleware hook, so instead of
 injecting into a per-request tool list we mutate each ``Tool.parameters`` dict
 once, in place, at install time — that dict is exactly what ``FastMCP.list_tools``
-advertises as ``inputSchema``. The reserved, namespaced ``baton_intent`` param
-is stripped back out in the wrapper before the vendor handler validates its
-arguments, so the tool never sees it. This is the capture path that survives
-runtimes which drop ``instructions`` (notably Claude Desktop). The session's
-first injected intent also synthesises one proactive annotation, coordinated
-with the annotation tool via a shared ``ProactiveTracker`` so a session opens at
-most one proactive.
+advertises as ``inputSchema``. The vendor-neutral ``user_goal``/``expected_result``
+params (white-label rule — see ``integrations._llm_text``) are stripped back out
+in the wrapper before the vendor handler validates its arguments, so the tool
+never sees them. This is the capture path that survives runtimes which drop
+``instructions`` (notably Claude Desktop). The session's first injected
+``user_goal`` also synthesises one proactive annotation (carrying
+``expected_result`` too, if present), coordinated with the annotation tool via
+a shared ``ProactiveTracker`` so a session opens at most one proactive.
 """
 
 from __future__ import annotations
@@ -65,9 +67,11 @@ from baton.events import (
     ToolCallStartPayload,
 )
 from baton.integrations._llm_text import (
-    INTENT_PARAM_NAME,
+    EXPECTED_RESULT_PARAM_NAME,
     INTENT_SOURCE_PARAM,
-    build_intent_param_description,
+    USER_GOAL_PARAM_NAME,
+    build_expected_result_param_description,
+    build_user_goal_param_description,
 )
 from baton.integrations.mcp._registry import get_tool_manager, get_tool_registry
 from baton.scrub import identity_scrub
@@ -98,10 +102,11 @@ def install_wraps(
 ) -> None:
     """Inject + wrap all currently-registered tools AND future registrations."""
     tracker = proactive_tracker or ProactiveTracker()
-    # tool_name -> "injected" | "native". Populated as tools are injected; read
-    # in the wrapper to decide strip-vs-forward. A plain dict (no lock) is safe:
-    # all access is on the one asyncio loop, so no statement interleaves.
-    param_registry: dict[str, str] = {}
+    # tool_name -> {param_name: "injected" | "native"}. Populated as tools are
+    # injected; read in the wrapper to decide strip-vs-forward, per param,
+    # independently. A plain dict (no lock) is safe: all access is on the one
+    # asyncio loop, so no statement interleaves.
+    param_registry: dict[str, dict[str, str]] = {}
     emit_before, emit_after, emit_error, emit_proactive = _make_emitters(
         tenant_id=tenant_id,
         vendor_id=vendor_id,
@@ -116,20 +121,20 @@ def install_wraps(
     def _maybe_wrap_entry(name: str, tool: Any) -> None:
         # Skip the annotation tool — its handler emits its own annotation
         # event with the structured payload, and it takes ``intent`` explicitly
-        # so it needs no injected ``baton_intent``.
+        # so it needs no injected goal params.
         if annotation_tool_name is not None and name == annotation_tool_name:
             return
-        # Inject BEFORE wrapping so the advertised schema carries the param on
+        # Inject BEFORE wrapping so the advertised schema carries the params on
         # the very first tools/list. Idempotent: a re-scan (via add_tool) skips
         # tools already in the registry rather than re-detecting them "native".
         if intent_param_mode != "off" and name not in param_registry:
             try:
-                disposition = _inject_intent_param(tool, intent_param_mode)
+                dispositions = _inject_goal_params(tool, intent_param_mode)
             except Exception:
                 logger.exception("baton: intent-param injection failed for a tool")
             else:
-                if disposition is not None:
-                    param_registry[name] = disposition
+                if dispositions:
+                    param_registry[name] = dispositions
         if getattr(tool.run, _WRAPPED_SENTINEL, False):
             return
         # mcp's Tool is a Pydantic BaseModel; `run` is a method, not a field,
@@ -179,66 +184,90 @@ def install_wraps(
 # =============================================================================
 
 
-def _inject_intent_param(tool: Any, intent_param_mode: str) -> str | None:
-    """Inject ``baton_intent`` into ``tool.parameters`` in place; return the
-    disposition (``"injected"`` / ``"native"`` / ``None`` when unschemable).
+def _inject_goal_params(tool: Any, intent_param_mode: str) -> dict[str, str]:
+    """Inject ``user_goal``/``expected_result`` into ``tool.parameters`` in
+    place; return each param's disposition (``"injected"`` / ``"native"``),
+    keyed independently — a tool that already declares one of the two names
+    is left untouched for that name only.
 
     Unlike the FastMCP middleware — which deep-copies on every ``on_list_tools``
     — this runs once at install and mutates the tool's canonical schema dict
     directly, because that dict IS what ``FastMCP.list_tools`` advertises as
-    ``inputSchema``. A tool that already declares ``baton_intent`` is left
-    untouched and recorded ``"native"`` so the wrapper forwards the caller's
-    value instead of stripping it. Mirrors the proxy's injector."""
+    ``inputSchema``. So the wrapper forwards the caller's own value for a
+    ``"native"`` param instead of stripping it. Mirrors baton-extmcp's injector."""
     schema = tool.parameters
     if not isinstance(schema, dict):
-        return None
+        return {}
     props = schema.get("properties")
-    if isinstance(props, dict) and INTENT_PARAM_NAME in props:
-        return "native"
+    existing = props if isinstance(props, dict) else {}
+    dispositions: dict[str, str] = {}
+    to_inject: dict[str, dict[str, str]] = {}
+    for name, build_desc in (
+        (USER_GOAL_PARAM_NAME, build_user_goal_param_description),
+        (EXPECTED_RESULT_PARAM_NAME, build_expected_result_param_description),
+    ):
+        if name in existing:
+            dispositions[name] = "native"
+        else:
+            dispositions[name] = "injected"
+            to_inject[name] = {"type": "string", "description": build_desc()}
+    if not to_inject:
+        return dispositions
     new_props = schema.setdefault("properties", {})
     if not isinstance(new_props, dict):
-        return None
-    new_props[INTENT_PARAM_NAME] = {
-        "type": "string",
-        "description": build_intent_param_description(),
-    }
-    if intent_param_mode == "required":
+        return dispositions
+    new_props.update(to_inject)
+    if dispositions[USER_GOAL_PARAM_NAME] == "injected" and intent_param_mode == "required":
         required = schema.get("required")
         if isinstance(required, list):
-            if INTENT_PARAM_NAME not in required:
-                required.append(INTENT_PARAM_NAME)
+            if USER_GOAL_PARAM_NAME not in required:
+                required.append(USER_GOAL_PARAM_NAME)
         else:
-            schema["required"] = [INTENT_PARAM_NAME]
-    return "injected"
+            schema["required"] = [USER_GOAL_PARAM_NAME]
+    return dispositions
 
 
-def _extract_intent_param(
+def _extract_goal_params(
     tool_name: str,
     arguments: dict[str, Any],
     intent_param_mode: str,
-    param_registry: dict[str, str],
-) -> str | None:
-    """Pop the injected intent from ``arguments`` in place; return its value.
+    param_registry: dict[str, dict[str, str]],
+) -> tuple[str | None, str | None]:
+    """Pop the injected ``user_goal``/``expected_result`` from ``arguments`` in
+    place; return their values independently (either may be absent).
 
-    Mutating in place is what keeps the value off the vendor handler — the same
-    dict is forwarded to ``original_run``. Registry dispositions mirror the
-    proxy: ``"native"`` → the param is the vendor's, forward untouched; unknown
-    (cold registry — a call arrived before the tool was scanned) → strip with a
-    warning, safe only because the name is namespaced. Never raises."""
+    Mutating in place is what keeps them off the vendor handler — the same
+    dict is forwarded to ``original_run``."""
     if intent_param_mode == "off":
+        return None, None
+    dispositions = param_registry.get(tool_name)
+    goal = _extract_one_goal_param(tool_name, arguments, USER_GOAL_PARAM_NAME, dispositions)
+    expected = _extract_one_goal_param(tool_name, arguments, EXPECTED_RESULT_PARAM_NAME, dispositions)
+    return goal, expected
+
+
+def _extract_one_goal_param(
+    tool_name: str,
+    arguments: dict[str, Any],
+    param_name: str,
+    dispositions: dict[str, str] | None,
+) -> str | None:
+    """Registry dispositions mirror baton-extmcp: ``"native"`` → the param is
+    the vendor's, forward untouched; unknown (cold registry — a call arrived
+    before the tool was scanned) → strip with a warning, safe only because the
+    names are reserved. Never raises."""
+    if param_name not in arguments:
         return None
-    if INTENT_PARAM_NAME not in arguments:
-        return None
-    disposition = param_registry.get(tool_name)
+    disposition = dispositions.get(param_name) if dispositions is not None else None
     if disposition == "native":
         return None
     if disposition is None:
         logger.warning(
             "baton: stripping %s from unlisted tool %r (cold registry)",
-            INTENT_PARAM_NAME,
+            param_name,
             tool_name,
         )
-    raw = arguments.pop(INTENT_PARAM_NAME, None)
+    raw = arguments.pop(param_name, None)
     if isinstance(raw, str) and raw.strip():
         return raw
     return None
@@ -257,11 +286,11 @@ def _wrap_tool_run(
     ],
     emit_after: Callable[[str, Any, float, dict[str, Any] | None], Awaitable[None]],
     emit_error: Callable[[str, BaseException, float, dict[str, Any] | None], Awaitable[None]],
-    emit_proactive: Callable[[str, str, dict[str, Any] | None], Awaitable[None]],
+    emit_proactive: Callable[[str, str, str | None, dict[str, Any] | None], Awaitable[None]],
     scrubber: Callable[[Any], Any],
     *,
     intent_param_mode: str,
-    param_registry: dict[str, str],
+    param_registry: dict[str, dict[str, str]],
     tracker: ProactiveTracker,
     session_id: str,
 ) -> Callable[..., Awaitable[Any]]:
@@ -279,25 +308,31 @@ def _wrap_tool_run(
         context: Any = None,
         convert_result: bool = False,
     ) -> Any:
-        # Strip the injected intent IN PLACE, before snapshotting params —
+        # Strip the injected goal params IN PLACE, before snapshotting params —
         # ``arguments`` is the same object forwarded to the vendor handler, so
-        # the strip keeps ``baton_intent`` off the tool AND out of the captured
-        # ``params`` (which must equal the vendor-visible arguments).
+        # the strip keeps ``user_goal``/``expected_result`` off the tool AND out
+        # of the captured ``params`` (which must equal the vendor-visible
+        # arguments).
         call_intent: str | None = None
+        call_expected: str | None = None
         if isinstance(arguments, dict):
-            call_intent = _extract_intent_param(name, arguments, intent_param_mode, param_registry)
+            call_intent, call_expected = _extract_goal_params(
+                name, arguments, intent_param_mode, param_registry
+            )
         scrubbed_intent = scrubber(call_intent) if call_intent is not None else None
+        scrubbed_expected = scrubber(call_expected) if call_expected is not None else None
 
         params = dict(arguments or {})
         meta_dict = _extract_meta_from_context(context)
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
 
         # The session's FIRST injected intent also becomes a proactive
-        # annotation, sequenced BEFORE the tool_call_start it explains. ``claim``
-        # dedups per session and is suppressed when a real annotation-tool
-        # proactive already fired. Later param intents ride only the start event.
+        # annotation (carrying expected_result too, if present), sequenced
+        # BEFORE the tool_call_start it explains. ``claim`` dedups per session
+        # and is suppressed when a real annotation-tool proactive already
+        # fired. Later param intents ride only the start event.
         if scrubbed_intent is not None and tracker.claim(session_id):
-            await emit_proactive(name, scrubbed_intent, scrubbed_meta)
+            await emit_proactive(name, scrubbed_intent, scrubbed_expected, scrubbed_meta)
 
         await emit_before(name, scrubber(params), scrubbed_meta, scrubbed_intent)
         called_at = monotonic()
@@ -362,7 +397,7 @@ def _make_emitters(
     Callable[[str, dict[str, Any], dict[str, Any] | None, str | None], Awaitable[None]],
     Callable[[str, Any, float, dict[str, Any] | None], Awaitable[None]],
     Callable[[str, BaseException, float, dict[str, Any] | None], Awaitable[None]],
-    Callable[[str, str, dict[str, Any] | None], Awaitable[None]],
+    Callable[[str, str, str | None, dict[str, Any] | None], Awaitable[None]],
 ]:
     """Build four async emitters: ``tool_call_start`` / ``_end`` / ``_error``
     plus the synthesised-proactive ``annotation``.
@@ -375,7 +410,9 @@ def _make_emitters(
     async def _seq() -> int:
         return await counter.next(fallback_session_id)
 
-    async def emit_proactive(name: str, intent: str, runtime_meta: dict[str, Any] | None) -> None:
+    async def emit_proactive(
+        name: str, intent: str, expected_outcome: str | None, runtime_meta: dict[str, Any] | None
+    ) -> None:
         await safe_write(
             sink,
             AnnotationEvent(
@@ -389,6 +426,7 @@ def _make_emitters(
                 runtime_meta=runtime_meta,
                 payload=AnnotationPayload(
                     intent=intent,
+                    expected_outcome=expected_outcome,
                     intent_source=INTENT_SOURCE_PARAM,
                     tool_name=name,
                 ),
