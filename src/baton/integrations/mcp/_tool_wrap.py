@@ -113,7 +113,6 @@ def install_wraps(
         consent_token=consent_token,
         sink=sink,
         counter=counter,
-        fallback_session_id=fallback_session_id,
         default_agent_runtime=default_agent_runtime,
         scrubber=scrubber,
     )
@@ -154,7 +153,7 @@ def install_wraps(
                 intent_param_mode=intent_param_mode,
                 param_registry=param_registry,
                 tracker=tracker,
-                session_id=fallback_session_id,
+                fallback_session_id=fallback_session_id,
             ),
         )
 
@@ -242,7 +241,9 @@ def _extract_goal_params(
         return None, None
     dispositions = param_registry.get(tool_name)
     goal = _extract_one_goal_param(tool_name, arguments, USER_GOAL_PARAM_NAME, dispositions)
-    expected = _extract_one_goal_param(tool_name, arguments, EXPECTED_RESULT_PARAM_NAME, dispositions)
+    expected = _extract_one_goal_param(
+        tool_name, arguments, EXPECTED_RESULT_PARAM_NAME, dispositions
+    )
     return goal, expected
 
 
@@ -282,17 +283,17 @@ def _wrap_tool_run(
     name: str,
     tool: Any,
     emit_before: Callable[
-        [str, dict[str, Any], dict[str, Any] | None, str | None], Awaitable[None]
+        [str, str, dict[str, Any], dict[str, Any] | None, str | None], Awaitable[None]
     ],
-    emit_after: Callable[[str, Any, float, dict[str, Any] | None], Awaitable[None]],
-    emit_error: Callable[[str, BaseException, float, dict[str, Any] | None], Awaitable[None]],
-    emit_proactive: Callable[[str, str, str | None, dict[str, Any] | None], Awaitable[None]],
+    emit_after: Callable[[str, str, Any, float, dict[str, Any] | None], Awaitable[None]],
+    emit_error: Callable[[str, str, BaseException, float, dict[str, Any] | None], Awaitable[None]],
+    emit_proactive: Callable[[str, str, str, str | None, dict[str, Any] | None], Awaitable[None]],
     scrubber: Callable[[Any], Any],
     *,
     intent_param_mode: str,
     param_registry: dict[str, dict[str, str]],
     tracker: ProactiveTracker,
-    session_id: str,
+    fallback_session_id: str,
 ) -> Callable[..., Awaitable[Any]]:
     """Build an async wrapper around ``tool.run`` that strips the injected
     intent param and emits Baton events.
@@ -325,16 +326,19 @@ def _wrap_tool_run(
         params = dict(arguments or {})
         meta_dict = _extract_meta_from_context(context)
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
+        call_session_id = _resolve_call_session_id(context, meta_dict, fallback_session_id)
 
         # The session's FIRST injected intent also becomes a proactive
         # annotation (carrying expected_result too, if present), sequenced
         # BEFORE the tool_call_start it explains. ``claim`` dedups per session
         # and is suppressed when a real annotation-tool proactive already
         # fired. Later param intents ride only the start event.
-        if scrubbed_intent is not None and tracker.claim(session_id):
-            await emit_proactive(name, scrubbed_intent, scrubbed_expected, scrubbed_meta)
+        if scrubbed_intent is not None and tracker.claim(call_session_id):
+            await emit_proactive(
+                call_session_id, name, scrubbed_intent, scrubbed_expected, scrubbed_meta
+            )
 
-        await emit_before(name, scrubber(params), scrubbed_meta, scrubbed_intent)
+        await emit_before(call_session_id, name, scrubber(params), scrubbed_meta, scrubbed_intent)
         called_at = monotonic()
         try:
             result = await original_run(arguments, context=context, convert_result=convert_result)
@@ -343,13 +347,104 @@ def _wrap_tool_run(
             # original __cause__ when present so error_type reflects the real
             # exception class the vendor's fn actually raised.
             original_exc = exc.__cause__ if exc.__cause__ is not None else exc
-            await emit_error(name, original_exc, monotonic() - called_at, scrubbed_meta)
+            await emit_error(
+                call_session_id, name, original_exc, monotonic() - called_at, scrubbed_meta
+            )
             raise
-        await emit_after(name, result, monotonic() - called_at, scrubbed_meta)
+        await emit_after(call_session_id, name, result, monotonic() - called_at, scrubbed_meta)
         return result
 
     setattr(wrapper, _WRAPPED_SENTINEL, True)
     return wrapper
+
+
+def _trace_id_from_traceparent(traceparent: Any) -> str | None:
+    """The trace-id field of a W3C ``traceparent`` value
+    (``version-trace_id-parent_id-flags``, SEP-414) — SPEC §3.4 rung 1's
+    preferred ``session_id`` source. ``None`` on any malformed or all-zero
+    input; never raises."""
+    if not isinstance(traceparent, str):
+        return None
+    parts = traceparent.split("-")
+    if len(parts) != 4:
+        return None
+    trace_id = parts[1]
+    if not trace_id or trace_id == "0" * len(trace_id):
+        return None
+    return trace_id
+
+
+def _resolve_session_id_from_meta(meta: dict[str, Any] | None) -> str | None:
+    """SPEC §3.4 rungs 1-2, in priority order: ``_meta.traceparent`` (W3C
+    trace context, SEP-414) then ``_meta["io.baton/session_id"]``
+    (vendor-supplied app-level handle). ``None`` if neither is present.
+
+    Per SPEC §5.2's validated runtime table, no MCP client Baton has tested
+    (Claude Code, Claude Desktop, Cursor) populates either key today — so in
+    practice this misses for every currently-known runtime. Still worth
+    reading: the data is already extracted for ``runtime_meta`` (free), and
+    unlike the header rung below, neither key depends on which MCP protocol
+    version was negotiated — this starts resolving automatically the moment
+    any runtime adopts SEP-414 or a vendor's own first-party client stamps
+    the Baton key, with no further SDK change.
+    """
+    if not meta:
+        return None
+    trace_id = _trace_id_from_traceparent(meta.get("traceparent"))
+    if trace_id is not None:
+        return trace_id
+    app_handle = meta.get("io.baton/session_id")
+    if isinstance(app_handle, str) and app_handle:
+        return app_handle
+    return None
+
+
+def _resolve_call_session_id(context: Any, meta: dict[str, Any] | None, fallback: str) -> str:
+    """Real per-call session id, SPEC §3.4's layered fallback in priority
+    order: (1) ``_meta.traceparent``, (2) ``_meta["io.baton/session_id"]``,
+    (4) the ``mcp-session-id`` HTTP header, else (5) ``fallback`` (the
+    install-time process-wide id). Rung 3 (a future runtime-specific
+    ``_meta`` key) isn't defined for any runtime yet, so it's skipped.
+
+    The header rung (4) is stateful-HTTP-only and protocol-version-sensitive:
+    ``stateless_http`` defaults to ``False`` on both mcp 1.x and 2.0, so the
+    header is present on old-spec streamable HTTP (the documented hosted
+    shape — one process, many users). But MCP protocol 2026-07-28+ (SEP-2567)
+    removes the header from the wire entirely when a client negotiates that
+    version — confirmed in mcp 2.0.0's ``_streamable_http_modern.py`` ("no
+    `Mcp-Session-Id`") — so on a new-spec connection this rung always misses
+    regardless of vendor deployment shape, which is exactly why rungs 1-2 are
+    checked first. On stdio there's no HTTP request, so the header rung
+    always misses and ``fallback`` is correct there (one process = one
+    user). On stateless HTTP (``stateless_http=True``, opt-in, no current
+    vendor) there's no header by protocol design either — that miss isn't a
+    bug this function can fix; see ``project_sdk_sensor_parity_gap`` memory
+    for why that needs a vendor-configurable resolver instead.
+
+    mcp 2.0's ``Context`` exposes ``.headers`` directly; mcp 1.x has no such
+    accessor, so we also try reaching through
+    ``request_context.request.headers`` (a raw transport request object on
+    HTTP transports, ``None`` on stdio). Never raises — best-effort like
+    ``_extract_meta_from_context`` below, including outside a live request
+    (``request_context`` raises ``ValueError`` there on both SDK versions).
+    """
+    from_meta = _resolve_session_id_from_meta(meta)
+    if from_meta is not None:
+        return from_meta
+    if context is None:
+        return fallback
+    try:
+        headers = getattr(context, "headers", None)
+        if not headers:
+            rc = context.request_context
+            request = getattr(rc, "request", None) if rc is not None else None
+            headers = getattr(request, "headers", None) if request is not None else None
+        if not headers:
+            return fallback
+        session_id = headers.get("mcp-session-id")
+    except (AttributeError, ValueError):
+        return fallback
+    return session_id if isinstance(session_id, str) and session_id else fallback
 
 
 def _extract_meta_from_context(context: Any) -> dict[str, Any] | None:
@@ -390,28 +485,33 @@ def _make_emitters(
     consent_token: str,
     sink: Sink,
     counter: SessionCounter,
-    fallback_session_id: str,
     default_agent_runtime: str,
     scrubber: Callable[[Any], Any],
 ) -> tuple[
-    Callable[[str, dict[str, Any], dict[str, Any] | None, str | None], Awaitable[None]],
-    Callable[[str, Any, float, dict[str, Any] | None], Awaitable[None]],
-    Callable[[str, BaseException, float, dict[str, Any] | None], Awaitable[None]],
-    Callable[[str, str, str | None, dict[str, Any] | None], Awaitable[None]],
+    Callable[[str, str, dict[str, Any], dict[str, Any] | None, str | None], Awaitable[None]],
+    Callable[[str, str, Any, float, dict[str, Any] | None], Awaitable[None]],
+    Callable[[str, str, BaseException, float, dict[str, Any] | None], Awaitable[None]],
+    Callable[[str, str, str, str | None, dict[str, Any] | None], Awaitable[None]],
 ]:
     """Build four async emitters: ``tool_call_start`` / ``_end`` / ``_error``
     plus the synthesised-proactive ``annotation``.
 
-    Session-id: still the SDK fallback per-process UUID. The Console worker
-    uses ``runtime_meta`` (now populated below) to derive finer per-cycle
-    correlation per SPEC §11.5 — this adapter no longer needs to invent it.
+    Each takes the per-call ``session_id`` resolved by
+    ``_resolve_call_session_id`` as its first argument — real on stateful
+    HTTP, ``fallback_session_id`` otherwise (stdio, or no header found). The
+    Console worker also uses ``runtime_meta`` (populated below) for finer
+    per-cycle correlation per SPEC §11.5, independent of this.
     """
 
-    async def _seq() -> int:
-        return await counter.next(fallback_session_id)
+    async def _seq(session_id: str) -> int:
+        return await counter.next(session_id)
 
     async def emit_proactive(
-        name: str, intent: str, expected_outcome: str | None, runtime_meta: dict[str, Any] | None
+        session_id: str,
+        name: str,
+        intent: str,
+        expected_outcome: str | None,
+        runtime_meta: dict[str, Any] | None,
     ) -> None:
         await safe_write(
             sink,
@@ -419,8 +519,8 @@ def _make_emitters(
                 tenant_id=tenant_id,
                 vendor_id=vendor_id,
                 consent_token=consent_token,
-                session_id=fallback_session_id,
-                sequence_number=await _seq(),
+                session_id=session_id,
+                sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=default_agent_runtime,
                 runtime_meta=runtime_meta,
@@ -435,6 +535,7 @@ def _make_emitters(
         )
 
     async def emit_before(
+        session_id: str,
         name: str,
         params: dict[str, Any],
         runtime_meta: dict[str, Any] | None,
@@ -446,8 +547,8 @@ def _make_emitters(
                 tenant_id=tenant_id,
                 vendor_id=vendor_id,
                 consent_token=consent_token,
-                session_id=fallback_session_id,
-                sequence_number=await _seq(),
+                session_id=session_id,
+                sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=default_agent_runtime,
                 runtime_meta=runtime_meta,
@@ -462,7 +563,11 @@ def _make_emitters(
         )
 
     async def emit_after(
-        name: str, result: Any, duration_s: float, runtime_meta: dict[str, Any] | None
+        session_id: str,
+        name: str,
+        result: Any,
+        duration_s: float,
+        runtime_meta: dict[str, Any] | None,
     ) -> None:
         await safe_write(
             sink,
@@ -470,8 +575,8 @@ def _make_emitters(
                 tenant_id=tenant_id,
                 vendor_id=vendor_id,
                 consent_token=consent_token,
-                session_id=fallback_session_id,
-                sequence_number=await _seq(),
+                session_id=session_id,
+                sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=default_agent_runtime,
                 runtime_meta=runtime_meta,
@@ -485,7 +590,11 @@ def _make_emitters(
         )
 
     async def emit_error(
-        name: str, exc: BaseException, duration_s: float, runtime_meta: dict[str, Any] | None
+        session_id: str,
+        name: str,
+        exc: BaseException,
+        duration_s: float,
+        runtime_meta: dict[str, Any] | None,
     ) -> None:
         await safe_write(
             sink,
@@ -493,8 +602,8 @@ def _make_emitters(
                 tenant_id=tenant_id,
                 vendor_id=vendor_id,
                 consent_token=consent_token,
-                session_id=fallback_session_id,
-                sequence_number=await _seq(),
+                session_id=session_id,
+                sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=default_agent_runtime,
                 runtime_meta=runtime_meta,

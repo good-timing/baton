@@ -20,6 +20,7 @@ import pytest
 
 from baton.integrations.mcp import VendorConfig, install_baton
 from baton.integrations.mcp._compat import MCPServerClass as FastMCP
+from baton.integrations.mcp._registry import get_tool_registry
 from baton.sinks import FileSink
 
 
@@ -407,6 +408,319 @@ class TestAllFourEventTypesInOneFlow:
         assert types.count("tool_call_start") == 1
         assert types.count("tool_call_end") == 1
 
+
+class _FakeRequest:
+    """Minimal stand-in for a transport request object — just headers."""
+
+    def __init__(self, headers: dict[str, str]) -> None:
+        self.headers = headers
+
+
+class _FakeRequestContext:
+    def __init__(self, request: Any = None, meta: dict[str, Any] | None = None) -> None:
+        self.request = request
+        self.meta = meta
+
+
+class _FakeContextV2:
+    """Mimics mcp 2.0's ``Context``: a first-class ``.headers`` property."""
+
+    def __init__(self, headers: dict[str, str] | None, meta: dict[str, Any] | None = None) -> None:
+        self.headers = headers
+        self.request_context = _FakeRequestContext(meta=meta)
+
+
+class _FakeContextV1:
+    """Mimics mcp 1.x's ``Context``: no ``.headers`` at all — only reachable
+    through ``request_context.request.headers``."""
+
+    def __init__(self, headers: dict[str, str] | None, meta: dict[str, Any] | None = None) -> None:
+        self.request_context = _FakeRequestContext(
+            _FakeRequest(headers) if headers else None, meta=meta
+        )
+
+
+class TestStatefulHttpSessionResolution:
+    """Item 2 (sdk-hardening thread): real per-call session id via the
+    ``mcp-session-id`` header on stateful HTTP, instead of the shared
+    process-wide fallback. Drives ``Tool.run`` directly with a fake context
+    object (rather than through ``mcp.call_tool()``, which never carries a
+    real transport request) since that's the exact call shape the mcp SDK's
+    dispatch layer uses — see ``tool_manager.py``'s ``call_tool``."""
+
+    async def test_two_calls_with_different_headers_get_different_session_ids(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        """The actual bug this item fixes: two different hosted users hitting
+        the same process must not collapse onto one session."""
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        await tool.run({"msg": "a"}, context=_FakeContextV2({"mcp-session-id": "user-a"}))
+        await tool.run({"msg": "b"}, context=_FakeContextV2({"mcp-session-id": "user-b"}))
+        await handle.flush()
+
+        events = [e for e in _read_events(path) if e["event_type"] == "tool_call_start"]
+        session_ids = {e["session_id"] for e in events}
+        assert session_ids == {"user-a", "user-b"}
+
+    async def test_mcp2_style_header_via_headers_property(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        await tool.run({"msg": "a"}, context=_FakeContextV2({"mcp-session-id": "sess-v2"}))
+        await handle.flush()
+
+        events = _read_events(path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == "sess-v2"
+
+    async def test_mcp1_style_header_via_request_context(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        await tool.run({"msg": "a"}, context=_FakeContextV1({"mcp-session-id": "sess-v1"}))
+        await handle.flush()
+
+        events = _read_events(path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == "sess-v1"
+
+    async def test_no_header_falls_back_to_process_wide_id(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        """Stateless HTTP (no ``mcp-session-id`` by protocol design) and any
+        other header-less case: falls back honestly rather than erroring."""
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        await tool.run({"msg": "a"}, context=_FakeContextV2({}))
+        await handle.flush()
+
+        events = _read_events(path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == handle.session_id
+
+    async def test_stdio_no_context_falls_back_to_process_wide_id(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        await tool.run({"msg": "a"}, context=None)
+        await handle.flush()
+
+        events = _read_events(path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == handle.session_id
+
+    async def test_proactive_annotation_carries_the_same_resolved_session_id(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        """The synthesised proactive (from an injected user_goal) must land
+        on the same session as the tool_call_start it explains, not the
+        process-wide fallback."""
+        mcp, handle, path = configured_mcp
+
+        # No `user_goal` param declared — Baton injects it into the advertised
+        # schema, so a value supplied at call time is treated as captured
+        # intent (disposition "injected"), not forwarded to the vendor fn.
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        await tool.run(
+            {"msg": "a", "user_goal": "summarize the thread"},
+            context=_FakeContextV2({"mcp-session-id": "sess-with-goal"}),
+        )
+        await handle.flush()
+
+        events = _read_events(path)
+        by_type = {e["event_type"]: e for e in events}
+        assert by_type["annotation"]["session_id"] == "sess-with-goal"
+        assert by_type["tool_call_start"]["session_id"] == "sess-with-goal"
+
+    async def test_sequence_numbers_independent_per_resolved_session(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        """SessionCounter must key on the RESOLVED session id, not the
+        install-time fallback, or two users' sequences would interleave into
+        one shared counter. Each tool call emits two events (start + end)
+        against the per-session counter, so 2 calls for user-a means seqs
+        1-4 and 1 call for user-b means seqs 1-2 — independently."""
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        await tool.run({"msg": "1"}, context=_FakeContextV2({"mcp-session-id": "user-a"}))
+        await tool.run({"msg": "2"}, context=_FakeContextV2({"mcp-session-id": "user-a"}))
+        await tool.run({"msg": "3"}, context=_FakeContextV2({"mcp-session-id": "user-b"}))
+        await handle.flush()
+
+        events = [
+            e for e in _read_events(path) if e["event_type"] in ("tool_call_start", "tool_call_end")
+        ]
+        by_session: dict[str, list[int]] = {}
+        for e in events:
+            by_session.setdefault(e["session_id"], []).append(e["sequence_number"])
+        assert sorted(by_session["user-a"]) == [1, 2, 3, 4]
+        assert sorted(by_session["user-b"]) == [1, 2]
+
+
+class TestMetaBasedSessionResolution:
+    """SPEC §3.4 rungs 1-2 — ``_meta.traceparent`` (SEP-414) then
+    ``_meta["io.baton/session_id"]`` — checked ahead of the header rung
+    below, since neither depends on which MCP protocol version was
+    negotiated (unlike the ``mcp-session-id`` header, which SEP-2567 removes
+    on new-spec streamable HTTP)."""
+
+    async def test_traceparent_trace_id_used_as_session_id(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        ctx = _FakeContextV2({}, meta={"traceparent": traceparent})
+        await tool.run({"msg": "a"}, context=ctx)
+        await handle.flush()
+
+        events = _read_events(path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
+
+    async def test_traceparent_takes_priority_over_header(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        ctx = _FakeContextV2({"mcp-session-id": "from-header"}, meta={"traceparent": traceparent})
+        await tool.run({"msg": "a"}, context=ctx)
+        await handle.flush()
+
+        events = _read_events(path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
+
+    async def test_malformed_traceparent_falls_through_to_header(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        ctx = _FakeContextV2({"mcp-session-id": "from-header"}, meta={"traceparent": "bogus"})
+        await tool.run({"msg": "a"}, context=ctx)
+        await handle.flush()
+
+        events = _read_events(path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == "from-header"
+
+    async def test_all_zero_trace_id_falls_through_to_header(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        """An all-zero trace-id is the W3C spec's explicit 'no trace' sentinel
+        — never a real correlation key."""
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        traceparent = "00-00000000000000000000000000000000-00f067aa0ba902b7-01"
+        ctx = _FakeContextV2({"mcp-session-id": "from-header"}, meta={"traceparent": traceparent})
+        await tool.run({"msg": "a"}, context=ctx)
+        await handle.flush()
+
+        events = _read_events(path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == "from-header"
+
+    async def test_io_baton_session_id_used_when_no_traceparent(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        ctx = _FakeContextV2({}, meta={"io.baton/session_id": "vendor-app-handle"})
+        await tool.run({"msg": "a"}, context=ctx)
+        await handle.flush()
+
+        events = _read_events(path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == "vendor-app-handle"
+
+    async def test_io_baton_session_id_lower_priority_than_traceparent(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        ctx = _FakeContextV2(
+            {},
+            meta={"traceparent": traceparent, "io.baton/session_id": "vendor-app-handle"},
+        )
+        await tool.run({"msg": "a"}, context=ctx)
+        await handle.flush()
+
+        events = _read_events(path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["session_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
+
+
+class TestSequenceNumbers:
     async def test_sequence_numbers_monotonic_across_event_types(
         self, configured_mcp: tuple[Any, Any, str]
     ) -> None:
