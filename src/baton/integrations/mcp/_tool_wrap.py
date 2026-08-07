@@ -32,6 +32,19 @@ wraps the original exception in ``ToolError`` (which it does), the event
 records the unwrapped ``__cause__`` so ``error_type`` reflects the real
 exception class (e.g., ``RuntimeError``, not ``ToolError``).
 
+**MRTR (multi-round-trip calls, mcp>=2.0).** A handler can pause mid-flight
+and return ``InputRequiredResult`` to ask the client for more input before
+the call actually completes; the client then retries the same logical call,
+carrying its answers via ``Context.input_responses``/``request_state``. A
+paused round is not a completion, so it gets no ``tool_call_end``
+(``_is_mrtr_pause``); a round that's continuing a prior pause is not a new
+call, so it gets no new ``tool_call_start`` (``_is_mrtr_continuation``) —
+otherwise a 3-round exchange would misreport as one dangling start, one
+spurious mid-sequence start+end pair, and one real completion. Whichever
+round eventually returns a real result (or errors) gets the one true
+``tool_call_end``/``tool_call_error``. Detection is duck-typed on the wire
+shape, not an ``mcp_types`` import, so it's inert (always False) on mcp<2.0.
+
 **Intent-param injection (mirrors the FastMCP middleware + baton-extmcp).**
 The official SDK exposes no ``on_list_tools`` middleware hook, so instead of
 injecting into a per-request tool list we mutate each ``Tool.parameters`` dict
@@ -353,7 +366,17 @@ def _wrap_tool_run(
                 call_session_id, name, scrubbed_intent, scrubbed_expected, scrubbed_meta
             )
 
-        await emit_before(call_session_id, name, scrubber(params), scrubbed_meta, scrubbed_intent)
+        # MRTR (mcp>=2.0): a continuation carries input_responses/request_state
+        # from an earlier InputRequiredResult pause — it's the SAME logical call
+        # resuming, not a new one, so it gets no new tool_call_start. The goal-
+        # param strip above still runs unconditionally regardless: if a
+        # continuation resends the original arguments, user_goal/expected_result
+        # must still never reach the vendor handler.
+        is_continuation = _is_mrtr_continuation(context)
+        if not is_continuation:
+            await emit_before(
+                call_session_id, name, scrubber(params), scrubbed_meta, scrubbed_intent
+            )
         called_at = monotonic()
         try:
             result = await original_run(arguments, context=context, convert_result=convert_result)
@@ -366,7 +389,12 @@ def _wrap_tool_run(
                 call_session_id, name, original_exc, monotonic() - called_at, scrubbed_meta
             )
             raise
-        await emit_after(call_session_id, name, result, monotonic() - called_at, scrubbed_meta)
+        # MRTR (mcp>=2.0): an InputRequiredResult means the call paused mid-flight
+        # to ask the client for more input — it hasn't finished, so no
+        # tool_call_end. Whichever round eventually returns something else
+        # (or errors) is the one that gets the real end/error event.
+        if not _is_mrtr_pause(result):
+            await emit_after(call_session_id, name, result, monotonic() - called_at, scrubbed_meta)
         return result
 
     setattr(wrapper, _WRAPPED_SENTINEL, True)
@@ -490,6 +518,37 @@ async def _resolve_call_session_id(
         return fallback
     session_id = headers.get("mcp-session-id")
     return session_id if isinstance(session_id, str) and session_id else fallback
+
+
+def _is_mrtr_continuation(context: Any) -> bool:
+    """True if this ``Tool.run`` invocation is a continuation of a previously
+    paused multi-round-trip (MRTR) call — mcp>=2.0's ``Context.input_responses``/
+    ``request_state`` carry the client's answers to an earlier
+    ``InputRequiredResult``'s ``input_requests`` (SEP, 2026-07-28+). Duck-typed,
+    not an ``isinstance`` check against ``mcp_types`` — mcp<2.0 has no such
+    properties on ``Context`` at all, so this is always False there. Never
+    raises: mirrors the rest of this module's best-effort context reads."""
+    if context is None:
+        return False
+    try:
+        return (
+            getattr(context, "input_responses", None) is not None
+            or getattr(context, "request_state", None) is not None
+        )
+    except (AttributeError, ValueError):
+        return False
+
+
+def _is_mrtr_pause(result: Any) -> bool:
+    """True if ``result`` is an mcp>=2.0 ``InputRequiredResult`` — the tool call
+    paused mid-flight to ask the client for more input rather than completing.
+    Duck-typed on the wire discriminator (``result_type == "input_required"``,
+    the tag ``FuncMetadata.convert_result`` passes an ``InputRequiredResult``
+    through unchanged to preserve) rather than importing ``mcp_types`` — mcp<2.0
+    has no such type, and every other completed-result shape here
+    (``CallToolResult``, the 1.x tuple, a raw dict/model) either lacks
+    ``result_type`` or carries ``"complete"``, never ``"input_required"``."""
+    return getattr(result, "result_type", None) == "input_required"
 
 
 def _extract_meta_from_context(context: Any) -> dict[str, Any] | None:

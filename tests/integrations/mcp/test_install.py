@@ -425,9 +425,21 @@ class _FakeRequestContext:
 class _FakeContextV2:
     """Mimics mcp 2.0's ``Context``: a first-class ``.headers`` property."""
 
-    def __init__(self, headers: dict[str, str] | None, meta: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        headers: dict[str, str] | None,
+        meta: dict[str, Any] | None = None,
+        *,
+        input_responses: dict[str, Any] | None = None,
+        request_state: str | None = None,
+    ) -> None:
         self.headers = headers
         self.request_context = _FakeRequestContext(meta=meta)
+        # mcp>=2.0's MRTR properties — present directly on Context, not nested.
+        # Both default None (a fresh, non-continuation call) so every existing
+        # caller of this fake is unaffected.
+        self.input_responses = input_responses
+        self.request_state = request_state
 
 
 class _FakeContextV1:
@@ -904,6 +916,147 @@ class TestResolveSessionIdHook:
         assert captured["meta"] == {"io.baton/session_id": "app-handle"}
         assert captured["tool_name"] == "echo"
         assert captured["arguments"] == {"msg": "hello"}
+
+
+class _Paused:
+    """Duck-types mcp>=2.0's ``InputRequiredResult`` on the one field
+    ``_is_mrtr_pause`` reads. With ``convert_result=False`` (the wrapper's
+    default and what every ``tool.run(...)`` call here uses), mcp 1.27.2's own
+    ``Tool.run`` returns the fn's raw return value unchanged — so a real
+    installed mcp SDK hands this straight back to the wrapper, no mocking of
+    mcp internals required."""
+
+    result_type = "input_required"
+
+
+class TestMRTRHandling:
+    """Item on the sdk-hardening thread: mcp>=2.0 multi-round-trip tool calls
+    (a handler pauses mid-flight via ``InputRequiredResult``, asking the
+    client for more input before the call completes). Before this fix, a
+    paused round fired ``tool_call_end`` as if it had finished; this also
+    covers the mirror-image bug a naive end-only fix would introduce: every
+    continuation round firing its own spurious ``tool_call_start``."""
+
+    async def test_paused_round_emits_start_but_no_end(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def ask(msg: str) -> Any:
+            return _Paused()
+
+        tool = get_tool_registry(mcp)["ask"]
+        await tool.run({"msg": "a"}, context=_FakeContextV2({"mcp-session-id": "sess-1"}))
+        await handle.flush()
+
+        events = _read_events(path)
+        types = [e["event_type"] for e in events]
+        assert types.count("tool_call_start") == 1
+        assert "tool_call_end" not in types
+        assert "tool_call_error" not in types
+
+    async def test_continuation_round_emits_no_new_start(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def ask(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["ask"]
+        # A continuation carries input_responses/request_state from an earlier
+        # pause — no fresh call is starting, so no new tool_call_start.
+        continuation_ctx = _FakeContextV2(
+            {"mcp-session-id": "sess-1"}, input_responses={"q1": "the answer"}
+        )
+        await tool.run({"msg": "a"}, context=continuation_ctx)
+        await handle.flush()
+
+        events = _read_events(path)
+        types = [e["event_type"] for e in events]
+        assert "tool_call_start" not in types
+        assert types.count("tool_call_end") == 1
+
+    async def test_request_state_alone_also_marks_a_continuation(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def ask(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["ask"]
+        continuation_ctx = _FakeContextV2(
+            {"mcp-session-id": "sess-1"}, request_state="opaque-state"
+        )
+        await tool.run({"msg": "a"}, context=continuation_ctx)
+        await handle.flush()
+
+        events = _read_events(path)
+        types = [e["event_type"] for e in events]
+        assert "tool_call_start" not in types
+        assert types.count("tool_call_end") == 1
+
+    async def test_full_two_round_exchange_yields_exactly_one_start_and_one_end(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        """The end-to-end shape this fix is for: a 2-round MRTR exchange must
+        look like exactly one logical tool call, not two."""
+        mcp, handle, path = configured_mcp
+
+        rounds = iter([_Paused(), "the real answer"])
+
+        @mcp.tool()
+        def ask(msg: str) -> Any:
+            return next(rounds)
+
+        tool = get_tool_registry(mcp)["ask"]
+        # Round 1: fresh call, pauses.
+        await tool.run({"msg": "a"}, context=_FakeContextV2({"mcp-session-id": "sess-1"}))
+        # Round 2: continuation, completes for real.
+        await tool.run(
+            {"msg": "a"},
+            context=_FakeContextV2({"mcp-session-id": "sess-1"}, input_responses={"q1": "answer"}),
+        )
+        await handle.flush()
+
+        events = _read_events(path)
+        types = [e["event_type"] for e in events]
+        assert types.count("tool_call_start") == 1
+        assert types.count("tool_call_end") == 1
+        session_ids = {e["session_id"] for e in events}
+        assert session_ids == {"sess-1"}
+
+    async def test_goal_params_still_stripped_on_a_continuation_round(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        """A continuation suppresses the emitted tool_call_start, but the
+        injected user_goal/expected_result strip must still run — if a
+        continuation resends the original arguments, they must never reach
+        the vendor handler."""
+        mcp, handle, _path = configured_mcp
+        seen_args: dict[str, Any] = {}
+
+        @mcp.tool()
+        def ask(msg: str) -> str:
+            seen_args.update({"msg": msg})
+            return msg
+
+        tool = get_tool_registry(mcp)["ask"]
+        continuation_ctx = _FakeContextV2(
+            {"mcp-session-id": "sess-1"}, input_responses={"q1": "answer"}
+        )
+        await tool.run(
+            {"msg": "a", "user_goal": "should never reach the vendor fn"},
+            context=continuation_ctx,
+        )
+        await handle.flush()
+
+        assert "user_goal" not in seen_args
+        assert seen_args == {"msg": "a"}
 
 
 class TestSequenceNumbers:
