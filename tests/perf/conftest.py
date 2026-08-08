@@ -76,13 +76,22 @@ def _render_markdown(measurements: list[dict[str, Any]]) -> str:
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     measurements = collected_measurements()
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    # Diagnostic — always printed (goes to the step's plain log, visible via
+    # `gh run view --log`) so a silent miss (0 measurements, unset env var,
+    # write exception) is visible without needing to inspect the rendered
+    # summary UI to tell whether this hook even ran.
+    print(
+        f"\n[perf-summary] {len(measurements)} measurement(s) collected; "
+        f"GITHUB_STEP_SUMMARY={'set: ' + summary_path if summary_path else 'unset'}"
+    )
     if not measurements:
         return
     report = _render_markdown(measurements)
-    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as f:
-            f.write(report)
+            written = f.write(report)
+        print(f"[perf-summary] wrote {written} chars to {summary_path}")
     else:
         # Local run — no step-summary file to append to. Print instead so
         # the numbers are visible without needing CI.
