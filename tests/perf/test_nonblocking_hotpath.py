@@ -50,6 +50,7 @@ from tests.perf.harness import (
     library_session,
     mcp_session,
     median,
+    record_measurement,
     timed_async_calls,
     timed_calls,
 )
@@ -102,6 +103,16 @@ def _assert_ratio_ok(path_name: str, mode: str, healthy: float, broken: float) -
     # near-zero healthy baseline doesn't make the ratio check meaningless —
     # the abs backstop's only job is catching a true multi-second hang.
     ratio_ceiling = max(healthy, MIN_HEALTHY_FLOOR_SECONDS) * RATIO_CEILING
+    # Recorded BEFORE asserting, so the number shows up in the CI step
+    # summary even when the assertion below fails.
+    record_measurement(
+        suite="nonblocking_hotpath",
+        path=path_name,
+        mode=mode,
+        healthy_median_ms=healthy * 1000,
+        broken_median_ms=broken * 1000,
+        ratio=broken / max(healthy, MIN_HEALTHY_FLOOR_SECONDS),
+    )
     assert broken < ratio_ceiling, (
         f"{path_name}: {mode}-collector median {broken:.4f}s vs healthy "
         f"{healthy:.4f}s median exceeds the {RATIO_CEILING}x ratio ceiling "

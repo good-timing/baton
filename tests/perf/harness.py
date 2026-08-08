@@ -176,6 +176,27 @@ def median(samples: list[float]) -> float:
 
 
 # =============================================================================
+# Measurement recording — for CI step-summary reporting (tests/perf/conftest.py
+# renders these into a markdown table via GITHUB_STEP_SUMMARY). Deliberately
+# separate from the pass/fail assertion: record BEFORE asserting, so a number
+# is visible even when the assertion built on it fails. Plain module-level
+# list, no pytest import — a soak-style caller could read collected_measurements()
+# too, though scripts/soak.py currently has its own separate report shape.
+# =============================================================================
+
+_MEASUREMENTS: list[dict[str, Any]] = []
+
+
+def record_measurement(**fields: Any) -> None:
+    """Record one perf measurement for the CI step-summary report."""
+    _MEASUREMENTS.append(fields)
+
+
+def collected_measurements() -> list[dict[str, Any]]:
+    return list(_MEASUREMENTS)
+
+
+# =============================================================================
 # Bounded teardown — see test_nonblocking_hotpath.py's module docstring for
 # the full "known trap" writeup: aclose()/flush() await the drain directly
 # and are NOT bounded by HttpSink's shutdown_flush_timeout_seconds (that

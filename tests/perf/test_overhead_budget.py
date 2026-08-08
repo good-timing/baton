@@ -40,7 +40,7 @@ import pytest
 
 from baton.integrations.mcp import VendorConfig, install_baton
 from baton.integrations.mcp._compat import MCPServerClass as FastMCP
-from tests.perf.harness import NullSink, median, percentile, timed_async_calls
+from tests.perf.harness import NullSink, median, percentile, record_measurement, timed_async_calls
 
 pytestmark = pytest.mark.perf
 
@@ -151,6 +151,17 @@ async def test_overhead_ratio_within_budget(case_name: str) -> None:
     # timer-resolution) would otherwise divide-by-near-zero and blow the
     # ratio ceiling on pure noise.
     ratio = wrapped_median / max(baseline_median, 1e-6)
+
+    # Recorded BEFORE asserting, so the number shows up in the CI step
+    # summary even when the assertion below fails.
+    record_measurement(
+        suite="overhead_budget",
+        case=case_name,
+        baseline_median_ms=baseline_median * 1000,
+        wrapped_median_ms=wrapped_median * 1000,
+        wrapped_p95_ms=wrapped_p95 * 1000,
+        ratio=ratio,
+    )
 
     assert wrapped_median < abs_backstop, (
         f"{case_name}: wrapped median {wrapped_median * 1000:.2f}ms exceeds the "
