@@ -23,12 +23,15 @@ either succeed synchronously or raise.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import logging
 import sys
 import warnings
+import weakref
 from abc import ABC, abstractmethod
 from collections import deque
+from collections.abc import Callable
 from pathlib import Path
 from time import monotonic
 from types import TracebackType
@@ -245,6 +248,7 @@ class HttpSink(Sink):
         backoff_max_seconds: float = 5.0,
         circuit_breaker_threshold: int = 5,
         circuit_breaker_reset_seconds: float = 30.0,
+        shutdown_flush_timeout_seconds: float = 3.0,
         _http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._url = url.rstrip("/")
@@ -255,6 +259,7 @@ class HttpSink(Sink):
         self._backoff_base = backoff_base_seconds
         self._backoff_max = backoff_max_seconds
         self._circuit = _CircuitBreaker(circuit_breaker_threshold, circuit_breaker_reset_seconds)
+        self._shutdown_flush_timeout = shutdown_flush_timeout_seconds
         self._owns_client = _http_client is None
         if _http_client is None:
             httpx = _require_httpx()
@@ -263,6 +268,8 @@ class HttpSink(Sink):
         self._flush_lock = asyncio.Lock()
         self._drain_task: asyncio.Task[None] | None = None
         self._closed = False
+        self._atexit_registered = False
+        self._atexit_callback: Callable[[], None] | None = None
 
     @property
     def url(self) -> str:
@@ -279,6 +286,7 @@ class HttpSink(Sink):
             raise RuntimeError("HttpSink is closed")
         self._enqueue(event)
         self._ensure_drain_running()
+        self._ensure_atexit_registered()
 
     async def flush(self) -> None:
         if self._closed:
@@ -293,6 +301,10 @@ class HttpSink(Sink):
             return
         await self.flush()
         self._closed = True
+        if self._atexit_callback is not None:
+            atexit.unregister(self._atexit_callback)
+            self._atexit_registered = False
+            self._atexit_callback = None
         if self._owns_client:
             await self._http_client.aclose()
 
@@ -321,6 +333,156 @@ class HttpSink(Sink):
         if self._drain_task is None or self._drain_task.done():
             self._drain_task = asyncio.create_task(self._background_drain())
 
+    def _ensure_atexit_registered(self) -> None:
+        # Registered on first write (not at import) so a constructed-but-unused
+        # sink holds no interpreter-lifetime reference. Weakref-wrapped so a
+        # caller that writes and never calls aclose() can still be garbage
+        # collected normally once nothing else references the sink — the
+        # hook becomes a no-op rather than pinning the sink (and its buffer/
+        # connection pool) alive for the process's whole lifetime just by
+        # having been written to once. Unregistered in aclose(): an explicit
+        # clean shutdown means there's nothing left for the hook to do.
+        if not self._atexit_registered:
+            weak_self = weakref.ref(self)
+
+            def _flush_if_alive() -> None:
+                sink = weak_self()
+                if sink is not None:
+                    sink._atexit_flush()
+
+            atexit.register(_flush_if_alive)
+            self._atexit_callback = _flush_if_alive
+            self._atexit_registered = True
+
+    def _events_url(self) -> str:
+        return f"{self._url}/v0/events"
+
+    def _auth_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._api_key}"}
+
+    @staticmethod
+    def _classify_status(status: int) -> str:
+        if 200 <= status < 300:
+            return "success"
+        if 400 <= status < 500 and status != 429:
+            return "permanent_failure"
+        return "transient_failure"
+
+    def _atexit_flush(self) -> None:
+        """Best-effort flush when the process exits without an explicit
+        ``aclose()`` — a forgotten shutdown call, or an unhandled exception
+        unwinding past ``asyncio.run()``.
+
+        Two distinct cases, disambiguated by whether the event loop that owns
+        ``_drain_task`` is still alive:
+
+        - **Dead loop** — the common case: ``asyncio.run()`` cancels
+          ``_background_drain`` and closes its loop before returning
+          (verified: a clean ``CancelledError``, not a crash — asyncio tasks
+          don't hit the ``threading``-only interpreter-abort risk a raw
+          background thread would). The original ``AsyncClient``/lock/task
+          are all unusable now, but cancellation only drops an event from
+          ``self._buffer`` on success or permanent failure, so anything
+          in-flight or not yet attempted survives — drained here with a
+          fresh sync client, one attempt per event (no retry; the process is
+          exiting), the remaining budget recomputed before every request so
+          total wall time can't exceed ``shutdown_flush_timeout_seconds``
+          regardless of how many events are buffered.
+        - **Live loop** — the sync ``Client``'s background-thread bridge
+          (``_SyncBridge``) runs its own loop via ``run_forever()`` on a
+          separate thread until ``Client.close()`` stops it; if the vendor
+          never calls ``close()``, that loop is still alive and potentially
+          mid-drain when this fires on the main thread. Touching
+          ``self._buffer``/``self._http_client`` directly here would race
+          with it (an ``asyncio.Lock`` only serializes coroutines on one
+          loop, not calls from a second thread) — instead, hand the real
+          ``flush()`` to that loop via ``run_coroutine_threadsafe`` (the
+          thread-safe way to submit work to a loop running elsewhere) and
+          block on the result under the same bounded deadline. `Client`
+          itself has no shutdown hook of its own today — this is the only
+          safety net for a never-closed sync `Client`, and if the bridge
+          thread is killed before its flush task finishes when the
+          interpreter actually tears down, that's a pre-existing gap in
+          `_SyncBridge`, not something this fix introduces or can close.
+
+        Real residual gap, not fixable in-process either way: SIGKILL, or
+        SIGTERM with no vendor-installed handler, terminate before Python's
+        normal shutdown sequence — and therefore atexit — ever runs. A
+        vendor needing that guarantee must call ``aclose()``/``close()`` from
+        their own signal handler.
+        """
+        if self._closed or not self._buffer:
+            return
+        log = logging.getLogger("baton")
+
+        loop = self._drain_task.get_loop() if self._drain_task is not None else None
+        if loop is not None and loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(self.flush(), loop)
+                future.result(timeout=self._shutdown_flush_timeout)
+            except TimeoutError:
+                log.warning(
+                    "baton: process exiting; cross-thread shutdown flush did not "
+                    "complete within %.1fs (background thread may still be "
+                    "draining when the process actually exits)",
+                    self._shutdown_flush_timeout,
+                )
+            except Exception:
+                log.exception("baton: cross-thread shutdown flush failed")
+            return
+
+        if not self._circuit.can_request():
+            log.warning(
+                "baton: process exiting with %d buffered event(s); "
+                "circuit breaker open, skipping shutdown flush",
+                len(self._buffer),
+            )
+            return
+        try:
+            import httpx
+
+            deadline = monotonic() + self._shutdown_flush_timeout
+            url = self._events_url()
+            headers = self._auth_headers()
+            sent = 0
+            dropped = 0
+            with httpx.Client() as client:
+                while self._buffer:
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        break
+                    event = self._buffer[0]
+                    try:
+                        response = client.post(
+                            url,
+                            json=event.model_dump(mode="json"),
+                            headers=headers,
+                            timeout=remaining,
+                        )
+                    except httpx.HTTPError:
+                        break  # transient — process is exiting, don't burn the deadline retrying
+                    outcome = self._classify_status(response.status_code)
+                    if outcome == "success":
+                        self._buffer.popleft()
+                        sent += 1
+                    elif outcome == "permanent_failure":
+                        self._buffer.popleft()  # unrecoverable, give up
+                        dropped += 1
+                    else:
+                        break  # transient (429/5xx)
+            remaining_count = len(self._buffer)
+            if remaining_count or dropped:
+                log.warning(
+                    "baton: process exiting without sink.aclose(); "
+                    "%d event(s) flushed, %d dropped (permanent failure), "
+                    "%d still buffered and lost",
+                    sent,
+                    dropped,
+                    remaining_count,
+                )
+        except Exception:
+            log.exception("baton: best-effort shutdown flush failed")
+
     async def _background_drain(self) -> None:
         async with self._flush_lock:
             await self._drain_locked()
@@ -344,18 +506,16 @@ class HttpSink(Sink):
     async def _send_with_retry(self, event: Event) -> str:
         import httpx  # installed — construction of this sink required the [http] extra
 
-        url = f"{self._url}/v0/events"
-        headers = {"Authorization": f"Bearer {self._api_key}"}
+        url = self._events_url()
+        headers = self._auth_headers()
         body = event.model_dump(mode="json")
 
         for attempt in range(self._max_retries + 1):
             try:
                 response = await self._http_client.post(url, json=body, headers=headers)
-                status = response.status_code
-                if 200 <= status < 300:
-                    return "success"
-                if 400 <= status < 500 and status != 429:
-                    return "permanent_failure"
+                outcome = self._classify_status(response.status_code)
+                if outcome != "transient_failure":
+                    return outcome
             except httpx.HTTPError:
                 pass
 

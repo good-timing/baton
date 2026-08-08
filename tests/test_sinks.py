@@ -10,6 +10,7 @@ Uses pytest-httpserver for a real in-process HTTP server (no mocks).
 
 from __future__ import annotations
 
+import asyncio
 import warnings
 from datetime import UTC, datetime
 from typing import Any
@@ -340,6 +341,248 @@ class TestLifecycle:
         # Subsequent emit raises (closed)
         with pytest.raises(RuntimeError):
             await sink.write(_make_event(sequence_number=2))
+
+
+# =============================================================================
+# Shutdown-safe flush (atexit)
+# =============================================================================
+
+
+class TestShutdownFlush:
+    """``_atexit_flush`` is the best-effort synchronous drain that runs when
+    the process exits without an explicit ``aclose()``. Called directly here
+    (bypassing real interpreter shutdown, same test-hook pattern as
+    ``_enqueue_for_test``) since ``atexit`` itself only fires once per
+    process and can't be exercised per-test."""
+
+    async def test_registers_on_first_write_unregisters_on_close(
+        self, httpserver: HTTPServer
+    ) -> None:
+        httpserver.expect_request("/v0/events", method="POST").respond_with_data("", status=201)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+        assert sink._atexit_registered is False
+        await sink.write(_make_event())
+        assert sink._atexit_registered is True
+        await sink.aclose()
+        assert sink._atexit_registered is False
+
+    async def test_flushes_leftover_buffer(self, httpserver: HTTPServer) -> None:
+        """Events that never got drained (e.g. the background task was
+        cancelled by an exiting event loop) are still in ``self._buffer`` —
+        the atexit flush ships them via a fresh sync client."""
+        posted: list[int] = []
+
+        def handler(request: Any) -> Response:
+            posted.append(request.get_json()["sequence_number"])
+            return Response("", status=201)
+
+        httpserver.expect_request("/v0/events", method="POST").respond_with_handler(handler)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+        # Bypass the background drain — simulates a task that got cancelled
+        # before it could send anything.
+        sink._enqueue_for_test(_make_event(sequence_number=1))
+        sink._enqueue_for_test(_make_event(sequence_number=2))
+
+        sink._atexit_flush()
+
+        assert posted == [1, 2]
+        assert len(sink._buffer) == 0
+        sink._closed = True  # avoid a second real flush attempt in aclose()
+
+    async def test_noop_when_already_closed(self, httpserver: HTTPServer) -> None:
+        call_count = 0
+
+        def handler(_request: Any) -> Response:
+            nonlocal call_count
+            call_count += 1
+            return Response("", status=201)
+
+        httpserver.expect_request("/v0/events", method="POST").respond_with_handler(handler)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+        sink._enqueue_for_test(_make_event())
+        sink._closed = True
+
+        sink._atexit_flush()
+
+        assert call_count == 0
+        assert len(sink._buffer) == 1  # untouched
+
+    async def test_noop_when_buffer_empty(self, httpserver: HTTPServer) -> None:
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+        sink._atexit_flush()  # must not raise with nothing buffered
+        await sink.aclose()
+
+    async def test_permanent_failure_dropped_without_retry(self, httpserver: HTTPServer) -> None:
+        call_count = 0
+
+        def handler(_request: Any) -> Response:
+            nonlocal call_count
+            call_count += 1
+            return Response("bad request", status=400)
+
+        httpserver.expect_request("/v0/events", method="POST").respond_with_handler(handler)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+        sink._enqueue_for_test(_make_event())
+
+        sink._atexit_flush()
+
+        assert call_count == 1
+        assert len(sink._buffer) == 0
+        sink._closed = True
+
+    async def test_transient_failure_stops_and_leaves_buffer(self, httpserver: HTTPServer) -> None:
+        httpserver.expect_request("/v0/events", method="POST").respond_with_data("err", status=500)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+        sink._enqueue_for_test(_make_event(sequence_number=1))
+        sink._enqueue_for_test(_make_event(sequence_number=2))
+
+        sink._atexit_flush()
+
+        # Stops at the first failure — doesn't burn the shutdown deadline
+        # retrying, and doesn't skip ahead to the next event.
+        assert len(sink._buffer) == 2
+        sink._closed = True
+
+    async def test_skips_entirely_when_circuit_open(self, httpserver: HTTPServer) -> None:
+        call_count = 0
+
+        def handler(_request: Any) -> Response:
+            nonlocal call_count
+            call_count += 1
+            return Response("err", status=500)
+
+        httpserver.expect_request("/v0/events", method="POST").respond_with_handler(handler)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k", circuit_breaker_threshold=3)
+        for _ in range(3):
+            sink._circuit.record_failure()
+        assert sink._circuit.can_request() is False
+        sink._enqueue_for_test(_make_event())
+
+        sink._atexit_flush()
+
+        assert call_count == 0
+        assert len(sink._buffer) == 1
+        sink._closed = True
+
+    async def test_deadline_bounds_total_wall_time_across_events(
+        self, httpserver: HTTPServer
+    ) -> None:
+        """The per-request timeout must be the REMAINING budget, not a fresh
+        full timeout each time — otherwise N slow-but-successful events can
+        blow the configured deadline by up to Nx."""
+        import time
+
+        def handler(_request: Any) -> Response:
+            time.sleep(0.05)
+            return Response("", status=201)
+
+        httpserver.expect_request("/v0/events", method="POST").respond_with_handler(handler)
+        sink = HttpSink(
+            url=httpserver.url_for(""), api_key="k", shutdown_flush_timeout_seconds=0.08
+        )
+        for i in range(5):
+            sink._enqueue_for_test(_make_event(sequence_number=i + 1))
+
+        start = time.monotonic()
+        sink._atexit_flush()
+        elapsed = time.monotonic() - start
+
+        # 5 requests x 0.05s each would be ~0.25s if each got its own fresh
+        # 0.08s budget (worse, unbounded); properly clamped it should stop
+        # within roughly one deadline window of the 0.08s configured budget.
+        assert elapsed < 0.2
+        sink._closed = True
+
+
+class TestCrossThreadShutdownFlush:
+    """When a live event loop still owns the sink (the sync ``Client``'s
+    background-thread bridge, still running because the vendor never called
+    ``close()``), ``_atexit_flush`` must delegate to that loop via
+    ``run_coroutine_threadsafe`` instead of touching ``self._buffer`` /
+    ``self._http_client`` directly from the calling (atexit/main) thread."""
+
+    async def test_delegates_to_live_loop_instead_of_racing_it(
+        self, httpserver: HTTPServer
+    ) -> None:
+        import threading
+        import time
+
+        posted: list[int] = []
+        lock = threading.Lock()
+
+        def handler(request: Any) -> Response:
+            seq = request.get_json()["sequence_number"]
+            if seq == 1:
+                # Widen the window so the background drain is still mid-flight
+                # on event 1 when _atexit_flush runs from this thread.
+                time.sleep(0.1)
+            with lock:
+                posted.append(seq)
+            return Response("", status=201)
+
+        httpserver.expect_request("/v0/events", method="POST").respond_with_handler(handler)
+
+        # A second thread running its own persistent loop — the same shape
+        # as baton.client._SyncBridge.
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
+
+        def run_loop() -> None:
+            asyncio.set_event_loop(loop)
+            ready.set()
+            loop.run_forever()
+
+        thread = threading.Thread(target=run_loop, daemon=True)
+        thread.start()
+        ready.wait(timeout=5.0)
+
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+
+        async def write_both() -> None:
+            await sink.write(_make_event(sequence_number=1))
+            await sink.write(_make_event(sequence_number=2))
+
+        try:
+            asyncio.run_coroutine_threadsafe(write_both(), loop).result(timeout=5.0)
+            # Let the bridge thread's background drain actually start
+            # sending event 1 before calling _atexit_flush from THIS
+            # (the test/main) thread — a genuine cross-thread call.
+            time.sleep(0.02)
+            sink._atexit_flush()
+
+            # Delegating to the live loop (which awaits the in-flight drain
+            # task, then runs flush() under its own lock) means every event
+            # is sent exactly once — no duplicate POST from a second sender
+            # racing the buffer, no drop from a pop lost to the race.
+            assert sorted(posted) == [1, 2]
+            assert len(posted) == 2
+            assert len(sink._buffer) == 0
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5.0)
+            loop.close()
+
+
+class TestAtexitDoesNotPinUnclosedSink:
+    async def test_unclosed_sink_is_still_garbage_collectable(self, httpserver: HTTPServer) -> None:
+        """A sink that's written to but never explicitly closed must not be
+        kept alive for the interpreter's lifetime just by being registered
+        with atexit — the registration is weakref-based specifically so a
+        caller who drops all other references can still reclaim it."""
+        import gc
+        import weakref
+
+        httpserver.expect_request("/v0/events", method="POST").respond_with_data("", status=201)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+        await sink.write(_make_event())
+        assert sink._drain_task is not None
+        await sink._drain_task  # let it actually drain before dropping the reference
+
+        ref = weakref.ref(sink)
+        del sink
+        gc.collect()
+
+        assert ref() is None
 
 
 # =============================================================================
