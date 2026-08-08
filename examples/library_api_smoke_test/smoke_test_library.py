@@ -249,13 +249,20 @@ def assert_events(events: list[dict[str, Any]]) -> None:
     )
 
     # Envelope per SPEC §11.4
+    # Keep in sync with tests/functional/envelope_assertions.py's
+    # REQUIRED_ENVELOPE_FIELDS — this example intentionally stays
+    # self-contained (no import from tests/, so it's still copy-paste-ready
+    # for a vendor) rather than importing that module, so the two field
+    # sets are maintained in parallel and must be updated together.
     required_envelope_fields = {
         "event_id",
         "event_type",
         "tenant_id",
+        "vendor_id",
         "session_id",
         "sequence_number",
         "captured_at",
+        "consent_token",
         "sdk_version",
         "agent_runtime",
         "payload",

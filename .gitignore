@@ -7,6 +7,13 @@ __pycache__
 build/
 dist/
 
+# The documented install path (Makefile's `install` target, CLAUDE.md) is
+# pip inside a venv, not uv — nothing in the Makefile or CI reads/enforces
+# uv.lock (no `uv lock --check` anywhere), so a locally-generated one would
+# be an unmaintained, silently-stale duplicate of pyproject.toml's
+# dependency resolution if committed. Keep it local-only.
+uv.lock
+
 # Test + coverage caches
 .pytest_cache
 .mypy_cache

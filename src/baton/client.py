@@ -67,6 +67,7 @@ may be overridden per-trace.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 import traceback
@@ -89,9 +90,11 @@ from baton.events import (
     ToolCallStartPayload,
 )
 from baton.scrub import Scrubber, identity_scrub  # noqa: F401  identity_scrub kept exported
-from baton.sinks import Sink
+from baton.sinks import Sink, safe_write
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "AsyncClient",
@@ -667,7 +670,13 @@ class Client:
     # =========================================================================
 
     def _emit_sync(self, event: Any) -> None:
-        self._bridge.run(self._sink.write(event))
+        # safe_write, not self._sink.write directly — a raise here (closed
+        # sink, an overflow warning promoted to an exception, etc.) would
+        # otherwise propagate into the vendor's own code inside the
+        # `with client.trace(...)` block, ahead of the vendor's real call in
+        # the proactive case. SPEC §11.2 fail-open applies here exactly as it
+        # does to the MCP adapters' tool-call wrapping.
+        self._bridge.run(safe_write(self._sink, event, logger))
 
     def _next_seq(self, session_id: str) -> int:
         current = self._seq_counters.get(session_id, 0)
@@ -1030,7 +1039,8 @@ class AsyncClient:
     # =========================================================================
 
     async def _emit(self, event: Any) -> None:
-        await self._sink.write(event)
+        # safe_write — see Client._emit_sync for why.
+        await safe_write(self._sink, event, logger)
 
     def _next_seq(self, session_id: str) -> int:
         current = self._seq_counters.get(session_id, 0)

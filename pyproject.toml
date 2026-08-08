@@ -128,6 +128,12 @@ disallow_untyped_defs = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-v --tb=short"
+markers = [
+    "slow: long-running (soak/stress); excluded from make test-fast",
+    "integration: requires a real vendor package extra installed",
+    "perf: wall-clock latency/overhead assertions; noisy on shared CI runners by nature, so CI-gated as continue-on-error rather than merge-blocking. Excluded from make test-fast.",
+    "functional: deterministic (non-timing-based) correctness assertions that happen to live alongside the perf suite (whitelabel/boundary leaks, cross-capture-path envelope parity, fail-open-on-overflow correctness) -- these are NOT timing-flaky, so they run in the regular merge-blocking test job, not the advisory perf job. Excluded from make test-fast.",
+]
 
 [tool.coverage.run]
 source_pkgs = ["baton"]
