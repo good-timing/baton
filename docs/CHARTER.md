@@ -38,7 +38,7 @@ These are non-negotiable. They exist to keep Baton a real SDK.
 
 1. **No vendor-specific imports anywhere in this repo.** Not in `src/baton/`, not in `tests/`, not in `examples/`. If anything ships in this repository that imports from a specific vendor module, the architecture is broken. CI enforces this. Examples use generic stubs that mirror common API shapes (e.g., OpenAI-compatible chat completions), not real vendor SDKs.
 2. **Baton only sees what MCP transport carries.** Tool name, params, response, error, agent-supplied metadata (intent/expected, via a spec-defined mechanism). It does not have access to the vendor app's logs, request context, DB, or observability events. For richer signal, the *spec* defines a mechanism for vendors to provide it — the SDK does not reach across.
-3. **The Baton spec lives in `docs/SPEC.md`, never in a vendor repo.** The JSON Schema for the signal and response payloads is the hero artifact. It travels with the SDK, not with any one vendor.
+3. **The Baton spec lives in `docs/SPEC.md`, never in a vendor repo.** The JSON Schema for the signal and response payloads is the hero artifact. It travels with the SDK, not with any one vendor. The prose spec stays here; the machine-readable wire envelope (SPEC §11.4) — schema + conformance vectors — lives in the neutral sibling repo `baton-spec`, submoduled by every producer (this SDK, `baton-proxy`, `baton-extmcp`, the TypeScript SDK) so none of Baton's own sibling repos is privileged as "the" spec home either.
 4. **Public API is the contract.** Anything exported from `src/baton/__init__.py` (or `src/baton/integrations/<name>/__init__.py`) is what vendors integrate against. Internal modules are off-limits to consumers. Changes to the public surface require a `CHANGELOG.md` entry; wire-format changes require a `SPEC.md §13` entry.
 5. **Tests use fake-vendor fixtures only.** The test suite uses synthetic in-process fixtures — `pytest-httpserver` for HTTP capture, FastMCP's in-process `Client` for MCP integration tests, generic stub vendor SDKs in examples. Tests prove the SDK works for *any* vendor. If a Baton test imports a real vendor module, the test is wrong.
 6. **Integration is minimal or the SDK is failing.** The single load-bearing ergonomic check. For the MCP path: one call to `install_baton(mcp, VendorConfig(...))` and that's the whole story. For the library API: a `Client(...)` constructor plus `with client.trace(...)` wrapping each call. If integration code grows substantially beyond these shapes, refactor Baton, not the vendor.
@@ -119,6 +119,7 @@ Architectural decisions baked into the current SPEC, dated for traceability.
 - **`CHANGELOG.md`** — SDK package changelog (wire-format changes are recorded in `SPEC.md §13`).
 - **`examples/`** — runnable usage examples (the library API skill demo, the e2e smoke test).
 - **Sibling repository:** `baton-console` (separate repo) for the Console worker + UI.
+- **Sibling repository:** `baton-spec` (separate repo) for the machine-readable event-envelope schema + conformance vectors, submoduled by every producer (this SDK, `baton-proxy`, `baton-extmcp`, the TypeScript SDK).
 
 ---
 
