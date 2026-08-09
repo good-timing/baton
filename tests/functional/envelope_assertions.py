@@ -23,26 +23,33 @@ shape.
 
 from __future__ import annotations
 
+import typing
 from typing import Any
 
-from baton import SignalType
+from pydantic import BaseModel
 
-# Mirrors baton.events._EventEnvelope's required (non-Optional) fields per
-# SPEC §11.4. Deliberately excludes the envelope's nullable fields
+from baton import SignalType
+from baton.events import ToolCallStartEvent
+
+
+def _non_nullable_fields(model: type[BaseModel]) -> set[str]:
+    """Field names whose annotation excludes ``None`` — always present on the
+    wire regardless of whether Pydantic considers them "required" (a field
+    with a server-generated default, like ``event_id``, is still always
+    populated). Derived from the model directly so this can't drift from
+    ``baton.events`` the way a hand-maintained field list could."""
+    return {
+        name
+        for name, info in model.model_fields.items()
+        if type(None) not in typing.get_args(info.annotation)
+    }
+
+
+# Every concrete event class shares _EventEnvelope's fields plus its own
+# event_type + payload, all non-nullable; ToolCallStartEvent is just a
+# representative pick. Excludes the envelope's genuinely nullable fields
 # (user_id, runtime_meta) — their absence-vs-null is not a shape defect.
-REQUIRED_ENVELOPE_FIELDS = {
-    "event_id",
-    "event_type",
-    "tenant_id",
-    "vendor_id",
-    "session_id",
-    "sequence_number",
-    "captured_at",
-    "consent_token",
-    "sdk_version",
-    "agent_runtime",
-    "payload",
-}
+REQUIRED_ENVELOPE_FIELDS = _non_nullable_fields(ToolCallStartEvent)
 
 
 def assert_envelope_shape(events: list[dict[str, Any]]) -> None:
