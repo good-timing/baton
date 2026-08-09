@@ -92,6 +92,7 @@ dev = [
     "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
     "pytest-httpserver>=1.0",
+    "jsonschema>=4.0",
 ]
 
 [tool.ruff]
