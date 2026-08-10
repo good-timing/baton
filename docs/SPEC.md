@@ -801,7 +801,7 @@ Event types and their payload shapes:
 
 | `event_type` | Payload | Source |
 |---|---|---|
-| `tool_call_start` | `{tool_name, params}` (params PII-scrubbed) | SDK middleware before vendor handler |
+| `tool_call_start` | `{tool_name, params, call_intent?, call_expected?, call_workflow?, intent_source?}` (params PII-scrubbed; the optional fields carry the injected per-call params when present — §13 changelog) | SDK middleware before vendor handler |
 | `tool_call_end` | `{tool_name, result, duration_ms}` (result PII-scrubbed) | SDK middleware after vendor handler returns |
 | `tool_call_error` | `{tool_name, error_type, error_body, duration_ms}` | SDK middleware on exception |
 | `annotation` | `{intent?, expected_outcome?, signal_type?, workflow?, suggested_improvement?, context?}` (all nullable; agent populates what it has) | SDK annotation tool handler / library `client.annotate(...)` / `trace.annotate(...)` |
@@ -842,7 +842,7 @@ Worker derives the canonical SignalPayload (§3) by:
 
 Mirrors baton-proxy's `MessageProcessor._capture_surface` / `Emitter.enqueue_surface_snapshot`. The SDK snapshots the wrapped server's **vendor-true** surface — `server_info` / `capabilities` / `instructions` (captured once, at `install_baton(...)` time, BEFORE Baton mutates instructions) plus the full `tools` list with schemas (captured BEFORE Baton's `user_goal`/`expected_result` injection) — hashes it (canonical JSON, sorted keys), and emits `surface_snapshot` at most once per observed `surface_hash` per process. Repeated captures of an unchanged surface are deduped and never re-emitted.
 
-`surface_hash` is the identity change specs and recipes are authored against (proxy's own `base_surface_hash`). This is why the snapshot excludes anything Baton itself adds: Baton's own injected tool (the annotation tool) is omitted from `tools` and recorded instead in `payload.seam_augmentations.injected_tools`, and the schema-injected `user_goal`/`expected_result` params never appear in `tools[].inputSchema` — toggling `intent_param_mode` MUST NOT change `surface_hash`.
+`surface_hash` is the identity change specs and recipes are authored against (proxy's own `base_surface_hash`). This is why the snapshot excludes anything Baton itself adds: Baton's own injected tool (the annotation tool) is omitted from `tools` and recorded instead in `payload.seam_augmentations.injected_tools`, and the schema-injected `user_goal`/`expected_result`/`overall_task` params never appear in `tools[].inputSchema` — toggling `intent_param_mode` MUST NOT change `surface_hash`.
 
 ```json
 {
@@ -853,13 +853,13 @@ Mirrors baton-proxy's `MessageProcessor._capture_surface` / `Emitter.enqueue_sur
   "tools": [{"name": "search", "description": "...", "inputSchema": {...}}, ...],
   "seam_augmentations": {
     "injected_tools": ["acme_annotate"],
-    "intent_param": {"names": ["user_goal", "expected_result"], "mode": "optional"},
+    "intent_param": {"names": ["expected_result", "overall_task", "user_goal"], "mode": "optional"},
     "instructions_suffix": true
   }
 }
 ```
 
-**`seam_augmentations.intent_param` is byte-for-byte with proxy** (converged 2026-08-08; was a documented divergence prior — see §13 changelog). Every producer injects the same two params (`user_goal` + `expected_result`) and emits plural `names: list[str]` as shown above — everything in the payload (top-level fields, `injected_tools`, `instructions_suffix`) is identical across producers.
+**`seam_augmentations.intent_param` is shape-identical across producers** (plural `names: list[str]`, converged 2026-08-08). The SDK injects three params (`user_goal` + `expected_result` + `overall_task`, 2026-08-10); baton-proxy/baton-extmcp still inject two until ported (tracked divergence in the §13 changelog — a data difference in `names`, not a shape difference, so consumers are unaffected). Everything else in the payload (top-level fields, `injected_tools`, `instructions_suffix`) is identical across producers.
 
 **Capture mechanism differs by adapter** (both converge on the same wire shape):
 - `baton.integrations.fastmcp` (standalone `fastmcp` library) has a real `on_list_tools` middleware hook — the snapshot is captured and (if new) emitted on every `tools/list` response, using the vendor-true tools `call_next` returns before this adapter's own injection loop runs.
@@ -970,6 +970,7 @@ Defined error codes:
 
 ### Wire-format changes
 
+- **Unreleased (SDK-only, 2026-08-10)** — two additive nullable fields on `tool_call_start` payloads, closing the injected-params capture gaps found by the granularity-ladder data review (baton-internal ladder note, 2026-08-10 addendum): (1) `call_expected` — the per-call `expected_result` param value, previously captured only for the session's FIRST call (via the synthesized proactive) and silently dropped for every later call; now rides every start event, restoring the expectation-vs-result diagnostic per call. (2) `call_workflow` — a NEW third injected param, agent-facing name `overall_task`, wire field `call_workflow`, feeding the console's existing `workflow` concept (rung 3b task continuity). Unlike `user_goal`/`expected_result` (call-scoped diagnostics, reword freely), `overall_task`'s description carries an explicit string-stability contract: repeat the exact same label across calls serving the same task. Grouping keys and diagnostics deliberately do not share a field. The agent-facing name avoids `workflow` because injected params live inside vendor tool schemas where `workflow` is a plausible real vendor param (collision = Baton's strip would swallow the vendor's argument). `seam_augmentations.intent_param.names` gains `overall_task` (data change, not shape change); baton-proxy and baton-extmcp still inject two params until ported — tracked divergence, same pattern as the 2026-08-06 entry below. Console ingest accepts both fields before any SDK emits them (deploy order).
 - **Unreleased (2026-08-08)** — closed the `seam_augmentations.intent_param` divergence from 2026-08-06/07 below: baton-proxy now injects the same two params (`user_goal` + `expected_result`) as the SDK and emits the same plural `names: list[str]` shape, instead of its prior single `baton_intent` param / singular `name: str`. No external customers depended on the old shape, so this was a straight port rather than an additive/compat change. `baton_console.dashboard.queries.build_surface_view`'s dual-shape handling was removed — `names` is now the only shape. Landed alongside `baton-spec` (a new repo holding the machine-readable envelope schema + conformance vectors, submoduled by every producer) to catch this class of drift going forward.
 - **Unreleased (SDK-only, 2026-08-07)** — added the `surface_snapshot` event type (§11.4.2). New event type, additive (existing producers/consumers unaffected). Brings the SDK to parity with baton-proxy's surface-capture behavior; top-level payload fields match proxy's `enqueue_surface_snapshot` so the Console worker materializes both into `vendor_surfaces` identically — `seam_augmentations.intent_param` is the one field that legitimately differs in shape (`names: list[str]` vs proxy's `name: str`), since the SDK injects two params where proxy injects one; the Console's `build_surface_view` was updated to handle both.
 - **Unreleased (SDK-only, 2026-08-06)** — no envelope/field changes; the SDK's injected schema param names changed from the single `baton_intent` to vendor-neutral `user_goal` + `expected_result`, matching baton-extmcp's naming (white-label rule). baton-proxy's superseded namespaced choice was a collision-safety call — it sits in front of upstream tools it doesn't own, which doesn't apply to an SDK-wrapped vendor server. `user_goal` still feeds `call_intent`/`intent_source`; `expected_result` is newly wired to the existing `AnnotationPayload.expected_outcome` field (previously reachable only via a real annotation-tool call, never via injection). baton-proxy is unaffected and still emits/expects `baton_intent` — the two surfaces intentionally diverge on the agent-facing param name until proxy is ported separately.

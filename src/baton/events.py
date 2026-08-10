@@ -43,19 +43,24 @@ class ToolCallStartPayload(BaseModel):
     """Emitted before the vendor handler runs. ``params`` is PII-scrubbed at
     emit-time per SPEC §7.
 
-    ``call_intent`` is the per-tool intent the SDK stripped from the injected
-    ``user_goal`` param (see ``integrations._llm_text.USER_GOAL_PARAM_NAME``);
-    it rides as a SIBLING of ``params`` — ``params`` stays exactly the
-    vendor-visible arguments. ``intent_source`` records provenance
-    (``"injected_param"``). Both null when the param wasn't used. The Console
-    reads ``payload.call_intent`` (``worker/correlate.py``, ``cycle.py``);
-    kept in lockstep with the proxy's emitter output."""
+    ``call_intent`` / ``call_expected`` / ``call_workflow`` are the values the
+    SDK stripped from the injected ``user_goal`` / ``expected_result`` /
+    ``overall_task`` params (``integrations._llm_text``); they ride as
+    SIBLINGS of ``params`` — ``params`` stays exactly the vendor-visible
+    arguments. ``call_intent``/``call_expected`` are call-scoped diagnostics;
+    ``call_workflow`` is the task-label grouping key (console rung 3b, exact
+    string continuity). ``intent_source`` records provenance
+    (``"injected_param"``). All null when the params weren't used. The Console
+    reads these off ``payload`` (``worker/correlate.py``, ``cycle.py``); kept
+    in lockstep with the proxy's emitter output."""
 
     model_config = ConfigDict(extra="forbid")
 
     tool_name: str
     params: dict[str, Any] = Field(default_factory=dict)
     call_intent: str | None = None
+    call_expected: str | None = None
+    call_workflow: str | None = None
     intent_source: str | None = None
 
 

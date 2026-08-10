@@ -48,8 +48,10 @@ from baton.integrations._config import (
 from baton.integrations._llm_text import (
     EXPECTED_RESULT_PARAM_NAME,
     INTENT_SOURCE_PARAM,
+    OVERALL_TASK_PARAM_NAME,
     USER_GOAL_PARAM_NAME,
     build_expected_result_param_description,
+    build_overall_task_param_description,
     build_user_goal_param_description,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
@@ -159,6 +161,7 @@ class BatonMiddleware(Middleware):
         for name, build_desc in (
             (USER_GOAL_PARAM_NAME, build_user_goal_param_description),
             (EXPECTED_RESULT_PARAM_NAME, build_expected_result_param_description),
+            (OVERALL_TASK_PARAM_NAME, build_overall_task_param_description),
         ):
             if name in existing:
                 dispositions[name] = "native"
@@ -218,7 +221,11 @@ class BatonMiddleware(Middleware):
                 injected_tool_names=(
                     [self._annotation_tool_name] if self._annotation_tool_name else []
                 ),
-                intent_param_names=[USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME],
+                intent_param_names=[
+                    USER_GOAL_PARAM_NAME,
+                    EXPECTED_RESULT_PARAM_NAME,
+                    OVERALL_TASK_PARAM_NAME,
+                ],
                 intent_param_mode=self._intent_param_mode,
             )
             seq = await self._next_seq(self._fallback_session_id)
@@ -259,14 +266,15 @@ class BatonMiddleware(Middleware):
 
     def _extract_goal_params(
         self, tool_name: str, arguments: dict[str, Any]
-    ) -> tuple[str | None, str | None]:
-        """Pop the injected ``user_goal``/``expected_result`` from ``arguments``
-        in place; return their values independently (either may be absent).
+    ) -> tuple[str | None, str | None, str | None]:
+        """Pop the injected ``user_goal``/``expected_result``/``overall_task``
+        from ``arguments`` in place; return their values independently (any
+        may be absent).
 
         Mutating in place is what keeps them off the vendor handler — the same
         dict is forwarded downstream."""
         if self._intent_param_mode == "off":
-            return None, None
+            return None, None, None
         dispositions = self._param_registry.get(tool_name)
         goal = self._extract_one_goal_param(
             tool_name, arguments, USER_GOAL_PARAM_NAME, dispositions
@@ -274,7 +282,10 @@ class BatonMiddleware(Middleware):
         expected = self._extract_one_goal_param(
             tool_name, arguments, EXPECTED_RESULT_PARAM_NAME, dispositions
         )
-        return goal, expected
+        task = self._extract_one_goal_param(
+            tool_name, arguments, OVERALL_TASK_PARAM_NAME, dispositions
+        )
+        return goal, expected, task
 
     def _extract_one_goal_param(
         self,
@@ -323,10 +334,14 @@ class BatonMiddleware(Middleware):
         # arguments).
         call_intent: str | None = None
         call_expected: str | None = None
+        call_task: str | None = None
         if isinstance(msg.arguments, dict):
-            call_intent, call_expected = self._extract_goal_params(tool_name, msg.arguments)
+            call_intent, call_expected, call_task = self._extract_goal_params(
+                tool_name, msg.arguments
+            )
         scrubbed_intent = self._scrubber(call_intent) if call_intent is not None else None
         scrubbed_expected = self._scrubber(call_expected) if call_expected is not None else None
+        scrubbed_task = self._scrubber(call_task) if call_task is not None else None
 
         params = dict(msg.arguments or {})
         raw_meta = self._extract_request_meta(context)
@@ -364,6 +379,7 @@ class BatonMiddleware(Middleware):
                     payload=AnnotationPayload(
                         intent=scrubbed_intent,
                         expected_outcome=scrubbed_expected,
+                        workflow=scrubbed_task,
                         intent_source=INTENT_SOURCE_PARAM,
                         tool_name=tool_name,
                     ),
@@ -389,7 +405,16 @@ class BatonMiddleware(Middleware):
                     tool_name=tool_name,
                     params=self._scrubber(params),
                     call_intent=scrubbed_intent,
-                    intent_source=INTENT_SOURCE_PARAM if scrubbed_intent is not None else None,
+                    call_expected=scrubbed_expected,
+                    call_workflow=scrubbed_task,
+                    intent_source=(
+                        INTENT_SOURCE_PARAM
+                        if any(
+                            v is not None
+                            for v in (scrubbed_intent, scrubbed_expected, scrubbed_task)
+                        )
+                        else None
+                    ),
                 ),
             ),
             logger,

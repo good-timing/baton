@@ -90,8 +90,10 @@ from baton.integrations._config import (
 from baton.integrations._llm_text import (
     EXPECTED_RESULT_PARAM_NAME,
     INTENT_SOURCE_PARAM,
+    OVERALL_TASK_PARAM_NAME,
     USER_GOAL_PARAM_NAME,
     build_expected_result_param_description,
+    build_overall_task_param_description,
     build_user_goal_param_description,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
@@ -304,6 +306,7 @@ def _inject_goal_params(tool: Any, intent_param_mode: str) -> dict[str, str]:
     for name, build_desc in (
         (USER_GOAL_PARAM_NAME, build_user_goal_param_description),
         (EXPECTED_RESULT_PARAM_NAME, build_expected_result_param_description),
+        (OVERALL_TASK_PARAM_NAME, build_overall_task_param_description),
     ):
         if name in existing:
             dispositions[name] = "native"
@@ -331,20 +334,22 @@ def _extract_goal_params(
     arguments: dict[str, Any],
     intent_param_mode: str,
     param_registry: dict[str, dict[str, str]],
-) -> tuple[str | None, str | None]:
-    """Pop the injected ``user_goal``/``expected_result`` from ``arguments`` in
-    place; return their values independently (either may be absent).
+) -> tuple[str | None, str | None, str | None]:
+    """Pop the injected ``user_goal``/``expected_result``/``overall_task``
+    from ``arguments`` in place; return their values independently (any may
+    be absent).
 
     Mutating in place is what keeps them off the vendor handler — the same
     dict is forwarded to ``original_run``."""
     if intent_param_mode == "off":
-        return None, None
+        return None, None, None
     dispositions = param_registry.get(tool_name)
     goal = _extract_one_goal_param(tool_name, arguments, USER_GOAL_PARAM_NAME, dispositions)
     expected = _extract_one_goal_param(
         tool_name, arguments, EXPECTED_RESULT_PARAM_NAME, dispositions
     )
-    return goal, expected
+    task = _extract_one_goal_param(tool_name, arguments, OVERALL_TASK_PARAM_NAME, dispositions)
+    return goal, expected, task
 
 
 def _extract_one_goal_param(
@@ -383,11 +388,14 @@ def _wrap_tool_run(
     name: str,
     tool: Any,
     emit_before: Callable[
-        [str, str, dict[str, Any], dict[str, Any] | None, str | None], Awaitable[None]
+        [str, str, dict[str, Any], dict[str, Any] | None, str | None, str | None, str | None],
+        Awaitable[None],
     ],
     emit_after: Callable[[str, str, Any, float, dict[str, Any] | None], Awaitable[None]],
     emit_error: Callable[[str, str, BaseException, float, dict[str, Any] | None], Awaitable[None]],
-    emit_proactive: Callable[[str, str, str, str | None, dict[str, Any] | None], Awaitable[None]],
+    emit_proactive: Callable[
+        [str, str, str, str | None, str | None, dict[str, Any] | None], Awaitable[None]
+    ],
     scrubber: Callable[[Any], Any],
     *,
     intent_param_mode: str,
@@ -439,7 +447,11 @@ def _wrap_tool_run(
                         injected_tool_names=(
                             [annotation_tool_name] if annotation_tool_name else []
                         ),
-                        intent_param_names=[USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME],
+                        intent_param_names=[
+                            USER_GOAL_PARAM_NAME,
+                            EXPECTED_RESULT_PARAM_NAME,
+                            OVERALL_TASK_PARAM_NAME,
+                        ],
                         intent_param_mode=intent_param_mode,
                     )
                     try:
@@ -459,12 +471,14 @@ def _wrap_tool_run(
         # arguments).
         call_intent: str | None = None
         call_expected: str | None = None
+        call_task: str | None = None
         if isinstance(arguments, dict):
-            call_intent, call_expected = _extract_goal_params(
+            call_intent, call_expected, call_task = _extract_goal_params(
                 name, arguments, intent_param_mode, param_registry
             )
         scrubbed_intent = scrubber(call_intent) if call_intent is not None else None
         scrubbed_expected = scrubber(call_expected) if call_expected is not None else None
+        scrubbed_task = scrubber(call_task) if call_task is not None else None
 
         params = dict(arguments or {})
         meta_dict = _extract_meta_from_context(context)
@@ -485,7 +499,12 @@ def _wrap_tool_run(
         # fired. Later param intents ride only the start event.
         if scrubbed_intent is not None and tracker.claim(call_session_id):
             await emit_proactive(
-                call_session_id, name, scrubbed_intent, scrubbed_expected, scrubbed_meta
+                call_session_id,
+                name,
+                scrubbed_intent,
+                scrubbed_expected,
+                scrubbed_task,
+                scrubbed_meta,
             )
 
         # MRTR (mcp>=2.0): a continuation carries input_responses/request_state
@@ -497,7 +516,13 @@ def _wrap_tool_run(
         is_continuation = _is_mrtr_continuation(context)
         if not is_continuation:
             await emit_before(
-                call_session_id, name, scrubber(params), scrubbed_meta, scrubbed_intent
+                call_session_id,
+                name,
+                scrubber(params),
+                scrubbed_meta,
+                scrubbed_intent,
+                scrubbed_expected,
+                scrubbed_task,
             )
         called_at = monotonic()
         try:
@@ -714,10 +739,13 @@ def _make_emitters(
     default_agent_runtime: str,
     scrubber: Callable[[Any], Any],
 ) -> tuple[
-    Callable[[str, str, dict[str, Any], dict[str, Any] | None, str | None], Awaitable[None]],
+    Callable[
+        [str, str, dict[str, Any], dict[str, Any] | None, str | None, str | None, str | None],
+        Awaitable[None],
+    ],
     Callable[[str, str, Any, float, dict[str, Any] | None], Awaitable[None]],
     Callable[[str, str, BaseException, float, dict[str, Any] | None], Awaitable[None]],
-    Callable[[str, str, str, str | None, dict[str, Any] | None], Awaitable[None]],
+    Callable[[str, str, str, str | None, str | None, dict[str, Any] | None], Awaitable[None]],
     Callable[[str, str, dict[str, Any]], Awaitable[None]],
 ]:
     """Build five async emitters: ``tool_call_start`` / ``_end`` / ``_error``,
@@ -738,6 +766,7 @@ def _make_emitters(
         name: str,
         intent: str,
         expected_outcome: str | None,
+        workflow: str | None,
         runtime_meta: dict[str, Any] | None,
     ) -> None:
         await safe_write(
@@ -754,6 +783,7 @@ def _make_emitters(
                 payload=AnnotationPayload(
                     intent=intent,
                     expected_outcome=expected_outcome,
+                    workflow=workflow,
                     intent_source=INTENT_SOURCE_PARAM,
                     tool_name=name,
                 ),
@@ -767,7 +797,10 @@ def _make_emitters(
         params: dict[str, Any],
         runtime_meta: dict[str, Any] | None,
         call_intent: str | None,
+        call_expected: str | None,
+        call_workflow: str | None,
     ) -> None:
+        injected_any = any(v is not None for v in (call_intent, call_expected, call_workflow))
         await safe_write(
             sink,
             ToolCallStartEvent(
@@ -783,7 +816,9 @@ def _make_emitters(
                     tool_name=name,
                     params=params,
                     call_intent=call_intent,
-                    intent_source=INTENT_SOURCE_PARAM if call_intent is not None else None,
+                    call_expected=call_expected,
+                    call_workflow=call_workflow,
+                    intent_source=INTENT_SOURCE_PARAM if injected_any else None,
                 ),
             ),
             logger,
