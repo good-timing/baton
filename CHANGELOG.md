@@ -8,6 +8,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Changed
+
+- **The `workflow` annotation field and the `overall_task` param now ask for the user's *current task*, not "the broader task".** Measured 2026-08-11 against scripted multi-turn sessions with known ground truth (`baton-internal/spikes/overall_task_a5/`): the old "broader task ... change it only when the user starts a different task" phrasing elicits conversation-scoped umbrella labels — one label held across genuinely distinct requests — which silently merges tasks in any correlation rule keyed on the field. Both surfaces now ask for a short current-task label with an explicit repeat-verbatim-until-they-switch stability contract, and the annotation tool's `workflow` gains that contract for the first time (it previously had none). Text-only: same fields, same events, no consumer change. **Honest result: this fixed the injected param and did NOT fix the annotation field** — on identical scripts the param produces per-task labels while annotations still produce umbrella ones, repeatably, which suggests position beats wording (a param is filled in the context of one call; an annotation is authored while reasoning about the session). SPEC §11.5.2 and §13 updated, including guidance that consumers treat annotation-sourced `workflow` as weaker evidence than `call_workflow`.
+
+---
+
 ## 0.6.0 — overall_task grouping key + vendor-neutral goal params
 
 ### Added
