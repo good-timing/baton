@@ -37,6 +37,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Without the submodule, test_spec_conformance.py silently skips —
+          # the release gate must actually pin the SDK against the spec schema.
+          submodules: true
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
