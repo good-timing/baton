@@ -381,7 +381,8 @@ class TestProactiveSynthesis:
     async def test_real_proactive_annotation_suppresses_synthesised(self, events_path: str) -> None:
         """A real proactive annotation-tool call claims the session's slot via the
         shared tracker, so a later injected-param intent does NOT synthesise a
-        second proactive."""
+        second proactive. Requires proactive_mode="on" — under the default the
+        tool rejects pre-call annotations, so nothing claims the slot."""
         mcp = FastMCP("test-vendor-mcp")
 
         @mcp.tool()
@@ -395,6 +396,7 @@ class TestProactiveSynthesis:
                 vendor_display_name="Test Vendor",
                 consent_token="ct_test",
                 sink=FileSink(events_path),
+                proactive_mode="on",
             ),
         )
         try:

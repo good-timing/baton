@@ -80,6 +80,28 @@ def register_annotation_tool(
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        # proactive_mode="off": refuse pre-call annotations structurally rather
+        # than by instruction text alone. Text alone is only a request, and a
+        # single umbrella `workflow` label from one stray proactive is enough
+        # to merge distinct tasks in any consumer that keys grouping on it
+        # (`workflow` outranks the per-call label in the reference consumer).
+        # Rejecting here, rather than requiring signal_type in the schema,
+        # keeps the agent from fabricating a `failure` just to get the call
+        # through — that would corrupt the reactive signal, which is the one
+        # worth protecting.
+        if proactive_mode == "off" and signal_type is None:
+            return {
+                "ok": False,
+                "error": (
+                    f"{name} is reactive-only on this server. Call it only AFTER "
+                    "a tool call returns an unhelpful, empty, failed or "
+                    "contradictory result, or when no tool covers what the user "
+                    "asked for — and set signal_type. What the user is trying to "
+                    "do is already recorded on each tool call, so no pre-call "
+                    "annotation is needed."
+                ),
+            }
+
         # Session id: we don't accept a Context kwarg because (a) we don't
         # use it (always fall back to fallback_session_id), and (b) older
         # mcp versions (<1.20) call `issubclass(param.annotation, Context)`

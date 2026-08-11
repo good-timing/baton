@@ -52,6 +52,9 @@ async def configured_mcp(events_path: str) -> Any:
             vendor_display_name="Test Vendor",
             consent_token="ct_test",
             sink=FileSink(events_path),
+            # These suites exercise the agent-initiated proactive path,
+            # which proactive_mode="off" (the default) now rejects.
+            proactive_mode="on",
         ),
     )
     yield mcp, handle, events_path

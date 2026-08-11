@@ -53,6 +53,9 @@ async def configured_mcp(
             vendor_display_name="Test Vendor",
             consent_token="ct_test",
             sink=HttpSink(url=httpserver.url_for(""), api_key="test-api-key"),
+            # These suites exercise the agent-initiated proactive path,
+            # which proactive_mode="off" (the default) now rejects.
+            proactive_mode="on",
         ),
     )
 
@@ -243,6 +246,89 @@ class TestInstallation:
                     "suggested_improvement": "return a typed error",
                 },
             )
+
+    async def test_proactive_annotation_is_rejected_by_default(
+        self, httpserver: HTTPServer
+    ) -> None:
+        """proactive_mode="off" enforces at the handler, not just in the prompt.
+        A stray proactive annotation carries an umbrella `workflow` label that
+        would outrank the per-call one in any consumer keying grouping on it,
+        so the call must not produce an event at all."""
+        captured: list[dict[str, Any]] = []
+
+        def ingest(request: Any) -> Response:
+            captured.append(request.get_json())
+            return Response("", status=201)
+
+        httpserver.expect_request("/v0/events", method="POST").respond_with_handler(ingest)
+        mcp = FastMCP("x")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="v",
+                vendor_display_name="V",
+                consent_token="ct_test",
+                sink=HttpSink(url=httpserver.url_for(""), api_key="k"),
+            ),
+        )
+        try:
+            async with Client(mcp) as client:
+                result = await client.call_tool("v_annotate", {"intent": "about to look"})
+            await handle.flush()
+        finally:
+            await handle.aclose()
+
+        assert "reactive-only" in str(result.content)
+        annotations = [
+            ev
+            for batch in captured
+            for ev in (batch if isinstance(batch, list) else [batch])
+            if ev.get("event_type") == "annotation"
+        ]
+        assert annotations == [], "a rejected proactive must not reach the sink"
+
+    async def test_reactive_annotation_still_lands_by_default(self, httpserver: HTTPServer) -> None:
+        """The mirror of the above — rejecting proactives must not cost us the
+        friction signal, which is the product."""
+        captured: list[dict[str, Any]] = []
+
+        def ingest(request: Any) -> Response:
+            captured.append(request.get_json())
+            return Response("", status=201)
+
+        httpserver.expect_request("/v0/events", method="POST").respond_with_handler(ingest)
+        mcp = FastMCP("x")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="v",
+                vendor_display_name="V",
+                consent_token="ct_test",
+                sink=HttpSink(url=httpserver.url_for(""), api_key="k"),
+            ),
+        )
+        try:
+            async with Client(mcp) as client:
+                await client.call_tool(
+                    "v_annotate",
+                    {
+                        "intent": "find the thing",
+                        "signal_type": "feature_gap",
+                        "suggested_improvement": "add a remove_item tool",
+                    },
+                )
+            await handle.flush()
+        finally:
+            await handle.aclose()
+
+        annotations = [
+            ev
+            for batch in captured
+            for ev in (batch if isinstance(batch, list) else [batch])
+            if ev.get("event_type") == "annotation"
+        ]
+        assert len(annotations) == 1
+        assert annotations[0]["payload"]["signal_type"] == "feature_gap"
 
 
 # =============================================================================

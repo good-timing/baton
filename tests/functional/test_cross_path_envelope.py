@@ -68,7 +68,12 @@ async def _run_mcp_path(events_path: str) -> None:
     )
     try:
         await mcp.call_tool(
-            "cross-path_annotate", {"intent": "look something up", "expected_outcome": "a match"}
+            "cross-path_annotate",
+            {
+                "intent": "look something up",
+                "signal_type": "failure",
+                "suggested_improvement": "return a typed not-found result",
+            },
         )
         await mcp.call_tool("lookup", {"name": "alice"})
         try:
@@ -106,9 +111,15 @@ async def _run_fastmcp_path(events_path: str) -> None:
     )
     try:
         async with Client(mcp) as client:
+            # Reactive, not proactive: proactive_mode defaults to "off", and
+            # this test deliberately runs the default config a real vendor gets.
             await client.call_tool(
                 "cross-path_annotate",
-                {"intent": "look something up", "expected_outcome": "a match"},
+                {
+                    "intent": "look something up",
+                    "signal_type": "failure",
+                    "suggested_improvement": "return a typed not-found result",
+                },
             )
             await client.call_tool("lookup", {"name": "alice"})
             try:
