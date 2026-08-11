@@ -199,7 +199,7 @@ _EXPECTED_RESULT_PARAM_DESCRIPTION = (
 # Granularity is the other half of the contract: the first wording ("broader
 # task ... change it only when the user starts a different task") produced
 # conversation-scoped umbrella labels — agents kept one label across clearly
-# distinct user requests (measured 2026-08-11 on multi-turn fixture sessions:
+# distinct user requests (measured 2026-08-10 on multi-turn fixture sessions:
 # 2 of 3 distinct-task turn boundaries kept the old label). The label must be
 # scoped to the user's CURRENT request, and a new request must start a fresh
 # label.
