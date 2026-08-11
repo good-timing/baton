@@ -69,6 +69,7 @@ def register_annotation_tool(
     fallback_session_id: str,
     default_agent_runtime: str = "unknown",
     annotation_tool_name: str | None = None,
+    proactive_mode: str = "off",
     scrubber: Callable[[Any], Any] = identity_scrub,
     proactive_tracker: ProactiveTracker | None = None,
     resolve_session_id_hook: ResolveSessionIdHook | None = None,
@@ -76,7 +77,9 @@ def register_annotation_tool(
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
     tracker = proactive_tracker or ProactiveTracker()
     name = derive_annotation_tool_name(vendor_id, annotation_tool_name)
-    description = build_annotation_tool_description(vendor_display_name=vendor_display_name)
+    description = build_annotation_tool_description(
+        vendor_display_name=vendor_display_name, proactive_mode=proactive_mode
+    )
 
     @mcp.tool(name=name, description=description)
     async def _annotate(

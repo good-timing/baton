@@ -89,6 +89,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     instructions = build_server_instructions(
         vendor_display_name=config.vendor_display_name,
         annotation_tool_name=annotation_tool_name,
+        proactive_mode=config.proactive_mode,
     )
     try:
         mcp.instructions = instructions
@@ -126,6 +127,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         fallback_session_id=fallback_session_id,
         default_agent_runtime=config.default_agent_runtime,
         annotation_tool_name=config.annotation_tool_name,
+        proactive_mode=config.proactive_mode,
         scrubber=scrubber,
         proactive_tracker=proactive_tracker,
         resolve_session_id_hook=config.resolve_session_id,

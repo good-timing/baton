@@ -137,6 +137,9 @@ class TestListInjection:
                 consent_token="ct_test",
                 sink=FileSink(events_path),
                 intent_param_mode="off",
+                # Both channels off is a config error — this test isolates
+                # param injection, so keep the annotation channel alive.
+                proactive_mode="on",
             ),
         )
         try:

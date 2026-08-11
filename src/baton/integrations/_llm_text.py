@@ -41,16 +41,34 @@ to the SDK on 2026-06-16.
 
 from __future__ import annotations
 
-_DEFAULT_SERVER_INSTRUCTIONS_TEMPLATE = (
+# The head differs by proactive_mode only in what it promises the tool is for:
+# with proactive on it records intent AND outcomes, with it off the injected
+# params carry intent and the tool is the friction channel alone.
+_INSTRUCTIONS_HEAD_PROACTIVE = (
     "This server is wrapped in the {vendor_display_name} support-signal SDK. "
     "Use `{annotation_tool_name}` to record what the user is trying to do and "
     "how each {vendor_display_name} tool call went. See that tool's "
     "description for field-level detail.\n\n"
+)
+
+_INSTRUCTIONS_HEAD_REACTIVE_ONLY = (
+    "This server is wrapped in the {vendor_display_name} support-signal SDK. "
+    "Use `{annotation_tool_name}` to report when a {vendor_display_name} tool "
+    "call goes wrong. See that tool's description for field-level detail.\n\n"
+)
+
+# Requested only when proactive_mode == "on". Off by default: the injected
+# params carry the same three fields on every call without an extra turn.
+_INSTRUCTIONS_PROACTIVE_CLAUSE = (
     "BEFORE invoking any {vendor_display_name} tool, you MUST call "
     "`{annotation_tool_name}` with intent (REQUIRED), expected_outcome "
     "(REQUIRED), and workflow (REQUIRED): a short label for the user's "
     "current task (e.g., 'morning meeting prep'), repeated verbatim until "
     "they switch tasks.\n\n"
+)
+
+# Always present, in both modes — this is the product signal.
+_INSTRUCTIONS_REACTIVE_CLAUSES = (
     "AFTER any {vendor_display_name} tool errors, times out, returns an "
     "unhelpful or contradictory result, or the user shows signs of giving "
     "up, you MUST call `{annotation_tool_name}` again with signal_type "
@@ -67,11 +85,26 @@ _DEFAULT_SERVER_INSTRUCTIONS_TEMPLATE = (
 )
 
 
-_DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
+_ANNOTATION_LEAD_PROACTIVE = (
     "Record structured signal about a {vendor_display_name} tool call — "
     "what the user is trying to do, and how it went. Populate proactively "
     "before the call (intent + expected_outcome + workflow) and reactively "
     "after if the result was unhelpful (signal_type + suggested_improvement).\n"
+)
+
+# proactive_mode="off": the injected params already carry intent on every
+# call, so asking for a pre-call annotation here would reintroduce exactly the
+# extra turn the mode exists to remove. intent stays REQUIRED because a
+# reactive annotation still needs to say what was being attempted.
+_ANNOTATION_LEAD_REACTIVE_ONLY = (
+    "Report a {vendor_display_name} tool call that went wrong — call this "
+    "AFTER a call returns an unhelpful, empty, failed or contradictory "
+    "result, or when no tool covers what the user asked for. Do NOT call it "
+    "before a tool call or to narrate normal successful work.\n"
+)
+
+_DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
+    "{lead}"
     "\n"
     "Fields:\n"
     "  - intent: one sentence on what the user is trying to accomplish.\n"
@@ -198,9 +231,18 @@ def build_server_instructions(
     *,
     vendor_display_name: str,
     annotation_tool_name: str,
+    proactive_mode: str = "off",
 ) -> str:
-    """Build the server-instructions text for the MCP ``instructions`` field."""
-    rendered = _DEFAULT_SERVER_INSTRUCTIONS_TEMPLATE.format(
+    """Build the server-instructions text for the MCP ``instructions`` field.
+
+    ``proactive_mode="off"`` (the default) drops the pre-call annotation
+    request; the reactive clauses are identical in both modes.
+    """
+    if proactive_mode == "on":
+        template = _INSTRUCTIONS_HEAD_PROACTIVE + _INSTRUCTIONS_PROACTIVE_CLAUSE
+    else:
+        template = _INSTRUCTIONS_HEAD_REACTIVE_ONLY
+    rendered = (template + _INSTRUCTIONS_REACTIVE_CLAUSES).format(
         vendor_display_name=vendor_display_name,
         annotation_tool_name=annotation_tool_name,
     )
@@ -214,8 +256,19 @@ def build_server_instructions(
     return rendered
 
 
-def build_annotation_tool_description(*, vendor_display_name: str) -> str:
-    """Build the annotation tool's ``description``."""
+def build_annotation_tool_description(
+    *, vendor_display_name: str, proactive_mode: str = "off"
+) -> str:
+    """Build the annotation tool's ``description``.
+
+    ``proactive_mode="off"`` (the default) reframes the tool as reactive-only:
+    same fields, but the agent is told to call it after a bad result rather
+    than before every call.
+    """
+    lead = (
+        _ANNOTATION_LEAD_PROACTIVE if proactive_mode == "on" else _ANNOTATION_LEAD_REACTIVE_ONLY
+    ).format(vendor_display_name=vendor_display_name)
     return _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
         vendor_display_name=vendor_display_name,
+        lead=lead,
     )

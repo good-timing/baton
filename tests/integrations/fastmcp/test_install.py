@@ -187,6 +187,63 @@ class TestInstallation:
                 ),
             )
 
+    async def test_both_capture_channels_off_is_rejected(self, httpserver: HTTPServer) -> None:
+        """intent_param_mode='off' + proactive_mode='off' captures no intent at
+        all — a silent no-op install. Fail loudly at construction instead."""
+        mcp = FastMCP("x")
+        with pytest.raises(ValueError, match="nothing would capture"):
+            install_baton(
+                mcp,
+                VendorConfig(
+                    vendor_id="v",
+                    vendor_display_name="V",
+                    consent_token="ct_test",
+                    sink=HttpSink(url=httpserver.url_for(""), api_key="k"),
+                    intent_param_mode="off",
+                    proactive_mode="off",
+                ),
+            )
+
+    async def test_proactive_mode_must_be_valid(self, httpserver: HTTPServer) -> None:
+        mcp = FastMCP("x")
+        with pytest.raises(ValueError, match="proactive_mode"):
+            install_baton(
+                mcp,
+                VendorConfig(
+                    vendor_id="v",
+                    vendor_display_name="V",
+                    consent_token="ct_test",
+                    sink=HttpSink(url=httpserver.url_for(""), api_key="k"),
+                    proactive_mode="disabled",
+                ),
+            )
+
+    async def test_annotation_tool_survives_proactive_off(self, httpserver: HTTPServer) -> None:
+        """The reactive channel is the product. Default (proactive off) must
+        still expose the annotation tool and still accept a reactive call."""
+        httpserver.expect_request("/v0/events").respond_with_response(Response(status=202))
+        mcp = FastMCP("x")
+        install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="v",
+                vendor_display_name="V",
+                consent_token="ct_test",
+                sink=HttpSink(url=httpserver.url_for(""), api_key="k"),
+            ),
+        )
+        async with Client(mcp) as client:
+            names = [t.name for t in await client.list_tools()]
+            assert "v_annotate" in names
+            await client.call_tool(
+                "v_annotate",
+                {
+                    "intent": "find the thing",
+                    "signal_type": "failure",
+                    "suggested_improvement": "return a typed error",
+                },
+            )
+
 
 # =============================================================================
 # End-to-end: tool call → tool_call_start + tool_call_end events

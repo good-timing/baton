@@ -41,15 +41,28 @@ def test_instructions_raises_when_names_exceed_cap() -> None:
 
 def test_instructions_carry_must_required_framing() -> None:
     """The BEFORE/AFTER MUST/REQUIRED framing is load-bearing per SPEC §5.4 —
-    milder framing under-populates fields. Don't drop it accidentally."""
+    milder framing under-populates fields. Don't drop it accidentally.
+
+    BEFORE is proactive-only; the reactive framing must survive in both modes.
+    """
     rendered = build_server_instructions(
         vendor_display_name="Acme",
         annotation_tool_name="acme_annotate",
+        proactive_mode="on",
     )
     assert "BEFORE" in rendered
     assert "AFTER" in rendered
     assert "MUST" in rendered
     assert "REQUIRED" in rendered
+
+    default = build_server_instructions(
+        vendor_display_name="Acme",
+        annotation_tool_name="acme_annotate",
+    )
+    assert "BEFORE" not in default, "proactive_mode defaults to off"
+    assert "AFTER" in default
+    assert "MUST" in default
+    assert "REQUIRED" in default
 
 
 def test_instructions_carry_full_signal_type_enum() -> None:
@@ -138,3 +151,70 @@ def test_signal_types_constant_matches_spec() -> None:
         "feature_gap",
         "other",
     )
+
+
+class TestProactiveMode:
+    """``VendorConfig.proactive_mode`` gates ONLY the pre-call annotation
+    request. The reactive channel is the product signal and must survive
+    unchanged in both modes — a regression here silently deletes the friction
+    capture the whole SDK exists to produce.
+    """
+
+    def test_off_is_the_default(self) -> None:
+        assert build_server_instructions(
+            vendor_display_name="Acme", annotation_tool_name="acme_annotate"
+        ) == build_server_instructions(
+            vendor_display_name="Acme",
+            annotation_tool_name="acme_annotate",
+            proactive_mode="off",
+        )
+
+    def test_off_drops_only_the_pre_call_request(self) -> None:
+        off = build_server_instructions(
+            vendor_display_name="Acme",
+            annotation_tool_name="acme_annotate",
+            proactive_mode="off",
+        )
+        assert "BEFORE invoking" not in off
+        assert "expected_outcome" not in off
+        # Reactive clauses verbatim, both of them.
+        assert "AFTER any Acme tool errors" in off
+        assert "signal_type" in off
+        assert "suggested_improvement" in off
+        assert "feature_gap" in off
+        assert "NOT replace answering" in off
+
+    def test_reactive_text_is_byte_identical_across_modes(self) -> None:
+        kw = {"vendor_display_name": "Acme", "annotation_tool_name": "acme_annotate"}
+        on = build_server_instructions(**kw, proactive_mode="on")
+        off = build_server_instructions(**kw, proactive_mode="off")
+        marker = "AFTER any Acme tool errors"
+        assert on[on.index(marker) :] == off[off.index(marker) :]
+
+    def test_off_is_shorter_and_still_under_cap(self) -> None:
+        kw = {"vendor_display_name": "Acme", "annotation_tool_name": "acme_annotate"}
+        on = build_server_instructions(**kw, proactive_mode="on")
+        off = build_server_instructions(**kw, proactive_mode="off")
+        assert len(off) < len(on)
+        assert len(on) <= _INSTRUCTIONS_LENGTH_CAP
+
+    def test_tool_description_keeps_every_field_in_both_modes(self) -> None:
+        """The tool's FIELD contract is mode-independent — only the lead
+        sentence changes. A reactive annotation still carries intent."""
+        for mode in ("on", "off"):
+            desc = build_annotation_tool_description(
+                vendor_display_name="Acme", proactive_mode=mode
+            )
+            for field in (
+                "intent",
+                "expected_outcome",
+                "workflow",
+                "signal_type",
+                "suggested_improvement",
+            ):
+                assert field in desc, (mode, field)
+
+    def test_tool_description_off_steers_away_from_pre_call_use(self) -> None:
+        off = build_annotation_tool_description(vendor_display_name="Acme", proactive_mode="off")
+        assert "Do NOT call it before a tool call" in off
+        assert "Populate proactively" not in off
