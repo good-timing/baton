@@ -197,23 +197,33 @@ _EXPECTED_RESULT_PARAM_DESCRIPTION = (
 # verbatim while the task is unchanged (measured 2026-08-10: without the
 # contract, 80% of adjacent same-task calls reword their goal text).
 #
-# Granularity was the open question, and a rewording aimed at it has been
-# TRIED AND REJECTED — do not re-apply it without new evidence. The candidate
-# ("the specific task the user is working on right now — not the overall theme
-# of the conversation ... when the user switches to a different request, start
-# a fresh label") was measured against this text on 2026-08-11, 20 paired
-# live-agent sessions, one build, in baton-internal `spikes/overall_task_a5/`
-# §A5b. Result: identical grouping behaviour on 19 of 20 sessions, and on the
-# 20th the candidate relabelled *within* a single task and then returned to the
-# first label (A → B → A), which a merge-only, adjacency-based consumer turns
-# into three tasks instead of one. No measured upside, one measured downside,
-# so the shipped text stands.
+# Granularity is a KNOWN, MEASURED weakness of this text, kept anyway because
+# the obvious fix is worse. Do not reword without scoring against both corpora
+# in baton-internal `spikes/overall_task_a5/` (40 paired live-agent sessions,
+# 2026-08-11, one build per run).
 #
-# What is NOT settled: whether this text elicits conversation-scoped umbrella
-# labels. An earlier run said it does; A5b's multi-task scripts announced their
-# boundaries out loud ("Different thing:", "New topic:"), this text scored
-# perfectly on them, and the umbrella behaviour never reproduced. A cue-free
-# corpus is the outstanding test.
+# What this text gets wrong: when the user switches topic WITHOUT announcing it,
+# agents carry the first task's label onto everything after it — one session
+# labelled a rice lookup, a chickpea restock and a waste check all
+# "cook dal tonight". Boundary detection 0.700 on cue-free multi-task scripts
+# (1.000 when the user says "Different thing:", which is why an earlier run
+# missed this entirely).
+#
+# What it gets right, and why it stays: it never splits a task that should stay
+# whole — 20/20 same-task pairs held the label verbatim across both corpora.
+# The candidate rewording ("the specific task the user is working on right now
+# — not the overall theme of the conversation") fixes the boundary problem
+# completely (1.000) but relabels *within* a single task, describing successive
+# steps of one goal as different tasks; it scored 0.200 then 0.400 over-split on
+# identical scripts, and produced an A → B → A label that a merge-only,
+# adjacency-based consumer resolves as three tasks instead of one. The gain
+# (+0.300 boundary) is smaller than the cost (0.400 over-split), and shattering
+# is the failure mode that destroys downstream trust, so the trade goes this way.
+#
+# The open target for any v3 is therefore specific: the candidate's boundary
+# behaviour with this text's within-task stability. The two failure modes are
+# independent, so it is not a granularity dial to be tuned — it needs the
+# repeat-verbatim contract hardened against step-level rewording.
 _OVERALL_TASK_PARAM_DESCRIPTION = (
     "OPTIONAL. Short stable label for the broader task this call serves "
     "(e.g. 'prepare campaign approval'). REPEAT the exact same string on "
