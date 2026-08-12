@@ -196,19 +196,29 @@ _EXPECTED_RESULT_PARAM_DESCRIPTION = (
 # cannot key grouping; this param works ONLY if the model repeats the label
 # verbatim while the task is unchanged (measured 2026-08-10: without the
 # contract, 80% of adjacent same-task calls reword their goal text).
-# Granularity is the other half of the contract: the first wording ("broader
-# task ... change it only when the user starts a different task") produced
-# conversation-scoped umbrella labels — agents kept one label across clearly
-# distinct user requests (measured 2026-08-10 on multi-turn fixture sessions:
-# 2 of 3 distinct-task turn boundaries kept the old label). The label must be
-# scoped to the user's CURRENT request, and a new request must start a fresh
-# label.
+#
+# Granularity was the open question, and a rewording aimed at it has been
+# TRIED AND REJECTED — do not re-apply it without new evidence. The candidate
+# ("the specific task the user is working on right now — not the overall theme
+# of the conversation ... when the user switches to a different request, start
+# a fresh label") was measured against this text on 2026-08-11, 20 paired
+# live-agent sessions, one build, in baton-internal `spikes/overall_task_a5/`
+# §A5b. Result: identical grouping behaviour on 19 of 20 sessions, and on the
+# 20th the candidate relabelled *within* a single task and then returned to the
+# first label (A → B → A), which a merge-only, adjacency-based consumer turns
+# into three tasks instead of one. No measured upside, one measured downside,
+# so the shipped text stands.
+#
+# What is NOT settled: whether this text elicits conversation-scoped umbrella
+# labels. An earlier run said it does; A5b's multi-task scripts announced their
+# boundaries out loud ("Different thing:", "New topic:"), this text scored
+# perfectly on them, and the umbrella behaviour never reproduced. A cue-free
+# corpus is the outstanding test.
 _OVERALL_TASK_PARAM_DESCRIPTION = (
-    "OPTIONAL. Short label naming the specific task the user is working on "
-    "right now (e.g. 'prepare campaign approval') — not the overall theme of "
-    "the conversation. REPEAT the exact same string on every call serving "
-    "this task; when the user switches to a different request, start a fresh "
-    "label."
+    "OPTIONAL. Short stable label for the broader task this call serves "
+    "(e.g. 'prepare campaign approval'). REPEAT the exact same string on "
+    "every call serving the same task; change it only when the user starts "
+    "a different task."
 )
 
 
