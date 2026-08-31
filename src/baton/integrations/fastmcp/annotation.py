@@ -2,7 +2,7 @@
 
 Registers a vendor-namespaced annotation tool (default name
 ``{vendor_id}_annotate``) on a FastMCP server. The tool accepts the
-annotation signature (intent / expected_outcome / signal_type / workflow /
+annotation signature (intent / expected_outcome / signal_type / overall_task /
 suggested_improvement / context, all optional per SPEC §5.1.1) and emits an
 ``annotation`` event when called.
 
@@ -87,15 +87,15 @@ def register_annotation_tool(
         intent: str,
         expected_outcome: str | None = None,
         signal_type: str | None = None,
-        workflow: str | None = None,
+        overall_task: str | None = None,
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         # proactive_mode="off": refuse pre-call annotations structurally rather
         # than by instruction text alone. Text alone is only a request, and a
-        # single umbrella `workflow` label from one stray proactive is enough
-        # to merge distinct tasks in any consumer that keys grouping on it
-        # (`workflow` outranks the per-call label in the reference consumer).
+        # single umbrella `overall_task` label from one stray proactive is
+        # enough to merge distinct tasks in any consumer that keys grouping
+        # on it (the annotation label outranks the per-call one there).
         # Rejecting here, rather than requiring signal_type in the schema,
         # keeps the agent from fabricating a `failure` just to get the call
         # through — that would corrupt the reactive signal, which is the one
@@ -136,7 +136,7 @@ def register_annotation_tool(
                         "intent": intent,
                         "expected_outcome": expected_outcome,
                         "signal_type": signal_type,
-                        "workflow": workflow,
+                        "workflow": overall_task,
                         "suggested_improvement": suggested_improvement,
                         "context": context,
                     },
@@ -164,7 +164,11 @@ def register_annotation_tool(
                     intent=scrubber(intent) if intent else None,
                     expected_outcome=(scrubber(expected_outcome) if expected_outcome else None),
                     signal_type=signal_type,
-                    workflow=workflow,
+                    # Agent-facing param `overall_task` -> wire key `workflow`, the
+                    # same split the injected params use (`overall_task` ->
+                    # `call_workflow`): renaming the param must not move the key the
+                    # console groups on.
+                    workflow=overall_task,
                     suggested_improvement=(
                         scrubber(suggested_improvement) if suggested_improvement else None
                     ),

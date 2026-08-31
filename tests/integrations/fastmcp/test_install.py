@@ -251,7 +251,7 @@ class TestInstallation:
         self, httpserver: HTTPServer
     ) -> None:
         """proactive_mode="off" enforces at the handler, not just in the prompt.
-        A stray proactive annotation carries an umbrella `workflow` label that
+        A stray proactive annotation carries an umbrella `overall_task` label that
         would outrank the per-call one in any consumer keying grouping on it,
         so the call must not produce an event at all."""
         captured: list[dict[str, Any]] = []
@@ -396,7 +396,7 @@ class TestAnnotationToolEndToEnd:
                 {
                     "intent": "summarize PR comments",
                     "expected_outcome": "2-3 sentence paragraph",
-                    "workflow": "code-review",
+                    "overall_task": "code-review",
                 },
             )
 
@@ -408,6 +408,7 @@ class TestAnnotationToolEndToEnd:
         payload = annotation_events[0]["payload"]
         assert payload["intent"] == "summarize PR comments"
         assert payload["expected_outcome"] == "2-3 sentence paragraph"
+        # Agent sends `overall_task`; the wire carries `workflow`.
         assert payload["workflow"] == "code-review"
         assert payload["signal_type"] is None
 

@@ -324,7 +324,7 @@ class TestAnnotationToolEndToEnd:
             {
                 "intent": "summarize PR comments",
                 "expected_outcome": "2-3 sentence paragraph",
-                "workflow": "code-review",
+                "overall_task": "code-review",
             },
         )
         await handle.flush()
@@ -335,6 +335,7 @@ class TestAnnotationToolEndToEnd:
         p = annotations[0]["payload"]
         assert p["intent"] == "summarize PR comments"
         assert p["expected_outcome"] == "2-3 sentence paragraph"
+        # Agent sends `overall_task`; the wire carries `workflow`.
         assert p["workflow"] == "code-review"
         assert p["signal_type"] is None
 

@@ -100,7 +100,7 @@ def test_annotation_description_lists_all_fields() -> None:
     for field in (
         "intent",
         "expected_outcome",
-        "workflow",
+        "overall_task",
         "signal_type",
         "suggested_improvement",
         "context",
@@ -208,7 +208,7 @@ class TestProactiveMode:
             for field in (
                 "intent",
                 "expected_outcome",
-                "workflow",
+                "overall_task",
                 "signal_type",
                 "suggested_improvement",
             ):

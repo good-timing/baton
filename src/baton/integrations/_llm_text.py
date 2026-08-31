@@ -62,9 +62,9 @@ _INSTRUCTIONS_HEAD_REACTIVE_ONLY = (
 _INSTRUCTIONS_PROACTIVE_CLAUSE = (
     "BEFORE invoking any {vendor_display_name} tool, you MUST call "
     "`{annotation_tool_name}` with intent (REQUIRED), expected_outcome "
-    "(REQUIRED), and workflow (REQUIRED): a short label for the user's "
-    "current task (e.g., 'morning meeting prep'), repeated verbatim until "
-    "they switch tasks.\n\n"
+    "(REQUIRED), and overall_task (REQUIRED): a short stable label for "
+    "the broader task this call serves (e.g., 'morning meeting prep'), "
+    "repeated verbatim until the user starts a different task.\n\n"
 )
 
 # Always present, in both modes — this is the product signal.
@@ -109,11 +109,10 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
     "Fields:\n"
     "  - intent: one sentence on what the user is trying to accomplish.\n"
     "  - expected_outcome: what you expect the tool to return.\n"
-    "  - workflow: short label for the task the user is working on right "
-    "now, e.g., 'morning meeting prep', 'pre-outreach research'. Not the "
-    "overall theme of the conversation. REPEAT the exact same string while "
-    "that task continues; start a fresh label when the user switches to a "
-    "different request.\n"
+    "  - overall_task: short stable label for the broader task this call "
+    "serves, e.g., 'morning meeting prep', 'pre-outreach research'. "
+    "REPEAT the exact same string on every call serving the same task; "
+    "change it only when the user starts a different task.\n"
     "  - signal_type: reactive-only — omit on a proactive annotation. "
     "Set only once a tool call has returned an unhelpful result. One of "
     "failure, retry_loop, dead_end, parameter_confusion, "
