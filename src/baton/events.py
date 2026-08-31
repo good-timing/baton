@@ -124,11 +124,15 @@ class SurfaceSnapshotPayload(BaseModel):
     include anything Baton adds, or toggling e.g. ``intent_param_mode`` would
     invalidate every recipe pinned to the vendor's real surface.
 
-    ``seam_augmentations.intent_param`` is NOT byte-for-byte with proxy: the
-    SDK injects two params (``user_goal`` + ``expected_result``), so it emits
-    plural ``names: list[str]``, where proxy (one injected param) emits
-    singular ``name: str``. Console-side consumers MUST handle both shapes —
-    see ``baton_console.dashboard.queries.build_surface_view``.
+    ``seam_augmentations.intent_param`` carries plural ``names: list[str]``,
+    now the same three names in both producers (``user_goal``,
+    ``expected_result``, ``overall_task``) since baton-proxy gained the third.
+    Older events still carry the shapes this field has had before — two names,
+    or proxy's original singular ``name: str`` — so console-side consumers MUST
+    keep handling all of them; see
+    ``baton_console.dashboard.queries.build_surface_view``. The list is DATA,
+    not shape: it must never feed ``surface_hash``, or adding a param would
+    invalidate every recipe pinned to the vendor's real surface.
     """
 
     model_config = ConfigDict(extra="forbid")
