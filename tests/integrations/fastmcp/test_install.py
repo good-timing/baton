@@ -20,6 +20,7 @@ from fastmcp import Client, FastMCP
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Response
 
+from baton.integrations._llm_text import build_user_goal_param_description
 from baton.integrations.fastmcp import VendorConfig, install_baton
 from baton.sinks import HttpSink
 from tests._event_helpers import without_surface_snapshots
@@ -123,12 +124,12 @@ class TestInstallation:
         finally:
             await handle.aclose()
 
-    async def test_annotation_tool_requires_intent(self, httpserver: HTTPServer) -> None:
+    async def test_annotation_tool_requires_the_goal(self, httpserver: HTTPServer) -> None:
         """``intent`` is the one load-bearing field on every annotation —
         proactives describe what's being attempted, reactives describe
         what the failed attempt was attempting. Without it the annotation
         is a payloadless event. Mirrors baton-proxy 0.1.3 (proxy.py:93)
-        which made ``required: ["intent"]`` an explicit schema property
+        which made a single explicit required schema property
         instead of relying on Python's None default to leave it optional."""
         mcp = FastMCP("x")
         handle = install_baton(
@@ -146,8 +147,8 @@ class TestInstallation:
             # MCP-native shape so the schema check matches the mcp adapter.
             annotate = next(t for t in tools if t.name == "v_annotate").to_mcp_tool()
             required = annotate.inputSchema.get("required", [])
-            assert "intent" in required, (
-                f"intent must be required on annotation tool schema; required={required}"
+            assert "user_goal" in required, (
+                f"user_goal must be required on annotation tool schema; required={required}"
             )
             # signal_type + suggested_improvement stay optional — the
             # tool description marks them reactive-only and they're
@@ -241,7 +242,7 @@ class TestInstallation:
             await client.call_tool(
                 "v_annotate",
                 {
-                    "intent": "find the thing",
+                    "user_goal": "find the thing",
                     "signal_type": "failure",
                     "suggested_improvement": "return a typed error",
                 },
@@ -273,7 +274,7 @@ class TestInstallation:
         )
         try:
             async with Client(mcp) as client:
-                result = await client.call_tool("v_annotate", {"intent": "about to look"})
+                result = await client.call_tool("v_annotate", {"user_goal": "about to look"})
             await handle.flush()
         finally:
             await handle.aclose()
@@ -312,7 +313,7 @@ class TestInstallation:
                 await client.call_tool(
                     "v_annotate",
                     {
-                        "intent": "find the thing",
+                        "user_goal": "find the thing",
                         "signal_type": "feature_gap",
                         "suggested_improvement": "add a remove_item tool",
                     },
@@ -394,8 +395,8 @@ class TestAnnotationToolEndToEnd:
             await client.call_tool(
                 "test-vendor_annotate",
                 {
-                    "intent": "summarize PR comments",
-                    "expected_outcome": "2-3 sentence paragraph",
+                    "user_goal": "summarize PR comments",
+                    "expected_result": "2-3 sentence paragraph",
                     "overall_task": "code-review",
                 },
             )
@@ -423,7 +424,7 @@ class TestAnnotationToolEndToEnd:
             await client.call_tool(
                 "test-vendor_annotate",
                 {
-                    "intent": "fetch the search results",
+                    "user_goal": "fetch the search results",
                     "signal_type": "dead_end",
                     "suggested_improvement": "surface clearer error",
                     "context": {"likely_cause": "content_filter"},
@@ -450,7 +451,7 @@ class TestAnnotationToolEndToEnd:
         mcp, handle = configured_mcp
 
         async with Client(mcp) as client:
-            await client.call_tool("test-vendor_annotate", {"intent": "x"})
+            await client.call_tool("test-vendor_annotate", {"user_goal": "x"})
 
         await handle.flush()
         types = [ev["event_type"] for ev in captured]
@@ -496,7 +497,7 @@ class TestResolveSessionIdHookOnAnnotationTool:
             await client.call_tool("echo", {"text": "x"})
             await client.call_tool(
                 "test-vendor_annotate",
-                {"intent": "explain this", "signal_type": "dead_end"},
+                {"user_goal": "explain this", "signal_type": "dead_end"},
             )
 
         await handle.flush()
@@ -523,7 +524,7 @@ class TestResolveSessionIdHookOnAnnotationTool:
         async with Client(mcp) as client:
             await client.call_tool(
                 "test-vendor_annotate",
-                {"intent": "x"},
+                {"user_goal": "x"},
                 meta={"claudecode/toolUseId": "tool-use-xyz"},
             )
 
@@ -586,7 +587,7 @@ class TestRuntimeMetaCapture:
         async with Client(mcp) as client:
             await client.call_tool(
                 "test-vendor_annotate",
-                {"intent": "find user"},
+                {"user_goal": "find user"},
                 meta={"claudecode/toolUseId": "tool-use-1"},
             )
 
@@ -646,7 +647,7 @@ class TestAllFourEventTypesInOneFlow:
             # 1. Proactive annotate
             await client.call_tool(
                 "test-vendor_annotate",
-                {"intent": "find user", "expected_outcome": "user record"},
+                {"user_goal": "find user", "expected_result": "user record"},
             )
             # 2. Real tool call
             await client.call_tool("lookup", {"name": "alice"})
@@ -655,7 +656,7 @@ class TestAllFourEventTypesInOneFlow:
             await client.call_tool(
                 "test-vendor_annotate",
                 {
-                    "intent": "find user",
+                    "user_goal": "find user",
                     "signal_type": "dead_end",
                     "suggested_improvement": "...",
                 },
@@ -682,7 +683,7 @@ class TestAllFourEventTypesInOneFlow:
             return text
 
         async with Client(mcp) as client:
-            await client.call_tool("test-vendor_annotate", {"intent": "x"})
+            await client.call_tool("test-vendor_annotate", {"user_goal": "x"})
             await client.call_tool("echo", {"text": "y"})
 
         await handle.flush()
@@ -921,9 +922,14 @@ class TestIntentInjectionInstalled:
 
         await handle.flush()
 
-        # annotation tool is NOT injected with user_goal
+        # The annotation tool declares `user_goal` itself, so its presence
+        # proves nothing; what proves injection skipped the tool is that its
+        # schema does not carry the INJECTED description, which only the
+        # injector writes.
         annotate_tool = next(t for t in tools if t.name == "test-vendor_annotate")
-        assert "user_goal" not in annotate_tool.inputSchema.get("properties", {})
+        annotate_props = annotate_tool.inputSchema.get("properties", {})
+        assert "user_goal" in annotate_props, "the tool declares it natively"
+        assert build_user_goal_param_description() not in str(annotate_props)
         assert "user_goal" in echo_tool.inputSchema["properties"]
         assert "test-vendor_annotate" in names
 
@@ -947,7 +953,7 @@ class TestIntentInjectionInstalled:
 
         async with Client(mcp) as client:
             # Agent's real proactive annotation (no signal_type) fires first.
-            await client.call_tool("test-vendor_annotate", {"intent": "real proactive intent"})
+            await client.call_tool("test-vendor_annotate", {"user_goal": "real proactive intent"})
             # Then the wrapped tool call carrying an injected intent.
             await client.call_tool("echo", {"text": "x", "user_goal": "param intent"})
 

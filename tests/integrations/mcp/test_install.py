@@ -121,12 +121,12 @@ class TestInstallation:
         finally:
             await handle.aclose()
 
-    async def test_annotation_tool_requires_intent(self, events_path: str) -> None:
+    async def test_annotation_tool_requires_the_goal(self, events_path: str) -> None:
         """``intent`` is the one load-bearing field on every annotation —
         proactives describe what's being attempted, reactives describe
         what the failed attempt was attempting. Without it the annotation
         is a payloadless event. Mirrors baton-proxy 0.1.3 (proxy.py:93)
-        which made ``required: ["intent"]`` an explicit schema property
+        which made a single explicit required schema property
         instead of relying on Python's None default to leave it optional."""
         mcp = FastMCP("x")
         handle = install_baton(
@@ -142,8 +142,8 @@ class TestInstallation:
             tools = await mcp.list_tools()
             annotate = next(t for t in tools if t.name == "v_annotate")
             required = _input_schema(annotate).get("required", [])
-            assert "intent" in required, (
-                f"intent must be required on annotation tool schema; required={required}"
+            assert "user_goal" in required, (
+                f"user_goal must be required on annotation tool schema; required={required}"
             )
             # signal_type + suggested_improvement stay optional — the
             # tool description marks them reactive-only and they're
@@ -322,8 +322,8 @@ class TestAnnotationToolEndToEnd:
         await mcp.call_tool(
             "test-vendor_annotate",
             {
-                "intent": "summarize PR comments",
-                "expected_outcome": "2-3 sentence paragraph",
+                "user_goal": "summarize PR comments",
+                "expected_result": "2-3 sentence paragraph",
                 "overall_task": "code-review",
             },
         )
@@ -346,7 +346,7 @@ class TestAnnotationToolEndToEnd:
         await mcp.call_tool(
             "test-vendor_annotate",
             {
-                "intent": "fetch the search results",
+                "user_goal": "fetch the search results",
                 "signal_type": "dead_end",
                 "suggested_improvement": "surface clearer error",
                 "context": {"likely_cause": "content_filter"},
@@ -369,7 +369,7 @@ class TestAnnotationToolEndToEnd:
         """The wrap layer MUST skip wrapping the annotation tool — its handler
         emits an annotation event, not a tool_call_start/end pair."""
         mcp, handle, path = configured_mcp
-        await mcp.call_tool("test-vendor_annotate", {"intent": "x"})
+        await mcp.call_tool("test-vendor_annotate", {"user_goal": "x"})
         await handle.flush()
 
         events = _read_events(path)
@@ -396,13 +396,13 @@ class TestAllFourEventTypesInOneFlow:
 
         await mcp.call_tool(
             "test-vendor_annotate",
-            {"intent": "find user", "expected_outcome": "user record"},
+            {"user_goal": "find user", "expected_result": "user record"},
         )
         await mcp.call_tool("lookup", {"name": "alice"})
         await mcp.call_tool(
             "test-vendor_annotate",
             {
-                "intent": "find user",
+                "user_goal": "find user",
                 "signal_type": "dead_end",
                 "suggested_improvement": "...",
             },
@@ -1340,7 +1340,7 @@ class TestSequenceNumbers:
         def echo(text: str) -> str:
             return text
 
-        await mcp.call_tool("test-vendor_annotate", {"intent": "x"})
+        await mcp.call_tool("test-vendor_annotate", {"user_goal": "x"})
         await mcp.call_tool("echo", {"text": "y"})
 
         await handle.flush()

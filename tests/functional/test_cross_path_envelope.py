@@ -70,7 +70,7 @@ async def _run_mcp_path(events_path: str) -> None:
         await mcp.call_tool(
             "cross-path_annotate",
             {
-                "intent": "look something up",
+                "user_goal": "look something up",
                 "signal_type": "failure",
                 "suggested_improvement": "return a typed not-found result",
             },
@@ -116,7 +116,7 @@ async def _run_fastmcp_path(events_path: str) -> None:
             await client.call_tool(
                 "cross-path_annotate",
                 {
-                    "intent": "look something up",
+                    "user_goal": "look something up",
                     "signal_type": "failure",
                     "suggested_improvement": "return a typed not-found result",
                 },

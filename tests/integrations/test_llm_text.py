@@ -98,8 +98,8 @@ def test_instructions_carry_dont_replace_answering_guardrail() -> None:
 def test_annotation_description_lists_all_fields() -> None:
     rendered = build_annotation_tool_description(vendor_display_name="Acme")
     for field in (
-        "intent",
-        "expected_outcome",
+        "user_goal",
+        "expected_result",
         "overall_task",
         "signal_type",
         "suggested_improvement",
@@ -206,8 +206,8 @@ class TestProactiveMode:
                 vendor_display_name="Acme", proactive_mode=mode
             )
             for field in (
-                "intent",
-                "expected_outcome",
+                "user_goal",
+                "expected_result",
                 "overall_task",
                 "signal_type",
                 "suggested_improvement",
@@ -218,3 +218,57 @@ class TestProactiveMode:
         off = build_annotation_tool_description(vendor_display_name="Acme", proactive_mode="off")
         assert "Do NOT call it before a tool call" in off
         assert "Populate proactively" not in off
+
+
+# The retired agent-facing names. These are still the WIRE keys, so they
+# legitimately appear all over the codebase — but never in text an agent reads,
+# where they would name a param that no longer exists.
+RETIRED_AGENT_FACING_NAMES = ("intent", "expected_outcome", "workflow")
+
+
+def test_no_agent_facing_text_still_asks_for_a_retired_param_name() -> None:
+    """Presence tests are not enough, and this is not hypothetical.
+
+    Both description tests check that each CURRENT field name appears. That
+    passed while `_ANNOTATION_LEAD_PROACTIVE` still told the agent to populate
+    "intent + expected_outcome + workflow" — three names the schema no longer
+    accepts — because the field dictionary below it listed the new ones and the
+    assertion only ever asked "is the new name here somewhere".
+
+    An agent reading the lead line fills in params that are then silently
+    dropped: the call succeeds, the annotation emits, and the goal text is
+    simply missing.
+
+    Matched only where a param is REFERENCED — `name:` in the field
+    dictionary, `name (REQUIRED`, or inside the `a + b + c` populate list. A
+    bare word-boundary search over-detects and would fail on this sentence,
+    which is prose and correct: "you satisfied the user's intent via a
+    workaround". The narrower pattern is not a weakening; the failure being
+    guarded is a param NAMED to the agent, and those three positions are the
+    only places these templates name one.
+    """
+    import re
+
+    surfaces = {
+        "instructions (proactive on)": build_server_instructions(
+            vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode="on"
+        ),
+        "instructions (proactive off)": build_server_instructions(
+            vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode="off"
+        ),
+        "tool description (on)": build_annotation_tool_description(
+            vendor_display_name="Acme", proactive_mode="on"
+        ),
+        "tool description (off)": build_annotation_tool_description(
+            vendor_display_name="Acme", proactive_mode="off"
+        ),
+    }
+    for where, text in surfaces.items():
+        for retired in RETIRED_AGENT_FACING_NAMES:
+            referenced = (
+                rf"\b{retired}(?=:)|\b{retired} \(REQUIRED|(?<=\+ ){retired}\b|\b{retired}(?= \+)"
+            )
+            assert not re.search(referenced, text), (
+                f"{where} still names the retired param {retired!r}; agents will send it "
+                f"and the value will be dropped"
+            )

@@ -15,7 +15,7 @@ truncation cap):**
   extensions. Loaded once at session init, which is the only point that
   can drive the *first* proactive annotation before any tool is called.
 - *Annotation tool description* carries the field-level reference (what
-  belongs in intent / expected_outcome / workflow / suggested_improvement /
+  belongs in user_goal / expected_result / overall_task / suggested_improvement /
   context). Tool descriptions are loaded on every call to the central
   annotation tool, so this is the right place for the just-in-time
   dictionary.
@@ -61,7 +61,7 @@ _INSTRUCTIONS_HEAD_REACTIVE_ONLY = (
 # params carry the same three fields on every call without an extra turn.
 _INSTRUCTIONS_PROACTIVE_CLAUSE = (
     "BEFORE invoking any {vendor_display_name} tool, you MUST call "
-    "`{annotation_tool_name}` with intent (REQUIRED), expected_outcome "
+    "`{annotation_tool_name}` with user_goal (REQUIRED), expected_result "
     "(REQUIRED), and overall_task (REQUIRED): a short stable label for "
     "the broader task this call serves (e.g., 'morning meeting prep'), "
     "repeated verbatim until the user starts a different task.\n\n"
@@ -88,7 +88,8 @@ _INSTRUCTIONS_REACTIVE_CLAUSES = (
 _ANNOTATION_LEAD_PROACTIVE = (
     "Record structured signal about a {vendor_display_name} tool call — "
     "what the user is trying to do, and how it went. Populate proactively "
-    "before the call (intent + expected_outcome + workflow) and reactively "
+    "before the call (user_goal + expected_result + overall_task) and "
+    "reactively "
     "after if the result was unhelpful (signal_type + suggested_improvement).\n"
 )
 
@@ -107,8 +108,10 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
     "{lead}"
     "\n"
     "Fields:\n"
-    "  - intent: one sentence on what the user is trying to accomplish.\n"
-    "  - expected_outcome: what you expect the tool to return.\n"
+    "  - user_goal: one sentence on what the user is trying to "
+    "accomplish.\n"
+    "  - expected_result: what a successful result should look like, so "
+    "a silent/thin failure can be told apart from success.\n"
     "  - overall_task: short stable label for the broader task this call "
     "serves, e.g., 'morning meeting prep', 'pre-outreach research'. "
     "REPEAT the exact same string on every call serving the same task; "

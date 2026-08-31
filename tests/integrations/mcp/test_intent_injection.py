@@ -23,6 +23,7 @@ from baton.integrations._llm_text import (
     INTENT_SOURCE_PARAM,
     OVERALL_TASK_PARAM_NAME,
     USER_GOAL_PARAM_NAME,
+    build_user_goal_param_description,
 )
 from baton.integrations.mcp import VendorConfig, install_baton
 from baton.integrations.mcp._compat import MCPServerClass as FastMCP
@@ -150,13 +151,24 @@ class TestListInjection:
             await handle.aclose()
 
     async def test_annotation_tool_not_injected(self, events_path: str) -> None:
-        """The annotation tool takes ``intent`` explicitly — no redundant
-        goal params should be injected into its schema."""
+        """The annotation tool declares its goal params itself; injection must
+        not also process it.
+
+        Checked through the injected DESCRIPTION, not the param name. The tool
+        now declares `user_goal`/`expected_result`/`overall_task` natively — the
+        same three names injection adds — so name-absence no longer separates a
+        tool injection skipped from one it rewrote, and asserting it would pass
+        for the wrong reason. The description is what only injection writes.
+        """
         mcp, handle = _install(events_path)
         try:
             tools = await mcp.list_tools()
             annotate = next(t for t in tools if t.name == "test-vendor_annotate")
-            assert USER_GOAL_PARAM_NAME not in _input_schema(annotate).get("properties", {})
+            props = _input_schema(annotate).get("properties", {})
+            assert USER_GOAL_PARAM_NAME in props, "the tool declares it natively"
+            assert build_user_goal_param_description() not in str(props), (
+                "injection rewrote the annotation tool's own schema"
+            )
         finally:
             await handle.aclose()
 
@@ -400,7 +412,7 @@ class TestProactiveSynthesis:
             ),
         )
         try:
-            await mcp.call_tool("test-vendor_annotate", {"intent": "real proactive"})
+            await mcp.call_tool("test-vendor_annotate", {"user_goal": "real proactive"})
             await mcp.call_tool("echo", {"text": "x", USER_GOAL_PARAM_NAME: "injected why"})
             await handle.flush()
         finally:

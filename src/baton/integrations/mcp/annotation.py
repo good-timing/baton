@@ -73,8 +73,8 @@ def register_annotation_tool(
 
     @mcp.tool(name=name, description=description)
     async def _annotate(
-        intent: str,
-        expected_outcome: str | None = None,
+        user_goal: str,
+        expected_result: str | None = None,
         signal_type: str | None = None,
         overall_task: str | None = None,
         suggested_improvement: str | None = None,
@@ -136,8 +136,8 @@ def register_annotation_tool(
                 captured_at=datetime.now(UTC),
                 agent_runtime=default_agent_runtime,
                 payload=AnnotationPayload(
-                    intent=scrubber(intent) if intent else None,
-                    expected_outcome=(scrubber(expected_outcome) if expected_outcome else None),
+                    intent=scrubber(user_goal) if user_goal else None,
+                    expected_outcome=(scrubber(expected_result) if expected_result else None),
                     signal_type=signal_type,
                     # Agent-facing param `overall_task` -> wire key `workflow`, the
                     # same split the injected params use (`overall_task` ->
