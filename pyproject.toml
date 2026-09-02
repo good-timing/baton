@@ -67,8 +67,16 @@ mcp = [
 ]
 # Adapts the standalone ``fastmcp`` library's ``fastmcp.FastMCP`` (different
 # project; advanced features like middleware not in the official SDK).
+# Upper bound <4: 4.0 is not "untested future major" like mcp's <3 cap — it is
+# TESTED AND BROKEN. On fastmcp 4.0.1 six adapter tests fail: sequence numbers
+# repeat within a session, the once-per-session proactive fires twice, a native
+# `user_goal` is no longer forwarded to the vendor handler, and a tools/list
+# response has no `inputSchema` key. 4.x also lifted fastmcp's own `mcp<2` pin,
+# so an uncapped resolve pulls mcp 2.x in behind it — which is how this reached
+# the `core` CI job's typecheck. Porting the adapter to 4.x is real work and is
+# not done; until it is, the cap is the honest constraint.
 fastmcp = [
-    "fastmcp>=2.10",
+    "fastmcp>=2.10,<4",
 ]
 # ``HttpSink`` (the production path — POST events to a Baton Console) needs an
 # async HTTP client. httpx is required (not urllib): the SDK emits from inside
