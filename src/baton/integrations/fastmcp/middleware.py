@@ -158,16 +158,19 @@ class BatonMiddleware(Middleware):
         existing = props if isinstance(props, dict) else {}
         dispositions: dict[str, str] = {}
         to_inject: dict[str, dict[str, str]] = {}
-        for name, build_desc in (
-            (USER_GOAL_PARAM_NAME, build_user_goal_param_description),
-            (EXPECTED_RESULT_PARAM_NAME, build_expected_result_param_description),
-            (OVERALL_TASK_PARAM_NAME, build_overall_task_param_description),
+        for name, description in (
+            (
+                USER_GOAL_PARAM_NAME,
+                build_user_goal_param_description(intent_param_mode=self._intent_param_mode),
+            ),
+            (EXPECTED_RESULT_PARAM_NAME, build_expected_result_param_description()),
+            (OVERALL_TASK_PARAM_NAME, build_overall_task_param_description()),
         ):
             if name in existing:
                 dispositions[name] = "native"
             else:
                 dispositions[name] = "injected"
-                to_inject[name] = {"type": "string", "description": build_desc()}
+                to_inject[name] = {"type": "string", "description": description}
         if not to_inject:
             return tool, dispositions
         # Deep-copy so we never mutate the server's canonical registered schema.

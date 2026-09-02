@@ -930,6 +930,10 @@ class TestIntentInjectionInstalled:
         annotate_props = annotate_tool.inputSchema.get("properties", {})
         assert "user_goal" in annotate_props, "the tool declares it natively"
         assert build_user_goal_param_description() not in str(annotate_props)
+        # Both labels, so the pin cannot go vacuous under `required`.
+        assert build_user_goal_param_description(intent_param_mode="required") not in str(
+            annotate_props
+        )
         assert "user_goal" in echo_tool.inputSchema["properties"]
         assert "test-vendor_annotate" in names
 

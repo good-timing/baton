@@ -183,10 +183,20 @@ OVERALL_TASK_PARAM_NAME = "overall_task"
 # (vs a real annotation-tool call). The Console reads this string.
 INTENT_SOURCE_PARAM = "injected_param"
 
-_USER_GOAL_PARAM_DESCRIPTION = (
-    "OPTIONAL. One sentence: what the user is actually trying to accomplish "
+# The leading label has to track ``intent_param_mode``: under ``"required"``
+# the injector appends ``user_goal`` to the schema's advertised ``required``
+# list, so a description still opening "OPTIONAL." contradicts the schema it
+# ships inside — the model reads both. Only the label moves; the body is
+# byte-identical across modes, because that sentence is the measured text and
+# the mode is not a licence to reword it. ``expected_result`` and
+# ``overall_task`` are never added to ``required`` in any mode, so their
+# "OPTIONAL." is true everywhere and they get no variant.
+_USER_GOAL_PARAM_BODY = (
+    "One sentence: what the user is actually trying to accomplish "
     "with this call (their goal, not a restatement of the arguments)."
 )
+_USER_GOAL_PARAM_DESCRIPTION = "OPTIONAL. " + _USER_GOAL_PARAM_BODY
+_USER_GOAL_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + _USER_GOAL_PARAM_BODY
 
 _EXPECTED_RESULT_PARAM_DESCRIPTION = (
     "OPTIONAL. One sentence: what a successful result should look like, so a "
@@ -234,8 +244,16 @@ _OVERALL_TASK_PARAM_DESCRIPTION = (
 )
 
 
-def build_user_goal_param_description() -> str:
-    """Build the injected ``user_goal`` param's ``description`` field."""
+def build_user_goal_param_description(*, intent_param_mode: str = "optional") -> str:
+    """Build the injected ``user_goal`` param's ``description`` field.
+
+    ``intent_param_mode="required"`` swaps the leading label for "REQUIRED.",
+    matching the ``required`` entry the injector adds under that mode. Any
+    other mode (including the ``"optional"`` default) returns the text
+    unchanged.
+    """
+    if intent_param_mode == "required":
+        return _USER_GOAL_PARAM_DESCRIPTION_REQUIRED
     return _USER_GOAL_PARAM_DESCRIPTION
 
 

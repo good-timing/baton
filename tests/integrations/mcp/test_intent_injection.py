@@ -23,6 +23,7 @@ from baton.integrations._llm_text import (
     INTENT_SOURCE_PARAM,
     OVERALL_TASK_PARAM_NAME,
     USER_GOAL_PARAM_NAME,
+    build_expected_result_param_description,
     build_user_goal_param_description,
 )
 from baton.integrations.mcp import VendorConfig, install_baton
@@ -123,6 +124,55 @@ class TestListInjection:
         finally:
             await handle.aclose()
 
+    async def test_description_label_tracks_the_mode(self, events_path: str) -> None:
+        """The advertised label has to move with the schema.
+
+        Under ``required`` this adapter adds ``user_goal`` to the tool's
+        ``required`` list, so a description still opening "OPTIONAL." would
+        contradict the schema it ships inside — and the model reads both.
+        Pinned in BOTH directions: the ``optional`` leg is the control that
+        proves the mode is what moves the label, not the injection. And
+        ``expected_result`` is never escalated, so its label must NOT move.
+        """
+        for mode, expected_lead in (("optional", "OPTIONAL."), ("required", "REQUIRED.")):
+            mcp = FastMCP("test-vendor-mcp")
+
+            @mcp.tool()
+            def echo(text: str) -> str:
+                return text
+
+            handle = install_baton(
+                mcp,
+                VendorConfig(
+                    vendor_id="test-vendor",
+                    vendor_display_name="Test Vendor",
+                    consent_token="ct_test",
+                    sink=FileSink(events_path),
+                    intent_param_mode=mode,
+                ),
+            )
+            try:
+                tools = await mcp.list_tools()
+                echo_tool = next(t for t in tools if t.name == "echo")
+                props = _input_schema(echo_tool)["properties"]
+                goal_desc = props[USER_GOAL_PARAM_NAME]["description"]
+                assert goal_desc.startswith(expected_lead), (
+                    f"{mode} mode advertised {goal_desc[:12]!r}"
+                )
+                assert goal_desc == build_user_goal_param_description(intent_param_mode=mode)
+                # Only the label moved — the measured sentence after it is identical.
+                assert (
+                    goal_desc[len(expected_lead) :]
+                    == build_user_goal_param_description()[len("OPTIONAL.") :]
+                )
+                assert (
+                    props[EXPECTED_RESULT_PARAM_NAME]["description"]
+                    == build_expected_result_param_description()
+                )
+                assert props[EXPECTED_RESULT_PARAM_NAME]["description"].startswith("OPTIONAL.")
+            finally:
+                await handle.aclose()
+
     async def test_off_mode_no_injection(self, events_path: str) -> None:
         mcp = FastMCP("test-vendor-mcp")
 
@@ -169,6 +219,10 @@ class TestListInjection:
             assert build_user_goal_param_description() not in str(props), (
                 "injection rewrote the annotation tool's own schema"
             )
+            # Both labels, so the pin cannot go vacuous under `required`.
+            assert build_user_goal_param_description(intent_param_mode="required") not in str(
+                props
+            ), "injection rewrote the annotation tool's own schema"
         finally:
             await handle.aclose()
 

@@ -22,6 +22,8 @@ from baton.integrations._llm_text import (
     INTENT_SOURCE_PARAM,
     OVERALL_TASK_PARAM_NAME,
     USER_GOAL_PARAM_NAME,
+    build_expected_result_param_description,
+    build_user_goal_param_description,
 )
 from baton.integrations.fastmcp.middleware import BatonMiddleware
 from baton.sinks import HttpSink, Sink
@@ -95,6 +97,47 @@ class TestListInjection:
         (echo_tool,) = tools
         assert USER_GOAL_PARAM_NAME in echo_tool.inputSchema["properties"]
         assert USER_GOAL_PARAM_NAME in echo_tool.inputSchema["required"]
+
+    async def test_description_label_tracks_the_mode(self, sink: Sink) -> None:
+        """The advertised label has to move with the schema.
+
+        Under ``required`` the injector adds ``user_goal`` to the tool's
+        ``required`` list, so a description still opening "OPTIONAL." would
+        contradict the schema it ships inside — and the model reads both.
+        Pinned in BOTH directions, because the failure this replaces was a
+        constant that was true under one mode and silently false under the
+        other: the ``optional`` leg is the control that proves the mode is
+        what moves the label. ``expected_result`` is never escalated, so its
+        label must NOT move — that is what separates a label that tracks the
+        schema from one that tracks the mode.
+        """
+
+        for mode, expected_lead in (("optional", "OPTIONAL."), ("required", "REQUIRED.")):
+            mcp = _build_mcp(sink, intent_param_mode=mode)
+
+            @mcp.tool()
+            def echo(text: str) -> str:
+                return text
+
+            async with Client(mcp) as client:
+                tools = await client.list_tools()
+
+            (echo_tool,) = tools
+            props = echo_tool.inputSchema["properties"]
+            goal_desc = props[USER_GOAL_PARAM_NAME]["description"]
+            assert goal_desc.startswith(expected_lead), f"{mode} mode advertised {goal_desc[:12]!r}"
+            assert goal_desc == build_user_goal_param_description(intent_param_mode=mode)
+            # Only the label moved — the measured sentence after it is identical.
+            assert (
+                goal_desc[len(expected_lead) :]
+                == build_user_goal_param_description()[len("OPTIONAL.") :]
+            )
+            # expected_result is never added to `required`, so it never flips.
+            assert (
+                props[EXPECTED_RESULT_PARAM_NAME]["description"]
+                == build_expected_result_param_description()
+            )
+            assert props[EXPECTED_RESULT_PARAM_NAME]["description"].startswith("OPTIONAL.")
 
     async def test_off_mode_no_injection(self, sink: Sink) -> None:
         mcp = _build_mcp(sink, intent_param_mode="off")
