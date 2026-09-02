@@ -71,7 +71,12 @@ def register_annotation_tool(
         vendor_display_name=vendor_display_name, proactive_mode=proactive_mode
     )
 
-    @mcp.tool(name=name, description=description)
+    # ``mcp`` is ``Any`` under type-checking (see ``_compat``: the server class
+    # is resolved per installed mcp major, so neither concrete class is right
+    # for both), which makes this decorator untyped to mypy under EVERY mcp
+    # version rather than only some — so this suppression is stable instead of
+    # flipping to `unused-ignore` on the next upstream major.
+    @mcp.tool(name=name, description=description)  # type: ignore[untyped-decorator]
     async def _annotate(
         user_goal: str,
         expected_result: str | None = None,

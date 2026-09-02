@@ -17,17 +17,31 @@ instructions setter route through here.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-try:  # mcp <2
-    from mcp.server.fastmcp import FastMCP as MCPServerClass
-except ImportError:  # mcp >=2.0 renamed the module + class
-    # Version-conditional: this module only exists on mcp>=2.0, so the stub is
-    # absent whenever type-checking runs against a 1.x env, and the rebind is a
-    # deliberate fallback, not a real redefinition.
-    from mcp.server.mcpserver import (  # type: ignore[import-not-found,no-redef]
-        MCPServer as MCPServerClass,
-    )
+if TYPE_CHECKING:
+    # The server class is chosen at RUNTIME from whichever mcp major is
+    # installed, so its static type differs per environment — and one mypy run
+    # can only see one of them. Annotating either concrete class makes the
+    # other environment's run wrong, which is what the previous
+    # ``type: ignore`` here did: correct under 1.x, and under 2.x three errors
+    # (a missing ``FastMCP`` attribute, the suppression itself reported
+    # unused, and an untyped ``tool()`` decorator downstream). Since CI's
+    # unpinned ``mcp>=1.20,<3`` resolves to whatever is newest, the pin was
+    # guaranteed to rot on the next major.
+    #
+    # ``Any`` is the honest annotation, not a suppression: everything the
+    # adapter reaches for on this object is the private internals listed in
+    # the module docstring, already duck-typed on ``Any`` in ``_tool_wrap``
+    # and ``_registry``. The version matrix — not mypy — is what proves those
+    # internals still exist, and `mcp-matrix` runs the tests on 1.20 / 1.25 /
+    # 1.27 / 2.0.
+    MCPServerClass = Any
+else:
+    try:  # mcp <2
+        from mcp.server.fastmcp import FastMCP as MCPServerClass
+    except ImportError:  # mcp >=2.0 renamed the module + class
+        from mcp.server.mcpserver import MCPServer as MCPServerClass
 
 __all__ = ["MCPServerClass", "get_lowlevel_server", "set_server_instructions"]
 
