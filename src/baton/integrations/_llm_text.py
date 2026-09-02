@@ -166,8 +166,8 @@ SIGNAL_TYPES: tuple[str, ...] = (
 # baton-extmcp's spike-proven neutral names. baton-proxy's namespaced choice
 # was originally a collision-safety call — it sits in front of upstream
 # tools it doesn't own, a constraint that doesn't apply to a vendor wrapping
-# their own server. baton-proxy still uses ``baton_intent``; porting proxy
-# to match is a separate follow-up, not done here.
+# their own server. baton-proxy ported to these names on 2026-08-08, closing
+# the SPEC §13 divergence; the two producers now advertise the same three.
 USER_GOAL_PARAM_NAME = "user_goal"
 EXPECTED_RESULT_PARAM_NAME = "expected_result"
 # The task-label grouping key (wire field ``call_workflow``; console rung 3b).
