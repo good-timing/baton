@@ -69,6 +69,20 @@ async def configured_mcp(
 # =============================================================================
 
 
+async def _server_tools(mcp: FastMCP) -> list[Any]:
+    """The server's registered tools, across every supported fastmcp major.
+
+    2.x exposes ``get_tools()`` returning a name->Tool dict; 3.x/4.x expose
+    ``list_tools()`` returning a sequence. Reading the server directly (rather
+    than going through an in-process ``Client``) is deliberate here — these
+    tests assert what is REGISTERED, not what a client is served.
+    """
+    list_tools = getattr(mcp, "list_tools", None)
+    if list_tools is not None:
+        return list(await list_tools())
+    return list((await mcp.get_tools()).values())
+
+
 class TestInstallation:
     async def test_returns_handle_with_flush_and_aclose(self, httpserver: HTTPServer) -> None:
         httpserver.expect_request("/v0/events", method="POST").respond_with_data("", status=201)
@@ -119,7 +133,7 @@ class TestInstallation:
             ),
         )
         try:
-            tools = {t.name for t in await mcp.list_tools()}
+            tools = {t.name for t in await _server_tools(mcp)}
             assert "v_annotate" in tools
         finally:
             await handle.aclose()
@@ -142,7 +156,7 @@ class TestInstallation:
             ),
         )
         try:
-            tools = await mcp.list_tools()
+            tools = await _server_tools(mcp)
             # FastMCP exposes a FunctionTool wrapper; convert to the
             # MCP-native shape so the schema check matches the mcp adapter.
             annotate = next(t for t in tools if t.name == "v_annotate").to_mcp_tool()
@@ -171,7 +185,7 @@ class TestInstallation:
             ),
         )
         try:
-            tools = {t.name for t in await mcp.list_tools()}
+            tools = {t.name for t in await _server_tools(mcp)}
             assert "custom-annotate-name" in tools
             assert "v_annotate" not in tools
         finally:
@@ -667,6 +681,16 @@ class TestAllFourEventTypesInOneFlow:
         assert types.count("annotation") == 2  # proactive + reactive
         assert types.count("tool_call_start") == 1
         assert types.count("tool_call_end") == 1
+
+        # The whole point of the flow: the annotations and the call they
+        # bracket must be JOINABLE. Both capture paths resolve session_id
+        # through the one ladder in ``fastmcp._session`` — when they resolved
+        # separately (the annotation tool via fastmcp's Context.session_id,
+        # the middleware via its own read of it) a stated intent could not be
+        # joined to the failure it was about, and nothing errored to say so.
+        assert len({ev["session_id"] for ev in captured}) == 1, (
+            "annotations and the tool call they describe must share a session_id"
+        )
 
     async def test_sequence_numbers_monotonic_across_event_types(
         self,

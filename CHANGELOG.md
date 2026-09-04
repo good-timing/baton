@@ -8,6 +8,26 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Fixed
+
+- **The standalone `fastmcp` adapter works on fastmcp 4.x, and the `<4` cap is lifted to `<5`.** 0.6.1 capped `fastmcp` below 4 because six adapter behaviours failed there and the port was not done. It is done. All three root causes were verified first-hand against fastmcp 4.0.2 (with mcp 2.1.1 behind it), and the suite is green across fastmcp 2.14 / 3.4 / 4.0:
+
+  - **`session_id` was minted fresh on every request, silently.** The adapter resolved it solely via fastmcp's `Context.session_id` — SPEC §3.4 rung 4 — which caches its generated id on the `ServerSession`, or on 4.x that session's `_connection`. Under MCP SDK v2 *both* of those objects are rebuilt per request, so the cache never survives and every call gets a new `uuid4`. **Reproduced on all three transports** (in-process, stdio, streamable HTTP): three calls on one client connection, three different ids. Nothing errors — events ship and 201 — but per-session sequence numbers restart at 1 on every call, the once-per-session synthesized proactive fires on every call, and an `*_annotate` lands under a different `session_id` than the tool call it describes, so the stated intent can never be joined to the failure it was about. That last one is the whole reason the sensor exists. **The fix is not a version branch:** the adapter now climbs SPEC §3.4's ladder like the official-SDK adapter does — rung 0 (`VendorConfig.resolve_session_id`), rungs 1-2 (`_meta.traceparent`, `_meta["io.baton/session_id"]`), then rung 4 read from its actual carrier, the `mcp-session-id` header, then the process-wide fallback. This adapter never had rungs 1-2 at all; design note D3 recorded that gap and deferred it. **Behaviour-preserving on fastmcp 2.x/3.x**, which is why it is not gated on a version check: on old-spec streamable HTTP `Context.session_id` *returns* that header, and on stdio it returns a per-process `uuid4` — which is what the fallback already is, since one stdio process is one client. Both capture paths — the middleware and the annotation tool — now resolve through the same function, because two ladders would let each path's tests pass while the product stayed broken.
+
+  - **A vendor's own `user_goal` was stripped before their handler saw it.** Per-param `"injected"`/`"native"` dispositions were recorded only as a side effect of `tools/list`, and fastmcp 4.x's client resolves a `tools/call` without listing first — so the registry was cold for every tool, and the pre-existing warn-and-strip fallback ate the vendor's own argument. Dispositions are now resolved from the server's own tool registry at call time when the listing hasn't warmed them, which is also strictly better evidence: the vendor-true schema as it is now, not as it was when something last listed.
+
+  - **`surface_snapshot.tools[]` emitted `input_schema` instead of `inputSchema` on mcp 2.x.** mcp 2.0 renamed the model fields and kept the wire names as aliases; the adapter's `to_mcp_tool().model_dump(...)` didn't pass `by_alias=True`, so the key a consumer received depended on which `mcp` resolved behind `fastmcp`. **This one is not fastmcp-4-specific** — mcp 2.0.0 has been in the `mcp-matrix` since it shipped — and it stayed invisible because the fastmcp adapter had no mcp axis at all: the matrix only exercises the official-SDK adapter, which hand-builds `inputSchema` and was never affected. Wire-format fix; see `SPEC §13`. `by_alias` also emits `_meta` rather than `meta` for a tool carrying tool-level meta, which shifts that tool's contribution to `surface_hash` — affected servers get one fresh `vendor_surfaces` row.
+
+- **Three fastmcp-2.x test failures that predate this release.** `tests/integrations/fastmcp/test_install.py` called `FastMCP.list_tools()`, which exists on 3.x/4.x but is `get_tools()` on 2.x — so the declared floor of the `[fastmcp]` extra could not run its own suite. Test-only; the SDK was always fine there.
+
+### Changed
+
+- **Session-id resolution moved out of `baton._state`.** `resolve_session_id` (a thin read of fastmcp's `Context.session_id`) is gone; SPEC §3.4's rungs now live with the adapters — `baton.integrations._session` for the two rungs both adapters share, `baton.integrations.fastmcp._session` and `baton.integrations.mcp._tool_wrap` for the transport-specific ones. Internal modules, no public export changed.
+
+---
+
 ## 0.6.1 — refuse before mutating; cap fastmcp below 4
 
 ### Fixed

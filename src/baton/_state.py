@@ -5,15 +5,15 @@ A per-session sequence-number counter that both ``BatonMiddleware`` (for
 ``annotation`` events) use, so sequence numbers stay monotonic within a
 session regardless of which path emitted the event.
 
-Plus a session-id resolver that walks FastMCP's ``Context`` and falls back
-to a process-wide UUID if no session info is available (e.g., during
-in-process Client testing or stdio-without-session-tracking).
+Session-id resolution is NOT here: it is SPEC §3.4's layered ladder, and it
+lives with the adapters (``integrations._session`` for the rungs both share,
+``integrations.fastmcp._session`` / ``integrations.mcp._tool_wrap`` for the
+transport-specific ones).
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 
 class SessionCounter:
@@ -65,13 +65,3 @@ class ProactiveTracker:
         """Record that a proactive already fired for this session (e.g. a real
         annotation-tool proactive), suppressing a later synthesised one."""
         self._emitted.add(session_id)
-
-
-def resolve_session_id(fastmcp_ctx: Any, fallback: str) -> str:
-    """Get the session_id from FastMCP's Context, falling back to ``fallback``
-    if no session info is available."""
-    if fastmcp_ctx is not None:
-        session_id = getattr(fastmcp_ctx, "session_id", None)
-        if isinstance(session_id, str) and session_id:
-            return session_id
-    return fallback

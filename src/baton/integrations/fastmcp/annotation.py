@@ -21,16 +21,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastmcp import Context, FastMCP
-from fastmcp.server.dependencies import get_http_headers
 
-from baton._state import ProactiveTracker, SessionCounter, resolve_session_id
+from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
-from baton.integrations._config import (
-    ResolveSessionIdHook,
-    SessionResolutionContext,
-    resolve_via_hook,
-)
+from baton.integrations._config import ResolveSessionIdHook
 from baton.integrations._llm_text import build_annotation_tool_description
+from baton.integrations.fastmcp._session import resolve_call_session_id
 from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime, meta_to_dict
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
@@ -119,31 +115,24 @@ def register_annotation_tool(
         runtime = detect_agent_runtime(raw_meta) or default_agent_runtime
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
 
-        # Rung 0 (a configured VendorConfig.resolve_session_id hook), same
-        # priority as the middleware's tool-call path — see design note
-        # docs/design-notes/session_resolver_hook.md. Falls back to FastMCP's
-        # own Context.session_id, same as before this hook existed.
-        session_id: str | None = None
-        if resolve_session_id_hook is not None:
-            headers = get_http_headers(include_all=True) or None
-            session_id = await resolve_via_hook(
-                resolve_session_id_hook,
-                SessionResolutionContext(
-                    headers=headers,
-                    meta=meta_dict,
-                    tool_name=name,
-                    arguments={
-                        "intent": user_goal,
-                        "expected_outcome": expected_result,
-                        "signal_type": signal_type,
-                        "workflow": overall_task,
-                        "suggested_improvement": suggested_improvement,
-                        "context": context,
-                    },
-                ),
-            )
-        if session_id is None:
-            session_id = resolve_session_id(ctx, fallback_session_id)
+        # SPEC §3.4's ladder, resolved by the SAME function the middleware's
+        # tool-call path uses — an annotation that resolved differently from
+        # the call it describes could never be joined to it downstream, which
+        # is the one correlation this tool exists to produce.
+        session_id = await resolve_call_session_id(
+            meta=meta_dict,
+            fallback=fallback_session_id,
+            resolve_hook=resolve_session_id_hook,
+            tool_name=name,
+            arguments={
+                "intent": user_goal,
+                "expected_outcome": expected_result,
+                "signal_type": signal_type,
+                "workflow": overall_task,
+                "suggested_improvement": suggested_improvement,
+                "context": context,
+            },
+        )
         # A proactive annotation (no signal_type) claims the session's proactive
         # slot so the middleware won't also synthesise one from an injected param.
         if signal_type is None:

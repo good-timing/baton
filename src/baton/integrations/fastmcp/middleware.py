@@ -16,17 +16,16 @@ from __future__ import annotations
 
 import copy
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
 
-from fastmcp.server.dependencies import get_http_headers
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools import Tool
 from mcp.types import CallToolRequestParams, ListToolsRequest
 
-from baton._state import ProactiveTracker, SessionCounter, resolve_session_id
+from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
 from baton.events import (
     AnnotationEvent,
@@ -40,11 +39,7 @@ from baton.events import (
     ToolCallStartEvent,
     ToolCallStartPayload,
 )
-from baton.integrations._config import (
-    ResolveSessionIdHook,
-    SessionResolutionContext,
-    resolve_via_hook,
-)
+from baton.integrations._config import ResolveSessionIdHook
 from baton.integrations._llm_text import (
     EXPECTED_RESULT_PARAM_NAME,
     INTENT_SOURCE_PARAM,
@@ -55,6 +50,7 @@ from baton.integrations._llm_text import (
     build_user_goal_param_description,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
+from baton.integrations.fastmcp._session import resolve_call_session_id
 from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime, meta_to_dict
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
@@ -207,9 +203,16 @@ class BatonMiddleware(Middleware):
             # _SurfaceState.build_snapshot) — call_next()'s list order isn't
             # a meaningful part of the surface's identity, so a pure
             # reordering (e.g. remove+re-add) must not flip surface_hash.
+            # ``by_alias=True`` is what keeps this on the WIRE names. mcp 2.0
+            # renamed the model fields (``inputSchema`` -> ``input_schema``,
+            # ``meta`` -> ``_meta``) and kept the old names as aliases, so a
+            # plain dump silently emits ``input_schema`` there — a SPEC §11.4
+            # break in the ``surface_snapshot`` payload that depends on which
+            # mcp version happened to resolve under fastmcp. The official-SDK
+            # adapter never hit it because it hand-builds ``inputSchema``.
             surface_tools = sorted(
                 (
-                    t.to_mcp_tool().model_dump(mode="json", exclude_none=True)
+                    t.to_mcp_tool().model_dump(mode="json", exclude_none=True, by_alias=True)
                     for t in tools
                     if t.name != self._annotation_tool_name
                 ),
@@ -267,8 +270,46 @@ class BatonMiddleware(Middleware):
         except Exception:
             logger.exception("baton: surface snapshot capture failed")
 
-    def _extract_goal_params(
-        self, tool_name: str, arguments: dict[str, Any]
+    async def _resolve_dispositions(self, tool_name: str, server: Any) -> dict[str, str] | None:
+        """Per-param ``"injected"``/``"native"`` dispositions for ``tool_name``.
+
+        Warm path: whatever ``on_list_tools`` recorded. Cold path: ask the
+        server for the tool and compute them on the spot. The cold path is not
+        an edge case — fastmcp 4.x's client resolves a ``tools/call`` without
+        first issuing ``tools/list``, so on 4.x the registry is empty for
+        every tool until something else lists, and the pre-existing
+        strip-with-a-warning fallback would eat a vendor's OWN ``user_goal``
+        before their handler ever saw it. Reading the server's registry is
+        also strictly better evidence than a remembered listing: it is the
+        vendor-true schema at call time.
+
+        Never raises — a lookup miss (unknown tool, an unexpected registry
+        shape on some future version) returns ``None`` and leaves the caller
+        on the original warn-and-strip path, which is safe because these three
+        names are reserved.
+        """
+        cached = self._param_registry.get(tool_name)
+        if cached is not None:
+            return cached
+        if server is None:
+            return None
+        try:
+            tool = await server.get_tool(tool_name)
+            _, dispositions = self._inject_goal_params(tool)
+        except Exception:
+            logger.debug(
+                "baton: could not resolve param dispositions for %r from the server registry",
+                tool_name,
+                exc_info=True,
+            )
+            return None
+        if not dispositions:
+            return None
+        self._param_registry[tool_name] = dispositions
+        return dispositions
+
+    async def _extract_goal_params(
+        self, tool_name: str, arguments: dict[str, Any], server: Any
     ) -> tuple[str | None, str | None, str | None]:
         """Pop the injected ``user_goal``/``expected_result``/``overall_task``
         from ``arguments`` in place; return their values independently (any
@@ -278,7 +319,7 @@ class BatonMiddleware(Middleware):
         dict is forwarded downstream."""
         if self._intent_param_mode == "off":
             return None, None, None
-        dispositions = self._param_registry.get(tool_name)
+        dispositions = await self._resolve_dispositions(tool_name, server)
         goal = self._extract_one_goal_param(
             tool_name, arguments, USER_GOAL_PARAM_NAME, dispositions
         )
@@ -339,8 +380,9 @@ class BatonMiddleware(Middleware):
         call_expected: str | None = None
         call_task: str | None = None
         if isinstance(msg.arguments, dict):
-            call_intent, call_expected, call_task = self._extract_goal_params(
-                tool_name, msg.arguments
+            fctx = context.fastmcp_context
+            call_intent, call_expected, call_task = await self._extract_goal_params(
+                tool_name, msg.arguments, getattr(fctx, "fastmcp", None) if fctx else None
             )
         scrubbed_intent = self._scrubber(call_intent) if call_intent is not None else None
         scrubbed_expected = self._scrubber(call_expected) if call_expected is not None else None
@@ -358,7 +400,7 @@ class BatonMiddleware(Middleware):
         # configured hook sees vendor-visible ``params`` and unscrubbed
         # ``meta_dict`` — the same shape ``SessionResolutionContext`` carries
         # on the mcp-adapter path.
-        session_id = await self._extract_session_id(context, meta_dict, tool_name, params)
+        session_id = await self._extract_session_id(meta_dict, tool_name, params)
 
         # The session's FIRST injected-param intent also becomes a proactive
         # annotation, sequenced BEFORE the tool_call_start it explains (so
@@ -484,46 +526,23 @@ class BatonMiddleware(Middleware):
 
     async def _extract_session_id(
         self,
-        context: MiddlewareContext[CallToolRequestParams],
         meta: dict[str, Any] | None,
         tool_name: str,
         arguments: dict[str, Any],
     ) -> str:
-        """Real per-call session id. Rung 0 (a configured
-        ``VendorConfig.resolve_session_id`` hook) is checked first and, on a
-        non-empty return, wins outright — see ``docs/design-notes/
-        session_resolver_hook.md``. Below that, falls back to FastMCP's own
-        ``Context.session_id``, then the process-wide UUID if no session info
-        is available.
-
-        Note: unlike the mcp-adapter path, this adapter doesn't implement
-        SPEC §3.4 rungs 1-2/4 (``_meta``/header based) below rung 0 — it only
-        ever resolves via the standalone ``fastmcp`` library's own session
-        concept. See design note D3 for why that gap isn't closed here.
+        """Real per-call session id — SPEC §3.4's ladder, shared with the
+        annotation tool so an annotation and the call it describes always
+        resolve identically. See ``baton.integrations.fastmcp._session`` for
+        the rungs, and for why fastmcp's own ``Context.session_id`` is not one
+        of them.
         """
-        if self._resolve_session_id_hook is not None:
-            headers = self._extract_headers()
-            hook_result = await resolve_via_hook(
-                self._resolve_session_id_hook,
-                SessionResolutionContext(
-                    headers=headers, meta=meta, tool_name=tool_name, arguments=arguments
-                ),
-            )
-            if hook_result is not None:
-                return hook_result
-        return resolve_session_id(context.fastmcp_context, self._fallback_session_id)
-
-    @staticmethod
-    def _extract_headers() -> Mapping[str, str] | None:
-        """Best-effort HTTP header extraction via FastMCP's context-var-backed
-        ``get_http_headers`` (set by ``RequestContextMiddleware`` around the
-        whole request, so it's populated by the time ``on_call_tool`` runs).
-        Never raises — empty outside a live HTTP request (e.g. stdio).
-        ``include_all=True`` so a vendor's hook can read headers the default
-        view strips (e.g. ``authorization``, which a session-lookup hook may
-        need)."""
-        headers = get_http_headers(include_all=True)
-        return headers if headers else None
+        return await resolve_call_session_id(
+            meta=meta,
+            fallback=self._fallback_session_id,
+            resolve_hook=self._resolve_session_id_hook,
+            tool_name=tool_name,
+            arguments=arguments,
+        )
 
     @staticmethod
     def _extract_request_meta(context: MiddlewareContext[CallToolRequestParams]) -> Any:

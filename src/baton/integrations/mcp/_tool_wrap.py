@@ -96,6 +96,10 @@ from baton.integrations._llm_text import (
     build_overall_task_param_description,
     build_user_goal_param_description,
 )
+from baton.integrations._session import (
+    resolve_session_id_from_meta,
+    session_id_from_headers,
+)
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 from baton.integrations.mcp._registry import get_tool_manager, get_tool_registry
 from baton.scrub import identity_scrub
@@ -551,47 +555,6 @@ def _wrap_tool_run(
     return wrapper
 
 
-def _trace_id_from_traceparent(traceparent: Any) -> str | None:
-    """The trace-id field of a W3C ``traceparent`` value
-    (``version-trace_id-parent_id-flags``, SEP-414) — SPEC §3.4 rung 1's
-    preferred ``session_id`` source. ``None`` on any malformed or all-zero
-    input; never raises."""
-    if not isinstance(traceparent, str):
-        return None
-    parts = traceparent.split("-")
-    if len(parts) != 4:
-        return None
-    trace_id = parts[1]
-    if not trace_id or trace_id == "0" * len(trace_id):
-        return None
-    return trace_id
-
-
-def _resolve_session_id_from_meta(meta: dict[str, Any] | None) -> str | None:
-    """SPEC §3.4 rungs 1-2, in priority order: ``_meta.traceparent`` (W3C
-    trace context, SEP-414) then ``_meta["io.baton/session_id"]``
-    (vendor-supplied app-level handle). ``None`` if neither is present.
-
-    Per SPEC §5.2's validated runtime table, no MCP client Baton has tested
-    (Claude Code, Claude Desktop, Cursor) populates either key today — so in
-    practice this misses for every currently-known runtime. Still worth
-    reading: the data is already extracted for ``runtime_meta`` (free), and
-    unlike the header rung below, neither key depends on which MCP protocol
-    version was negotiated — this starts resolving automatically the moment
-    any runtime adopts SEP-414 or a vendor's own first-party client stamps
-    the Baton key, with no further SDK change.
-    """
-    if not meta:
-        return None
-    trace_id = _trace_id_from_traceparent(meta.get("traceparent"))
-    if trace_id is not None:
-        return trace_id
-    app_handle = meta.get("io.baton/session_id")
-    if isinstance(app_handle, str) and app_handle:
-        return app_handle
-    return None
-
-
 def _extract_headers_from_context(context: Any) -> Mapping[str, str] | None:
     """Best-effort HTTP header extraction, shared by rung 0 (the vendor hook's
     ``SessionResolutionContext.headers``) and rung 4 below. ``None`` on stdio,
@@ -661,13 +624,11 @@ async def _resolve_call_session_id(
         )
         if hook_result is not None:
             return hook_result
-    from_meta = _resolve_session_id_from_meta(meta)
+    from_meta = resolve_session_id_from_meta(meta)
     if from_meta is not None:
         return from_meta
-    if headers is None:
-        return fallback
-    session_id = headers.get("mcp-session-id")
-    return session_id if isinstance(session_id, str) and session_id else fallback
+    from_header = session_id_from_headers(headers)
+    return from_header if from_header is not None else fallback
 
 
 def _is_mrtr_continuation(context: Any) -> bool:

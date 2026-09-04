@@ -17,6 +17,7 @@ from starlette.requests import Request
 from werkzeug.wrappers import Response
 
 from baton.events import Event
+from baton.integrations.fastmcp._session import extract_headers
 from baton.integrations.fastmcp.middleware import BatonMiddleware
 from baton.sinks import HttpSink, Sink
 from tests._event_helpers import without_surface_snapshots
@@ -292,15 +293,26 @@ class TestSequenceNumbers:
             await client.call_tool("echo", {"text": "3"})
 
         await sink.flush()
-        # 3 tool calls x 2 events each = 6 events. surface_snapshot lands on a
-        # different (fallback) session, so it's excluded here — it has its
-        # own independent per-session counter, not part of this sequence.
+        # 3 tool calls x 2 events each = 6 tool events, all in one session.
         tool_events = without_surface_snapshots(captured)
         seqs = [ev["sequence_number"] for ev in tool_events]
         # Same session → must be strictly increasing
         assert seqs == sorted(seqs)
         assert len(set(seqs)) == len(seqs), "sequence numbers must be unique"
-        assert seqs[0] == 1, "sequence starts at 1"
+        # The session's counter starts at 1, but the first number is not
+        # necessarily a tool event's: an in-process/stdio surface_snapshot now
+        # shares this session rather than sitting on one of its own. It used to
+        # land elsewhere only because tool calls resolved via fastmcp's
+        # Context.session_id while the snapshot used the process-wide fallback
+        # — an artefact of the two disagreeing, not a designed separation. They
+        # agree now, so assert over every event in the session.
+        all_seqs = [ev["sequence_number"] for ev in captured]
+        assert sorted(all_seqs) == list(range(1, len(all_seqs) + 1)), (
+            "the session's sequence numbers are 1..n with no gaps or repeats"
+        )
+        assert len({ev["session_id"] for ev in captured}) == 1, (
+            "every event of this session, snapshot included, shares its session_id"
+        )
 
     async def test_start_seq_less_than_end_seq(
         self, sink: Sink, captured: list[dict[str, Any]]
@@ -591,7 +603,7 @@ class TestResolveSessionIdHook:
         assert seen["headers"] is None
 
     async def test_extract_headers_reads_a_real_http_request(self) -> None:
-        """``_extract_headers`` (called by rung 0) wraps FastMCP's
+        """``extract_headers`` (called by rungs 0 and 4) wraps FastMCP's
         ``get_http_headers()`` — exercised here against a real Starlette
         ``Request`` via ``set_http_request``, not mocked. (The full
         middleware dispatch can't be driven through this path in-process:
@@ -602,10 +614,10 @@ class TestResolveSessionIdHook:
         extraction itself.)"""
         request = _fake_http_request({"x-vendor-session": "real-header-value"})
         with set_http_request(request):
-            headers = BatonMiddleware._extract_headers()
+            headers = extract_headers()
 
         assert headers is not None
         assert headers.get("x-vendor-session") == "real-header-value"
 
     async def test_extract_headers_none_outside_a_live_request(self) -> None:
-        assert BatonMiddleware._extract_headers() is None
+        assert extract_headers() is None
