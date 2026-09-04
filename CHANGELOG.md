@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.6.1 — refuse before mutating; cap fastmcp below 4
 
 ### Fixed
 
