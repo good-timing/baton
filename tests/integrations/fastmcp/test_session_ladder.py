@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from fastmcp.server.dependencies import get_http_headers
 from fastmcp.server.http import set_http_request
 from starlette.requests import Request
 
@@ -18,6 +19,34 @@ from baton.integrations.fastmcp._session import resolve_call_session_id
 
 TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+
+def _http_injection_works() -> bool:
+    """Whether THIS fastmcp version's ``set_http_request`` is observable through
+    ``get_http_headers``.
+
+    It isn't on fastmcp 2.12/2.13: the two use different contextvars there, so
+    the injection lands somewhere the reader never looks and every header rung
+    reads empty. That is a limitation of the test harness on those versions,
+    NOT of rung 4 — verified against a real fastmcp 2.12 streamable-HTTP server,
+    where `mcp-session-id` is read correctly and holds stable across calls.
+    Skipping beats asserting a false negative or silently dropping the coverage
+    on the versions where it does work.
+    """
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [(b"mcp-session-id", b"probe")],
+    }
+    with set_http_request(Request(scope)):
+        return (get_http_headers(include_all=True) or {}).get("mcp-session-id") == "probe"
+
+
+requires_http_injection = pytest.mark.skipif(
+    not _http_injection_works(),
+    reason="fastmcp's set_http_request is not observable via get_http_headers on this version",
+)
 
 
 def _fake_http_request(headers: dict[str, str]) -> Request:
@@ -59,6 +88,7 @@ class TestMetaRungs:
     async def test_traceparent_trace_id_used_as_session_id(self) -> None:
         assert await _resolve(meta={"traceparent": TRACEPARENT}) == TRACE_ID
 
+    @requires_http_injection
     async def test_traceparent_takes_priority_over_header(self) -> None:
         got = await _resolve(
             meta={"traceparent": TRACEPARENT}, headers={"mcp-session-id": "from-header"}
@@ -75,6 +105,7 @@ class TestMetaRungs:
             42,
         ],
     )
+    @requires_http_injection
     async def test_unusable_traceparent_falls_through_to_header(self, traceparent: Any) -> None:
         got = await _resolve(
             meta={"traceparent": traceparent}, headers={"mcp-session-id": "from-header"}
@@ -94,6 +125,7 @@ class TestMetaRungs:
 
 
 class TestHeaderAndFallbackRungs:
+    @requires_http_injection
     async def test_header_used_when_meta_is_empty(self) -> None:
         assert await _resolve(meta=None, headers={"mcp-session-id": "hdr"}) == "hdr"
 
@@ -102,14 +134,17 @@ class TestHeaderAndFallbackRungs:
         client, so the process-wide fallback is the right answer here."""
         assert await _resolve() == "sdk-fallback"
 
+    @requires_http_injection
     async def test_empty_header_value_falls_through_to_fallback(self) -> None:
         assert await _resolve(headers={"mcp-session-id": ""}) == "sdk-fallback"
 
+    @requires_http_injection
     async def test_unrelated_headers_do_not_resolve(self) -> None:
         assert await _resolve(headers={"x-request-id": "nope"}) == "sdk-fallback"
 
 
 class TestHookRungZero:
+    @requires_http_injection
     async def test_hook_wins_over_every_lower_rung(self) -> None:
         got = await _resolve(
             meta={"traceparent": TRACEPARENT},
@@ -127,6 +162,7 @@ class TestHookRungZero:
 
         assert await _resolve(meta={"traceparent": TRACEPARENT}, hook=broken) == TRACE_ID
 
+    @requires_http_injection
     async def test_hook_sees_headers_and_meta(self) -> None:
         seen: dict[str, Any] = {}
 

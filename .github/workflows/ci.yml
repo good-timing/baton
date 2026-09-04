@@ -134,7 +134,58 @@ jobs:
           pip install "mcp==${{ matrix.mcp-version }}"
 
       - name: Test (mcp adapter only)
-        # Scope to the official-mcp-SDK adapter tests — the fastmcp adapter
-        # and core tests are covered by the `core` job above and don't depend
-        # on the mcp package version.
+        # Scope to the official-mcp-SDK adapter tests. The fastmcp adapter is
+        # NOT covered here — it pins its own mcp version transitively, so this
+        # job cannot swing it. That is covered by `fastmcp-matrix` below, whose
+        # absence is exactly how a `surface_snapshot` wire-format break on
+        # mcp 2.x survived a green `mcp-matrix` (see CHANGELOG, 0.6.2).
         run: pytest tests/integrations/mcp/ -q
+
+  fastmcp-matrix:
+    # Verifies the baton.integrations.fastmcp adapter against each major of the
+    # standalone `fastmcp` library. This job exists because its absence hid a
+    # real bug: `surface_snapshot` serialises tools via fastmcp's
+    # `to_mcp_tool().model_dump()`, so the WIRE KEYS depend on the mcp version
+    # fastmcp drags in behind it — and mcp 2.0 renamed them. `mcp-matrix` never
+    # saw it (it only runs the official-SDK adapter, which hand-builds its
+    # tool dicts) and `core` never saw it (one resolved fastmcp, one resolved
+    # mcp). Each leg below pins fastmcp and lets it choose its own mcp, which
+    # is what a customer's resolve actually does: 2.x/3.x pull mcp 1.x, 4.x
+    # lifted fastmcp's `mcp<2` pin and pulls mcp 2.x.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One leg per supported major. The `[fastmcp]` extra declares a floor of
+        # >=2.10, but 2.10/2.11 cannot `import fastmcp` at all under current
+        # pydantic (upstream: "cannot specify both default and default_factory")
+        # and 2.12/2.13 have unrelated pre-existing gaps in this suite, so the
+        # 2.x leg pins the newest 2.x rather than the declared floor. Raising
+        # that floor to match is an open decision, not a settled one.
+        fastmcp-version: ["2.14.7", "3.4.2", "4.0.2"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies (override fastmcp version)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install "fastmcp==${{ matrix.fastmcp-version }}"
+
+      - name: Show resolved fastmcp + mcp
+        # The mcp version is the point of this matrix, so print what resolved
+        # rather than inferring it from the fastmcp pin.
+        run: pip list | grep -iE "^(mcp|fastmcp|pydantic) "
+
+      - name: Test (fastmcp adapter + cross-path functional)
+        # Wider than mcp-matrix's scope on purpose: `tests/functional/` is where
+        # envelope/spec-conformance lives, and a wire-format regression from the
+        # mcp version underneath fastmcp shows up there, not only in the
+        # adapter's own tests.
+        run: pytest tests/integrations/fastmcp/ tests/functional/ -q
