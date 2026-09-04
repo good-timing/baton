@@ -970,3 +970,77 @@ class TestIntentInjectionInstalled:
         # the param intent is not lost — it still rides tool_call_start
         start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
         assert start["payload"]["call_intent"] == "param intent"
+
+
+def test_the_official_sdk_server_is_told_which_adapter_to_use() -> None:
+    """The reverse of the mcp adapter's guard, for the reverse mixup.
+
+    Both libraries name the class ``FastMCP`` and both adapters' install_baton
+    take the same arguments, so the only thing separating them is which import
+    line the vendor copied. Handing the official SDK's server to THIS adapter
+    used to half-install **on mcp 1.x**: ``_mcp_server`` is there, so the
+    surface capture succeeded and the read-only-property fallback wrote the
+    Baton instructions onto it — install then died at ``add_middleware``,
+    leaving a server advertising an annotation tool that was never registered.
+    (On mcp 2.x that attribute is renamed ``_lowlevel_server`` and this adapter
+    has no compat shim for it, so the instructions write raised and nothing was
+    mutated — a different failure, which the guard also replaces. The assertion
+    below holds on both.)
+
+    The class comes from the mcp adapter's compat shim rather than a direct
+    import because the module moved in mcp 2.0 (``mcp.server.fastmcp.FastMCP``
+    → ``mcp.server.mcpserver.MCPServer``); the shim already resolves both, so
+    this stays portable across the version matrix.
+    """
+    from baton.integrations.mcp._compat import MCPServerClass
+
+    official = MCPServerClass("official-sdk-server")
+    before = official.instructions
+
+    with pytest.raises(TypeError) as excinfo:
+        install_baton(
+            official,
+            VendorConfig(
+                vendor_id="v",
+                vendor_display_name="V",
+                consent_token="ct_test",
+            ),
+        )
+
+    detail = str(excinfo.value)
+    assert "baton.integrations.mcp.install_baton" in detail, (
+        "the message does not name the adapter that would actually work"
+    )
+    # Refused before mutating: the half-install wrote these instructions.
+    assert official.instructions == before
+
+
+def test_a_bare_low_level_server_is_not_bounced_to_the_other_adapter() -> None:
+    """A low-level ``mcp.server.Server`` is an ``mcp.*`` object too, and the
+    sibling adapter refuses it — so it must not be sent there.
+
+    The reference servers (git, time, fetch) are all written against the
+    low-level API, so this is the shape a stranger who started from the
+    canonical examples has. "Use baton.integrations.mcp.install_baton" would
+    send them to a second refusal ("not supported yet"), which is the
+    wrong-advice round trip this whole area exists to remove. The tool registry
+    is what separates the two: the high-level server has one, a bare Server
+    does not.
+    """
+    from mcp.server.lowlevel import Server
+
+    with pytest.raises(TypeError) as excinfo:
+        install_baton(
+            Server("bare-low-level"),
+            VendorConfig(
+                vendor_id="v",
+                vendor_display_name="V",
+                consent_token="ct_test",
+            ),
+        )
+
+    detail = str(excinfo.value)
+    assert "low-level" in detail, "it does not name what the reader is holding"
+    assert "Neither adapter supports it yet" in detail
+    # It must NOT hand them an adapter that will refuse them in turn.
+    assert "Use ``baton.integrations.mcp.install_baton`` instead" not in detail

@@ -30,6 +30,7 @@ shutdown.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastmcp import FastMCP
 
@@ -44,13 +45,82 @@ from baton.integrations.fastmcp.annotation import (
     register_annotation_tool,
 )
 from baton.integrations.fastmcp.middleware import BatonMiddleware
+from baton.integrations.mcp._registry import get_tool_manager
 from baton.scrub import Scrubber
 
 logger = logging.getLogger(__name__)
 
 
+def _require_fastmcp_server(mcp: Any) -> None:
+    """Refuse a server this adapter can't install into, BEFORE it mutates one.
+
+    Mirror of ``baton.integrations.mcp._compat.require_high_level_server``, for
+    the mirror-image failure. Install below captures a surface snapshot, then
+    WRITES server instructions, and only then calls ``add_middleware``. Handed
+    the official mcp SDK's server **on mcp 1.x**, the first two steps succeed —
+    ``_mcp_server`` is there, and the read-only-property fallback writes the
+    instructions straight to it — so install died at ``add_middleware`` on a
+    server already advertising an annotation tool that was never registered.
+    A half-install, not a refusal. (On mcp 2.x the same object failed earlier
+    and more honestly: the backing was renamed ``_lowlevel_server``, which this
+    adapter does not route through a compat shim, so the instructions write
+    itself raised and nothing was mutated. The guard makes both cases the same
+    clean refusal.)
+
+    ``add_middleware`` is the seam: it is what this adapter cannot work without
+    and what actually failed. Duck-typed rather than ``isinstance(mcp,
+    FastMCP)`` — the mcp adapter is duck-typed on the same reasoning, and a
+    vendor proxy that forwards the API should still install.
+
+    An ``mcp.*`` object is only sent to the sibling adapter if that adapter can
+    actually take it, which is why the tool registry is probed here too. A bare
+    low-level ``mcp.server.Server`` is also an ``mcp.*`` object and the sibling
+    guard refuses it — pointing there would be a round trip ending in a second
+    refusal, the wrong-advice failure this whole area exists to remove.
+    """
+    if callable(getattr(mcp, "add_middleware", None)):
+        return
+
+    if type(mcp).__module__.split(".")[0] == "mcp":
+        try:
+            registry = get_tool_manager(mcp)
+        except AttributeError:
+            registry = None
+        if registry is None:
+            raise TypeError(
+                "baton: this looks like the official mcp SDK's low-level "
+                "``mcp.server.Server`` — the API the reference servers (git, "
+                "time, fetch) are written against. Neither adapter supports it "
+                "yet: this one captures on the standalone ``fastmcp`` "
+                "library's middleware chain, and "
+                "``baton.integrations.mcp.install_baton`` captures on the "
+                "high-level server's tool registry, which a low-level Server "
+                "has none of."
+            )
+        raise TypeError(
+            "baton: this is the official mcp SDK's high-level server, but "
+            "``baton.integrations.fastmcp.install_baton`` adapts the "
+            "standalone ``fastmcp`` library — different library, different "
+            "hook mechanism (middleware vs. tool-handler wrapping). Use "
+            "``baton.integrations.mcp.install_baton`` instead; same signature, "
+            "same VendorConfig."
+        )
+    raise TypeError(
+        "baton: install_baton needs the standalone ``fastmcp`` library's "
+        "FastMCP, and this object has no ``add_middleware`` — the middleware "
+        "chain is the seam this adapter captures on. If this IS a fastmcp "
+        "FastMCP, then it is a version problem: pin fastmcp>=2.10,<4."
+    )
+
+
 def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     """Install Baton into a FastMCP server. See module docstring for usage."""
+    # FIRST, before any validation or mutation: everything below assumes this
+    # library's FastMCP, and the failure downstream is both late and
+    # uninformative — the surface capture and the instructions write both
+    # succeed on the official SDK's server, and only ``add_middleware`` finally
+    # dies, on a server Baton has already modified.
+    _require_fastmcp_server(mcp)
     _validate_vendor_config(config)
 
     # Default to a fresh Scrubber per install so PII redaction is on out
