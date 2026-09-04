@@ -32,6 +32,8 @@ def get_tool_manager(mcp: Any) -> Any:
     """Return the ``ToolManager`` instance.
 
     Needed to monkey-patch ``add_tool`` so tools registered AFTER
-    ``install_baton(...)`` are also wrapped.
+    ``install_baton(...)`` are also wrapped. Also the shape probe
+    ``_compat.require_high_level_server`` refuses on — routed through here so
+    an upstream rename stays a one-file change, per this module's role above.
     """
     return mcp._tool_manager

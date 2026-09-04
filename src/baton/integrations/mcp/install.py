@@ -38,6 +38,7 @@ from baton.integrations.mcp._compat import (
 )
 from baton.integrations.mcp._compat import (
     get_lowlevel_server,
+    require_high_level_server,
     set_server_instructions,
 )
 from baton.integrations.mcp._tool_wrap import install_wraps
@@ -52,6 +53,12 @@ logger = logging.getLogger(__name__)
 
 def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     """Install Baton into an official-SDK FastMCP server. See module docstring for usage."""
+    # FIRST, before any validation or mutation: everything below assumes a
+    # high-level server, and the failures downstream are both late and
+    # uninformative — the low-level-server lookup is caught and merely logged,
+    # the instructions write silently succeeds on a bare ``Server``, and only
+    # ``install_wraps`` finally dies, on a server Baton has already modified.
+    require_high_level_server(mcp)
     _validate_vendor_config(config)
 
     # Default to a fresh Scrubber per install so PII redaction is on out

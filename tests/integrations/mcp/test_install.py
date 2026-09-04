@@ -1348,3 +1348,122 @@ class TestSequenceNumbers:
         seqs = [e["sequence_number"] for e in events]
         assert seqs == sorted(seqs)
         assert len(set(seqs)) == len(seqs)
+
+
+def test_the_low_level_backing_error_leads_with_the_version_cause() -> None:
+    """``get_lowlevel_server``'s error is a VERSION diagnosis, not a shape one.
+
+    It once said "Pin a supported mcp release" for everything, then briefly
+    led with the shape instead — and that was wrong here, in the opposite
+    direction. ``install_baton`` refuses non-high-level servers up front now
+    (``require_high_level_server``), so anything that still reaches this error
+    has a tool registry: it IS a FastMCP/MCPServer, on a layout we don't
+    recognise. That is the version case, so the version advice leads and the
+    shape survives as the second branch — the reverse of the guard's message.
+
+    Still reachable in real life: ``set_server_instructions`` falls through to
+    here on a high-level server whose backing attribute upstream has renamed
+    again.
+    """
+    from mcp.server import Server
+
+    from baton.integrations.mcp._compat import get_lowlevel_server
+
+    with pytest.raises(AttributeError) as excinfo:
+        get_lowlevel_server(Server("bare-low-level"))
+
+    detail = str(excinfo.value)
+    assert "pin mcp>=1.20,<3" in detail, "the message does not give the version fix"
+    assert detail.index("version problem") < detail.index("the shape"), (
+        "the shape branch leads, which is the wrong diagnosis for anything "
+        "that can still reach this error"
+    )
+    # The shape branch survives — the helper is importable on its own.
+    assert "mcp.server.Server" in detail and "not supported yet" in detail
+
+
+def test_a_low_level_server_is_refused_before_install_touches_it(events_path: str) -> None:
+    """The refusal has to be what ``install_baton`` raises, and it has to come
+    before Baton mutates anything.
+
+    The message alone wasn't enough. Reaching this code the way a reader
+    actually does — ``install_baton(Server(...), ...)`` — the guidance never
+    surfaced: the low-level-server lookup is best-effort, so it became a logged
+    traceback; ``set_server_instructions`` then SUCCEEDED, because on a bare
+    ``Server`` ``instructions`` is a plain settable attribute rather than the
+    read-only property it is on FastMCP/MCPServer; and install died later in
+    the wrap layer on a raw ``'Server' object has no attribute
+    '_tool_manager'``. The server was left advertising an annotation tool that
+    was never registered — a half-install, not a refusal.
+    """
+    from mcp.server import Server
+
+    server = Server("bare-low-level")
+    before = getattr(server, "instructions", None)
+
+    with pytest.raises(TypeError) as excinfo:
+        install_baton(
+            server,
+            VendorConfig(
+                vendor_id="v",
+                vendor_display_name="V",
+                consent_token="ct_test",
+                sink=FileSink(events_path),
+            ),
+        )
+
+    detail = str(excinfo.value)
+    assert "mcp.server.Server" in detail, "it does not name what the reader is holding"
+    assert "not supported yet" in detail
+    # Shape leads here, version second — the reverse of get_lowlevel_server's
+    # message, because here the object demonstrably is NOT a high-level server.
+    assert detail.index("no tool registry") < detail.index("version problem")
+
+    # Nothing was written on the way to the refusal. Server instructions are
+    # the load-bearing one: a half-install leaves them advertising a
+    # ``v_annotate`` tool that the failed wrap layer never registered.
+    assert getattr(server, "instructions", None) == before
+    assert not os.path.exists(events_path) or os.path.getsize(events_path) == 0
+
+
+def test_the_standalone_fastmcp_server_is_told_which_adapter_to_use(events_path: str) -> None:
+    """The likeliest way this guard fires is the wrong-library mixup, and it
+    has to say so rather than list causes and let the reader guess.
+
+    Both libraries call the class ``FastMCP`` and both adapters export an
+    ``install_baton`` with the same signature, so the only thing separating
+    them is which import line the vendor copied. The standalone library's
+    server has no ``_tool_manager`` either, so without a dedicated branch it
+    would be told it was holding a bare low-level ``Server`` and sent to pin
+    an mcp version — the same wrong-advice failure this whole area exists to
+    fix.
+
+    Stands in for the real class rather than importing ``fastmcp``: the
+    detection is by module path, and ``fastmcp<4`` pins ``mcp<2``, so importing
+    it from the mcp adapter's tests would be a broken resolve on the mcp 2.0
+    leg of the version matrix.
+    """
+
+    class FastMCP:  # stand-in for the standalone library's class; see docstring
+        pass
+
+    FastMCP.__module__ = "fastmcp.server.server"
+
+    with pytest.raises(TypeError) as excinfo:
+        install_baton(
+            FastMCP(),
+            VendorConfig(
+                vendor_id="v",
+                vendor_display_name="V",
+                consent_token="ct_test",
+                sink=FileSink(events_path),
+            ),
+        )
+
+    detail = str(excinfo.value)
+    assert "baton.integrations.fastmcp.install_baton" in detail, (
+        "the message does not name the adapter that would actually work"
+    )
+    assert "standalone" in detail
+    # It must NOT reach for the bare-Server / version guesses here.
+    assert "pin mcp" not in detail and "mcp.server.Server" not in detail

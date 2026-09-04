@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from baton.integrations.mcp._registry import get_tool_manager
+
 if TYPE_CHECKING:
     # The server class is chosen at RUNTIME from whichever mcp major is
     # installed, so its static type differs per environment — and one mypy run
@@ -43,7 +45,82 @@ else:
     except ImportError:  # mcp >=2.0 renamed the module + class
         from mcp.server.mcpserver import MCPServer as MCPServerClass
 
-__all__ = ["MCPServerClass", "get_lowlevel_server", "set_server_instructions"]
+__all__ = [
+    "MCPServerClass",
+    "get_lowlevel_server",
+    "require_high_level_server",
+    "set_server_instructions",
+]
+
+
+def _looks_like_standalone_fastmcp(mcp: Any) -> bool:
+    """True if this is the *standalone* ``fastmcp`` library's server rather
+    than the official SDK's.
+
+    Sniffed by module path, not by importing ``fastmcp`` — it is an optional
+    extra and this adapter must never import it. Worth a dedicated branch
+    because the mixup is easy to make and invisible once made: both libraries
+    name the class ``FastMCP``, and the two ``install_baton`` entry points take
+    the same arguments, so the only thing that differs is which import line the vendor
+    copied.
+    """
+    return type(mcp).__module__.split(".")[0] == "fastmcp"
+
+
+def require_high_level_server(mcp: Any) -> None:
+    """Refuse anything that isn't a high-level server, BEFORE install mutates it.
+
+    ``install_baton`` needs FastMCP/MCPServer internals in two places, and the
+    two fail very differently. The low-level-server lookup is best-effort
+    (surface-snapshot capture degrades to an empty ``server_meta``), so on a
+    bare ``Server`` its careful error was only ever a logged traceback. Then
+    ``set_server_instructions`` *succeeds* — on a bare ``Server``
+    ``instructions`` is a plain settable attribute, not the read-only property
+    it is on FastMCP/MCPServer, so the public-setter fast path returns before
+    the compat helper is consulted. Install finally died in ``install_wraps``
+    on a raw ``'Server' object has no attribute '_tool_manager'``, by which
+    point the server was already advertising an annotation tool that never got
+    registered. That is a half-install, not a refusal.
+
+    So the refusal happens here instead, on the seam install genuinely cannot
+    do without: the tool registry. Probed through ``_registry`` rather than by
+    reaching for ``_tool_manager`` directly, because that module is the single
+    swap point for the attribute (see its docstring) — a second hardcoded copy
+    here would survive an upstream rename and start refusing every legitimate
+    server.
+
+    Duck-typed rather than ``isinstance``: everything downstream is duck-typed
+    on ``Any``, and a vendor proxy that exposes the internals should install.
+
+    ``TypeError``, not ``AttributeError``: this is a wrong-shaped argument, and
+    it must not be swallowed by the best-effort ``except AttributeError``
+    around the surface-snapshot capture.
+    """
+    try:
+        manager = get_tool_manager(mcp)
+    except AttributeError:
+        manager = None
+    if manager is not None:
+        return
+
+    if _looks_like_standalone_fastmcp(mcp):
+        raise TypeError(
+            "baton: this is the standalone ``fastmcp`` library's FastMCP, but "
+            "``baton.integrations.mcp.install_baton`` adapts the official mcp "
+            "SDK's server — different library, different hook mechanism "
+            "(middleware vs. tool-handler wrapping). Use "
+            "``baton.integrations.fastmcp.install_baton`` instead; same "
+            "signature, same VendorConfig."
+        )
+    raise TypeError(
+        "baton: install_baton needs the official mcp SDK's high-level server, "
+        "and this object has no tool registry. install_baton takes FastMCP "
+        "(mcp 1.x) or MCPServer (mcp 2.x) and reaches down into its internals. "
+        "A bare ``mcp.server.Server`` — the low-level API the reference servers "
+        "(git, time, fetch) are written against — has none of them and is not "
+        "supported yet. If this IS a FastMCP/MCPServer, then it is a version "
+        "problem: pin mcp>=1.20,<3."
+    )
 
 
 def get_lowlevel_server(mcp: Any) -> Any:
@@ -60,9 +137,14 @@ def get_lowlevel_server(mcp: Any) -> Any:
         backing = getattr(mcp, "_lowlevel_server", None)
     if backing is None:
         raise AttributeError(
-            "baton: cannot locate the low-level server backing on this mcp "
-            "version (tried ``_mcp_server`` and ``_lowlevel_server``). Pin a "
-            "supported mcp release."
+            "baton: this object has no low-level server backing (tried "
+            "``_mcp_server`` and ``_lowlevel_server``). On the official SDK's "
+            "FastMCP/MCPServer that backing always exists, so if that is what "
+            "you built with, this is a version problem: pin mcp>=1.20,<3. "
+            "Otherwise it is the shape: install_baton takes the high-level "
+            "server and reaches down into it, and a bare ``mcp.server.Server`` "
+            "— the low-level API the reference servers (git, time, fetch) are "
+            "written against — has no such backing and is not supported yet."
         )
     return backing
 
