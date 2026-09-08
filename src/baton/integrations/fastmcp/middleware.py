@@ -533,8 +533,8 @@ class BatonMiddleware(Middleware):
         """Real per-call session id — SPEC §3.4's ladder, shared with the
         annotation tool so an annotation and the call it describes always
         resolve identically. See ``baton.integrations.fastmcp._session`` for
-        the rungs, and for why fastmcp's own ``Context.session_id`` is not one
-        of them.
+        the rungs, including why fastmcp's own ``Context.session_id`` sits
+        BELOW the header and is gated to the versions where its cache survives.
         """
         return await resolve_call_session_id(
             meta=meta,

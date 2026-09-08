@@ -1,0 +1,181 @@
+"""Two concurrent clients on ONE server must not share a ``session_id``.
+
+The absence of this test is why the SSE regression in ``67c8eb2`` reached review:
+every existing session test drives ONE client, and a merge is invisible with one
+client — the id is stable and plausible either way. Measured 2026-09-07 (see
+``baton-internal`` `mcp_integration_seams.md` §Validation V2): two clients, one
+server, and 2 of 8 call pairs were attributed to the wrong caller.
+
+Two properties this file is built around, both learned the hard way:
+
+**The overlap has to be forced, not hoped for.** The tool waits on a barrier that
+only releases once BOTH clients are inside it, so a run that accidentally
+serialises the clients deadlocks and fails on the timeout instead of passing on
+traffic that never overlapped.
+
+**It has to run over a real transport.** In-process and stdio carry no session
+header at all, so they merge by construction and would "detect" a bug that is not
+the deployed behaviour. Only a network transport distinguishes the cases.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import socket
+import threading
+import time
+from collections.abc import Iterator
+from importlib.metadata import version
+from typing import Any
+
+import pytest
+from fastmcp import Client, FastMCP
+
+from baton.events import Event
+from baton.integrations.fastmcp import VendorConfig, install_baton
+from baton.sinks import Sink
+
+# Same discriminator the fix gates on, for the same reason: mcp owns the
+# ``ServerSession`` whose lifetime decides whether fastmcp's cached id survives.
+# See ``baton.integrations.fastmcp._session._session_cache_survives``.
+MCP_MAJOR = int(version("mcp").split(".")[0])
+
+BARRIER_TIMEOUT_S = 10.0
+BOOT_TIMEOUT_S = 15.0
+
+
+class _CapturingSink(Sink):
+    """Keeps every envelope in memory. The assertions are about the envelope's
+    ``session_id``, so nothing needs to be serialised or shipped."""
+
+    def __init__(self) -> None:
+        self.events: list[Event] = []
+
+    async def write(self, event: Event) -> None:
+        self.events.append(event)
+
+    async def flush(self) -> None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _free_port() -> int:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = int(s.getsockname()[1])
+    s.close()
+    return port
+
+
+@contextlib.contextmanager
+def _running_server(transport: str) -> Iterator[tuple[_CapturingSink, str]]:
+    sink = _CapturingSink()
+    mcp: FastMCP[Any] = FastMCP("concurrency-probe")
+    barrier = asyncio.Barrier(2)
+
+    @mcp.tool
+    async def work(caller: str) -> str:
+        """Returns only once both callers are inside it simultaneously."""
+        async with asyncio.timeout(BARRIER_TIMEOUT_S):
+            await barrier.wait()
+        return f"done for {caller}"
+
+    install_baton(
+        mcp,
+        VendorConfig(
+            vendor_id="concurrency-probe",
+            vendor_display_name="Concurrency Probe",
+            consent_token="test-token",
+            sink=sink,
+        ),
+    )
+
+    port = _free_port()
+    boot_error: list[BaseException] = []
+
+    def _serve() -> None:
+        try:
+            mcp.run(transport=transport, host="127.0.0.1", port=port, show_banner=False)
+        except BaseException as exc:  # re-raised on the test thread
+            boot_error.append(exc)
+
+    threading.Thread(target=_serve, daemon=True).start()
+
+    deadline = time.monotonic() + BOOT_TIMEOUT_S
+    while True:
+        if boot_error:
+            # A transport this fastmcp does not offer is a skip; anything else is
+            # a real failure. Never let the two look alike.
+            exc = boot_error[0]
+            if isinstance(exc, ValueError) and "transport" in str(exc).lower():
+                pytest.skip(f"fastmcp {version('fastmcp')} has no {transport!r} transport: {exc}")
+            raise exc
+        with contextlib.suppress(OSError):
+            socket.create_connection(("127.0.0.1", port), timeout=0.25).close()
+            break
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"{transport} server did not accept connections in {BOOT_TIMEOUT_S}s"
+            )
+        time.sleep(0.05)
+
+    path = "/sse/" if transport == "sse" else "/mcp/"
+    yield sink, f"http://127.0.0.1:{port}{path}"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "transport",
+    [
+        pytest.param(
+            "http",
+            marks=pytest.mark.xfail(
+                MCP_MAJOR >= 2,
+                strict=True,
+                raises=AssertionError,
+                reason=(
+                    "fastmcp 4 sends no mcp-session-id and its own cached id is "
+                    "rebuilt per request, so every client lands on the process-wide "
+                    "fallback and merges — seams note D2, undecided"
+                ),
+            ),
+        ),
+        pytest.param(
+            "sse",
+            marks=pytest.mark.xfail(
+                MCP_MAJOR >= 2,
+                strict=True,
+                raises=AssertionError,
+                reason=(
+                    "SSE never sends the mcp-session-id header, and on mcp 2.x "
+                    "rung 4b is gated off because the cache does not survive — "
+                    "so nothing is left but the fallback"
+                ),
+            ),
+        ),
+    ],
+)
+async def test_concurrent_clients_do_not_share_a_session_id(transport: str) -> None:
+    with _running_server(transport) as (sink, url):
+
+        async def call_as(caller: str) -> None:
+            async with Client(url) as client:
+                await client.call_tool("work", {"caller": caller})
+
+        await asyncio.gather(call_as("alice"), call_as("bob"))
+
+    starts = [e for e in sink.events if e.event_type == "tool_call_start"]
+    assert len(starts) == 2, f"expected one start per client, got {len(starts)}"
+
+    callers = {e.payload.params.get("caller") for e in starts}  # type: ignore[union-attr]
+    assert callers == {"alice", "bob"}, f"both clients must have run, saw {callers}"
+
+    sessions = {e.session_id for e in starts}
+    assert len(sessions) == 2, (
+        f"two concurrent clients shared a session_id ({sessions}) — their events "
+        "interleave, and a FIFO pair join attributes one caller's result to the "
+        "other's arguments"
+    )

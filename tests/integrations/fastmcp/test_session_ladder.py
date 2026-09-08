@@ -8,6 +8,7 @@ which SPEC calls rung 4 and which fastmcp 4.x mints fresh per request — see
 
 from __future__ import annotations
 
+from importlib.metadata import version
 from typing import Any
 
 import pytest
@@ -15,7 +16,16 @@ from fastmcp.server.dependencies import get_http_headers
 from fastmcp.server.http import set_http_request
 from starlette.requests import Request
 
+from baton.integrations.fastmcp import _session
 from baton.integrations.fastmcp._session import resolve_call_session_id
+
+
+class _FakeContext:
+    """Stands in for fastmcp's ``Context``; only ``session_id`` is read."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+
 
 TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
@@ -176,3 +186,77 @@ class TestHookRungZero:
         assert seen["headers"].get("mcp-session-id") == "hdr"
         assert seen["meta"] == {"k": "v"}
         assert seen["tool_name"] == "echo"
+
+
+class TestRung4bFastmcpContext:
+    """Rung 4b — fastmcp's own ``Context.session_id``, below the header.
+
+    It exists for ONE transport: SSE never sends ``mcp-session-id`` (the id
+    rides a query param), so header-only resolution dropped every SSE client
+    onto the process-wide fallback and merged them. Measured with two concurrent
+    clients on one server: one shared id, 2 of 8 call pairs attributed to the
+    wrong caller. The rung is gated because on mcp 2.x the cached id is rebuilt
+    per request — using it there would restore the per-call churn this ladder
+    was built to end.
+    """
+
+    @requires_http_injection
+    async def test_used_on_an_http_request_with_no_session_header(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The SSE shape: a live HTTP request, but no ``mcp-session-id`` on it."""
+        monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
+        monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("per-connection-id"))
+        assert await _resolve(headers={"host": "example.invalid"}) == "per-connection-id"
+
+    async def test_not_used_without_headers_so_stdio_keeps_the_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """stdio / in-process carry no headers. One process is one client and
+        ``fallback`` already says so; firing here would mint a second
+        per-process id that disagrees with the install-time
+        ``surface_snapshot``'s, splitting a session from its own surface."""
+        monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
+        monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("a-different-uuid"))
+        assert await _resolve() == "sdk-fallback"
+
+    @requires_http_injection
+    async def test_header_outranks_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
+        monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("per-connection-id"))
+        assert await _resolve(headers={"mcp-session-id": "from-header"}) == "from-header"
+
+    @requires_http_injection
+    async def test_meta_outranks_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
+        monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("per-connection-id"))
+        assert await _resolve(meta={"traceparent": TRACEPARENT}, headers={"host": "x"}) == TRACE_ID
+
+    @requires_http_injection
+    async def test_gated_off_where_the_cache_does_not_survive(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On mcp 2.x the id is minted fresh per call, so the rung must not fire
+        — the fallback loses joins, but this rung would MANUFACTURE them."""
+        monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", False)
+        monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("fresh-every-call"))
+        assert await _resolve(headers={"host": "x"}) == "sdk-fallback"
+
+    @requires_http_injection
+    async def test_no_active_context_falls_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Outside a request ``get_context`` raises; a correlation rung must
+        never be able to fail the tool call it is describing."""
+
+        def boom() -> Any:
+            raise RuntimeError("No active context found.")
+
+        monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
+        monkeypatch.setattr(_session, "get_context", boom)
+        assert await _resolve(headers={"host": "x"}) == "sdk-fallback"
+
+    async def test_gate_matches_the_installed_mcp_major(self) -> None:
+        """The gate is a claim about the INSTALLED stack, so pin it to that
+        rather than to a hardcoded expectation — this is the assertion that
+        would fail if fastmcp and mcp ever stopped moving in lockstep."""
+        major = int(version("mcp").split(".")[0])
+        assert _session._session_cache_survives() is (major < 2)
