@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -61,6 +62,21 @@ async def resolve_via_hook(
     return result if isinstance(result, str) and result else None
 
 
+def _resolve_tenant_id(explicit: str | None, vendor_id: str) -> str:
+    """``tenant_id`` per SPEC §11.4: explicit → ``BATON_TENANT_ID`` → ``vendor_id``.
+
+    The ``vendor_id`` tail is a migration shim for this repo's own fixtures, not
+    a supported configuration: it reproduces exactly the collapse the split
+    exists to end, so it is the branch to delete once the recipe emits the var.
+    """
+    if explicit:
+        return explicit
+    from_env = os.environ.get("BATON_TENANT_ID")
+    if from_env:
+        return from_env
+    return vendor_id
+
+
 @dataclass
 class VendorConfig:
     """Vendor-side configuration for ``install_baton``."""
@@ -74,6 +90,23 @@ class VendorConfig:
     """Human-readable vendor name used in server instructions, annotation
     tool description, and any LLM-facing strings. Whitelabel obligation
     (SPEC §5.4): no Baton-branded strings reach the calling agent."""
+
+    tenant_id: str | None = None
+    """Account identifier for the envelope's ``tenant_id`` (SPEC §11.4).
+
+    **This is not ``vendor_id``, and conflating them is the bug this field
+    exists to fix.** ``tenant_id`` names the ACCOUNT the collector
+    authenticates; ``vendor_id`` names the SERVER whose surface is being
+    captured. One account wraps many servers, so sending the account id in
+    both slots collapses them: two servers in one workspace render as one,
+    whose label flips to whichever deployed last, and a server ends up naming
+    itself with its workspace's opaque id.
+
+    Resolved explicit → ``BATON_TENANT_ID`` → ``vendor_id``. That last
+    fallback exists for our own fixtures during the change, not for anyone's
+    install — a wrap block states this value on its own line, because it is
+    the diff a customer reviews in their pull request.
+    """
 
     consent_token: str = ""
     """End-user consent token attached to every emitted event per SPEC §2.3 +

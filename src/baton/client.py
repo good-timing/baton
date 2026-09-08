@@ -58,10 +58,17 @@ Async usage (no thread bridge; directly drives the async ``Sink``):
         await client.aclose()
 
 Config loading: explicit kwargs win; env-var fallback supported for
-``vendor_id`` (``BATON_VENDOR_ID``) and ``consent_token``
-(``BATON_CONSENT_TOKEN``). ``sink`` is explicit only — construct your sink
-from env vars at the call site if you want that behavior. ``consent_token``
-may be overridden per-trace.
+``vendor_id`` (``BATON_VENDOR_ID``), ``tenant_id`` (``BATON_TENANT_ID``) and
+``consent_token`` (``BATON_CONSENT_TOKEN``). ``sink`` is explicit only —
+construct your sink from env vars at the call site if you want that behavior.
+``consent_token`` may be overridden per-trace.
+
+``vendor_id`` and ``tenant_id`` are DIFFERENT things and the envelope carries
+both (SPEC §11.4): ``tenant_id`` is the ACCOUNT the collector authenticates,
+``vendor_id`` names the SERVER being captured. One account wraps many servers.
+``tenant_id`` alone is optional and falls back to ``vendor_id`` — a migration
+shim for fixtures written before the split, which reproduces the very collapse
+the split exists to end, and should be given a real value.
 """
 
 from __future__ import annotations
@@ -396,7 +403,7 @@ class Trace:
         self._call_started_at = monotonic()
         self._start_seq = self._client._next_seq(self._session_id)
         start_event = ToolCallStartEvent(
-            tenant_id=self._client._vendor_id,
+            tenant_id=self._client._tenant_id,
             vendor_id=self._client._vendor_id,
             session_id=self._session_id,
             sequence_number=self._start_seq,
@@ -413,7 +420,7 @@ class Trace:
         if self._intent or self._expected_outcome or self._workflow:
             ann_seq = self._client._next_seq(self._session_id)
             ann_event = AnnotationEvent(
-                tenant_id=self._client._vendor_id,
+                tenant_id=self._client._tenant_id,
                 vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=ann_seq,
@@ -440,7 +447,7 @@ class Trace:
 
         if exc is not None:
             error_event = ToolCallErrorEvent(
-                tenant_id=self._client._vendor_id,
+                tenant_id=self._client._tenant_id,
                 vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=end_seq,
@@ -471,7 +478,7 @@ class Trace:
             # observed() was called with error_type/body — emit tool_call_error
             error_type, error_body = self._observed_error
             error_event = ToolCallErrorEvent(
-                tenant_id=self._client._vendor_id,
+                tenant_id=self._client._tenant_id,
                 vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=end_seq,
@@ -488,7 +495,7 @@ class Trace:
             self._client._emit_sync(error_event)
         else:
             end_event = ToolCallEndEvent(
-                tenant_id=self._client._vendor_id,
+                tenant_id=self._client._tenant_id,
                 vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=end_seq,
@@ -524,6 +531,7 @@ class Client:
         *,
         sink: Sink,
         vendor_id: str | None = None,
+        tenant_id: str | None = None,
         consent_token: str | None = None,
         agent_runtime: str = "python-library",
         scrubber: Any = None,
@@ -534,11 +542,20 @@ class Client:
         consent_token_resolved = _resolve_config_value(
             consent_token, "BATON_CONSENT_TOKEN", required=True, name="consent_token"
         )
+        # NOT required, and it falls back to vendor_id: SPEC §11.4 wants the
+        # ACCOUNT here and vendor_id is the SERVER, but every install predating
+        # the split passes only the latter. The fallback is a migration shim for
+        # this repo's fixtures — it reproduces the collapse the split ends — and
+        # is the branch to delete once the recipe emits BATON_TENANT_ID.
+        tenant_id_resolved = _resolve_config_value(
+            tenant_id, "BATON_TENANT_ID", required=False, name="tenant_id"
+        )
 
         assert vendor_id_resolved is not None
         assert consent_token_resolved is not None
 
         self._vendor_id: str = vendor_id_resolved
+        self._tenant_id: str = tenant_id_resolved or vendor_id_resolved
         self._consent_token: str = consent_token_resolved
         self._agent_runtime: str = agent_runtime
         # Default to a fresh Scrubber per Client so the per-category
@@ -620,7 +637,7 @@ class Client:
         seq = self._next_seq(resolved_session)
         signal_type_str = _resolve_signal_type(signal_type)
         event = AnnotationEvent(
-            tenant_id=self._vendor_id,
+            tenant_id=self._tenant_id,
             vendor_id=self._vendor_id,
             session_id=resolved_session,
             sequence_number=seq,
@@ -796,7 +813,7 @@ class AsyncTrace:
         self._call_started_at = monotonic()
         self._start_seq = self._client._next_seq(self._session_id)
         start_event = ToolCallStartEvent(
-            tenant_id=self._client._vendor_id,
+            tenant_id=self._client._tenant_id,
             vendor_id=self._client._vendor_id,
             session_id=self._session_id,
             sequence_number=self._start_seq,
@@ -812,7 +829,7 @@ class AsyncTrace:
         if self._intent or self._expected_outcome or self._workflow:
             ann_seq = self._client._next_seq(self._session_id)
             ann_event = AnnotationEvent(
-                tenant_id=self._client._vendor_id,
+                tenant_id=self._client._tenant_id,
                 vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=ann_seq,
@@ -843,7 +860,7 @@ class AsyncTrace:
 
         if exc is not None:
             error_event = ToolCallErrorEvent(
-                tenant_id=self._client._vendor_id,
+                tenant_id=self._client._tenant_id,
                 vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=end_seq,
@@ -872,7 +889,7 @@ class AsyncTrace:
         if self._observed_error is not None:
             error_type, error_body = self._observed_error
             error_event = ToolCallErrorEvent(
-                tenant_id=self._client._vendor_id,
+                tenant_id=self._client._tenant_id,
                 vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=end_seq,
@@ -889,7 +906,7 @@ class AsyncTrace:
             await self._client._emit(error_event)
         else:
             end_event = ToolCallEndEvent(
-                tenant_id=self._client._vendor_id,
+                tenant_id=self._client._tenant_id,
                 vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
                 sequence_number=end_seq,
@@ -920,6 +937,7 @@ class AsyncClient:
         *,
         sink: Sink,
         vendor_id: str | None = None,
+        tenant_id: str | None = None,
         consent_token: str | None = None,
         agent_runtime: str = "python-library",
         scrubber: Any = None,
@@ -930,11 +948,20 @@ class AsyncClient:
         consent_token_resolved = _resolve_config_value(
             consent_token, "BATON_CONSENT_TOKEN", required=True, name="consent_token"
         )
+        # NOT required, and it falls back to vendor_id: SPEC §11.4 wants the
+        # ACCOUNT here and vendor_id is the SERVER, but every install predating
+        # the split passes only the latter. The fallback is a migration shim for
+        # this repo's fixtures — it reproduces the collapse the split ends — and
+        # is the branch to delete once the recipe emits BATON_TENANT_ID.
+        tenant_id_resolved = _resolve_config_value(
+            tenant_id, "BATON_TENANT_ID", required=False, name="tenant_id"
+        )
 
         assert vendor_id_resolved is not None
         assert consent_token_resolved is not None
 
         self._vendor_id: str = vendor_id_resolved
+        self._tenant_id: str = tenant_id_resolved or vendor_id_resolved
         self._consent_token: str = consent_token_resolved
         self._agent_runtime: str = agent_runtime
         # Default to a fresh Scrubber per AsyncClient — see Client
@@ -992,7 +1019,7 @@ class AsyncClient:
         seq = self._next_seq(resolved_session)
         signal_type_str = _resolve_signal_type(signal_type)
         event = AnnotationEvent(
-            tenant_id=self._vendor_id,
+            tenant_id=self._tenant_id,
             vendor_id=self._vendor_id,
             session_id=resolved_session,
             sequence_number=seq,

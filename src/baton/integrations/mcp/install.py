@@ -29,7 +29,11 @@ import logging
 
 from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
-from baton.integrations._config import VendorConfig, _validate_vendor_config
+from baton.integrations._config import (
+    VendorConfig,
+    _resolve_tenant_id,
+    _validate_vendor_config,
+)
 from baton.integrations._handle import BatonHandle
 from baton.integrations._llm_text import build_server_instructions
 from baton.integrations._surface import build_server_meta
@@ -65,6 +69,11 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     # of the box; vendors needing raw payloads pass ``identity_scrub``
     # via ``VendorConfig.scrubber``.
     scrubber = config.scrubber or Scrubber()
+    # Resolved once and passed to both capture paths. Two independent
+    # resolutions could disagree, and an annotation filed under a different
+    # tenant than its tool call is unjoinable — the one correlation the
+    # sensor exists to produce.
+    tenant_id = _resolve_tenant_id(config.tenant_id, config.vendor_id)
     fallback_session_id = f"sdk-{uuid7()}"
     counter = SessionCounter()
     # Shared across the wrap layer (synthesises a proactive from the first
@@ -105,7 +114,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     # Wrap currently-registered tools + patch add_tool for future ones.
     install_wraps(
         mcp,
-        tenant_id=config.vendor_id,
+        tenant_id=tenant_id,
         vendor_id=config.vendor_id,
         consent_token=config.consent_token,
         sink=sink,
@@ -126,7 +135,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         mcp,
         vendor_id=config.vendor_id,
         vendor_display_name=config.vendor_display_name,
-        tenant_id=config.vendor_id,
+        tenant_id=tenant_id,
         consent_token=config.consent_token,
         sink=sink,
         counter=counter,
