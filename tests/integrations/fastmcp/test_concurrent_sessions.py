@@ -71,7 +71,9 @@ def _free_port() -> int:
 
 
 @contextlib.contextmanager
-def _running_server(transport: str) -> Iterator[tuple[_CapturingSink, str]]:
+def _running_server(
+    transport: str, *, stateless: bool = False
+) -> Iterator[tuple[_CapturingSink, str]]:
     sink = _CapturingSink()
     mcp: FastMCP[Any] = FastMCP("concurrency-probe")
     barrier = asyncio.Barrier(2)
@@ -98,7 +100,13 @@ def _running_server(transport: str) -> Iterator[tuple[_CapturingSink, str]]:
 
     def _serve() -> None:
         try:
-            mcp.run(transport=transport, host="127.0.0.1", port=port, show_banner=False)
+            mcp.run(
+                transport=transport,
+                host="127.0.0.1",
+                port=port,
+                show_banner=False,
+                stateless_http=stateless,
+            )
         except BaseException as exc:  # re-raised on the test thread
             boot_error.append(exc)
 
@@ -178,4 +186,53 @@ async def test_concurrent_clients_do_not_share_a_session_id(transport: str) -> N
         f"two concurrent clients shared a session_id ({sessions}) — their events "
         "interleave, and a FIFO pair join attributes one caller's result to the "
         "other's arguments"
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.xfail(
+    MCP_MAJOR >= 2,
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "on mcp 2.x rung 4b is gated off (the cached id does not survive), and "
+        "stateless mode issues no mcp-session-id — so both clients land on the "
+        "process-wide fallback and merge. Same D2 gap as the other two legs."
+    ),
+)
+async def test_stateless_http_clients_do_not_merge() -> None:
+    """Stateless streamable HTTP splits one client's calls, and that is DELIBERATE.
+
+    A stateless server rebuilds its session per request, so ``Context.session_id``
+    (rung 4b) mints a fresh id per call: one client's consecutive calls do not
+    share an id, ``sequence_number`` restarts at 1, and a cross-request
+    ``*_annotate`` cannot be joined to the call it describes. That is unchanged
+    from 0.6.1, which resolved through the same property — this ladder neither
+    caused it nor repairs it, and SPEC §3.4's answer is rung 5 (per-event UUID),
+    unbuilt in both adapters (D2).
+
+    **What this test pins is the direction, not the split.** The tempting "fix" is
+    to narrow rung 4b's gate so stateless falls through to ``fallback``. That
+    would trade a recoverable failure for an unrecoverable one: a split costs
+    joins, while the process-wide fallback would merge every client of a
+    multi-user stateless server and attach one user's arguments to another
+    user's result. This test goes RED on exactly that change, and stays green
+    under rung 5, whose per-event ids are also distinct.
+    """
+    with _running_server("http", stateless=True) as (sink, url):
+
+        async def call_as(caller: str) -> None:
+            async with Client(url) as client:
+                await client.call_tool("work", {"caller": caller})
+
+        await asyncio.gather(call_as("alice"), call_as("bob"))
+
+    starts = [e for e in sink.events if e.event_type == "tool_call_start"]
+    assert len(starts) == 2, f"expected one start per client, got {len(starts)}"
+
+    sessions = {e.session_id for e in starts}
+    assert len(sessions) == 2, (
+        f"two concurrent stateless clients shared a session_id ({sessions}) — "
+        "rung 4b was narrowed and they fell through to the process-wide "
+        "fallback, which merges strangers instead of merely losing their joins"
     )

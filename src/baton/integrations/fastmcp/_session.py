@@ -31,13 +31,36 @@ strangers.
 So ``Context.session_id`` returns as **rung 4b**, below the header and above the
 fallback, and doubly gated: to the band where its cache actually survives (see
 ``_session_cache_survives``), and to requests that carry HTTP headers at all.
-That second gate is what confines it to the case it exists for. On old-spec
-streamable HTTP the header rung has already answered; on stdio and in-process
-there are no headers, one process IS one client, and ``fallback`` already says
-so — firing there would only mint a second per-process id that disagrees with
-the ``surface_snapshot``'s. What is left is SSE: a live HTTP request, no
-``mcp-session-id``, and a per-connection id that reading the header alone throws
-away.
+That second gate narrows it to HTTP requests the header rung did not answer. On
+STATEFUL old-spec streamable HTTP the header rung has already answered; on stdio
+and in-process there are no headers, one process IS one client, and ``fallback``
+already says so — firing there would only mint a second per-process id that
+disagrees with the ``surface_snapshot``'s.
+
+**Two cases are left, not one.** SSE is the one this rung exists for: a live HTTP
+request, no ``mcp-session-id``, and a per-connection id that reading the header
+alone throws away. The other is **stateless streamable HTTP**
+(``stateless_http=True`` / ``FASTMCP_STATELESS_HTTP``), where mcp builds a fresh
+transport and a fresh ``ServerSession`` per request
+(``streamable_http_manager._handle_stateless_request``) and issues no
+``mcp-session-id`` — so the rung fires and ``Context.session_id`` mints a fresh
+``uuid4`` for every call. Measured on fastmcp 3.4.2 / mcp 1.27.2, one client,
+three sequential calls: three ids with the rung on, the single process-wide
+``fallback`` with it off.
+
+**That case is knowingly not fixed here, and this rung is not what broke it.**
+0.6.1 resolved solely through this same property, so a stateless deployment has
+always minted per-request ids; the rung reproduces the released behaviour rather
+than regressing it. It is also the survivable direction: a stateless server has
+no session by protocol design, and splitting one client's calls costs joins,
+where routing them to the process-wide ``fallback`` would merge every client of
+a multi-user server and manufacture joins between strangers. Start/end pairing
+survives either way — both legs of a call share one request, so they share the
+id; what a split costs is ``sequence_number`` continuity (restarts at 1 per
+call), the once-per-session proactive (fires per call), and the cross-request
+``*_annotate`` → call join. SPEC §3.4's real answer here is rung 5, a per-event
+UUID with ``correlation_mode=per-event``, unbuilt in both adapters and tracked
+as D2.
 """
 
 from __future__ import annotations
@@ -95,7 +118,10 @@ def session_id_from_fastmcp_context(headers: Mapping[str, str] | None) -> str | 
     """SPEC §3.4 rung 4b — fastmcp's own per-connection id, where it is stable.
 
     Fires only on an HTTP transport that did not carry ``mcp-session-id`` — in
-    practice, SSE. **Not on stdio or in-process**, and that exclusion is
+    practice SSE, and also stateless streamable HTTP, where it degrades to a
+    per-request id (see the module docstring: deliberately unfixed, unchanged
+    since 0.6.1, and the safe direction of the two). **Not on stdio or
+    in-process**, and that exclusion is
     load-bearing rather than an optimisation: there, one process is one client
     and ``fallback`` already says so correctly. Firing would mint a SECOND
     per-process id that disagrees with the one the install-time
@@ -143,10 +169,16 @@ async def resolve_call_session_id(
     order: (0) a configured ``VendorConfig.resolve_session_id`` hook, which on
     a non-empty return wins outright — see ``docs/design-notes/
     session_resolver_hook.md``; (1) ``_meta.traceparent``; (2)
-    ``_meta["io.baton/session_id"]``; (4) the ``mcp-session-id`` header; else
-    (5) ``fallback``, the install-time process-wide id. Rung 3 (a future
-    runtime-specific ``_meta`` key) isn't defined for any runtime yet, so it's
-    skipped.
+    ``_meta["io.baton/session_id"]``; (4) the ``mcp-session-id`` header;
+    (4b) fastmcp's ``Context.session_id``, where its cache survives and the
+    header was absent; else ``fallback``, the install-time process-wide id.
+    Rung 3 (a future runtime-specific ``_meta`` key) isn't defined for any
+    runtime yet, so it's skipped.
+
+    ``fallback`` is **not** SPEC rung 5. Rung 5 is a per-event UUID carrying
+    ``correlation_mode=per-event``; neither adapter implements it, so both
+    terminate on a process-wide id that is stable but merges every client of a
+    multi-user server. That gap is D2.
 
     Rungs 1-2 are shared with the official-SDK adapter via
     ``integrations._session``; before this existed, this adapter implemented

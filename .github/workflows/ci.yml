@@ -138,7 +138,7 @@ jobs:
         # NOT covered here — it pins its own mcp version transitively, so this
         # job cannot swing it. That is covered by `fastmcp-matrix` below, whose
         # absence is exactly how a `surface_snapshot` wire-format break on
-        # mcp 2.x survived a green `mcp-matrix` (see CHANGELOG, 0.6.2).
+        # mcp 2.x survived a green `mcp-matrix` (see CHANGELOG, `## Unreleased`).
         run: pytest tests/integrations/mcp/ -q
 
   fastmcp-matrix:
