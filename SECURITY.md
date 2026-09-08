@@ -30,7 +30,7 @@ When reporting, please include:
 
 In scope:
 - The `baton` package source under `src/baton/`.
-- The MCP integration under `src/baton/integrations/mcp/`.
+- The MCP integrations under `src/baton/integrations/official/` (official `mcp` SDK) and `src/baton/integrations/standalone/` (standalone `fastmcp`).
 - The wire-format event envelope (SPEC §11.4) — anything that could allow tampering, forgery, or replay of events.
 - PII / consent handling — any path that could leak unscrubbed end-user data, drop a consent token, or accept events without one.
 - Authentication / API-key handling — anything that could leak the vendor's bearer token to other tenants, log it, or transmit it insecurely.

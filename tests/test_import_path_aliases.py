@@ -4,10 +4,17 @@
 ``baton.integrations.fastmcp`` -> ``baton.integrations.standalone``. The
 aliases exist for exactly one release and then get deleted; these tests are
 what make that deletion deliberate rather than incidental, and they pin the
-two properties the deletion plan depends on — that the old path resolves to
-the SAME objects (so a caller cannot be half-migrated), and that it resolves
+three properties the deletion plan depends on — that the old path resolves to
+the SAME objects (so a caller cannot be half-migrated), that it resolves
 SILENTLY (the decision was no DeprecationWarning, because with no customers
-the only reader would be us).
+the only reader would be us), and that SUBMODULE imports work too.
+
+The last one is here because its absence shipped: the first cut of these
+shims re-exported only the four top-level names, so
+``from baton.integrations.mcp._compat import MCPServerClass`` raised
+ModuleNotFoundError while this file was green and the CHANGELOG claimed the
+old paths kept working. That exact import is in
+``baton-spec/scripts/generate.py``, vendored into three repos.
 """
 
 from __future__ import annotations
@@ -71,3 +78,33 @@ def test_old_path_exports_exactly_the_package_api(old: str, new: str) -> None:
     old_mod = importlib.import_module(old)
     new_mod = importlib.import_module(new)
     assert sorted(old_mod.__all__) == sorted(new_mod.__all__) == sorted(PUBLIC_NAMES)
+
+
+@pytest.mark.parametrize(("old", "new"), ALIASES)
+def test_every_submodule_resolves_at_the_old_path(old: str, new: str) -> None:
+    """Not a hand-listed set: whatever the renamed package actually contains is
+    what the old path must expose, so a submodule added while the shims live is
+    covered without anyone remembering this file."""
+    import pkgutil
+
+    new_pkg = importlib.import_module(new)
+    names = [m.name for m in pkgutil.iter_modules(new_pkg.__path__)]
+    assert names, f"{new} exposed no submodules — the discovery is broken, not the package"
+
+    importlib.import_module(old)  # registers the aliases
+    for name in names:
+        old_sub = importlib.import_module(f"{old}.{name}")
+        new_sub = importlib.import_module(f"{new}.{name}")
+        assert old_sub is new_sub, (
+            f"{old}.{name} is a SECOND module object loaded from the same file as "
+            f"{new}.{name}; two copies means two sets of module state"
+        )
+
+
+def test_the_import_that_broke_is_covered() -> None:
+    """The concrete caller, not just the mechanism: baton-spec's generate.py."""
+    from baton.integrations.mcp._compat import MCPServerClass
+
+    from baton.integrations.official._compat import MCPServerClass as Renamed
+
+    assert MCPServerClass is Renamed

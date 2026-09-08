@@ -20,12 +20,37 @@ PyPI distributions, not our folders, so the two deliberately differ now.
 
 from __future__ import annotations
 
+import importlib
+import pkgutil
+import sys
+
+from baton.integrations import standalone as _target
 from baton.integrations.standalone import (
     BatonHandle,
     SessionResolutionContext,
     VendorConfig,
     install_baton,
 )
+
+# Submodule imports at the old path — ``from baton.integrations.fastmcp.middleware
+# import ...`` — need more than a re-export: a plain module is not a package, so
+# the import machinery refuses to look inside it. Registering the RENAMED
+# package's already-imported submodules under the old dotted names makes those
+# imports resolve, and resolve to the same module objects rather than to second
+# copies loaded from the same files. Discovered rather than listed, so a
+# submodule added before the aliases are deleted is covered without anyone
+# remembering to come back here.
+#
+# The sibling shim has a known external caller of this shape
+# (``baton-spec/scripts/generate.py`` imports ``baton.integrations.mcp._compat``,
+# vendored into baton, baton-proxy and baton-extmcp). None is known for this
+# side, but ``middleware.BatonMiddleware`` is the obvious candidate — it is how
+# this repo's own tests reach it — so both shims behave the same rather than
+# waiting to find out.
+for _sub in pkgutil.iter_modules(_target.__path__):
+    sys.modules[f"{__name__}.{_sub.name}"] = importlib.import_module(
+        f"{_target.__name__}.{_sub.name}"
+    )
 
 __all__ = [
     "BatonHandle",

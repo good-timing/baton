@@ -20,12 +20,34 @@ distributions, not our folders, so the two deliberately differ now.
 
 from __future__ import annotations
 
+import importlib
+import pkgutil
+import sys
+
+from baton.integrations import official as _target
 from baton.integrations.official import (
     BatonHandle,
     SessionResolutionContext,
     VendorConfig,
     install_baton,
 )
+
+# Submodule imports at the old path — ``from baton.integrations.mcp._compat
+# import ...`` — need more than a re-export: a plain module is not a package, so
+# the import machinery refuses to look inside it. Registering the RENAMED
+# package's already-imported submodules under the old dotted names makes those
+# imports resolve, and resolve to the same module objects rather than to second
+# copies loaded from the same files. Discovered rather than listed, so a
+# submodule added before the aliases are deleted is covered without anyone
+# remembering to come back here.
+#
+# This is not hypothetical: ``baton-spec/scripts/generate.py`` imports
+# ``baton.integrations.mcp._compat``, and that script is vendored into baton,
+# baton-proxy and baton-extmcp.
+for _sub in pkgutil.iter_modules(_target.__path__):
+    sys.modules[f"{__name__}.{_sub.name}"] = importlib.import_module(
+        f"{_target.__name__}.{_sub.name}"
+    )
 
 __all__ = [
     "BatonHandle",

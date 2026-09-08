@@ -53,7 +53,7 @@ Issues = "https://github.com/good-timing/baton/issues"
 [project.optional-dependencies]
 # Adapts the official Anthropic ``mcp`` package's server class — ``FastMCP``
 # (``mcp.server.fastmcp``) on 1.x, renamed ``MCPServer`` (``mcp.server.mcpserver``)
-# in 2.0. ``baton.integrations.mcp._compat`` resolves both; the internal struct
+# in 2.0. ``baton.integrations.official._compat`` resolves both; the internal struct
 # the adapter wraps is preserved byte-for-byte across the rename.
 # Minimum 1.20: earlier versions have a `Tool.from_function` bug that calls
 # `issubclass(param.annotation, Context)` without first checking for
