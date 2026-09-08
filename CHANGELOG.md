@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.7.0 — fastmcp 4 works; one entry point; `tenant_id` is the account
 
 ### Fixed
 
