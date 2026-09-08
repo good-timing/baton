@@ -101,7 +101,7 @@ from baton.integrations._session import (
     session_id_from_headers,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
-from baton.integrations.mcp._registry import get_tool_manager, get_tool_registry
+from baton.integrations.official._registry import get_tool_manager, get_tool_registry
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
 

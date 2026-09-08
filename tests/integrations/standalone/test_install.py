@@ -21,7 +21,7 @@ from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Response
 
 from baton.integrations._llm_text import build_user_goal_param_description
-from baton.integrations.fastmcp import VendorConfig, install_baton
+from baton.integrations.standalone import VendorConfig, install_baton
 from baton.sinks import HttpSink
 from tests._event_helpers import without_surface_snapshots
 
@@ -1016,7 +1016,7 @@ def test_the_official_sdk_server_is_told_which_adapter_to_use() -> None:
     → ``mcp.server.mcpserver.MCPServer``); the shim already resolves both, so
     this stays portable across the version matrix.
     """
-    from baton.integrations.mcp._compat import MCPServerClass
+    from baton.integrations.official._compat import MCPServerClass
 
     official = MCPServerClass("official-sdk-server")
     before = official.instructions
@@ -1032,7 +1032,7 @@ def test_the_official_sdk_server_is_told_which_adapter_to_use() -> None:
         )
 
     detail = str(excinfo.value)
-    assert "baton.integrations.mcp.install_baton" in detail, (
+    assert "baton.integrations.official.install_baton" in detail, (
         "the message does not name the adapter that would actually work"
     )
     # Refused before mutating: the half-install wrote these instructions.
@@ -1045,7 +1045,7 @@ def test_a_bare_low_level_server_is_not_bounced_to_the_other_adapter() -> None:
 
     The reference servers (git, time, fetch) are all written against the
     low-level API, so this is the shape a stranger who started from the
-    canonical examples has. "Use baton.integrations.mcp.install_baton" would
+    canonical examples has. "Use baton.integrations.official.install_baton" would
     send them to a second refusal ("not supported yet"), which is the
     wrong-advice round trip this whole area exists to remove. The tool registry
     is what separates the two: the high-level server has one, a bare Server
@@ -1067,4 +1067,4 @@ def test_a_bare_low_level_server_is_not_bounced_to_the_other_adapter() -> None:
     assert "low-level" in detail, "it does not name what the reader is holding"
     assert "Neither adapter supports it yet" in detail
     # It must NOT hand them an adapter that will refuse them in turn.
-    assert "Use ``baton.integrations.mcp.install_baton`` instead" not in detail
+    assert "Use ``baton.integrations.official.install_baton`` instead" not in detail

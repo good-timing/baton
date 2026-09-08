@@ -1,6 +1,6 @@
 """Shared LLM-facing text — server instructions + annotation tool description.
 
-Two adapters (``baton.integrations.fastmcp``, ``baton.integrations.mcp``)
+Two adapters (``baton.integrations.standalone``, ``baton.integrations.official``)
 surface identical text to the calling agent; this module owns the canonical
 copy so they cannot drift.
 

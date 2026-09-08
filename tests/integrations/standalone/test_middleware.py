@@ -17,8 +17,8 @@ from starlette.requests import Request
 from werkzeug.wrappers import Response
 
 from baton.events import Event
-from baton.integrations.fastmcp._session import extract_headers
-from baton.integrations.fastmcp.middleware import BatonMiddleware
+from baton.integrations.standalone._session import extract_headers
+from baton.integrations.standalone.middleware import BatonMiddleware
 from baton.sinks import HttpSink, Sink
 from tests._event_helpers import without_surface_snapshots
 

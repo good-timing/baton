@@ -33,12 +33,12 @@ import pytest
 from fastmcp import Client, FastMCP
 
 from baton.events import Event
-from baton.integrations.fastmcp import VendorConfig, install_baton
+from baton.integrations.standalone import VendorConfig, install_baton
 from baton.sinks import Sink
 
 # Same discriminator the fix gates on, for the same reason: mcp owns the
 # ``ServerSession`` whose lifetime decides whether fastmcp's cached id survives.
-# See ``baton.integrations.fastmcp._session._session_cache_survives``.
+# See ``baton.integrations.standalone._session._session_cache_survives``.
 MCP_MAJOR = int(version("mcp").split(".")[0])
 
 BARRIER_TIMEOUT_S = 10.0

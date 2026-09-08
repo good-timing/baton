@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from baton.integrations.mcp._registry import get_tool_manager
+from baton.integrations.official._registry import get_tool_manager
 
 if TYPE_CHECKING:
     # The server class is chosen at RUNTIME from whichever mcp major is
@@ -106,10 +106,10 @@ def require_high_level_server(mcp: Any) -> None:
     if _looks_like_standalone_fastmcp(mcp):
         raise TypeError(
             "baton: this is the standalone ``fastmcp`` library's FastMCP, but "
-            "``baton.integrations.mcp.install_baton`` adapts the official mcp "
+            "``baton.integrations.official.install_baton`` adapts the official mcp "
             "SDK's server — different library, different hook mechanism "
             "(middleware vs. tool-handler wrapping). Use "
-            "``baton.integrations.fastmcp.install_baton`` instead; same "
+            "``baton.integrations.standalone.install_baton`` instead; same "
             "signature, same VendorConfig."
         )
     raise TypeError(

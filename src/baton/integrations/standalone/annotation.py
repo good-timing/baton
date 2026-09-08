@@ -26,8 +26,8 @@ from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
 from baton.integrations._config import ResolveSessionIdHook
 from baton.integrations._llm_text import build_annotation_tool_description
-from baton.integrations.fastmcp._session import resolve_call_session_id
-from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime, meta_to_dict
+from baton.integrations.standalone._session import resolve_call_session_id
+from baton.integrations.standalone.runtime_adapter import detect_agent_runtime, meta_to_dict
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
 

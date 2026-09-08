@@ -12,12 +12,21 @@ There are TWO MCP adapters because there are two different libraries, and
 both name their server class ``FastMCP`` — pick by your import, not by the
 name:
 
-    from mcp.server.fastmcp import FastMCP   # mcp 1.x  -> baton.integrations.mcp
-    from mcp.server.mcpserver import MCPServer  # mcp 2.x -> baton.integrations.mcp
-    from fastmcp import FastMCP              # standalone -> baton.integrations.fastmcp
+    from mcp.server.fastmcp import FastMCP   # mcp 1.x  -> baton.integrations.official
+    from mcp.server.mcpserver import MCPServer  # mcp 2.x -> baton.integrations.official
+    from fastmcp import FastMCP              # standalone -> baton.integrations.standalone
 
 Passing a server to the wrong adapter is refused before anything is mutated,
-with a message naming the right one.
+with a message naming the right one. Simpler still, ``baton.install_baton``
+picks for you by inspecting the server object.
+
+The folder names and the extra names deliberately DIFFER: an extra names a
+PyPI distribution (``mcp``, ``fastmcp``) and a folder names our adapter for
+it. The folders used to carry the distribution names too, which is exactly
+what made the mixup easy — the official SDK's server class is also called
+``FastMCP``, so a class-name match sent people to the wrong one. The old
+paths ``baton.integrations.mcp`` and ``baton.integrations.fastmcp`` survive
+as silent aliases for one release.
 
 Not yet built, no extra published: Anthropic Managed Agents, A2A.
 

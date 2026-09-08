@@ -13,7 +13,7 @@ one-time ``surface_snapshot`` build+hash+emit (``_tool_wrap.py``'s
 ``_SurfaceState``) — a real, non-representative cost. Discarded via
 ``warmup=WARMUP`` on every timing series. The snapshot's own
 dedup/correctness is already covered by
-``tests/integrations/mcp/test_install.py::TestSurfaceSnapshot`` — not
+``tests/integrations/official/test_install.py::TestSurfaceSnapshot`` — not
 re-tested here.
 
 **Assertion shape.** Primary gate: a per-payload-class absolute backstop on
@@ -38,8 +38,8 @@ from typing import Any
 
 import pytest
 
-from baton.integrations.mcp import VendorConfig, install_baton
-from baton.integrations.mcp._compat import MCPServerClass as FastMCP
+from baton.integrations.official import VendorConfig, install_baton
+from baton.integrations.official._compat import MCPServerClass as FastMCP
 from tests.perf.harness import NullSink, median, percentile, record_measurement, timed_async_calls
 
 pytestmark = pytest.mark.perf

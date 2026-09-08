@@ -1,6 +1,6 @@
-"""End-to-end tests for the official-mcp-SDK adapter (``baton.integrations.mcp``).
+"""End-to-end tests for the official-mcp-SDK adapter (``baton.integrations.official``).
 
-Mirrors ``tests/integrations/fastmcp/test_install.py`` but targets the official
+Mirrors ``tests/integrations/standalone/test_install.py`` but targets the official
 ``mcp.server.fastmcp.FastMCP`` and drives tools via ``mcp.call_tool(name, args)``
 directly (the official SDK doesn't ship an in-process client equivalent to
 fastmcp's ``Client``; the wrap layer's emission semantics are independent of
@@ -20,9 +20,9 @@ from typing import Any
 import pytest
 
 from baton.events import Event
-from baton.integrations.mcp import VendorConfig, install_baton
-from baton.integrations.mcp._compat import MCPServerClass as FastMCP
-from baton.integrations.mcp._registry import get_tool_registry
+from baton.integrations.official import VendorConfig, install_baton
+from baton.integrations.official._compat import MCPServerClass as FastMCP
+from baton.integrations.official._registry import get_tool_registry
 from baton.sinks import FileSink, Sink
 from tests._event_helpers import without_surface_snapshots
 
@@ -481,7 +481,7 @@ class TestSurfaceSnapshot:
         def _boom(surface: Any) -> str:
             raise ValueError("simulated unserializable schema")
 
-        monkeypatch.setattr("baton.integrations.mcp._tool_wrap.surface_hash", _boom)
+        monkeypatch.setattr("baton.integrations.official._tool_wrap.surface_hash", _boom)
 
         result = await mcp.call_tool("echo", {"text": "x"})
         await handle.flush()
@@ -1367,7 +1367,7 @@ def test_the_low_level_backing_error_leads_with_the_version_cause() -> None:
     """
     from mcp.server import Server
 
-    from baton.integrations.mcp._compat import get_lowlevel_server
+    from baton.integrations.official._compat import get_lowlevel_server
 
     with pytest.raises(AttributeError) as excinfo:
         get_lowlevel_server(Server("bare-low-level"))
@@ -1461,7 +1461,7 @@ def test_the_standalone_fastmcp_server_is_told_which_adapter_to_use(events_path:
         )
 
     detail = str(excinfo.value)
-    assert "baton.integrations.fastmcp.install_baton" in detail, (
+    assert "baton.integrations.standalone.install_baton" in detail, (
         "the message does not name the adapter that would actually work"
     )
     assert "standalone" in detail

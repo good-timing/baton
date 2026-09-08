@@ -41,7 +41,7 @@ def test_exported_from_the_top_level() -> None:
 def test_routes_standalone_fastmcp_to_the_middleware_adapter() -> None:
     from fastmcp import FastMCP
 
-    from baton.integrations.fastmcp.middleware import BatonMiddleware
+    from baton.integrations.standalone.middleware import BatonMiddleware
 
     server: FastMCP[Any] = FastMCP("routing-standalone")
 
@@ -57,9 +57,9 @@ def test_routes_standalone_fastmcp_to_the_middleware_adapter() -> None:
 
 
 async def test_routes_official_sdk_to_the_tool_wrap_adapter() -> None:
-    from baton.integrations.mcp._compat import MCPServerClass as FastMCP
-    from baton.integrations.mcp._registry import get_tool_registry
-    from baton.integrations.mcp._tool_wrap import _WRAPPED_SENTINEL
+    from baton.integrations.official._compat import MCPServerClass as FastMCP
+    from baton.integrations.official._registry import get_tool_registry
+    from baton.integrations.official._tool_wrap import _WRAPPED_SENTINEL
 
     server = FastMCP("routing-official")
 
@@ -110,7 +110,7 @@ def test_both_seams_routes_to_fastmcp_because_that_is_what_2_x_looks_like(
     server both routes and installs, and the ``fastmcp-matrix`` CI leg now runs
     this file against a pinned 2.14.7 to hold that end.
     """
-    from baton.integrations.mcp._compat import MCPServerClass as FastMCP
+    from baton.integrations.official._compat import MCPServerClass as FastMCP
 
     server = FastMCP("routing-both-seams")
     server.add_middleware = lambda *_a, **_k: None  # type: ignore[attr-defined]
@@ -121,11 +121,11 @@ def test_both_seams_routes_to_fastmcp_because_that_is_what_2_x_looks_like(
     assert _has_official_tool_registry(server), "fixture must carry BOTH seams"
 
     chosen: list[str] = []
-    import baton.integrations.fastmcp as fastmcp_adapter
-    import baton.integrations.mcp as official_adapter
+    import baton.integrations.official as official_adapter
+    import baton.integrations.standalone as standalone_adapter
 
     monkeypatch.setattr(
-        fastmcp_adapter, "install_baton", lambda *_a, **_k: chosen.append("fastmcp")
+        standalone_adapter, "install_baton", lambda *_a, **_k: chosen.append("standalone")
     )
     monkeypatch.setattr(
         official_adapter, "install_baton", lambda *_a, **_k: chosen.append("official")
@@ -133,7 +133,7 @@ def test_both_seams_routes_to_fastmcp_because_that_is_what_2_x_looks_like(
 
     baton.install_baton(server, _config())
 
-    assert chosen == ["fastmcp"], "both seams present must route, not refuse"
+    assert chosen == ["standalone"], "both seams present must route, not refuse"
 
 
 def test_importing_baton_does_not_require_the_adapters() -> None:

@@ -42,7 +42,7 @@ Use `make ci` as the canonical gate (matches GitHub Actions).
 - `examples/` — runnable usage examples (the four-rung sink ladder, the library-API skill demo, the e2e smoke test).
 - `tests/` — test suite. Integration tests live under `tests/integrations/<name>/` mirroring the source layout.
 
-**Public API and the contract:** anything exported from `src/baton/__init__.py` (core: `Client`, `AsyncClient`, `SignalType`, `__version__`), `src/baton/sinks.py` (the `Sink` ABC + implementations), or `src/baton/integrations/<name>/__init__.py` (per-integration; today: `install_baton`, `VendorConfig`, `BatonHandle` under both `baton.integrations.mcp` and `baton.integrations.fastmcp`) is what vendors integrate against. Breaking changes require a SPEC §13 changelog entry. MCP-side integrations import directly from `baton.integrations.<library>` — there is no top-level re-export.
+**Public API and the contract:** anything exported from `src/baton/__init__.py` (core: `Client`, `AsyncClient`, `SignalType`, `__version__`), `src/baton/sinks.py` (the `Sink` ABC + implementations), or `src/baton/integrations/<name>/__init__.py` (per-integration; today: `install_baton`, `VendorConfig`, `BatonHandle` under both `baton.integrations.official` and `baton.integrations.standalone`) is what vendors integrate against. Breaking changes require a SPEC §13 changelog entry. MCP-side integrations import directly from `baton.integrations.<adapter>` — the adapter folders are named `official`/`standalone` rather than after the library they wrap, because the class-name match sent people to the wrong one. `baton.install_baton` also picks for you.
 
 ## When in doubt
 

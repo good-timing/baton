@@ -25,7 +25,7 @@ from baton.integrations._llm_text import (
     build_expected_result_param_description,
     build_user_goal_param_description,
 )
-from baton.integrations.fastmcp.middleware import BatonMiddleware
+from baton.integrations.standalone.middleware import BatonMiddleware
 from baton.sinks import HttpSink, Sink
 from tests._event_helpers import without_surface_snapshots
 

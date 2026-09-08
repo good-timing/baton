@@ -41,7 +41,7 @@ def _ids(events: list[dict[str, Any]]) -> set[tuple[str, str]]:
 async def _run_fastmcp(events_path: Path, **config_kwargs: Any) -> list[dict[str, Any]]:
     from fastmcp import Client, FastMCP
 
-    from baton.integrations.fastmcp import VendorConfig, install_baton
+    from baton.integrations.standalone import VendorConfig, install_baton
     from baton.sinks import FileSink
 
     mcp: FastMCP[Any] = FastMCP("split-probe")
@@ -68,8 +68,8 @@ async def _run_fastmcp(events_path: Path, **config_kwargs: Any) -> list[dict[str
 
 
 async def _run_mcp(events_path: Path, **config_kwargs: Any) -> list[dict[str, Any]]:
-    from baton.integrations.mcp import VendorConfig, install_baton
-    from baton.integrations.mcp._compat import MCPServerClass as FastMCP
+    from baton.integrations.official import VendorConfig, install_baton
+    from baton.integrations.official._compat import MCPServerClass as FastMCP
     from baton.sinks import FileSink
 
     mcp = FastMCP("split-probe")

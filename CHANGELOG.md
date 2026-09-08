@@ -8,6 +8,20 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Changed
+
+- **The two adapter packages are renamed: `baton.integrations.mcp` → `baton.integrations.official`, `baton.integrations.fastmcp` → `baton.integrations.standalone`.** Both folders were named after the PyPI distribution they adapt, and the official `mcp` SDK names its server class `FastMCP` on 1.x — so a vendor on the official SDK scanned the folder list, matched the class name, and imported the STANDALONE library's adapter. That mixup has cost two runtime guards, three wrong docstrings and one misread diagram, and every guard exists because someone had already made it. Neither folder is named after a class now, so the class name cannot select one. Considered and rejected: `anthropic/` + `community/`, because `anthropic` is a real PyPI package (the API client) and `baton.integrations.anthropic` reads as wrapping that; and seam-based names (`middleware/` + `toolwrap/`), because 0.7.0 established the seams are not disjoint — fastmcp 2.14 has both — so the names would encode a falsehood, and the bare low-level `Server` would have no home.
+
+- **The install extras are NOT renamed and stay `[mcp]` and `[fastmcp]`.** An extra names a PyPI distribution; a folder names our adapter for it. Those were the same string until now, which is part of why the mixup was easy, and they deliberately differ from here on.
+
+### Deprecated
+
+- **The old import paths keep working, silently, for one release.** `baton.integrations.mcp` and `baton.integrations.fastmcp` are thin modules re-exporting the renamed packages' public API — the same objects, verified by identity in `tests/test_import_path_aliases.py`, so nothing can end up half-migrated. **No `DeprecationWarning`**: there are no customers, so the only reader would be us. The aliases are not politeness to strangers — they exist because `baton-console` depends on `baton-sdk` by FLOOR rather than by pin (`backend/pyproject.toml`), so without them this release would break the console at whatever moment its next dependency resolve happened, which includes a deploy pipeline that goes red silently. With them the release is inert there and the console switches on its own schedule. The alternative considered was capping the console below this release instead, which works only if that cap lands BEFORE the release; the aliases do not depend on getting a cross-repo ordering right. **They are deleted in the commit that switches the console's import lines**, which must also raise `WRAP_DEPENDENCY` in `onboarding/recipes.py` to this release — the recipe emits an import path into code a stranger pastes, and a floor that permits an older SDK would hand them a module that does not exist there.
+
+---
+
 ## 0.7.1 — `baton.install_baton` works on fastmcp 2.x, which 0.7.0 refused
 
 ### Fixed

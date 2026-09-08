@@ -7,7 +7,7 @@ back at the destination) is handled by the SDK.
 
 ```python
 from fastmcp import FastMCP
-from baton.integrations.fastmcp import install_baton, VendorConfig
+from baton.integrations.standalone import install_baton, VendorConfig
 from baton.sinks import StdoutSink
 
 mcp = FastMCP("your-vendor-mcp")
@@ -44,12 +44,12 @@ from baton.integrations._config import (
 from baton.integrations._handle import BatonHandle
 from baton.integrations._llm_text import build_server_instructions
 from baton.integrations._surface import build_server_meta
-from baton.integrations.fastmcp.annotation import (
+from baton.integrations.official._registry import get_tool_manager
+from baton.integrations.standalone.annotation import (
     derive_annotation_tool_name,
     register_annotation_tool,
 )
-from baton.integrations.fastmcp.middleware import BatonMiddleware
-from baton.integrations.mcp._registry import get_tool_manager
+from baton.integrations.standalone.middleware import BatonMiddleware
 from baton.scrub import Scrubber
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 def _require_fastmcp_server(mcp: Any) -> None:
     """Refuse a server this adapter can't install into, BEFORE it mutates one.
 
-    Mirror of ``baton.integrations.mcp._compat.require_high_level_server``, for
+    Mirror of ``baton.integrations.official._compat.require_high_level_server``, for
     the mirror-image failure. Install below captures a surface snapshot, then
     WRITES server instructions, and only then calls ``add_middleware``. Handed
     the official mcp SDK's server **on mcp 1.x**, the first two steps succeed —
@@ -97,16 +97,16 @@ def _require_fastmcp_server(mcp: Any) -> None:
                 "time, fetch) are written against. Neither adapter supports it "
                 "yet: this one captures on the standalone ``fastmcp`` "
                 "library's middleware chain, and "
-                "``baton.integrations.mcp.install_baton`` captures on the "
+                "``baton.integrations.official.install_baton`` captures on the "
                 "high-level server's tool registry, which a low-level Server "
                 "has none of."
             )
         raise TypeError(
             "baton: this is the official mcp SDK's high-level server, but "
-            "``baton.integrations.fastmcp.install_baton`` adapts the "
+            "``baton.integrations.standalone.install_baton`` adapts the "
             "standalone ``fastmcp`` library — different library, different "
             "hook mechanism (middleware vs. tool-handler wrapping). Use "
-            "``baton.integrations.mcp.install_baton`` instead; same signature, "
+            "``baton.integrations.official.install_baton`` instead; same signature, "
             "same VendorConfig."
         )
     raise TypeError(

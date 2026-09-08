@@ -41,7 +41,7 @@ events to stderr. You'll see:
 ## The integration, in full
 
 ```python
-from baton.integrations.fastmcp import VendorConfig, install_baton
+from baton.integrations.standalone import VendorConfig, install_baton
 from baton.sinks import StdoutSink  # or FileSink / HttpSink / MultiSink
 
 install_baton(

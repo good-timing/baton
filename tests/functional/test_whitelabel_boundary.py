@@ -48,8 +48,8 @@ def _assert_injected_param_descriptions_clean(surface_name: str, schema: dict[st
 
 
 async def test_mcp_adapter_surfaces_are_whitelabeled(tmp_path: Path) -> None:
-    from baton.integrations.mcp import VendorConfig, install_baton
-    from baton.integrations.mcp._compat import MCPServerClass as FastMCP
+    from baton.integrations.official import VendorConfig, install_baton
+    from baton.integrations.official._compat import MCPServerClass as FastMCP
 
     mcp = FastMCP("whitelabel-mcp")
 
@@ -91,7 +91,7 @@ async def test_mcp_adapter_surfaces_are_whitelabeled(tmp_path: Path) -> None:
 async def test_fastmcp_adapter_surfaces_are_whitelabeled(tmp_path: Path) -> None:
     from fastmcp import Client, FastMCP
 
-    from baton.integrations.fastmcp import VendorConfig, install_baton
+    from baton.integrations.standalone import VendorConfig, install_baton
 
     mcp = FastMCP("whitelabel-fastmcp")
 

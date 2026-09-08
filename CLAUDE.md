@@ -25,8 +25,8 @@ Run a single test:
 
 ```sh
 .venv/bin/pytest tests/test_sinks.py::TestHttpSink::test_retry_on_500 -v
-.venv/bin/pytest tests/integrations/mcp/ -v          # official mcp SDK adapter
-.venv/bin/pytest tests/integrations/fastmcp/ -v      # standalone fastmcp adapter
+.venv/bin/pytest tests/integrations/official/ -v      # official mcp SDK adapter
+.venv/bin/pytest tests/integrations/standalone/ -v   # standalone fastmcp adapter
 .venv/bin/pytest -k "annotation" -v                # by keyword
 ```
 
@@ -40,11 +40,11 @@ The SDK is a **thin event emitter** (CHARTER ADR-4). Three integration paths emi
 Capture surface                                  Sink layer (baton/sinks.py)
 ─────────────────────────                        ──────────────────────────
 MCP — official `mcp` SDK adapter         ───┐
-  baton.integrations.mcp                    │
+  baton.integrations.official               │
   (tool-handler wrapping)                   │
                                             │
 MCP — standalone `fastmcp` adapter       ───┤
-  baton.integrations.fastmcp                ├─►  StdoutSink / FileSink / HttpSink / MultiSink
+  baton.integrations.standalone             ├─►  StdoutSink / FileSink / HttpSink / MultiSink
   (middleware chain)                        │      │
                                             │      ▼
 Library API (vendor-side)                   │   (collector: any compatible HTTPS endpoint;
@@ -64,8 +64,9 @@ The SDK does NOT keep session state beyond a bounded in-memory buffer, does NOT 
 - `src/baton/events.py` — Pydantic `_EventEnvelope` + per-type payloads. The wire schema.
 - `src/baton/client.py` — `Client` (sync, via background thread bridge) + `AsyncClient` + `Trace` / `AsyncTrace` context managers.
 - `src/baton/scrub.py` — PII scrubber interface. Default is no-op identity; vendors handling sensitive data MUST supply their own via `VendorConfig(scrubber=...)`.
-- `src/baton/integrations/mcp/` — **Official `mcp` SDK adapter** (targets `mcp.server.fastmcp.FastMCP`): `install.py` (entrypoint + `VendorConfig`), `_tool_wrap.py` (wraps each registered tool's handler — no middleware in this library), `_registry.py` (resolver for `_tool_manager._tools`; single swap point for upstream rename PR #1951), `annotation.py` (registers `<vendor>_annotate` tool), `instructions.py` (server-instructions template per `SPEC §5.1.2`).
-- `src/baton/integrations/fastmcp/` — **Standalone `fastmcp` adapter** (targets `fastmcp.FastMCP` v2.x): `install.py` (entrypoint + `VendorConfig`), `middleware.py` (`BatonMiddleware` — uses fastmcp's native middleware chain), `annotation.py`, `instructions.py`, `runtime_adapter.py` (`_meta`-based agent runtime detection).
+- `src/baton/integrations/official/` — **Official `mcp` SDK adapter** (targets `mcp.server.fastmcp.FastMCP`): `install.py` (entrypoint + `VendorConfig`), `_tool_wrap.py` (wraps each registered tool's handler — no middleware in this library), `_registry.py` (resolver for `_tool_manager._tools`; single swap point for upstream rename PR #1951), `annotation.py` (registers `<vendor>_annotate` tool), `instructions.py` (server-instructions template per `SPEC §5.1.2`).
+- `src/baton/integrations/standalone/` — **Standalone `fastmcp` adapter** (targets `fastmcp.FastMCP` v2.x): `install.py` (entrypoint + `VendorConfig`), `middleware.py` (`BatonMiddleware` — uses fastmcp's native middleware chain), `annotation.py`, `instructions.py`, `runtime_adapter.py` (`_meta`-based agent runtime detection).
+- `src/baton/integrations/{mcp,fastmcp}.py` — **temporary silent aliases** at the pre-rename import paths. They exist because `baton-console` depends on `baton-sdk` by floor, not by pin; delete them in the commit that switches the console's imports and raises its `WRAP_DEPENDENCY` floor. Pinned by `tests/test_import_path_aliases.py`.
 
 ## Boundary rules that fail review (from CHARTER §3)
 

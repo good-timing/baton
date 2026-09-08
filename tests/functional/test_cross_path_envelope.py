@@ -43,8 +43,8 @@ def _read_events(path: str) -> list[dict[str, Any]]:
 
 
 async def _run_mcp_path(events_path: str) -> None:
-    from baton.integrations.mcp import VendorConfig, install_baton
-    from baton.integrations.mcp._compat import MCPServerClass as FastMCP
+    from baton.integrations.official import VendorConfig, install_baton
+    from baton.integrations.official._compat import MCPServerClass as FastMCP
     from baton.sinks import FileSink
 
     mcp = FastMCP("cross-path-mcp")
@@ -87,7 +87,7 @@ async def _run_mcp_path(events_path: str) -> None:
 async def _run_fastmcp_path(events_path: str) -> None:
     from fastmcp import Client, FastMCP
 
-    from baton.integrations.fastmcp import VendorConfig, install_baton
+    from baton.integrations.standalone import VendorConfig, install_baton
     from baton.sinks import FileSink
 
     mcp = FastMCP("cross-path-fastmcp")

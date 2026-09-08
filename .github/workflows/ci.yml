@@ -20,7 +20,7 @@
 #                     version of this workflow did exactly that and let a
 #                     real regression to any of them merge silently.
 #   - `mcp-matrix`  — tests-only against multiple `mcp` package versions,
-#                     since `baton.integrations.mcp` reaches into private
+#                     since `baton.integrations.official` reaches into private
 #                     internals (`_tool_manager._tools`, `Tool.fn`,
 #                     `Tool.is_async`) per the API spike. The matrix guards
 #                     against upstream churn.
@@ -102,7 +102,7 @@ jobs:
         run: pytest tests/perf tests/functional -q -m perf
 
   mcp-matrix:
-    # Verifies the baton.integrations.mcp adapter works against multiple
+    # Verifies the baton.integrations.official adapter works against multiple
     # `mcp` package versions. The API spike found internals are bit-stable
     # across v1.10 → v2.0; this matrix proves it on every commit. mcp 2.0
     # renamed the server class + instructions backing (handled in _compat.py)
@@ -139,10 +139,10 @@ jobs:
         # job cannot swing it. That is covered by `fastmcp-matrix` below, whose
         # absence is exactly how a `surface_snapshot` wire-format break on
         # mcp 2.x survived a green `mcp-matrix` (see CHANGELOG, `## Unreleased`).
-        run: pytest tests/integrations/mcp/ -q
+        run: pytest tests/integrations/official/ -q
 
   fastmcp-matrix:
-    # Verifies the baton.integrations.fastmcp adapter against each major of the
+    # Verifies the baton.integrations.standalone adapter against each major of the
     # standalone `fastmcp` library. This job exists because its absence hid a
     # real bug: `surface_snapshot` serialises tools via fastmcp's
     # `to_mcp_tool().model_dump()`, so the WIRE KEYS depend on the mcp version
@@ -220,5 +220,5 @@ jobs:
         # point, and the gap was the intersection neither covered — the same
         # shape as the fastmcp-slim hybrid this job's own guard was added for.
         run: >
-          pytest tests/integrations/fastmcp/ tests/functional/
+          pytest tests/integrations/standalone/ tests/functional/
           tests/test_entry_point_routing.py -q

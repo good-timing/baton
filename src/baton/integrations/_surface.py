@@ -1,5 +1,5 @@
-"""Shared ``surface_snapshot`` helpers — both adapters (``baton.integrations.fastmcp``,
-``baton.integrations.mcp``) build the vendor-true surface the same way; this
+"""Shared ``surface_snapshot`` helpers — both adapters (``baton.integrations.standalone``,
+``baton.integrations.official``) build the vendor-true surface the same way; this
 module owns the canonical logic so they cannot drift.
 
 Mirrors baton-proxy's ``MessageProcessor._capture_surface`` (``proxy.py``):
@@ -44,7 +44,7 @@ def build_server_meta(lowlevel_server: Any) -> dict[str, Any]:
     Both adapters wrap the same official low-level ``mcp.server.lowlevel.
     server.Server`` (reachable via ``._mcp_server`` on the standalone
     ``fastmcp`` library and, pre-2.0, on the official SDK too — see
-    ``integrations.mcp._compat.get_lowlevel_server`` for the 2.0 rename).
+    ``integrations.official._compat.get_lowlevel_server`` for the 2.0 rename).
     ``create_initialization_options()`` reads current server state, so
     callers MUST invoke this before mutating instructions (the Baton
     suffix) — otherwise the snapshot captures Baton's own text instead of

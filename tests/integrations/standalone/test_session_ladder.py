@@ -3,7 +3,7 @@
 Parity coverage for the mcp adapter's ``TestSessionIdMetaRungs``. Before this
 adapter grew a ladder it resolved only via fastmcp's ``Context.session_id``,
 which SPEC calls rung 4 and which fastmcp 4.x mints fresh per request — see
-``baton.integrations.fastmcp._session``.
+``baton.integrations.standalone._session``.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from fastmcp.server.dependencies import get_http_headers
 from fastmcp.server.http import set_http_request
 from starlette.requests import Request
 
-from baton.integrations.fastmcp import _session
-from baton.integrations.fastmcp._session import resolve_call_session_id
+from baton.integrations.standalone import _session
+from baton.integrations.standalone._session import resolve_call_session_id
 
 
 class _FakeContext:

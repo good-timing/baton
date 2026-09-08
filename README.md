@@ -2,7 +2,7 @@
 
 *Structured signal capture for agent-mediated tool use. Thin event capture surface with pluggable sinks (stdout / file / HTTP / fan-out); a worker on the other side of the sink assembles signals, applies policy, and dispatches.*
 
-**Pre-1.0 (`0.2.0`)** — public API not yet stable; breaking changes flagged in [SPEC §13](docs/SPEC.md). Vendor integration via `install_baton(mcp, ...)` against either the official Anthropic `mcp` SDK (`baton.integrations.mcp`) or the standalone `fastmcp` library (`baton.integrations.fastmcp`); library API path (`baton.Client` / `AsyncClient`) for Skill-instrumented code. Thin SDK + fat collector worker per [CHARTER ADR-4](docs/CHARTER.md). MCP tool-call events captured across Claude Code, Cursor, and Claude Desktop; the proactive + reactive annotation flow works on Claude Code and Cursor (per-runtime support matrix in [SPEC §5.1.3](docs/SPEC.md)). See [`docs/SPEC.md`](docs/SPEC.md) for the wire protocol.
+**Pre-1.0 (`0.2.0`)** — public API not yet stable; breaking changes flagged in [SPEC §13](docs/SPEC.md). Vendor integration via `install_baton(mcp, ...)` against either the official Anthropic `mcp` SDK (`baton.integrations.official`) or the standalone `fastmcp` library (`baton.integrations.standalone`); library API path (`baton.Client` / `AsyncClient`) for Skill-instrumented code. Thin SDK + fat collector worker per [CHARTER ADR-4](docs/CHARTER.md). MCP tool-call events captured across Claude Code, Cursor, and Claude Desktop; the proactive + reactive annotation flow works on Claude Code and Cursor (per-runtime support matrix in [SPEC §5.1.3](docs/SPEC.md)). See [`docs/SPEC.md`](docs/SPEC.md) for the wire protocol.
 
 ![Baton in action — events streaming to stderr](docs/demo.gif)
 
@@ -95,15 +95,15 @@ Two parallel adapters covering the two production Python MCP libraries. The vend
 
 | You import FastMCP via… | Use the adapter at… | Install extra |
 |---|---|---|
-| `from mcp.server.fastmcp import FastMCP` (Anthropic's official `mcp` SDK — the dominant library) | `baton.integrations.mcp` | `baton-sdk[mcp]` |
-| `from fastmcp import FastMCP` (standalone `fastmcp` library, v2.x by jlowin) | `baton.integrations.fastmcp` | `baton-sdk[fastmcp]` |
+| `from mcp.server.fastmcp import FastMCP` (Anthropic's official `mcp` SDK — the dominant library) | `baton.integrations.official` | `baton-sdk[mcp]` |
+| `from fastmcp import FastMCP` (standalone `fastmcp` library, v2.x by jlowin) | `baton.integrations.standalone` | `baton-sdk[fastmcp]` |
 
 ### Official `mcp` SDK path
 
 ```python
 import os
 from mcp.server.fastmcp import FastMCP
-from baton.integrations.mcp import install_baton, VendorConfig
+from baton.integrations.official import install_baton, VendorConfig
 from baton.sinks import HttpSink   # or StdoutSink / FileSink / MultiSink
 
 mcp = FastMCP("your-vendor-mcp")
@@ -126,7 +126,7 @@ async def your_tool(...): ...
 ```python
 import os
 from fastmcp import FastMCP
-from baton.integrations.fastmcp import install_baton, VendorConfig
+from baton.integrations.standalone import install_baton, VendorConfig
 from baton.sinks import HttpSink
 
 mcp = FastMCP("your-vendor-mcp")

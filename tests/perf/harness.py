@@ -249,8 +249,8 @@ async def mcp_session(
     """Stand up an mcp-adapter FastMCP server with install_baton applied,
     yielding an async callable that drives one tool call through the real
     wrapped hot path."""
-    from baton.integrations.mcp import VendorConfig, install_baton
-    from baton.integrations.mcp._compat import MCPServerClass as FastMCP
+    from baton.integrations.official import VendorConfig, install_baton
+    from baton.integrations.official._compat import MCPServerClass as FastMCP
 
     mcp = FastMCP("harness-mcp")
 
@@ -286,7 +286,7 @@ async def fastmcp_session(
     the real wrapped hot path via an in-process fastmcp ``Client``."""
     from fastmcp import Client, FastMCP
 
-    from baton.integrations.fastmcp import VendorConfig, install_baton
+    from baton.integrations.standalone import VendorConfig, install_baton
 
     mcp = FastMCP("harness-mcp")
 

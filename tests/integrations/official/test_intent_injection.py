@@ -1,6 +1,6 @@
 """Tests for per-tool intent-param injection in the official-mcp-SDK adapter.
 
-Mirrors ``tests/integrations/fastmcp/test_intent_injection.py`` but targets the
+Mirrors ``tests/integrations/standalone/test_intent_injection.py`` but targets the
 official ``mcp.server.fastmcp.FastMCP``: the adapter has no ``on_list_tools``
 middleware hook, so it injects ``user_goal``/``expected_result`` into each
 ``Tool.parameters`` dict at install time (that dict is what
@@ -26,8 +26,8 @@ from baton.integrations._llm_text import (
     build_expected_result_param_description,
     build_user_goal_param_description,
 )
-from baton.integrations.mcp import VendorConfig, install_baton
-from baton.integrations.mcp._compat import MCPServerClass as FastMCP
+from baton.integrations.official import VendorConfig, install_baton
+from baton.integrations.official._compat import MCPServerClass as FastMCP
 from baton.sinks import FileSink
 from tests._event_helpers import without_surface_snapshots
 

@@ -19,9 +19,9 @@ this adapter attach to it" — and those come apart on subclasses, on re-exports
 and on any upstream reorganisation. The seams:
 
 - standalone ``fastmcp`` — a callable ``add_middleware``; the middleware chain is
-  a supported public API and is precisely what ``integrations.fastmcp`` needs.
+  a supported public API and is precisely what ``integrations.standalone`` needs.
 - official ``mcp`` SDK — a resolvable tool registry, which is what
-  ``integrations.mcp`` wraps (and what a bare low-level ``Server`` lacks, which
+  ``integrations.official`` wraps (and what a bare low-level ``Server`` lacks, which
   is why that shape is refused rather than half-installed).
 
 **The middleware seam decides; the registry only breaks a tie it never has.**
@@ -44,7 +44,7 @@ which keeps a ``_tool_manager`` alongside its middleware chain — so the new
 entry point raised ``TypeError`` for every server on the declared ``>=2.14``
 floor, and its message blamed a hypothetical upstream move for a fact that
 predates the module. Only ``baton.install_baton`` was affected;
-``baton.integrations.fastmcp.install_baton`` routes correctly and always did.
+``baton.integrations.standalone.install_baton`` routes correctly and always did.
 
 **Neither signal is still an error**, and that direction is unchanged: a bare
 low-level ``Server`` must be refused rather than half-installed, because a
@@ -79,7 +79,7 @@ def _has_official_tool_registry(server: Any) -> bool:
     that shape here", never an error at import time.
     """
     try:
-        from baton.integrations.mcp._registry import get_tool_manager
+        from baton.integrations.official._registry import get_tool_manager
     except Exception:  # pragma: no cover - only when the extra is absent
         return False
     try:
@@ -91,8 +91,8 @@ def _has_official_tool_registry(server: Any) -> bool:
 def install_baton(server: Any, config: VendorConfig) -> BatonHandle:
     """Install Baton into either MCP server implementation.
 
-    Routes to ``baton.integrations.fastmcp`` for a standalone ``fastmcp``
-    server and ``baton.integrations.mcp`` for the official SDK's, detecting on
+    Routes to ``baton.integrations.standalone`` for a standalone ``fastmcp``
+    server and ``baton.integrations.official`` for the official SDK's, detecting on
     the seam each adapter needs. Raises ``TypeError`` — before mutating
     anything — only when the object is neither.
     """
@@ -104,13 +104,13 @@ def install_baton(server: Any, config: VendorConfig) -> BatonHandle:
     # SDK has never exposed ``add_middleware`` on either major, so its presence
     # is decisive rather than merely suggestive.
     if is_fastmcp:
-        from baton.integrations.fastmcp import install_baton as _install
+        from baton.integrations.standalone import install_baton as _install
 
         logger.debug("baton: routing to the standalone fastmcp adapter")
         return _install(server, config)
 
     if _has_official_tool_registry(server):
-        from baton.integrations.mcp import install_baton as _install
+        from baton.integrations.official import install_baton as _install
 
         logger.debug("baton: routing to the official mcp SDK adapter")
         return _install(server, config)

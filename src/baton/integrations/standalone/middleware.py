@@ -50,8 +50,8 @@ from baton.integrations._llm_text import (
     build_user_goal_param_description,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
-from baton.integrations.fastmcp._session import resolve_call_session_id
-from baton.integrations.fastmcp.runtime_adapter import detect_agent_runtime, meta_to_dict
+from baton.integrations.standalone._session import resolve_call_session_id
+from baton.integrations.standalone.runtime_adapter import detect_agent_runtime, meta_to_dict
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
 
@@ -532,7 +532,7 @@ class BatonMiddleware(Middleware):
     ) -> str:
         """Real per-call session id — SPEC §3.4's ladder, shared with the
         annotation tool so an annotation and the call it describes always
-        resolve identically. See ``baton.integrations.fastmcp._session`` for
+        resolve identically. See ``baton.integrations.standalone._session`` for
         the rungs, including why fastmcp's own ``Context.session_id`` sits
         BELOW the header and is gated to the versions where its cache survives.
         """

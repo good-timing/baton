@@ -7,7 +7,7 @@ session regardless of which path emitted the event.
 
 Session-id resolution is NOT here: it is SPEC §3.4's layered ladder, and it
 lives with the adapters (``integrations._session`` for the rungs both share,
-``integrations.fastmcp._session`` / ``integrations.mcp._tool_wrap`` for the
+``integrations.standalone._session`` / ``integrations.official._tool_wrap`` for the
 transport-specific ones).
 """
 

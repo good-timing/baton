@@ -15,10 +15,10 @@ Integrations (optional, opt-in via pip extras):
 Two MCP adapters ship, one per library. Both libraries call their server class
 ``FastMCP``, so choose by the import in your server, not by the class name:
 
-- ``baton.integrations.mcp`` — the official Anthropic ``mcp`` package
+- ``baton.integrations.official`` — the official Anthropic ``mcp`` package
   (``mcp.server.fastmcp.FastMCP`` on 1.x, ``mcp.server.mcpserver.MCPServer``
   on 2.x). ``pip install baton-sdk[mcp]``.
-- ``baton.integrations.fastmcp`` — the standalone ``fastmcp`` library, a
+- ``baton.integrations.standalone`` — the standalone ``fastmcp`` library, a
   different project. ``pip install baton-sdk[fastmcp]``.
 
 Both expose ``install_baton``, ``VendorConfig``, ``BatonHandle``, and both

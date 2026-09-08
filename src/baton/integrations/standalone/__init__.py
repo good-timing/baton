@@ -5,7 +5,7 @@ Anthropic ``mcp`` package. Both libraries name their server class ``FastMCP``
 and both adapters' ``install_baton`` take the same arguments, so this is the
 easy mixup to make — if your import is ``from mcp.server.fastmcp import
 FastMCP`` (mcp 1.x) or ``from mcp.server.mcpserver import MCPServer`` (mcp
-2.x), you want ``baton.integrations.mcp`` instead. Passing the wrong one is
+2.x), you want ``baton.integrations.official`` instead. Passing the wrong one is
 refused up front with a message naming the other adapter.
 
 Five-line vendor integration via ``install_baton(mcp, VendorConfig(...))``;
@@ -22,7 +22,7 @@ Example:
 
 ```python
 from fastmcp import FastMCP
-from baton.integrations.fastmcp import install_baton, VendorConfig
+from baton.integrations.standalone import install_baton, VendorConfig
 from baton.sinks import StdoutSink
 
 mcp = FastMCP("your-vendor-mcp")
@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from baton.integrations._config import SessionResolutionContext, VendorConfig
 from baton.integrations._handle import BatonHandle
-from baton.integrations.fastmcp.install import install_baton
+from baton.integrations.standalone.install import install_baton
 
 __all__ = [
     "BatonHandle",

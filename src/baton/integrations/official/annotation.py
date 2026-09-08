@@ -1,7 +1,7 @@
 """Annotation tool registration — SPEC §5.1.1 — for the official mcp SDK's
 ``mcp.server.fastmcp.FastMCP``.
 
-Mirrors ``baton.integrations.fastmcp.annotation`` but registers via the
+Mirrors ``baton.integrations.standalone.annotation`` but registers via the
 official SDK's ``@mcp.tool(...)`` decorator.
 
 **Note on `from __future__ import annotations` (intentionally omitted):**
@@ -23,7 +23,7 @@ from typing import Any
 from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
 from baton.integrations._llm_text import build_annotation_tool_description
-from baton.integrations.mcp._compat import MCPServerClass as FastMCP
+from baton.integrations.official._compat import MCPServerClass as FastMCP
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
 

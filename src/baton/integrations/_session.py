@@ -1,5 +1,5 @@
 """Shared SPEC §3.4 session-id resolution — both adapters
-(``baton.integrations.fastmcp``, ``baton.integrations.mcp``) climb the same
+(``baton.integrations.standalone``, ``baton.integrations.official``) climb the same
 ladder, so this module owns the rungs that are transport-independent and they
 cannot drift.
 

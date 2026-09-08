@@ -40,7 +40,7 @@ def get_bookmark(name: str) -> str:
 # --- Baton integration — three lines --------------------------------------------
 # StdoutSink writes JSONL to stderr, so this needs no backend or configuration.
 # ----------------------------------------------------------------------------
-from baton.integrations.fastmcp import VendorConfig, install_baton  # noqa: E402
+from baton.integrations.standalone import VendorConfig, install_baton  # noqa: E402
 from baton.sinks import StdoutSink  # noqa: E402
 
 install_baton(

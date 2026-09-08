@@ -6,7 +6,7 @@ vendor-namespaced annotation tool against the official Anthropic
 
 ```python
 from mcp.server.fastmcp import FastMCP
-from baton.integrations.mcp import install_baton, VendorConfig
+from baton.integrations.official import install_baton, VendorConfig
 from baton.sinks import StdoutSink
 
 mcp = FastMCP("your-vendor-mcp")
@@ -18,7 +18,7 @@ handle = install_baton(mcp, VendorConfig(
 ))
 ```
 
-For the standalone ``fastmcp`` library, use ``baton.integrations.fastmcp``
+For the standalone ``fastmcp`` library, use ``baton.integrations.standalone``
 instead — different library, different hook mechanism (middleware vs.
 tool-handler wrapping).
 """
@@ -37,16 +37,16 @@ from baton.integrations._config import (
 from baton.integrations._handle import BatonHandle
 from baton.integrations._llm_text import build_server_instructions
 from baton.integrations._surface import build_server_meta
-from baton.integrations.mcp._compat import (
+from baton.integrations.official._compat import (
     MCPServerClass as FastMCP,
 )
-from baton.integrations.mcp._compat import (
+from baton.integrations.official._compat import (
     get_lowlevel_server,
     require_high_level_server,
     set_server_instructions,
 )
-from baton.integrations.mcp._tool_wrap import install_wraps
-from baton.integrations.mcp.annotation import (
+from baton.integrations.official._tool_wrap import install_wraps
+from baton.integrations.official.annotation import (
     derive_annotation_tool_name,
     register_annotation_tool,
 )
