@@ -50,7 +50,9 @@ __all__ = [
     "Client",
     "SignalType",
     "Trace",
+    "VendorConfig",
     "__version__",
+    "install_baton",
 ]
 
 
@@ -59,3 +61,9 @@ __all__ = [
 # Trace + AsyncTrace are re-exported so typed callers can write
 # ``def f(t: baton.Trace) -> ...`` without reaching into ``baton.client``.
 from baton.client import AsyncClient, AsyncTrace, Client, SignalType, Trace
+
+# One entry point for both adapters, detecting on structure — see
+# ``baton.install``. Imported last: it pulls in ``integrations`` lazily inside
+# the call, so neither optional extra is required to import ``baton``.
+from baton.install import install_baton
+from baton.integrations._config import VendorConfig
