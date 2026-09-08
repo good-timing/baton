@@ -184,28 +184,6 @@ class _EventEnvelope(BaseModel):
     ``(tenant_id, vendor_id, user_id)``. Null when no identity resolved or no
     HMAC key configured; additive + nullable so pre-user_id consumers are
     unaffected."""
-    correlation_mode: Literal["session-stitched", "per-event"] = "session-stitched"
-    """How ``session_id`` should be read (SPEC §3.4 + §11.5).
-
-    ``session-stitched`` means events sharing a ``session_id`` really are one
-    agent session, so the worker may correlate across them —
-    ``tool_call_start`` ↔ ``tool_call_end`` ↔ surrounding ``annotation`` — and
-    may detect the multi-event signal types (``retry_loop``,
-    ``parameter_confusion``, derived ``slow_performance``, ``abandonment``).
-    ``per-event`` means each event stands alone and the worker MUST NOT group.
-
-    **Why a constant is still worth sending.** Every SDK path resolves a session
-    id today, so this is always ``session-stitched``; SPEC §3.4 rung 5, which is
-    what would set ``per-event``, is unbuilt in both adapters (D2). The field
-    earns its place anyway, because without it a consumer cannot tell **"every
-    event has a different id because that is the declared mode"** from **"every
-    event has a different id because the resolver is broken"** — and that is not
-    hypothetical: this release's own changelog describes fastmcp 4's per-request
-    ids as "indistinguishable on the wire from legitimate per-event
-    correlation". This field is the thing that distinguishes them. A consumer
-    seeing ``session-stitched`` alongside an id that never repeats is looking at
-    a producer bug, and can now say so.
-    """
     runtime_meta: dict[str, Any] | None = None
     """Runtime-supplied ``_meta`` envelope from the MCP request (SPEC §11.4).
     Per SPEC §11.5 the Console worker uses this to derive turn / cycle

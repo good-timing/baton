@@ -72,30 +72,6 @@ def assert_sequence_monotonic_per_session(events: list[dict[str, Any]]) -> None:
         )
 
 
-def assert_correlation_mode_declared(events: list[dict[str, Any]]) -> None:
-    """Every event declares how its ``session_id`` should be read (SPEC §3.4).
-
-    Presence is already covered by ``assert_envelope_shape`` (the field is
-    non-nullable, so it is derived into the required set automatically). What
-    this adds is the VALUE, and one consistency rule that matters more than it
-    looks: all events of a single run must agree on the mode. A producer that
-    mixed the two within one session would be telling the worker both "you may
-    correlate these" and "you must not" about the same events.
-
-    The SDK is ``session-stitched`` everywhere today, because rung 5 — the only
-    thing that sets ``per-event`` — is unbuilt (D2). This asserts the declared
-    value rather than pinning the constant, so building rung 5 changes the
-    ladder and not this test.
-    """
-    valid = {"session-stitched", "per-event"}
-    modes = {e["correlation_mode"] for e in events}
-    assert modes <= valid, f"unknown correlation_mode(s): {modes - valid}"
-    assert len(modes) == 1, (
-        f"one run declared more than one correlation_mode ({modes}) — a consumer "
-        "cannot be told both to group and not to group the same session"
-    )
-
-
 def assert_signal_types_valid(events: list[dict[str, Any]]) -> None:
     """Any populated ``annotation.payload.signal_type`` is one of the eight
     canonical SPEC §3.1 values — a typo'd or adapter-specific value here

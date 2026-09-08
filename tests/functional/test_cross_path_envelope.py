@@ -27,7 +27,6 @@ import pytest
 
 from tests._event_helpers import without_surface_snapshots
 from tests.functional.envelope_assertions import (
-    assert_correlation_mode_declared,
     assert_envelope_shape,
     assert_sequence_monotonic_per_session,
     assert_signal_types_valid,
@@ -174,7 +173,6 @@ async def test_mcp_family_envelope_invariants_hold(path_name: str, tmp_path: Pat
     assert_envelope_shape(events)
     assert_sequence_monotonic_per_session(events)
     assert_signal_types_valid(events)
-    assert_correlation_mode_declared(events)
 
     # Path-specific: MCP-family agent_runtime is never the library sentinel.
     assert all(e["agent_runtime"] != "python-library" for e in events), (
@@ -197,7 +195,6 @@ async def test_library_path_envelope_invariants_hold(tmp_path: Path) -> None:
     assert_envelope_shape(events)
     assert_sequence_monotonic_per_session(events)
     assert_signal_types_valid(events)
-    assert_correlation_mode_declared(events)
 
     assert all(e["agent_runtime"] == "python-library" for e in events)
     assert {e["event_type"] for e in events} == EXPECTED_EVENT_TYPES
