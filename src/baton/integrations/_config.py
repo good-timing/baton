@@ -91,23 +91,6 @@ class VendorConfig:
     tool description, and any LLM-facing strings. Whitelabel obligation
     (SPEC §5.4): no Baton-branded strings reach the calling agent."""
 
-    tenant_id: str | None = None
-    """Account identifier for the envelope's ``tenant_id`` (SPEC §11.4).
-
-    **This is not ``vendor_id``, and conflating them is the bug this field
-    exists to fix.** ``tenant_id`` names the ACCOUNT the collector
-    authenticates; ``vendor_id`` names the SERVER whose surface is being
-    captured. One account wraps many servers, so sending the account id in
-    both slots collapses them: two servers in one workspace render as one,
-    whose label flips to whichever deployed last, and a server ends up naming
-    itself with its workspace's opaque id.
-
-    Resolved explicit → ``BATON_TENANT_ID`` → ``vendor_id``. That last
-    fallback exists for our own fixtures during the change, not for anyone's
-    install — a wrap block states this value on its own line, because it is
-    the diff a customer reviews in their pull request.
-    """
-
     consent_token: str = ""
     """End-user consent token attached to every emitted event per SPEC §2.3 +
     §3.1 (the consumer of the events MUST reject events missing it). v0 form:
@@ -182,6 +165,23 @@ class VendorConfig:
     through to the ladder unchanged. Return an opaque, non-PII id —
     passed through raw, not hashed; hashing/derivation is the vendor's
     responsibility if the raw value is sensitive. Sync or async."""
+
+    tenant_id: str | None = None
+    """Account identifier for the envelope's ``tenant_id`` (SPEC §11.4).
+
+    **This is not ``vendor_id``, and conflating them is the bug this field
+    exists to fix.** ``tenant_id`` names the ACCOUNT the collector
+    authenticates; ``vendor_id`` names the SERVER whose surface is being
+    captured. One account wraps many servers, so sending the account id in
+    both slots collapses them: two servers in one workspace render as one,
+    whose label flips to whichever deployed last, and a server ends up naming
+    itself with its workspace's opaque id.
+
+    Resolved explicit → ``BATON_TENANT_ID`` → ``vendor_id``. That last
+    fallback exists for our own fixtures during the change, not for anyone's
+    install — a wrap block states this value on its own line, because it is
+    the diff a customer reviews in their pull request.
+    """
 
 
 def _validate_vendor_config(config: VendorConfig) -> None:

@@ -206,9 +206,19 @@ jobs:
               sys.exit(f"::error::hybrid install — imported {got}, pinned {want}")
           PY
 
-      - name: Test (fastmcp adapter + cross-path functional)
+      - name: Test (fastmcp adapter + cross-path functional + entry-point routing)
         # Wider than mcp-matrix's scope on purpose: `tests/functional/` is where
         # envelope/spec-conformance lives, and a wire-format regression from the
         # mcp version underneath fastmcp shows up there, not only in the
         # adapter's own tests.
-        run: pytest tests/integrations/fastmcp/ tests/functional/ -q
+        #
+        # `test_entry_point_routing.py` is here because 0.7.0 shipped a router
+        # that refused every fastmcp 2.x server and NO leg could see it: this
+        # job pins 2.14 but did not run the routing test, and `core` runs the
+        # routing test but resolves fastmcp 4.x, where the `_tool_manager` that
+        # caused the refusal does not exist. Two green legs, one broken entry
+        # point, and the gap was the intersection neither covered — the same
+        # shape as the fastmcp-slim hybrid this job's own guard was added for.
+        run: >
+          pytest tests/integrations/fastmcp/ tests/functional/
+          tests/test_entry_point_routing.py -q

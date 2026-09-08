@@ -24,11 +24,31 @@ and on any upstream reorganisation. The seams:
   ``integrations.mcp`` wraps (and what a bare low-level ``Server`` lacks, which
   is why that shape is refused rather than half-installed).
 
-**Both signals, or neither, is an error rather than a guess.** If a future
-upstream release gives the official server a middleware chain, this raises and
-names the two explicit entry points instead of silently routing to whichever
-branch happened to be tested first — a mis-route installs a capture that looks
-healthy and produces nothing
+**The middleware seam decides; the registry only breaks a tie it never has.**
+``add_middleware`` is exclusive to the standalone package and the ordering rests
+on that, measured across all four shipped shapes rather than assumed:
+
+===========================  ================  ================
+server                       add_middleware    tool registry
+===========================  ================  ================
+official ``mcp`` 1.x         no                yes
+official ``mcp`` 2.x         no                yes
+standalone ``fastmcp`` 2.14  **yes**           **yes**
+standalone ``fastmcp`` 4.x   yes               no
+===========================  ================  ================
+
+**Corrected 2026-09-08, after 0.7.0 shipped the wrong rule.** This module was
+written to treat both-signals as an ambiguity and refuse, on the stated belief
+that the seams were disjoint. They are not, and never were on ``fastmcp`` 2.x,
+which keeps a ``_tool_manager`` alongside its middleware chain — so the new
+entry point raised ``TypeError`` for every server on the declared ``>=2.14``
+floor, and its message blamed a hypothetical upstream move for a fact that
+predates the module. Only ``baton.install_baton`` was affected;
+``baton.integrations.fastmcp.install_baton`` routes correctly and always did.
+
+**Neither signal is still an error**, and that direction is unchanged: a bare
+low-level ``Server`` must be refused rather than half-installed, because a
+mis-route installs a capture that looks healthy and produces nothing
 (→ ``broken and unbuilt must not look alike``).
 """
 
@@ -74,30 +94,22 @@ def install_baton(server: Any, config: VendorConfig) -> BatonHandle:
     Routes to ``baton.integrations.fastmcp`` for a standalone ``fastmcp``
     server and ``baton.integrations.mcp`` for the official SDK's, detecting on
     the seam each adapter needs. Raises ``TypeError`` — before mutating
-    anything — when the object is neither, or ambiguously both.
+    anything — only when the object is neither.
     """
     is_fastmcp = _has_fastmcp_middleware_seam(server)
-    is_official = _has_official_tool_registry(server)
 
-    if is_fastmcp and is_official:
-        raise TypeError(
-            "baton.install_baton cannot tell which adapter this server needs: it "
-            "exposes BOTH a fastmcp-style ``add_middleware`` and an official-SDK "
-            "tool registry. Rather than guess, call the adapter you mean directly "
-            "— ``baton.integrations.fastmcp.install_baton`` for a server built "
-            "from the standalone ``fastmcp`` package, or "
-            "``baton.integrations.mcp.install_baton`` for one built from the "
-            "official ``mcp`` SDK. Please report this: the two seams are supposed "
-            "to be disjoint, so this means an upstream release moved one."
-        )
-
+    # Checked FIRST and on its own. ``fastmcp`` 2.x carries a ``_tool_manager``
+    # as well, so requiring the registry to be absent here refuses every server
+    # on the declared floor — which is exactly what 0.7.0 shipped. The official
+    # SDK has never exposed ``add_middleware`` on either major, so its presence
+    # is decisive rather than merely suggestive.
     if is_fastmcp:
         from baton.integrations.fastmcp import install_baton as _install
 
         logger.debug("baton: routing to the standalone fastmcp adapter")
         return _install(server, config)
 
-    if is_official:
+    if _has_official_tool_registry(server):
         from baton.integrations.mcp import install_baton as _install
 
         logger.debug("baton: routing to the official mcp SDK adapter")

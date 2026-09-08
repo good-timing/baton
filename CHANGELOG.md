@@ -8,6 +8,20 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## 0.7.1 — `baton.install_baton` works on fastmcp 2.x, which 0.7.0 refused
+
+### Fixed
+
+- **`baton.install_baton` raised `TypeError` for every standalone `fastmcp` 2.x server — the whole declared `>=2.14` floor.** 0.7.0's new entry point routes on the seam each adapter installs into, and treated "both seams present" as an ambiguity to refuse rather than guess. The premise was wrong: `fastmcp` 2.14.7 exposes `add_middleware` AND keeps a `_tool_manager`, so both probes fired and the router refused before touching anything. Its message then blamed a hypothetical upstream change — *"the two seams are supposed to be disjoint, so this means an upstream release moved one"* — for a fact that predates the module. Measured against the PUBLISHED 0.7.0 wheel in a one-resolve `fastmcp==2.14.7` venv, not reasoned about. The full table, all four shapes measured: official `mcp` 1.x `FastMCP` and 2.0.0 `MCPServer` have a tool registry and no `add_middleware`; `fastmcp` 2.14.7 has both; `fastmcp` 4.0.3 has `add_middleware` only. So `add_middleware` is the exclusive signal and now decides on its own, with the registry consulted only when it is absent. **Neither signal is still an error** — a bare low-level `Server` must be refused rather than half-installed. Only the top-level entry point was affected; `baton.integrations.fastmcp.install_baton` routed correctly throughout, which is the workaround for anyone on 0.7.0.
+
+- **The CI leg that pins fastmcp 2.x did not run the routing test, and the leg that runs it resolves fastmcp 4.x.** That intersection is why the above shipped green: `fastmcp-matrix` ran `tests/integrations/fastmcp/ tests/functional/`, and `test_entry_point_routing.py` is the only file exercising `baton.install_baton`, while `core` runs it against a fastmcp with no `_tool_manager` to trip over. Two green legs, one broken entry point, and no single leg could see it — the same shape as the `fastmcp-slim` hybrid that this job's own version guard was added for one day earlier. The matrix step now includes the routing test; verified by running the widened scope against a real 2.14.7 install (114 passed).
+
+- **`VendorConfig.tenant_id` no longer takes a positional slot from `consent_token` and `sink`.** 0.7.0 inserted it as the third field of a plain (not `kw_only`) dataclass, so `VendorConfig("acme", "Acme", "ct", my_sink)` — valid on 0.6.1 — silently bound `tenant_id="ct"` and `consent_token=my_sink`, and validation passed because it only tests truthiness and a `Sink` is truthy. A `Sink` object then rode into the envelope's `consent_token`. The field is appended instead, restoring the field order 0.6.1 shipped and making the changelog's "purely additive" claim true. Every in-repo call site uses keywords, which is precisely why no test caught it; there is now one that constructs positionally.
+
+- **A test fixture leaked a live HTTP server per parametrised case.** `tests/integrations/fastmcp/test_concurrent_sessions.py` started `mcp.run` on a daemon thread and never stopped it — `run` builds its own loop inside uvicorn and returns no handle — so each case left a bound port, an event loop, and its sink alive for the rest of the session. Driven through `run_async` on a loop the fixture owns, with a bounded join and outstanding tasks cancelled before close.
+
+---
+
 ## 0.7.0 — fastmcp 4 works; one entry point; `tenant_id` is the account
 
 ### Fixed

@@ -166,3 +166,32 @@ async def test_library_api_env_and_fallback(
     c2 = AsyncClient(sink=sink2, vendor_id=SERVER, consent_token="ct")
     assert (c2._tenant_id, c2._vendor_id) == (SERVER, SERVER)
     await c2.aclose()
+
+
+def test_tenant_id_is_appended_so_positional_construction_still_binds() -> None:
+    """``VendorConfig`` is a plain dataclass, so field ORDER is public API.
+
+    0.7.0 inserted ``tenant_id`` third, ahead of ``consent_token`` and ``sink``.
+    A caller writing ``VendorConfig("acme", "Acme", "ct", my_sink)`` — valid on
+    0.6.1 — then bound ``tenant_id="ct"`` and ``consent_token=my_sink``, and
+    nothing caught it: ``_validate_vendor_config`` only tests
+    ``if not config.consent_token``, and a Sink instance is truthy, so a Sink
+    object rode into the envelope's ``consent_token`` field. Silent, and
+    described in the changelog as purely additive.
+
+    Every in-repo call site uses keywords, which is exactly why the suite could
+    not see it. This test is the missing one: it constructs positionally, the
+    way a vendor's code does.
+    """
+    from baton.integrations._config import VendorConfig
+    from baton.sinks import StdoutSink
+
+    sink = StdoutSink()
+    config = VendorConfig("acme", "Acme Corp", "ct-positional", sink)
+
+    assert config.vendor_id == "acme"
+    assert config.vendor_display_name == "Acme Corp"
+    assert config.consent_token == "ct-positional"
+    assert config.sink is sink
+    # The new field takes no positional slot from anything that existed.
+    assert config.tenant_id is None

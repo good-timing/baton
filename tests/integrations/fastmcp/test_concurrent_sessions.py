@@ -98,19 +98,45 @@ def _running_server(
     port = _free_port()
     boot_error: list[BaseException] = []
 
+    # Driven through ``run_async`` on a loop this fixture owns, rather than the
+    # blocking ``mcp.run``, for one reason: ``run`` builds its own loop inside
+    # uvicorn and hands back no handle, so there is nothing to stop afterwards.
+    # Each parametrised case then left a live daemon thread holding a bound
+    # port, an event loop, and — through the installed middleware — its sink,
+    # for the rest of the pytest session.
+    loop_box: list[asyncio.AbstractEventLoop] = []
+
     def _serve() -> None:
+        loop = asyncio.new_event_loop()
+        loop_box.append(loop)
+        asyncio.set_event_loop(loop)
         try:
-            mcp.run(
-                transport=transport,
-                host="127.0.0.1",
-                port=port,
-                show_banner=False,
-                stateless_http=stateless,
+            loop.run_until_complete(
+                mcp.run_async(
+                    transport=transport,
+                    host="127.0.0.1",
+                    port=port,
+                    show_banner=False,
+                    stateless_http=stateless,
+                )
             )
         except BaseException as exc:  # re-raised on the test thread
             boot_error.append(exc)
+        finally:
+            # Cancel what uvicorn left in flight before closing, or the
+            # interpreter prints "Task was destroyed but it is pending!" —
+            # noise that reads like a defect in the code under test.
+            with contextlib.suppress(Exception):
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            with contextlib.suppress(Exception):
+                loop.close()
 
-    threading.Thread(target=_serve, daemon=True).start()
+    thread = threading.Thread(target=_serve, daemon=True)
+    thread.start()
 
     deadline = time.monotonic() + BOOT_TIMEOUT_S
     while True:
@@ -131,7 +157,16 @@ def _running_server(
         time.sleep(0.05)
 
     path = "/sse/" if transport == "sse" else "/mcp/"
-    yield sink, f"http://127.0.0.1:{port}{path}"
+    try:
+        yield sink, f"http://127.0.0.1:{port}{path}"
+    finally:
+        # Stop the loop from this thread, then wait for the server thread to
+        # unwind so the port is actually free before the next case picks one.
+        # Bounded: a hung shutdown must not convert a passing test into a hang.
+        for loop in loop_box:
+            with contextlib.suppress(Exception):
+                loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=BOOT_TIMEOUT_S)
 
 
 @pytest.mark.anyio
