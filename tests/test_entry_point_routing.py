@@ -85,7 +85,9 @@ def test_refuses_an_object_that_is_neither() -> None:
         baton.install_baton(NotAServer(), _config())
 
 
-def test_both_seams_routes_to_fastmcp_because_that_is_what_2_x_looks_like() -> None:
+def test_both_seams_routes_to_fastmcp_because_that_is_what_2_x_looks_like(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """0.7.0 refused this shape, and the shape is the declared floor.
 
     The module was written believing the two seams disjoint, so both-present
@@ -97,30 +99,41 @@ def test_both_seams_routes_to_fastmcp_because_that_is_what_2_x_looks_like() -> N
     official SDK exposes it on neither major (measured: ``mcp`` 1.x ``FastMCP``
     and ``mcp`` 2.0.0 ``MCPServer``, both no) — so it decides.
 
-    Simulated here rather than pinned to a version, because the suite resolves
-    one ``fastmcp`` at a time: an official server given a middleware attribute
-    is exactly the both-signals shape, and it must now route rather than raise.
+    **Asserted on the routing DECISION, not on a completed install.** The first
+    version of this test let the chosen adapter run and checked that a
+    ``BatonMiddleware`` landed. It passed locally on mcp 1.x and failed on CI
+    under mcp 2.x — because the fixture is an official-SDK object and the
+    fastmcp adapter, correctly chosen, then died reaching for a ``_mcp_server``
+    that 2.x does not have. That failure said nothing about routing, which is
+    this module's only job: whether one adapter can install into a synthetic
+    hybrid is the adapter's contract, not the router's. A REAL ``fastmcp`` 2.x
+    server both routes and installs, and the ``fastmcp-matrix`` CI leg now runs
+    this file against a pinned 2.14.7 to hold that end.
     """
     from baton.integrations.mcp._compat import MCPServerClass as FastMCP
 
     server = FastMCP("routing-both-seams")
-    installed: list[object] = []
-    server.add_middleware = installed.append  # type: ignore[attr-defined]
+    server.add_middleware = lambda *_a, **_k: None  # type: ignore[attr-defined]
 
     from baton.install import _has_fastmcp_middleware_seam, _has_official_tool_registry
 
     assert _has_fastmcp_middleware_seam(server)
     assert _has_official_tool_registry(server), "fixture must carry BOTH seams"
 
+    chosen: list[str] = []
+    import baton.integrations.fastmcp as fastmcp_adapter
+    import baton.integrations.mcp as official_adapter
+
+    monkeypatch.setattr(
+        fastmcp_adapter, "install_baton", lambda *_a, **_k: chosen.append("fastmcp")
+    )
+    monkeypatch.setattr(
+        official_adapter, "install_baton", lambda *_a, **_k: chosen.append("official")
+    )
+
     baton.install_baton(server, _config())
 
-    # Asserted on the seam being USED, not on the absence of an error: this
-    # fixture is an official-SDK object, so the fastmcp adapter runs to
-    # completion on it and a "did not raise" check would pass under the old
-    # both-signals refusal too, once that refusal was removed. A middleware
-    # actually handed to ``add_middleware`` can only come from the fastmcp arm.
-    assert installed, "the fastmcp adapter's middleware was never installed"
-    assert type(installed[0]).__name__ == "BatonMiddleware"
+    assert chosen == ["fastmcp"], "both seams present must route, not refuse"
 
 
 def test_importing_baton_does_not_require_the_adapters() -> None:
