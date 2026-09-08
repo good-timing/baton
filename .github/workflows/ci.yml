@@ -173,16 +173,38 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Install dependencies (override fastmcp version)
+      - name: Install dependencies (pin fastmcp in ONE resolve)
+        # Deliberately NOT `pip install -e ".[dev]"` followed by a downgrade.
+        # `[dev]` resolves fastmcp 4.x, which ships its modules in a SEPARATE
+        # distribution (`fastmcp-slim`); downgrading `fastmcp` afterwards does
+        # not remove that, so site-packages ends up holding 4.x code under a
+        # 2.x version label — a hybrid matching no release anyone can install.
+        # Measured 2026-09-08, the first time this job ever ran: the 2.14.7 leg
+        # died collecting, on `ImportError: cannot import name
+        # 'IdentityAssertionParams' from 'mcp.server.auth.provider'` — 4.x
+        # oauth_proxy code against the mcp 1.30.0 that 2.14.7 correctly pulled.
+        # One resolve carrying both constraints keeps fastmcp-slim out entirely.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-          pip install "fastmcp==${{ matrix.fastmcp-version }}"
+          pip install -e ".[dev]" "fastmcp==${{ matrix.fastmcp-version }}"
 
-      - name: Show resolved fastmcp + mcp
+      - name: Show resolved fastmcp + mcp, and prove the pin is what imports
         # The mcp version is the point of this matrix, so print what resolved
-        # rather than inferring it from the fastmcp pin.
-        run: pip list | grep -iE "^(mcp|fastmcp|pydantic) "
+        # rather than inferring it from the fastmcp pin. The import check is the
+        # guard the hybrid above walked straight through: metadata said 2.14.7
+        # while the importable package was 4.0.3, so a version-label assertion
+        # alone would have passed. Import it and ask IT what it is.
+        run: |
+          pip list | grep -iE "^(mcp|mcp-types|fastmcp|fastmcp-slim|pydantic) " || true
+          python - <<'PY'
+          import sys
+          import fastmcp
+          want = "${{ matrix.fastmcp-version }}"
+          got = getattr(fastmcp, "__version__", "<none>")
+          print(f"imported fastmcp {got}; pinned {want}")
+          if got != want:
+              sys.exit(f"::error::hybrid install — imported {got}, pinned {want}")
+          PY
 
       - name: Test (fastmcp adapter + cross-path functional)
         # Wider than mcp-matrix's scope on purpose: `tests/functional/` is where
