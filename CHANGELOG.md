@@ -24,6 +24,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Changed
 
+- **The `[fastmcp]` extra's floor is `>=2.14`, up from `>=2.10`.** The old floor was fiction: `fastmcp` 2.10 and 2.11 cannot `import fastmcp` at all under current pydantic (upstream — "cannot specify both default and default_factory"), and 2.12/2.13 fail this suite for unrelated pre-existing reasons. 2.14 is the newest 2.x release and the only working part of that line, and it is what the `fastmcp-matrix` 2.x leg has pinned since the matrix landed. **Nothing that worked stops working** — the declaration now matches what CI actually proves, instead of promising four releases that cannot start. Upper bound `<5` is unchanged. The adapter's own "wrong object" `TypeError` was telling readers to `pin fastmcp>=2.10,<4` — stale on both ends, since the `<4` cap was lifted to `<5` earlier in this release; it now names the real range.
+
 - **Session-id resolution moved out of `baton._state`.** `resolve_session_id` (a thin read of fastmcp's `Context.session_id`) is gone; SPEC §3.4's rungs now live with the adapters — `baton.integrations._session` for the two rungs both adapters share, `baton.integrations.fastmcp._session` and `baton.integrations.mcp._tool_wrap` for the transport-specific ones. Internal modules, no public export changed.
 
 ---

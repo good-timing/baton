@@ -109,7 +109,7 @@ def _require_fastmcp_server(mcp: Any) -> None:
         "baton: install_baton needs the standalone ``fastmcp`` library's "
         "FastMCP, and this object has no ``add_middleware`` — the middleware "
         "chain is the seam this adapter captures on. If this IS a fastmcp "
-        "FastMCP, then it is a version problem: pin fastmcp>=2.10,<4."
+        "FastMCP, then it is a version problem: pin fastmcp>=2.14,<5."
     )
 
 

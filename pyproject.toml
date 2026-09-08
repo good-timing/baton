@@ -78,8 +78,14 @@ mcp = [
 # Note 4.x lifted fastmcp's own `mcp<2` pin, so an uncapped resolve pulls mcp
 # 2.x in behind it; that combination is now a matrix axis rather than a
 # surprise reaching the `core` job's typecheck.
+# Floor 2.14 (was 2.10, which was fiction): 2.10/2.11 cannot `import fastmcp`
+# at all under current pydantic ("cannot specify both default and
+# default_factory"), and 2.12/2.13 fail this suite. 2.14 is the newest and only
+# working 2.x band, and it is what `fastmcp-matrix` has always pinned for its
+# 2.x leg — so this raises the declaration to match what is tested, and drops
+# nothing that worked.
 fastmcp = [
-    "fastmcp>=2.10,<5",
+    "fastmcp>=2.14,<5",
 ]
 # ``HttpSink`` (the production path — POST events to a Baton Console) needs an
 # async HTTP client. httpx is required (not urllib): the SDK emits from inside
