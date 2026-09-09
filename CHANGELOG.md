@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.7.2 — adapter folders named for the adapter, not the class that fooled people
 
 ### Changed
 
