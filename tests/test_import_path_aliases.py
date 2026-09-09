@@ -2,8 +2,11 @@
 
 ``baton.integrations.mcp`` -> ``baton.integrations.official`` and
 ``baton.integrations.fastmcp`` -> ``baton.integrations.standalone``. The
-aliases exist for exactly one release and then get deleted; these tests are
-what make that deletion deliberate rather than incidental, and they pin the
+The aliases are temporary, but NOT on a release count — "one release" was the
+original plan and it did not survive contact with the sibling repos; the shim
+docstrings carry the real precondition, which is a grep that must come back
+empty. These tests make the deletion deliberate rather than incidental, and pin
+the
 three properties the deletion plan depends on — that the old path resolves to
 the SAME objects (so a caller cannot be half-migrated), that it resolves
 SILENTLY (the decision was no DeprecationWarning, because with no customers

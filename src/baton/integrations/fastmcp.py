@@ -1,4 +1,4 @@
-"""Compatibility alias — this adapter now lives at ``baton.integrations.standalone``.
+r"""Compatibility alias — this adapter now lives at ``baton.integrations.standalone``.
 
 The package was renamed because its old name was a magnet for the wrong
 choice: the OFFICIAL ``mcp`` SDK also names its server class ``FastMCP`` on
@@ -11,11 +11,38 @@ working, and it does so SILENTLY: with no customers, the only reader of a
 deprecation warning would be us, and the one consumer that matters
 (``baton-console``) tracks ``baton-sdk`` by floor rather than by pin, so this
 alias is what keeps a release from breaking it at the next resolve rather
-than at a moment it chose. It is deleted once the console switches its import
-lines — see the CHANGELOG entry for the rename.
+than at a moment it chose.
 
-The install extra is unchanged and still ``baton-sdk[fastmcp]``: extras name
-PyPI distributions, not our folders, so the two deliberately differ now.
+DO NOT delete these yet, and do NOT delete them on any single event. The
+original plan said "delete once baton-console switches its imports"; the console
+switched, and a sweep then showed that trigger was wrong — it named the one
+consumer we happened to know about. A first attempt at replacing it with a
+hand-written list of the others was ALSO wrong: it missed four old-path callers,
+omitted baton-ts, and claimed this repo was clear when its own vendored
+``baton-spec`` is not.
+
+So the precondition is a CHECK, not a list, because a list drifts and this one
+already did. From each repo root::
+
+    grep -rn "baton\.integrations\.\(mcp\|fastmcp\)" . \
+      --exclude-dir=.git --exclude-dir=.venv --exclude-dir=node_modules \
+      --exclude=CHANGELOG.md
+
+In THIS repo four hits are expected and are themselves part of the deletion
+commit: these two shims, the sentence in ``integrations/__init__.py`` announcing
+them, and ``tests/test_import_path_aliases.py``. Anything else is a blocker.
+Delete the shims when the check is clean by that rule in:
+``baton`` (this repo — INCLUDING the vendored ``baton-spec/`` submodule, which
+is on the old paths at the pinned pointer), ``baton-spec``, ``baton-internal``
+(the toybox fixture and the identity_probe spike are live; several spikes and
+two READMEs that tell a reader to paste the old path are also hits), and
+``baton-proxy`` / ``baton-extmcp`` / ``baton-ts``, each of which vendors
+``baton-spec`` at a pointer whose ``scripts/generate.py`` still uses the old
+paths. ``baton-console`` is already clear.
+
+Note the break does NOT wait for a release. ``baton-spec/scripts/generate.py``
+is documented to run against THIS repo's editable ``.venv``, so deleting on
+``main`` breaks that script the same day.
 """
 
 from __future__ import annotations
