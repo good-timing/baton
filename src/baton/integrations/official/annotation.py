@@ -23,7 +23,10 @@ from typing import Any
 from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
 from baton.integrations._llm_text import build_annotation_tool_description
+from baton.integrations.official._compat import ContextClass as Context
 from baton.integrations.official._compat import MCPServerClass as FastMCP
+from baton.integrations.official._tool_wrap import _extract_meta_from_context
+from baton.integrations.runtime_adapter import detect_agent_runtime
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
 
@@ -84,6 +87,7 @@ def register_annotation_tool(
         overall_task: str | None = None,
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
+        ctx: Context = None,
     ) -> dict[str, Any]:
         # proactive_mode="off": refuse pre-call annotations structurally rather
         # than by instruction text alone. Text alone is only a request, and a
@@ -107,23 +111,54 @@ def register_annotation_tool(
                 ),
             }
 
-        # Session id: we don't accept a Context kwarg because (a) we don't
-        # use it (always fall back to fallback_session_id), and (b) older
-        # mcp versions (<1.20) call `issubclass(param.annotation, Context)`
-        # on each kwarg in Tool.from_function — that crashes on
-        # parameterized generics like `Context[Any, Any, Any]`. Threading
-        # Context through is a follow-up when we want true per-session
-        # correlation; until then fallback_session_id is honest.
+        # The MCP Context is threaded in for its ``_meta``, so this event
+        # reports the SAME agent_runtime as the tool calls around it. Without
+        # it this tool emitted the install-time default unconditionally, which
+        # made an annotation and the call it describes disagree about who was
+        # calling.
         #
-        # Known gap: because of the above, this tool does NOT check
-        # VendorConfig.resolve_session_id either (unlike _tool_wrap.py's
-        # rung 0) — there's no headers/meta to build a
-        # SessionResolutionContext from without the same Context threading.
-        # A vendor's explicit (reactive) annotation calls on this adapter
-        # won't stitch to the hook-resolved session id their tool calls get;
+        # It is annotated as a BARE ``Context`` on purpose. The older objection
+        # here was that mcp's ``Tool.from_function`` calls
+        # ``issubclass(param.annotation, Context)`` on each kwarg, which
+        # crashes on a PARAMETERIZED generic like ``Context[Any, Any, Any]``.
+        # Unparameterized it is a plain class and ``issubclass`` is fine —
+        # measured registering cleanly on mcp 1.20.0 (the floor) and 2.0.0,
+        # with ``context_kwarg`` detected so it stays OUT of the tool's public
+        # schema. It is also named ``ctx`` rather than ``context`` because
+        # ``context`` is already this tool's own payload field.
+        #
+        # Still a known gap, and now the ONLY one: session id. This tool does
+        # not climb SPEC §3.4's ladder or check VendorConfig.resolve_session_id
+        # the way _tool_wrap.py's rung 0 does — it still falls back. So a
+        # vendor's explicit (reactive) annotation calls on this adapter won't
+        # stitch to the hook-resolved session id their tool calls get;
         # synthesised proactives are unaffected (those emit from inside the
-        # wrap layer, which does have the hook). Tracked on the sdk-hardening
-        # thread alongside the Context-threading follow-up above.
+        # wrap layer, which does have the hook). The standalone adapter
+        # resolves both; closing the difference is tracked on sdk-hardening.
+        # Reuses the wrap layer's extractor rather than re-deriving the meta
+        # here. Two extraction paths on one adapter is how this repo has been
+        # bitten before, and this one has a specific guard worth inheriting:
+        # ``ctx.request_context`` RAISES ``ValueError`` outside a live request
+        # (a tool invoked programmatically, which every test here does), so a
+        # plain ``getattr(ctx, "request_context", None)`` does not save you —
+        # getattr's default only swallows AttributeError.
+        meta_dict = _extract_meta_from_context(ctx)
+        # Detect from the RAW meta — the scrubber runs on the values below, and
+        # a vendor scrubber that touches meta keys must not be able to turn
+        # runtime detection off. Same rule as both tool-call paths.
+        runtime = detect_agent_runtime(meta_dict, scrubber) or default_agent_runtime
+        # The meta is read for the RUNTIME and deliberately not emitted as
+        # ``runtime_meta`` on this event, unlike the tool-call path. It can
+        # carry ``io.baton/session_id`` and ``traceparent`` — session-bearing
+        # keys — and ``session_id`` below is still the fallback, so emitting
+        # both would put a session identifier on an event whose own envelope
+        # field disagrees with it: a consumer correlating via ``runtime_meta``
+        # per SPEC §11.5 and one reading the envelope would file this single
+        # event under two different sessions. Today's gap only LOSES a join;
+        # that would manufacture a wrong one, which is strictly worse and is
+        # the distinction the whole D2 posture turns on. Emitting it becomes
+        # correct as soon as this tool climbs §3.4's ladder — now unblocked,
+        # since the ``ctx`` that resolution needs is finally threaded in.
         session_id = fallback_session_id
         # A proactive annotation (no signal_type) claims the session's proactive
         # slot so the wrap layer won't also synthesise one from an injected param.
@@ -139,7 +174,7 @@ def register_annotation_tool(
                 session_id=session_id,
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
-                agent_runtime=default_agent_runtime,
+                agent_runtime=runtime,
                 payload=AnnotationPayload(
                     intent=scrubber(user_goal) if user_goal else None,
                     expected_outcome=(scrubber(expected_result) if expected_result else None),

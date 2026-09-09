@@ -50,8 +50,8 @@ from baton.integrations._llm_text import (
     build_user_goal_param_description,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
+from baton.integrations.runtime_adapter import detect_agent_runtime, meta_to_dict
 from baton.integrations.standalone._session import resolve_call_session_id
-from baton.integrations.standalone.runtime_adapter import detect_agent_runtime, meta_to_dict
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
 
@@ -391,7 +391,7 @@ class BatonMiddleware(Middleware):
         params = dict(msg.arguments or {})
         raw_meta = self._extract_request_meta(context)
         meta_dict = meta_to_dict(raw_meta)
-        runtime = detect_agent_runtime(raw_meta) or self._default_agent_runtime
+        runtime = detect_agent_runtime(raw_meta, self._scrubber) or self._default_agent_runtime
         # Scrub the meta dict if a scrubber is configured — meta values may
         # carry runtime-supplied identifiers that vendors want filtered.
         scrubbed_meta = self._scrubber(meta_dict) if meta_dict is not None else None

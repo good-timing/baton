@@ -453,7 +453,47 @@ class TestEnvelopeFields:
     async def test_explicit_baton_override_in_meta(
         self, sink: Sink, captured: list[dict[str, Any]]
     ) -> None:
-        """``_meta.baton.agent_runtime`` takes precedence over heuristics."""
+        """``_meta["io.baton/agent_runtime"]`` takes precedence over heuristics.
+
+        The key is reverse-DNS per SPEC §5.2's table and the MCP ``_meta``
+        convention. It carries the ``claudecode/`` prefix alongside it so this
+        also proves the override beats a heuristic that WOULD have matched,
+        rather than merely being read when nothing else is there.
+        """
+        mcp = _build_mcp(sink)
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.call_tool(
+                "echo",
+                {"text": "x"},
+                meta={
+                    "io.baton/agent_runtime": "my-custom-runtime",
+                    "claudecode/toolUseId": "tu_1",
+                },
+            )
+
+        await sink.flush()
+        for ev in without_surface_snapshots(captured):
+            assert ev["agent_runtime"] == "my-custom-runtime"
+
+    async def test_nested_baton_dict_is_no_longer_an_override(
+        self, sink: Sink, captured: list[dict[str, Any]]
+    ) -> None:
+        """The pre-B5 nested ``_meta["baton"]["agent_runtime"]`` form is dead.
+
+        Pinned in the negative direction on purpose. The nested shape matched
+        no MCP convention and SPEC §5.2 contradicted itself about it — the key
+        table said ``io.baton/agent_runtime`` while a prose line in the same
+        section said ``_meta.baton.*``, and the code followed the prose, so a
+        vendor asserting its runtime the way the table documents was silently
+        ignored. Without this test, re-adding the nested read as a "harmless"
+        compatibility branch would go unnoticed, and two wire shapes for one
+        assertion is what B5 exists to remove.
+        """
         mcp = _build_mcp(sink)
 
         @mcp.tool()
@@ -468,8 +508,10 @@ class TestEnvelopeFields:
             )
 
         await sink.flush()
-        for ev in without_surface_snapshots(captured):
-            assert ev["agent_runtime"] == "my-custom-runtime"
+        events = without_surface_snapshots(captured)
+        assert events, "no events captured — the assertion below would be vacuous"
+        for ev in events:
+            assert ev["agent_runtime"] == "unknown"
 
 
 # =============================================================================

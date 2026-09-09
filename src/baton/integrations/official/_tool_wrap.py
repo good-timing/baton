@@ -102,6 +102,7 @@ from baton.integrations._session import (
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 from baton.integrations.official._registry import get_tool_manager, get_tool_registry
+from baton.integrations.runtime_adapter import detect_agent_runtime
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
 
@@ -238,6 +239,7 @@ def install_wraps(
                 emit_error,
                 emit_proactive,
                 scrubber,
+                default_agent_runtime,
                 intent_param_mode=intent_param_mode,
                 param_registry=param_registry,
                 tracker=tracker,
@@ -395,15 +397,18 @@ def _wrap_tool_run(
     name: str,
     tool: Any,
     emit_before: Callable[
-        [str, str, dict[str, Any], dict[str, Any] | None, str | None, str | None, str | None],
+        [str, str, dict[str, Any], dict[str, Any] | None, str | None, str | None, str | None, str],
         Awaitable[None],
     ],
-    emit_after: Callable[[str, str, Any, float, dict[str, Any] | None], Awaitable[None]],
-    emit_error: Callable[[str, str, BaseException, float, dict[str, Any] | None], Awaitable[None]],
+    emit_after: Callable[[str, str, Any, float, dict[str, Any] | None, str], Awaitable[None]],
+    emit_error: Callable[
+        [str, str, BaseException, float, dict[str, Any] | None, str], Awaitable[None]
+    ],
     emit_proactive: Callable[
-        [str, str, str, str | None, str | None, dict[str, Any] | None], Awaitable[None]
+        [str, str, str, str | None, str | None, dict[str, Any] | None, str], Awaitable[None]
     ],
     scrubber: Callable[[Any], Any],
+    default_agent_runtime: str,
     *,
     intent_param_mode: str,
     param_registry: dict[str, dict[str, str]],
@@ -489,6 +494,13 @@ def _wrap_tool_run(
 
         params = dict(arguments or {})
         meta_dict = _extract_meta_from_context(context)
+        # Detect from the RAW meta, BEFORE the scrub on the next line. The
+        # default scrubber is an identity no-op, so detecting from
+        # ``scrubbed_meta`` — which is what the emitters receive — passes every
+        # test here and silently reports "unknown" for any vendor whose
+        # scrubber touches meta keys. The standalone adapter detects pre-scrub
+        # for the same reason (middleware.py, just above its own scrub call).
+        call_agent_runtime = detect_agent_runtime(meta_dict, scrubber) or default_agent_runtime
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
         call_session_id = await _resolve_call_session_id(
             context,
@@ -512,6 +524,7 @@ def _wrap_tool_run(
                 scrubbed_expected,
                 scrubbed_task,
                 scrubbed_meta,
+                call_agent_runtime,
             )
 
         # MRTR (mcp>=2.0): a continuation carries input_responses/request_state
@@ -530,6 +543,7 @@ def _wrap_tool_run(
                 scrubbed_intent,
                 scrubbed_expected,
                 scrubbed_task,
+                call_agent_runtime,
             )
         called_at = monotonic()
         try:
@@ -540,7 +554,12 @@ def _wrap_tool_run(
             # exception class the vendor's fn actually raised.
             original_exc = exc.__cause__ if exc.__cause__ is not None else exc
             await emit_error(
-                call_session_id, name, original_exc, monotonic() - called_at, scrubbed_meta
+                call_session_id,
+                name,
+                original_exc,
+                monotonic() - called_at,
+                scrubbed_meta,
+                call_agent_runtime,
             )
             raise
         # MRTR (mcp>=2.0): an InputRequiredResult means the call paused mid-flight
@@ -548,7 +567,14 @@ def _wrap_tool_run(
         # tool_call_end. Whichever round eventually returns something else
         # (or errors) is the one that gets the real end/error event.
         if not _is_mrtr_pause(result):
-            await emit_after(call_session_id, name, result, monotonic() - called_at, scrubbed_meta)
+            await emit_after(
+                call_session_id,
+                name,
+                result,
+                monotonic() - called_at,
+                scrubbed_meta,
+                call_agent_runtime,
+            )
         return result
 
     setattr(wrapper, _WRAPPED_SENTINEL, True)
@@ -704,12 +730,12 @@ def _make_emitters(
     scrubber: Callable[[Any], Any],
 ) -> tuple[
     Callable[
-        [str, str, dict[str, Any], dict[str, Any] | None, str | None, str | None, str | None],
+        [str, str, dict[str, Any], dict[str, Any] | None, str | None, str | None, str | None, str],
         Awaitable[None],
     ],
-    Callable[[str, str, Any, float, dict[str, Any] | None], Awaitable[None]],
-    Callable[[str, str, BaseException, float, dict[str, Any] | None], Awaitable[None]],
-    Callable[[str, str, str, str | None, str | None, dict[str, Any] | None], Awaitable[None]],
+    Callable[[str, str, Any, float, dict[str, Any] | None, str], Awaitable[None]],
+    Callable[[str, str, BaseException, float, dict[str, Any] | None, str], Awaitable[None]],
+    Callable[[str, str, str, str | None, str | None, dict[str, Any] | None, str], Awaitable[None]],
     Callable[[str, str, dict[str, Any]], Awaitable[None]],
 ]:
     """Build five async emitters: ``tool_call_start`` / ``_end`` / ``_error``,
@@ -732,6 +758,7 @@ def _make_emitters(
         expected_outcome: str | None,
         workflow: str | None,
         runtime_meta: dict[str, Any] | None,
+        agent_runtime: str,
     ) -> None:
         await safe_write(
             sink,
@@ -742,7 +769,7 @@ def _make_emitters(
                 session_id=session_id,
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
-                agent_runtime=default_agent_runtime,
+                agent_runtime=agent_runtime,
                 runtime_meta=runtime_meta,
                 payload=AnnotationPayload(
                     intent=intent,
@@ -763,6 +790,7 @@ def _make_emitters(
         call_intent: str | None,
         call_expected: str | None,
         call_workflow: str | None,
+        agent_runtime: str,
     ) -> None:
         injected_any = any(v is not None for v in (call_intent, call_expected, call_workflow))
         await safe_write(
@@ -774,7 +802,7 @@ def _make_emitters(
                 session_id=session_id,
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
-                agent_runtime=default_agent_runtime,
+                agent_runtime=agent_runtime,
                 runtime_meta=runtime_meta,
                 payload=ToolCallStartPayload(
                     tool_name=name,
@@ -794,6 +822,7 @@ def _make_emitters(
         result: Any,
         duration_s: float,
         runtime_meta: dict[str, Any] | None,
+        agent_runtime: str,
     ) -> None:
         await safe_write(
             sink,
@@ -804,7 +833,7 @@ def _make_emitters(
                 session_id=session_id,
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
-                agent_runtime=default_agent_runtime,
+                agent_runtime=agent_runtime,
                 runtime_meta=runtime_meta,
                 payload=ToolCallEndPayload(
                     tool_name=name,
@@ -821,6 +850,7 @@ def _make_emitters(
         exc: BaseException,
         duration_s: float,
         runtime_meta: dict[str, Any] | None,
+        agent_runtime: str,
     ) -> None:
         await safe_write(
             sink,
@@ -831,7 +861,7 @@ def _make_emitters(
                 session_id=session_id,
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
-                agent_runtime=default_agent_runtime,
+                agent_runtime=agent_runtime,
                 runtime_meta=runtime_meta,
                 payload=ToolCallErrorPayload(
                     tool_name=name,
@@ -844,6 +874,12 @@ def _make_emitters(
         )
 
     async def emit_surface(session_id: str, digest: str, snapshot: dict[str, Any]) -> None:
+        # Keeps the install-time default rather than a detected runtime, and
+        # that is deliberate parity, not an oversight: the standalone adapter
+        # captures the surface from ``on_list_tools``, which is not a tool call
+        # and has no per-call ``_meta`` to detect from, so it emits the default
+        # too. A surface snapshot describes the SERVER, not whoever happened to
+        # trigger the first capture.
         # NOT safe_write — this deliberately lets a write failure propagate so
         # the caller (_wrap_tool_run) can tell success from failure and retry
         # on the next call rather than silently treating the surface as

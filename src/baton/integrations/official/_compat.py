@@ -4,6 +4,9 @@ mcp 2.0 (upstream PR #1951) renamed the server class and moved one private
 attribute:
 
 - ``mcp.server.fastmcp.FastMCP`` → ``mcp.server.mcpserver.MCPServer``
+- ``mcp.server.fastmcp.Context`` → ``mcp.server.mcpserver.Context`` (the whole
+  module moved, so ``Context`` needs the same two-branch import the server
+  class does)
 - the server-instructions backing ``_mcp_server`` → ``_lowlevel_server``
 
 Everything else the adapter reaches into is preserved **byte-for-byte** across
@@ -39,13 +42,17 @@ if TYPE_CHECKING:
     # internals still exist, and `mcp-matrix` runs the tests on 1.20 / 1.25 /
     # 1.27 / 2.0.
     MCPServerClass = Any
+    ContextClass = Any
 else:
     try:  # mcp <2
+        from mcp.server.fastmcp import Context as ContextClass
         from mcp.server.fastmcp import FastMCP as MCPServerClass
     except ImportError:  # mcp >=2.0 renamed the module + class
+        from mcp.server.mcpserver import Context as ContextClass
         from mcp.server.mcpserver import MCPServer as MCPServerClass
 
 __all__ = [
+    "ContextClass",
     "MCPServerClass",
     "get_lowlevel_server",
     "require_high_level_server",
