@@ -112,7 +112,9 @@ def register_annotation_tool(
         rc = ctx.request_context if ctx is not None else None
         raw_meta = rc.meta if rc else None
         meta_dict = meta_to_dict(raw_meta)
-        runtime = detect_agent_runtime(raw_meta) or default_agent_runtime
+        runtime = detect_agent_runtime(raw_meta, context=ctx, scrubber=scrubber) or (
+            default_agent_runtime
+        )
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
 
         # SPEC §3.4's ladder, resolved by the SAME function the middleware's

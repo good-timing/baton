@@ -499,7 +499,10 @@ def _wrap_tool_run(
         # test here and silently reports "unknown" for any vendor whose
         # scrubber touches meta keys. The standalone adapter detects pre-scrub
         # for the same reason (middleware.py, just above its own scrub call).
-        call_agent_runtime = detect_agent_runtime(meta_dict) or default_agent_runtime
+        call_agent_runtime = (
+            detect_agent_runtime(meta_dict, context=context, scrubber=scrubber)
+            or default_agent_runtime
+        )
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
         call_session_id = await _resolve_call_session_id(
             context,

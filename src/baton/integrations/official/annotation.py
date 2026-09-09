@@ -146,7 +146,9 @@ def register_annotation_tool(
         # Detect from the RAW meta — the scrubber runs on the values below, and
         # a vendor scrubber that touches meta keys must not be able to turn
         # runtime detection off. Same rule as both tool-call paths.
-        runtime = detect_agent_runtime(meta_dict) or default_agent_runtime
+        runtime = detect_agent_runtime(meta_dict, context=ctx, scrubber=scrubber) or (
+            default_agent_runtime
+        )
         # The meta is read for the RUNTIME and deliberately not emitted as
         # ``runtime_meta`` on this event, unlike the tool-call path. It can
         # carry ``io.baton/session_id`` and ``traceparent`` while ``session_id``

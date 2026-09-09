@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from baton.integrations.runtime_adapter import (
+    CLIENT_NAME_MAX_LEN,
     detect_agent_runtime,
     meta_to_dict,
 )
@@ -129,3 +130,135 @@ class TestEverythingReturnedIsAValueWeControl:
         client sent."""
         meta = {"claudecode/toolUseId": "tu_1", "attacker": "y" * 5000}
         assert detect_agent_runtime(meta) in {None, "claude-code"}
+
+
+class _Info:
+    def __init__(self, name: Any) -> None:
+        self.name = name
+
+
+class _Params1x:
+    """mcp 1.x spells the attribute ``clientInfo``."""
+
+    def __init__(self, name: Any) -> None:
+        self.clientInfo = _Info(name)  # mirrors mcp 1.x exactly
+
+
+class _Params2x:
+    """mcp 2.x renamed it to ``client_info`` (wire aliases unchanged)."""
+
+    def __init__(self, name: Any) -> None:
+        self.client_info = _Info(name)
+
+
+class _Ctx:
+    def __init__(self, params: Any) -> None:
+        self.session = type("S", (), {"client_params": params})()
+
+
+class _RaisingCtx:
+    """``ctx.session`` raises outside a live request on both mcp majors."""
+
+    @property
+    def session(self) -> Any:
+        raise ValueError("Context is not available outside of a request")
+
+
+class TestTheDeclaredTiers:
+    """``clientInfo`` — what the client called itself, which is the whole
+    point of B1-R: identity that does not depend on a vendor's name appearing
+    in a key prefix."""
+
+    @pytest.mark.parametrize(
+        ("params", "id_"),
+        [
+            pytest.param(_Params1x("claude-ai"), "mcp-1.x", id="mcp-1x-clientInfo"),
+            pytest.param(_Params2x("claude-ai"), "mcp-2.x", id="mcp-2x-client_info"),
+        ],
+    )
+    def test_BOTH_attribute_spellings_are_read(self, params: Any, id_: str) -> None:
+        """The trap this file exists to hold shut.
+
+        mcp 2.x renamed ``clientInfo`` to ``client_info``. Reading one spelling
+        returns ``None`` on the other major — which is indistinguishable from
+        "this client is anonymous" and would report ``unknown`` across an
+        entire supported version band. Measured on fastmcp 4, where asking for
+        the 1.x name on a 2.x object looked exactly like no data.
+        """
+        assert detect_agent_runtime(None, context=_Ctx(params)) == "claude-ai"
+
+    def test_a_context_outside_a_live_request_is_not_an_error(self) -> None:
+        """``getattr(ctx, "session", None)`` does NOT save you here: its
+        default swallows AttributeError only, and this raises ValueError."""
+        assert detect_agent_runtime({"claudecode/toolUseId": "tu_1"}, context=_RaisingCtx()) == (
+            "claude-code"
+        )
+        assert detect_agent_runtime(None, context=_RaisingCtx()) is None
+
+    def test_the_per_request_key_outranks_the_connection(self) -> None:
+        """New-spec clients declare on every request; that is fresher than a
+        handshake cached at connect time."""
+        meta = {"io.modelcontextprotocol/clientInfo": {"name": "zed"}}
+        assert detect_agent_runtime(meta, context=_Ctx(_Params2x("gateway"))) == "zed"
+
+    def test_a_per_call_key_outranks_the_connection(self) -> None:
+        """The ordering that looks wrong and is not: ``_meta`` survives a proxy
+        hop, ``clientInfo`` does not. This is Claude Code reaching us THROUGH a
+        middlebox, and the answer must name the agent, not the box."""
+        meta = {"claudecode/toolUseId": "tu_1"}
+        assert detect_agent_runtime(meta, context=_Ctx(_Params2x("some-gateway"))) == "claude-code"
+
+    def test_the_connection_answers_when_the_call_says_nothing(self) -> None:
+        """Claude Desktop's shape: no ``_meta`` at all. Unattributable before
+        this tier existed, on both adapters."""
+        assert detect_agent_runtime(None, context=_Ctx(_Params2x("claude-ai"))) == "claude-ai"
+
+
+class TestDeclaredNamesAreUntrustedInput:
+    """A client picks its own ``clientInfo``, so both declared tiers carry
+    arbitrary client text onto every event of the call. The heuristic's answer
+    is a constant we own and stays untouched."""
+
+    def test_a_long_declared_name_is_capped(self) -> None:
+        got = detect_agent_runtime(None, context=_Ctx(_Params2x("x" * 5000)))
+        assert got is not None
+        assert len(got) == CLIENT_NAME_MAX_LEN
+
+    def test_the_vendor_scrubber_is_applied_to_a_declared_name(self) -> None:
+        got = detect_agent_runtime(
+            None, context=_Ctx(_Params2x("user@example.com")), scrubber=lambda v: "[REDACTED]"
+        )
+        assert got == "[REDACTED]"
+
+    def test_the_scrubber_is_NOT_applied_to_the_heuristics_own_constant(self) -> None:
+        """Mangling ``claude-code`` would be the opposite mistake — it is a
+        value this module derived, not one a client sent."""
+        got = detect_agent_runtime(
+            {"claudecode/toolUseId": "tu_1"}, scrubber=lambda v: "[REDACTED]"
+        )
+        assert got == "claude-code"
+
+    def test_the_scrubber_never_sees_the_detection_INPUT(self) -> None:
+        """Detection reads the RAW meta: a scrubber that touches meta keys must
+        not be able to switch detection off."""
+        seen: list[Any] = []
+
+        def _scrubber(value: Any) -> Any:
+            seen.append(value)
+            return value
+
+        detect_agent_runtime({"claudecode/toolUseId": "tu_1"}, scrubber=_scrubber)
+        assert seen == [], f"the scrubber was handed the detection input: {seen}"
+
+    def test_a_name_scrubbed_to_empty_falls_through_to_the_next_tier(self) -> None:
+        """Losing a tier to a scrubber must not lose the whole ladder."""
+        meta = {"io.modelcontextprotocol/clientInfo": {"name": "a"}, "claudecode/toolUseId": "t"}
+        assert detect_agent_runtime(meta, scrubber=lambda v: "") == "claude-code"
+
+    @pytest.mark.parametrize(
+        "name",
+        [pytest.param("", id="empty"), pytest.param(None, id="null"), pytest.param(7, id="int")],
+    )
+    def test_a_junk_declared_name_falls_through(self, name: Any) -> None:
+        meta = {"claudecode/toolUseId": "tu_1"}
+        assert detect_agent_runtime(meta, context=_Ctx(_Params2x(name))) == "claude-code"

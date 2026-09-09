@@ -54,7 +54,10 @@ RUNTIME_CASES = [
         # kept honouring it, the same client would be reported two ways by two
         # sensors watching the same call.
         {"io.baton/agent_runtime": "acme-plugin"},
-        "unknown",
+        # `mcp` (the driver client's declared name), NOT `acme-plugin`: the
+        # removed override loses to the declared tier rather than to a
+        # default, which is a sharper proof of inertness than "unknown" was.
+        "mcp",
         id="io.baton-override-is-inert",
     ),
     pytest.param(
@@ -65,16 +68,48 @@ RUNTIME_CASES = [
     ),
     pytest.param(
         # Cursor's shape per SPEC §5.2: a progressToken and nothing else.
+        # ⚠ This was "unknown" until 2026-09-09 and is now the DECLARED name.
+        # Both drivers' clients identify as the `mcp` library, because neither
+        # sets `client_info` — which is exactly what a client that declares
+        # nothing about itself looks like on the wire, and it is still more
+        # than "unknown" told us.
         {"progressToken": 7},
-        "unknown",
-        id="no-signal-falls-back",
+        "mcp",
+        id="no-per-call-signal-falls-to-the-declared-name",
     ),
     pytest.param(
         # The pre-B5 nested form. Dead on both adapters, or the two wire
         # shapes B5 removed are back.
         {"baton": {"agent_runtime": "acme-plugin"}},
-        "unknown",
+        "mcp",
         id="nested-baton-dict-is-dead",
+    ),
+]
+
+# (case id, _meta, the name the CLIENT declares in initialize, expected)
+#
+# The tier that does the real work, and the reason B1-R exists: identity that
+# does NOT depend on a vendor prefix appearing in a key name. Claude Desktop
+# and Cursor were unattributable on both adapters before this.
+DECLARED_CASES = [
+    pytest.param({}, "claude-ai", "claude-ai", id="desktops-declared-name"),
+    pytest.param({"progressToken": 7}, "cursor", "cursor", id="cursor-declared"),
+    pytest.param(
+        # The ordering case. `_meta` survives a proxy hop and `clientInfo` does
+        # not, so a per-call key beats a connection-level declaration: this is
+        # Claude Code reaching us THROUGH a middlebox, and the answer must name
+        # the agent, not the box.
+        {"claudecode/toolUseId": "tu_1"},
+        "some-gateway",
+        "claude-code",
+        id="per-call-key-outranks-the-hop",
+    ),
+    pytest.param(
+        # And the new-spec carrier outranks both.
+        {"io.modelcontextprotocol/clientInfo": {"name": "zed"}, "claudecode/toolUseId": "tu_1"},
+        "some-gateway",
+        "zed",
+        id="new-spec-per-request-declaration-wins",
     ),
 ]
 
@@ -84,7 +119,9 @@ def _read_events(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-async def _run_official_path(events_path: Path, meta: dict[str, Any]) -> None:
+async def _run_official_path(
+    events_path: Path, meta: dict[str, Any], declared: str | None = None
+) -> None:
     """Official ``mcp`` SDK adapter, driven over its in-memory client session.
 
     ``ClientSession.call_tool`` takes a keyword-only ``meta``, which is what
@@ -115,7 +152,7 @@ async def _run_official_path(events_path: Path, meta: dict[str, Any]) -> None:
         # that helper was REMOVED in mcp 2.0, and `core` resolves whatever
         # ``mcp>=1.20,<3`` gives it — so using it would make this test's
         # portability depend on a resolution accident.
-        async with connected_session(mcp) as client:
+        async with connected_session(mcp, declared_name=declared) as client:
             await client.call_tool("lookup", {"name": "alice"}, meta=meta)
             await client.call_tool(
                 "parity_annotate",
@@ -126,8 +163,11 @@ async def _run_official_path(events_path: Path, meta: dict[str, Any]) -> None:
         await handle.aclose()
 
 
-async def _run_standalone_path(events_path: Path, meta: dict[str, Any]) -> None:
+async def _run_standalone_path(
+    events_path: Path, meta: dict[str, Any], declared: str | None = None
+) -> None:
     """Standalone ``fastmcp`` adapter, driven over its in-process ``Client``."""
+    import mcp.types as mcp_types
     from fastmcp import Client, FastMCP
 
     from baton.integrations.standalone import VendorConfig, install_baton
@@ -149,7 +189,12 @@ async def _run_standalone_path(events_path: Path, meta: dict[str, Any]) -> None:
         ),
     )
     try:
-        async with Client(mcp) as client:
+        client_info = (
+            mcp_types.Implementation(name=declared, version="9.9.9")
+            if declared is not None
+            else None
+        )
+        async with Client(mcp, client_info=client_info) as client:
             await client.call_tool("lookup", {"name": "alice"}, meta=meta)
             await client.call_tool(
                 "parity_annotate",
@@ -199,3 +244,34 @@ async def test_both_adapters_report_the_same_agent_runtime(
     )
     assert standalone == {expected}, f"standalone adapter reported {standalone}"
     assert official == standalone
+
+
+@pytest.mark.parametrize(("meta", "declared", "expected"), DECLARED_CASES)
+async def test_both_adapters_read_the_clients_declared_identity(
+    tmp_path: Path, meta: dict[str, Any], declared: str, expected: str
+) -> None:
+    """Parity on the DECLARED tier, driven by a real client that names itself.
+
+    Asserted through both adapters for the same reason the `_meta` test is:
+    the declaration is read from ``ctx.session.client_params``, whose attribute
+    was RENAMED between mcp 1.x (``clientInfo``) and 2.x (``client_info``). An
+    adapter reading one spelling reports the correct name on one major version
+    and ``unknown`` on the other — and since the two adapters resolve different
+    mcp versions in CI, a per-adapter test could stay green through exactly
+    that split.
+    """
+    official_events = tmp_path / "official.jsonl"
+    standalone_events = tmp_path / "standalone.jsonl"
+
+    await _run_official_path(official_events, meta, declared)
+    await _run_standalone_path(standalone_events, meta, declared)
+
+    official = _runtimes(official_events, "official")
+    standalone = _runtimes(standalone_events, "standalone")
+
+    assert official == {expected}, (
+        f"official adapter reported {official}, expected {{{expected!r}}} — "
+        f"a {{'unknown'}} here means the declared tier is not wired in; the "
+        f"client's own name is on the session"
+    )
+    assert standalone == {expected}, f"standalone adapter reported {standalone}"

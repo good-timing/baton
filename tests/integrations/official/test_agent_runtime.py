@@ -79,13 +79,18 @@ async def _drive(events_path: Path, meta: dict[str, Any] | None) -> list[dict[st
     return events
 
 
+# ⚠ Every "unknown" here became `mcp` on 2026-09-09. The driver's client sets
+# no `client_info`, so it declares the LIBRARY name — and the SDK now reads a
+# client's declared identity off the session, which fires for every client
+# rather than only for one that happens to send a `claudecode/` key. "unknown"
+# survives only where there is no session to read from at all.
 @pytest.mark.parametrize(
     ("meta", "expected"),
     [
         pytest.param({"claudecode/toolUseId": "tu_1"}, "claude-code", id="heuristic"),
-        pytest.param({"io.baton/agent_runtime": "acme"}, "unknown", id="override-is-inert"),
-        pytest.param({"progressToken": 7}, "unknown", id="no-signal"),
-        pytest.param(None, "unknown", id="no-meta-at-all"),
+        pytest.param({"io.baton/agent_runtime": "acme"}, "mcp", id="override-is-inert"),
+        pytest.param({"progressToken": 7}, "mcp", id="no-per-call-signal"),
+        pytest.param(None, "mcp", id="no-meta-at-all"),
     ],
 )
 async def test_agent_runtime_is_detected_on_every_event(

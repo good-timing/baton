@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import anyio
+import mcp.types as mcp_types
 from mcp import ClientSession
 from mcp.shared.memory import create_client_server_memory_streams
 
@@ -28,12 +29,20 @@ from baton.integrations.official._compat import get_lowlevel_server
 
 
 @asynccontextmanager
-async def connected_session(mcp: Any) -> AsyncGenerator[ClientSession, None]:
+async def connected_session(
+    mcp: Any, declared_name: str | None = None
+) -> AsyncGenerator[ClientSession, None]:
     """Yield an initialized ``ClientSession`` wired to ``mcp`` over memory streams.
 
     ``mcp`` is the high-level server (``FastMCP`` on 1.x, ``MCPServer`` on 2.0);
     the low-level backing is resolved through ``_compat`` because that attribute
     was renamed in the same release.
+
+    ``declared_name`` sets the ``clientInfo`` this session sends in its
+    ``initialize`` handshake — the carrier the SDK reads a client's identity
+    from. Left ``None``, ``ClientSession`` sends its own default, which names
+    the LIBRARY (``mcp``) rather than any agent; that is a realistic shape in
+    its own right, so both are worth driving.
     """
     server = get_lowlevel_server(mcp)
     async with create_client_server_memory_streams() as (client_streams, server_streams):
@@ -51,7 +60,12 @@ async def connected_session(mcp: Any) -> AsyncGenerator[ClientSession, None]:
                 )
 
             tg.start_soon(_run_server)
-            async with ClientSession(client_read, client_write) as session:
+            client_info = (
+                mcp_types.Implementation(name=declared_name, version="9.9.9")
+                if declared_name is not None
+                else None
+            )
+            async with ClientSession(client_read, client_write, client_info=client_info) as session:
                 await session.initialize()
                 yield session
             tg.cancel_scope.cancel()

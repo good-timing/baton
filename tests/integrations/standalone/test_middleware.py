@@ -401,7 +401,19 @@ class TestEnvelopeFields:
             await client.call_tool("echo", {"text": "x"})
 
         await sink.flush()
-        for ev in captured:
+        # ⚠ Two answers on purpose, and the split is the point. Since
+        # 2026-09-09 a tool call reports the client's DECLARED name — `mcp`
+        # here, the library, because the in-process client sets no
+        # `client_info` — while the surface snapshot keeps the default. The
+        # snapshot describes the SERVER and is captured outside any call
+        # (`on_list_tools`), so there is no caller to name; asserting one value
+        # across every event would have to pick one of those and be wrong
+        # about the other.
+        for ev in without_surface_snapshots(captured):
+            assert ev["agent_runtime"] == "mcp"
+        snapshots = [ev for ev in captured if ev["event_type"] == "surface_snapshot"]
+        assert snapshots, "no surface_snapshot captured — the split below is vacuous"
+        for ev in snapshots:
             assert ev["agent_runtime"] == "unknown"
 
     async def test_explicit_default_agent_runtime(
@@ -420,7 +432,20 @@ class TestEnvelopeFields:
             await client.call_tool("echo", {"text": "x"})
 
         await sink.flush()
-        for ev in captured:
+        # ⚠ `mcp`, not `claude-code`, since 2026-09-09: the in-process client
+        # DECLARES itself (as the library, having set no `client_info`), and a
+        # declaration beats the vendor's install-time default. The default was
+        # always a fallback — `detect(...) or default` — which was unobservable
+        # while detection fired on one key prefix. It now applies only to a
+        # client that declares nothing at all. A vendor who set this because
+        # they "ship into Claude Code" was guessing, and a bare mcp client
+        # genuinely is not Claude Code.
+        for ev in without_surface_snapshots(captured):
+            assert ev["agent_runtime"] == "mcp"
+        # The one place a configured default still lands: no caller to name.
+        snapshots = [ev for ev in captured if ev["event_type"] == "surface_snapshot"]
+        assert snapshots, "no surface_snapshot captured — the assertion below is vacuous"
+        for ev in snapshots:
             assert ev["agent_runtime"] == "claude-code"
 
     async def test_detects_claude_code_from_meta(
@@ -509,8 +534,12 @@ class TestEnvelopeFields:
         await sink.flush()
         events = without_surface_snapshots(captured)
         assert events, "no events captured — the assertion below would be vacuous"
+        # `mcp` (the client's declared name) rather than the asserted
+        # `my-custom-runtime`: the nested override loses to the declared tier
+        # now instead of falling to a default. Still the same proof — the
+        # value the client tried to assert is not the value reported.
         for ev in events:
-            assert ev["agent_runtime"] == "unknown"
+            assert ev["agent_runtime"] == "mcp"
 
 
 # =============================================================================

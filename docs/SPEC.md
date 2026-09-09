@@ -450,7 +450,22 @@ Different MCP clients populate `_meta` very differently. Observed behavior:
 
 **MCP spec evolution note (2026-07-28 release candidate, ships July 28, 2026):** SEP-2567 removes the protocol-level session for streamable HTTP (`Mcp-Session-Id` header gone). On stdio, process lifetime continues to provide implicit session scoping. On streamable HTTP under the new spec, the SDK MUST rely on the layered fallback in §3.4 — W3C trace context (now standardized in `_meta` per SEP-414) is the preferred primary path. `correlation_mode=per-event` is the conformant fallback when no session-bearing key is observable; see §3.4 + §11.3 for worker-side semantics.
 
-`agent_runtime` is therefore resolved from signals the SDK derives itself — the per-runtime table above — with no way for a caller to assert or suppress it. Every value the detector can return is an SDK-controlled constant rather than client text, which is why none of it is scrubbed or length-capped; the first tier to read a client-supplied value (`clientInfo.name` is the candidate) must bring its own scrub and cap.
+**`agent_runtime` resolution (updated 2026-09-09).** The SDK reads the client's DECLARED identity where it exists, and falls back to the per-runtime key heuristic above. In priority order, first hit wins:
+
+| # | source | carrier | notes |
+|---|---|---|---|
+| 1 | `_meta["io.modelcontextprotocol/clientInfo"].name` | the request | Reserved by MCP 2026-07-28. Empty today — no shipping client negotiates that revision. |
+| 2 | the per-runtime key heuristic (table above) | the request | Inferred, but travels end-to-end. |
+| 3 | the `initialize` handshake's `clientInfo.name` | the connection | **The tier that resolves in practice.** Read from the session's cached handshake params at tool-call time; no `initialize` hook is involved, and old-spec and new-spec clients both land here. |
+| 4 | `VendorConfig(default_agent_runtime=...)` | server config | Fallback only. |
+
+**Why an inference outranks a declaration at rung 2:** `_meta` is forwarded verbatim by proxies and gateways, so it travels end-to-end from the agent; `clientInfo` describes only the immediate connection hop. The two can disagree only when something sits in between, and there rung 2 names the agent while rung 3 names the middlebox.
+
+**Two limits on what rung 3 proves.** It names the immediate MCP client, so behind a gateway it reports the gateway; and it is self-asserted, never attested — a client chooses its own `clientInfo`. Attested identity is `user_id`, a different field on a different condition. Rungs 1 and 3 carry client-supplied text and are scrubbed and length-capped (128); rung 2 returns an SDK-owned constant and is neither.
+
+**Consequence for `default_agent_runtime`:** it was always a fallback, but detection previously fired for one client only, so a configured default usually stood. Rung 3 fires for essentially every client, so the configured value now applies only where a client declares nothing at all.
+
+There remains no way for a caller to override or suppress the resolved value. Every value the detector can return is an SDK-controlled constant rather than client text, which is why none of it is scrubbed or length-capped; the first tier to read a client-supplied value (`clientInfo.name` is the candidate) must bring its own scrub and cap.
 
 **Implementation note (from spike):** FastMCP exposes `_meta` as a structured `Meta(...)` pydantic-like object via `context.fastmcp_context.request_context.meta`, not as a plain dict. The SDK MUST call `.model_dump()` (or equivalent) before reading keys, and MUST treat the dict as forward-compatible (unknown keys ignored, no schema validation).
 
