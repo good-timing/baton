@@ -97,7 +97,6 @@ from baton.integrations._llm_text import (
     build_user_goal_param_description,
 )
 from baton.integrations._session import (
-    resolve_session_id_from_meta,
     session_id_from_headers,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
@@ -500,7 +499,7 @@ def _wrap_tool_run(
         # test here and silently reports "unknown" for any vendor whose
         # scrubber touches meta keys. The standalone adapter detects pre-scrub
         # for the same reason (middleware.py, just above its own scrub call).
-        call_agent_runtime = detect_agent_runtime(meta_dict, scrubber) or default_agent_runtime
+        call_agent_runtime = detect_agent_runtime(meta_dict) or default_agent_runtime
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
         call_session_id = await _resolve_call_session_id(
             context,
@@ -611,11 +610,17 @@ async def _resolve_call_session_id(
     ``VendorConfig.resolve_session_id`` hook) is checked first and, on a
     non-empty return, wins outright — see ``docs/design-notes/
     session_resolver_hook.md``. Below that, SPEC §3.4's layered fallback in
-    priority order: (1) ``_meta.traceparent``, (2)
-    ``_meta["io.baton/session_id"]``, (4) the ``mcp-session-id`` HTTP header,
+    priority order: (4) the ``mcp-session-id`` HTTP header,
     else (5) ``fallback`` (the install-time process-wide id). Rung 3 (a
     future runtime-specific ``_meta`` key) isn't defined for any runtime yet,
     so it's skipped.
+
+    **Rungs 1-2 were retired 2026-09-09** — they keyed the session on
+    identifiers the SDK did not mint (``_meta.traceparent``'s trace-id and a
+    client-supplied ``_meta["io.baton/session_id"]``), which the D2 join rule
+    forbids. Both values are still captured — ``runtime_meta`` forwards the
+    whole ``_meta`` — so grouping on them is a downstream decision now. See
+    ``integrations._session``.
 
     The header rung (4) is stateful-HTTP-only and protocol-version-sensitive:
     ``stateless_http`` defaults to ``False`` on both mcp 1.x and 2.0, so the
@@ -624,8 +629,9 @@ async def _resolve_call_session_id(
     removes the header from the wire entirely when a client negotiates that
     version — confirmed in mcp 2.0.0's ``_streamable_http_modern.py`` ("no
     `Mcp-Session-Id`") — so on a new-spec connection this rung always misses
-    regardless of vendor deployment shape, which is exactly why rungs 1-2 are
-    checked first. On stdio there's no HTTP request, so the header rung
+    regardless of vendor deployment shape, which is why the ladder
+    terminates on ``fallback`` for that shape rather than on a meta rung. On
+    stdio there's no HTTP request, so the header rung
     always misses and ``fallback`` is correct there (one process = one
     user). On stateless HTTP (``stateless_http=True``, opt-in, no current
     vendor) there's no header by protocol design either — that miss isn't a
@@ -650,9 +656,6 @@ async def _resolve_call_session_id(
         )
         if hook_result is not None:
             return hook_result
-    from_meta = resolve_session_id_from_meta(meta)
-    if from_meta is not None:
-        return from_meta
     from_header = session_id_from_headers(headers)
     return from_header if from_header is not None else fallback
 

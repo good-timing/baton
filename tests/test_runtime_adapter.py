@@ -16,8 +16,6 @@ from typing import Any
 import pytest
 
 from baton.integrations.runtime_adapter import (
-    AGENT_RUNTIME_MAX_LEN,
-    AGENT_RUNTIME_META_KEY,
     detect_agent_runtime,
     meta_to_dict,
 )
@@ -77,46 +75,29 @@ class TestDetectAgentRuntime:
         matching on it would attribute every Cursor call to Claude Code."""
         assert detect_agent_runtime({"progressToken": 7}) is None
 
-    def test_explicit_override_wins(self) -> None:
-        assert detect_agent_runtime({AGENT_RUNTIME_META_KEY: "acme-plugin"}) == "acme-plugin"
-
-    def test_the_override_key_is_the_reverse_dns_one(self) -> None:
-        """Pins the literal string, not just the constant.
-
-        Both sides of an ``AGENT_RUNTIME_META_KEY == AGENT_RUNTIME_META_KEY``
-        comparison move together when someone edits the constant, so the wire
-        key needs pinning as a literal — it is what a vendor reading SPEC §5.2
-        types into their client, and changing it is a wire change.
-        """
-        assert AGENT_RUNTIME_META_KEY == "io.baton/agent_runtime"
-
-    def test_override_beats_a_matching_heuristic(self) -> None:
-        assert (
-            detect_agent_runtime(
-                {AGENT_RUNTIME_META_KEY: "acme-plugin", "claudecode/toolUseId": "tu_1"}
-            )
-            == "acme-plugin"
-        )
-
-    def test_the_pre_B5_nested_form_is_not_read(self) -> None:
-        """``_meta["baton"]["agent_runtime"]`` is dead — see the module's own
-        note on why it is a clean break rather than an accept-both."""
-        assert detect_agent_runtime({"baton": {"agent_runtime": "acme-plugin"}}) is None
-
     @pytest.mark.parametrize(
-        "override",
+        "meta",
         [
-            pytest.param("", id="empty-string"),
-            pytest.param(None, id="null"),
-            pytest.param(123, id="not-a-string"),
-            pytest.param({"agent_runtime": "x"}, id="a-dict"),
+            pytest.param({"io.baton/agent_runtime": "acme-plugin"}, id="reverse-dns-form"),
+            pytest.param({"baton": {"agent_runtime": "acme-plugin"}}, id="pre-B5-nested-form"),
         ],
     )
-    def test_a_junk_override_falls_through_to_the_heuristic(self, override: Any) -> None:
-        """A client sending a malformed override must not be able to force
-        ``None`` where a heuristic would have answered — the override is a
-        client-supplied value and the fallback has to survive it."""
-        meta = {AGENT_RUNTIME_META_KEY: override, "claudecode/toolUseId": "tu_1"}
+    def test_no_client_override_is_honoured_in_any_form(self, meta: dict[str, Any]) -> None:
+        """**The override was REMOVED 2026-09-09** — both spellings are inert.
+
+        This is the point of the removal, so it is pinned rather than left to
+        absence: a client asserting its own runtime is now ignored, and
+        detection answers only from signals the SDK derives itself. The nested
+        form died at B5 and the reverse-DNS form died here; a test that only
+        covered one of them would let the other be quietly restored.
+        """
+        assert detect_agent_runtime(meta) is None
+
+    def test_an_override_cannot_suppress_the_heuristic(self) -> None:
+        """The removal must not have left a half-read key that can still lose
+        us a detection — the heuristic answers regardless of what else is in
+        ``_meta``."""
+        meta = {"io.baton/agent_runtime": "acme-plugin", "claudecode/toolUseId": "tu_1"}
         assert detect_agent_runtime(meta) == "claude-code"
 
     def test_a_non_string_key_does_not_crash_the_prefix_scan(self) -> None:
@@ -133,43 +114,18 @@ class TestDetectAgentRuntime:
         assert detect_agent_runtime(model) == "claude-code"
 
 
-class TestTheOverrideValueIsUntrustedInput:
-    """The override is an arbitrary string from the client, copied onto every
-    event of the call. The detection INPUT stays raw; the emitted VALUE does
-    not."""
+class TestEverythingReturnedIsAValueWeControl:
+    """No tier reads client text any more, so nothing here is scrubbed or
+    capped. Pinned because that invariant is what licenses the absence of a
+    cap — the next tier to read a client-supplied value (``clientInfo.name``)
+    must bring its own."""
 
-    def test_a_long_override_is_capped(self) -> None:
-        meta = {AGENT_RUNTIME_META_KEY: "x" * 5000}
-        detected = detect_agent_runtime(meta)
-        assert detected is not None
-        assert len(detected) == AGENT_RUNTIME_MAX_LEN
+    def test_the_only_answer_is_the_sdks_own_constant(self) -> None:
+        meta = {"claudecode/toolUseId": "tu_1", "io.baton/agent_runtime": "x" * 5000}
+        assert detect_agent_runtime(meta) == "claude-code"
 
-    def test_the_vendor_scrubber_is_applied_to_the_override(self) -> None:
-        """A vendor whose scrubber redacts identifiers expects it to cover this
-        field — otherwise a client can put an email here and ship it raw."""
-        meta = {AGENT_RUNTIME_META_KEY: "user@example.com"}
-        assert detect_agent_runtime(meta, lambda v: "[REDACTED]") == "[REDACTED]"
-
-    def test_the_scrubber_is_NOT_applied_to_a_derived_value(self) -> None:
-        """Scrubbing our own constant would be the opposite mistake: the
-        heuristic's answer is a value we control, not client input."""
-        meta = {"claudecode/toolUseId": "tu_1"}
-        assert detect_agent_runtime(meta, lambda v: "[REDACTED]") == "claude-code"
-
-    def test_the_scrubber_does_NOT_see_the_detection_input(self) -> None:
-        """The whole reason detection reads the RAW meta: a scrubber that
-        touches meta KEYS must not be able to switch detection off."""
-        seen: list[Any] = []
-
-        def _scrubber(value: Any) -> Any:
-            seen.append(value)
-            return value
-
-        assert detect_agent_runtime({"claudecode/toolUseId": "tu_1"}, _scrubber) == "claude-code"
-        assert seen == [], f"the scrubber was handed the detection input: {seen}"
-
-    def test_an_override_scrubbed_to_empty_falls_through(self) -> None:
-        """A scrubber returning "" must not make the reported runtime empty —
-        it falls through to the heuristic, then to the caller's default."""
-        meta = {AGENT_RUNTIME_META_KEY: "user@example.com", "claudecode/toolUseId": "tu_1"}
-        assert detect_agent_runtime(meta, lambda v: "") == "claude-code"
+    def test_no_client_string_can_reach_the_return_value(self) -> None:
+        """Any answer must be one of the SDK's own literals, whatever the
+        client sent."""
+        meta = {"claudecode/toolUseId": "tu_1", "attacker": "y" * 5000}
+        assert detect_agent_runtime(meta) in {None, "claude-code"}

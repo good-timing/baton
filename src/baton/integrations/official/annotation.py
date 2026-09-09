@@ -146,19 +146,26 @@ def register_annotation_tool(
         # Detect from the RAW meta — the scrubber runs on the values below, and
         # a vendor scrubber that touches meta keys must not be able to turn
         # runtime detection off. Same rule as both tool-call paths.
-        runtime = detect_agent_runtime(meta_dict, scrubber) or default_agent_runtime
+        runtime = detect_agent_runtime(meta_dict) or default_agent_runtime
         # The meta is read for the RUNTIME and deliberately not emitted as
         # ``runtime_meta`` on this event, unlike the tool-call path. It can
-        # carry ``io.baton/session_id`` and ``traceparent`` — session-bearing
-        # keys — and ``session_id`` below is still the fallback, so emitting
-        # both would put a session identifier on an event whose own envelope
-        # field disagrees with it: a consumer correlating via ``runtime_meta``
-        # per SPEC §11.5 and one reading the envelope would file this single
-        # event under two different sessions. Today's gap only LOSES a join;
-        # that would manufacture a wrong one, which is strictly worse and is
-        # the distinction the whole D2 posture turns on. Emitting it becomes
-        # correct as soon as this tool climbs §3.4's ladder — now unblocked,
-        # since the ``ctx`` that resolution needs is finally threaded in.
+        # carry ``io.baton/session_id`` and ``traceparent`` while ``session_id``
+        # below is still the fallback, so emitting both would put a session
+        # identifier on an event whose own envelope field disagrees with it —
+        # one consumer grouping on the forwarded value and another reading the
+        # envelope would file this single event under two sessions. Today's gap
+        # only LOSES a join; that would manufacture a wrong one.
+        #
+        # ⚠ Retiring §3.4's rungs 1-2 (2026-09-09) does NOT dissolve this. It
+        # is tempting to think it does — the SDK no longer treats either key as
+        # session-bearing — but the retirement moved that grouping DOWNSTREAM
+        # rather than abolishing it, so a console that groups on a forwarded
+        # handle is now the expected consumer, not a hypothetical one. The
+        # hazard is unchanged; only its address moved.
+        #
+        # Emitting it becomes correct as soon as this tool resolves a real
+        # session id instead of the fallback — unblocked, since the ``ctx``
+        # that resolution needs is finally threaded in.
         session_id = fallback_session_id
         # A proactive annotation (no signal_type) claims the session's proactive
         # slot so the wrap layer won't also synthesise one from an injected param.

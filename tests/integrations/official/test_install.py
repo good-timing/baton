@@ -876,33 +876,19 @@ class TestStatefulHttpSessionResolution:
         assert sorted(by_session["user-b"]) == [1, 2]
 
 
-class TestMetaBasedSessionResolution:
-    """SPEC §3.4 rungs 1-2 — ``_meta.traceparent`` (SEP-414) then
-    ``_meta["io.baton/session_id"]`` — checked ahead of the header rung
-    below, since neither depends on which MCP protocol version was
-    negotiated (unlike the ``mcp-session-id`` header, which SEP-2567 removes
-    on new-spec streamable HTTP)."""
+class TestTheRetiredMetaSessionRungs:
+    """SPEC §3.4 rungs 1-2 — ``_meta.traceparent`` (SEP-414) and
+    ``_meta["io.baton/session_id"]`` — were RETIRED 2026-09-09.
 
-    async def test_traceparent_trace_id_used_as_session_id(
-        self, configured_mcp: tuple[Any, Any, str]
-    ) -> None:
-        mcp, handle, path = configured_mcp
+    Both keyed the session on an identifier the SDK did not mint, which the D2
+    join rule forbids. Asserted as absence, not merely deleted: restoring
+    either rung silently would change the grouping key on every event this
+    adapter emits, and this suite is the only place that would notice. The
+    values are still CAPTURED — see the ``runtime_meta`` coverage — so what is
+    pinned here is that they do not become the ``session_id``.
+    """
 
-        @mcp.tool()
-        def echo(msg: str) -> str:
-            return msg
-
-        tool = get_tool_registry(mcp)["echo"]
-        traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-        ctx = _FakeContextV2({}, meta={"traceparent": traceparent})
-        await tool.run({"msg": "a"}, context=ctx)
-        await handle.flush()
-
-        events = _read_events(path)
-        start = next(e for e in events if e["event_type"] == "tool_call_start")
-        assert start["session_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
-
-    async def test_traceparent_takes_priority_over_header(
+    async def test_traceparent_does_not_become_the_session_id(
         self, configured_mcp: tuple[Any, Any, str]
     ) -> None:
         mcp, handle, path = configured_mcp
@@ -919,9 +905,9 @@ class TestMetaBasedSessionResolution:
 
         events = _read_events(path)
         start = next(e for e in events if e["event_type"] == "tool_call_start")
-        assert start["session_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
+        assert start["session_id"] == "from-header"
 
-    async def test_malformed_traceparent_falls_through_to_header(
+    async def test_io_baton_session_id_does_not_become_the_session_id(
         self, configured_mcp: tuple[Any, Any, str]
     ) -> None:
         mcp, handle, path = configured_mcp
@@ -931,7 +917,9 @@ class TestMetaBasedSessionResolution:
             return msg
 
         tool = get_tool_registry(mcp)["echo"]
-        ctx = _FakeContextV2({"mcp-session-id": "from-header"}, meta={"traceparent": "bogus"})
+        ctx = _FakeContextV2(
+            {"mcp-session-id": "from-header"}, meta={"io.baton/session_id": "vendor-app-handle"}
+        )
         await tool.run({"msg": "a"}, context=ctx)
         await handle.flush()
 
@@ -939,48 +927,11 @@ class TestMetaBasedSessionResolution:
         start = next(e for e in events if e["event_type"] == "tool_call_start")
         assert start["session_id"] == "from-header"
 
-    async def test_all_zero_trace_id_falls_through_to_header(
+    async def test_with_no_header_both_keys_leave_the_install_time_fallback(
         self, configured_mcp: tuple[Any, Any, str]
     ) -> None:
-        """An all-zero trace-id is the W3C spec's explicit 'no trace' sentinel
-        — never a real correlation key."""
-        mcp, handle, path = configured_mcp
-
-        @mcp.tool()
-        def echo(msg: str) -> str:
-            return msg
-
-        tool = get_tool_registry(mcp)["echo"]
-        traceparent = "00-00000000000000000000000000000000-00f067aa0ba902b7-01"
-        ctx = _FakeContextV2({"mcp-session-id": "from-header"}, meta={"traceparent": traceparent})
-        await tool.run({"msg": "a"}, context=ctx)
-        await handle.flush()
-
-        events = _read_events(path)
-        start = next(e for e in events if e["event_type"] == "tool_call_start")
-        assert start["session_id"] == "from-header"
-
-    async def test_io_baton_session_id_used_when_no_traceparent(
-        self, configured_mcp: tuple[Any, Any, str]
-    ) -> None:
-        mcp, handle, path = configured_mcp
-
-        @mcp.tool()
-        def echo(msg: str) -> str:
-            return msg
-
-        tool = get_tool_registry(mcp)["echo"]
-        ctx = _FakeContextV2({}, meta={"io.baton/session_id": "vendor-app-handle"})
-        await tool.run({"msg": "a"}, context=ctx)
-        await handle.flush()
-
-        events = _read_events(path)
-        start = next(e for e in events if e["event_type"] == "tool_call_start")
-        assert start["session_id"] == "vendor-app-handle"
-
-    async def test_io_baton_session_id_lower_priority_than_traceparent(
-        self, configured_mcp: tuple[Any, Any, str]
-    ) -> None:
+        """The stdio shape. Previously either key answered here; now nothing
+        below rung 0 does, so the process-wide id stands."""
         mcp, handle, path = configured_mcp
 
         @mcp.tool()
@@ -990,15 +941,42 @@ class TestMetaBasedSessionResolution:
         tool = get_tool_registry(mcp)["echo"]
         traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
         ctx = _FakeContextV2(
-            {},
-            meta={"traceparent": traceparent, "io.baton/session_id": "vendor-app-handle"},
+            {}, meta={"traceparent": traceparent, "io.baton/session_id": "vendor-app-handle"}
         )
         await tool.run({"msg": "a"}, context=ctx)
         await handle.flush()
 
         events = _read_events(path)
         start = next(e for e in events if e["event_type"] == "tool_call_start")
-        assert start["session_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
+        assert start["session_id"] not in {
+            "4bf92f3577b34da6a3ce929d0e0e4736",
+            "vendor-app-handle",
+        }
+
+    async def test_the_retired_keys_are_still_captured_in_runtime_meta(
+        self, configured_mcp: tuple[Any, Any, str]
+    ) -> None:
+        """The half that must NOT change: retiring a rung stops us keying on
+        the value, it does not stop us carrying it. Downstream grouping needs
+        the value to still arrive."""
+        mcp, handle, path = configured_mcp
+
+        @mcp.tool()
+        def echo(msg: str) -> str:
+            return msg
+
+        tool = get_tool_registry(mcp)["echo"]
+        traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        ctx = _FakeContextV2(
+            {}, meta={"traceparent": traceparent, "io.baton/session_id": "vendor-app-handle"}
+        )
+        await tool.run({"msg": "a"}, context=ctx)
+        await handle.flush()
+
+        events = _read_events(path)
+        start = next(e for e in events if e["event_type"] == "tool_call_start")
+        assert start["runtime_meta"]["traceparent"] == traceparent
+        assert start["runtime_meta"]["io.baton/session_id"] == "vendor-app-handle"
 
 
 class TestResolveSessionIdHook:

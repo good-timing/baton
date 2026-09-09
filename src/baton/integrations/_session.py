@@ -3,12 +3,26 @@
 ladder, so this module owns the rungs that are transport-independent and they
 cannot drift.
 
-Rungs 1-2 (``_meta.traceparent`` → ``_meta["io.baton/session_id"]``) live here
-because they read the wire ``_meta`` both adapters already extract for
-``runtime_meta``. Rung 0 (the vendor hook) is owned by ``_config``; rung 4 is
-transport-specific and stays with each adapter, because "the MCP protocol-level
-session" is reached differently on each (a raw request object on the official
-SDK, a context-var-backed header view on the standalone ``fastmcp`` library).
+**Rungs 1-2 were RETIRED on 2026-09-09 and this module is what is left.** Rung 1
+took the trace-id out of ``_meta.traceparent`` and used it AS the ``session_id``;
+rung 2 did the same with a client-supplied ``_meta["io.baton/session_id"]``. Both
+keyed on an identifier the SDK did not mint, which the D2 join rule forbids: the
+SDK mints a ``call_id`` and everything else — ``traceparent``, the MCP session id,
+``clientInfo``, the JSON-RPC request id — is emitted as data and keyed on by
+nothing at capture time. OTel forbids rung 1 independently, because a trace spans
+one TURN rather than one conversation, so using it as a conversation id
+over-fragments systematically.
+
+⚠ **Retired means "not keyed on", NOT "not captured".** Both values still reach
+the console: ``runtime_meta`` forwards the whole ``_meta`` dict unchanged, so a
+vendor-supplied handle or a trace context can still be grouped on DOWNSTREAM,
+where the decision can be changed and re-run against stored events. Do not
+"restore" these rungs to recover data that was never lost.
+
+Rung 0 (the vendor hook) is owned by ``_config``; rung 4 is transport-specific
+and stays with each adapter, because "the MCP protocol-level session" is reached
+differently on each (a raw request object on the official SDK, a
+context-var-backed header view on the standalone ``fastmcp`` library).
 """
 
 from __future__ import annotations
@@ -19,47 +33,6 @@ from typing import Any
 #: removed from the wire entirely by MCP 2026-07-28+ (SEP-2567), and never
 #: present on stdio.
 MCP_SESSION_ID_HEADER = "mcp-session-id"
-
-
-def trace_id_from_traceparent(traceparent: Any) -> str | None:
-    """The trace-id field of a W3C ``traceparent`` value
-    (``version-trace_id-parent_id-flags``, SEP-414) — SPEC §3.4 rung 1's
-    preferred ``session_id`` source. ``None`` on any malformed or all-zero
-    input; never raises."""
-    if not isinstance(traceparent, str):
-        return None
-    parts = traceparent.split("-")
-    if len(parts) != 4:
-        return None
-    trace_id = parts[1]
-    if not trace_id or trace_id == "0" * len(trace_id):
-        return None
-    return trace_id
-
-
-def resolve_session_id_from_meta(meta: dict[str, Any] | None) -> str | None:
-    """SPEC §3.4 rungs 1-2, in priority order: ``_meta.traceparent`` (W3C
-    trace context, SEP-414) then ``_meta["io.baton/session_id"]``
-    (vendor-supplied app-level handle). ``None`` if neither is present.
-
-    Per SPEC §5.2's validated runtime table, no MCP client Baton has tested
-    (Claude Code, Claude Desktop, Cursor) populates either key today — so in
-    practice this misses for every currently-known runtime. Still worth
-    reading: the data is already extracted for ``runtime_meta`` (free), and
-    unlike the header rung, neither key depends on which MCP protocol version
-    was negotiated — this starts resolving automatically the moment any
-    runtime adopts SEP-414 or a vendor's own first-party client stamps the
-    Baton key, with no further SDK change.
-    """
-    if not meta:
-        return None
-    trace_id = trace_id_from_traceparent(meta.get("traceparent"))
-    if trace_id is not None:
-        return trace_id
-    app_handle = meta.get("io.baton/session_id")
-    if isinstance(app_handle, str) and app_handle:
-        return app_handle
-    return None
 
 
 def session_id_from_headers(headers: Any) -> str | None:

@@ -11,9 +11,15 @@ field on each tool call. Different runtimes populate this differently
 ``progressToken``; Claude Desktop sets nothing). This module distills the
 spike-validated detection rules into one function.
 
-Vendors / clients MAY override the heuristic by setting
-``_meta["io.baton/agent_runtime"]`` explicitly — useful when shipping into a
-known runtime (e.g., a Claude Code plugin that wants to assert its identity).
+**There is no ``io.baton/agent_runtime`` override any more — removed
+2026-09-09 with the rest of the ``io.baton/*`` keys.** It let a caller assert
+its own runtime, but no client anywhere ever set it (checked across all eight
+repos) and ``instructions.py`` never told one it existed, so the only discovery
+path was reading the spec. Its cost was not hypothetical: **B5 happened because
+that one key had two documented spellings and no users to notice the
+contradiction.** If a real need appears — the strongest candidate is a gateway
+asserting the true agent behind a ``clientInfo`` that names the gateway — bring
+it back deliberately, with something that tells clients it exists.
 
 ⚠ **Call this on the RAW ``_meta``, before the vendor's scrubber runs.** The
 default scrubber is an identity no-op, so detecting from the scrubbed dict
@@ -24,35 +30,7 @@ stop, not one to reintroduce one layer down.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any
-
-#: The vendor/client override key. Reverse-DNS per the MCP ``_meta``
-#: convention and per SPEC §5.2's key table, which is the form a vendor
-#: reading the spec will send.
-#:
-#: This replaced a nested ``_meta["baton"]["agent_runtime"]`` dict, which no
-#: MCP convention produces and which SPEC §5.2 contradicted itself about — the
-#: key table said ``io.baton/agent_runtime`` while a prose line at the end of
-#: the same section said ``_meta.baton.*``. The code followed the prose, so a
-#: vendor asserting its runtime the way the table documents was silently
-#: ignored. The prose line is the one that was wrong; it now names this key.
-#:
-#: Safe to change outright rather than accept both: nothing SENDS the nested
-#: form. Checked across all eight repos — the only senders were this repo's
-#: own middleware test and baton-proxy's, which reads its own copy of this
-#: heuristic and is unaffected. There are no customers, and ``instructions.py``
-#: never told a client to set it. Accepting both would have enshrined two wire
-#: shapes for one assertion as compatibility for an audience of zero.
-AGENT_RUNTIME_META_KEY = "io.baton/agent_runtime"
-
-#: Cap on the override VALUE. The key is read from untrusted client input and
-#: its value is copied onto every event of the call, so an unbounded string is
-#: copied into every ``HttpSink`` payload too. 128 is far above any real runtime
-#: name (``claude-code`` is 11) and far below anything worth shipping. Same
-#: posture as ``error_body``, the other untrusted string on this wire, which is
-#: both scrubbed and truncated at 2000.
-AGENT_RUNTIME_MAX_LEN = 128
 
 
 def meta_to_dict(meta: Any) -> dict[str, Any] | None:
@@ -71,41 +49,23 @@ def meta_to_dict(meta: Any) -> dict[str, Any] | None:
     return None
 
 
-def detect_agent_runtime(meta: Any, scrubber: Callable[[Any], Any] | None = None) -> str | None:
+def detect_agent_runtime(meta: Any) -> str | None:
     """Return the detected agent runtime, or ``None`` if no signal.
 
     Accepts either a dict or an MCP ``RequestParams.Meta`` (it normalizes).
 
     Detection precedence:
-    1. Explicit ``_meta["io.baton/agent_runtime"]`` (vendor/client override)
-    2. Heuristic on key prefixes (e.g., ``claudecode/*`` → ``claude-code``)
-    3. ``None`` if nothing matches; caller substitutes a default
+    1. Heuristic on key prefixes (e.g., ``claudecode/*`` → ``claude-code``)
+    2. ``None`` if nothing matches; caller substitutes a default
 
-    ``scrubber`` is applied to the OVERRIDE VALUE only — never to the detection
-    input, and never to a value this function derived itself. The distinction is
-    the point: the raw ``_meta`` must reach the key scan (a vendor scrubber that
-    touches meta keys would otherwise turn detection off), but the override's
-    value is an arbitrary client-supplied string that lands verbatim on
-    ``agent_runtime`` for every event of the call. A vendor whose scrubber
-    redacts identifiers reasonably expects it to cover that field, and without
-    this a client could put an email or a user id there and have it ship raw.
-    Scrubbing the heuristic's own ``"claude-code"`` would be the opposite
-    mistake — mangling a constant we control.
+    Everything this returns is a constant the SDK controls, never client text —
+    which is why nothing here is scrubbed or length-capped. That stops being
+    true the moment a tier reads a client-supplied value (``clientInfo.name``
+    is the one coming); such a tier owns its own scrub and cap.
     """
     meta_dict = meta_to_dict(meta)
     if not meta_dict:
         return None
-
-    # Explicit override via _meta["io.baton/agent_runtime"]
-    override = meta_dict.get(AGENT_RUNTIME_META_KEY)
-    if isinstance(override, str) and override:
-        if scrubber is not None:
-            override = str(scrubber(override))
-        # Re-checked after scrubbing: a scrubber may return an empty string,
-        # and an empty override must fall through to the heuristic rather than
-        # becoming the reported runtime.
-        if override:
-            return override[:AGENT_RUNTIME_MAX_LEN]
 
     # Heuristic: namespace prefixes from runtime-specific _meta keys
     for key in meta_dict:

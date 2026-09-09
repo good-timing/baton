@@ -77,7 +77,7 @@ from baton.integrations._config import (
     SessionResolutionContext,
     resolve_via_hook,
 )
-from baton.integrations._session import resolve_session_id_from_meta, session_id_from_headers
+from baton.integrations._session import session_id_from_headers
 
 logger = logging.getLogger(__name__)
 
@@ -168,8 +168,7 @@ async def resolve_call_session_id(
     """Real per-call session id, SPEC §3.4's layered fallback in priority
     order: (0) a configured ``VendorConfig.resolve_session_id`` hook, which on
     a non-empty return wins outright — see ``docs/design-notes/
-    session_resolver_hook.md``; (1) ``_meta.traceparent``; (2)
-    ``_meta["io.baton/session_id"]``; (4) the ``mcp-session-id`` header;
+    session_resolver_hook.md``; (4) the ``mcp-session-id`` header;
     (4b) fastmcp's ``Context.session_id``, where its cache survives and the
     header was absent; else ``fallback``, the install-time process-wide id.
     Rung 3 (a future runtime-specific ``_meta`` key) isn't defined for any
@@ -180,10 +179,15 @@ async def resolve_call_session_id(
     terminate on a process-wide id that is stable but merges every client of a
     multi-user server. That gap is D2.
 
-    Rungs 1-2 are shared with the official-SDK adapter via
-    ``integrations._session``; before this existed, this adapter implemented
-    neither, resolving only via fastmcp's own ``Context.session_id`` — the
-    uneven ladder that design note D3 recorded and deferred.
+    **Rungs 1-2 were retired 2026-09-09** — ``_meta.traceparent``'s trace-id
+    and a client-supplied ``_meta["io.baton/session_id"]`` both keyed the
+    session on an identifier the SDK did not mint, which the D2 join rule
+    forbids. The values still reach the console via ``runtime_meta``; only the
+    capture-time join is gone. Before the shared module existed this adapter
+    implemented neither rung, resolving only via fastmcp's own
+    ``Context.session_id`` — the uneven ladder design note D3 recorded and
+    deferred; retiring them makes both adapters even again, from the other
+    end.
     """
     headers = extract_headers()
     if resolve_hook is not None:
@@ -195,9 +199,6 @@ async def resolve_call_session_id(
         )
         if hook_result is not None:
             return hook_result
-    from_meta = resolve_session_id_from_meta(meta)
-    if from_meta is not None:
-        return from_meta
     from_header = session_id_from_headers(headers)
     if from_header is not None:
         return from_header

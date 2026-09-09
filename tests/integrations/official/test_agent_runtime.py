@@ -83,7 +83,7 @@ async def _drive(events_path: Path, meta: dict[str, Any] | None) -> list[dict[st
     ("meta", "expected"),
     [
         pytest.param({"claudecode/toolUseId": "tu_1"}, "claude-code", id="heuristic"),
-        pytest.param({"io.baton/agent_runtime": "acme"}, "acme", id="explicit-override"),
+        pytest.param({"io.baton/agent_runtime": "acme"}, "unknown", id="override-is-inert"),
         pytest.param({"progressToken": 7}, "unknown", id="no-signal"),
         pytest.param(None, "unknown", id="no-meta-at-all"),
     ],

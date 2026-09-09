@@ -49,16 +49,19 @@ RUNTIME_CASES = [
         id="claudecode-prefix-heuristic",
     ),
     pytest.param(
+        # The client override was REMOVED 2026-09-09. Parity matters as much
+        # for a key that is ignored as for one that is read: if one adapter
+        # kept honouring it, the same client would be reported two ways by two
+        # sensors watching the same call.
         {"io.baton/agent_runtime": "acme-plugin"},
-        "acme-plugin",
-        id="io.baton-explicit-override",
+        "unknown",
+        id="io.baton-override-is-inert",
     ),
     pytest.param(
-        # The override must WIN over a heuristic that would otherwise match,
-        # not merely be read when nothing else is present.
+        # And it cannot SUPPRESS a heuristic that would otherwise match.
         {"io.baton/agent_runtime": "acme-plugin", "claudecode/toolUseId": "tu_abc123"},
-        "acme-plugin",
-        id="override-beats-heuristic",
+        "claude-code",
+        id="removed-override-does-not-suppress-the-heuristic",
     ),
     pytest.param(
         # Cursor's shape per SPEC §5.2: a progressToken and nothing else.

@@ -91,47 +91,36 @@ async def _resolve(
         return await call()
 
 
-class TestMetaRungs:
-    """Rungs 1-2 — ``_meta.traceparent`` (SEP-414) then
-    ``_meta["io.baton/session_id"]``, both ahead of the header rung."""
+class TestTheRetiredMetaRungs:
+    """Rungs 1-2 were RETIRED 2026-09-09 — ``_meta.traceparent`` and
+    ``_meta["io.baton/session_id"]`` no longer resolve the session.
 
-    async def test_traceparent_trace_id_used_as_session_id(self) -> None:
-        assert await _resolve(meta={"traceparent": TRACEPARENT}) == TRACE_ID
+    Both keyed the session on an identifier the SDK did not mint, which the D2
+    join rule forbids. These tests are the inverse of the ones they replace: a
+    silent restoration of either rung would change what a session groups on for
+    every event, so absence is asserted rather than assumed.
+    """
 
     @requires_http_injection
-    async def test_traceparent_takes_priority_over_header(self) -> None:
+    async def test_traceparent_no_longer_outranks_the_header(self) -> None:
         got = await _resolve(
             meta={"traceparent": TRACEPARENT}, headers={"mcp-session-id": "from-header"}
         )
-        assert got == TRACE_ID
-
-    @pytest.mark.parametrize(
-        "traceparent",
-        [
-            "bogus",
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7",  # too few fields
-            "00-" + "0" * 32 + "-00f067aa0ba902b7-01",  # all-zero trace id
-            None,
-            42,
-        ],
-    )
-    @requires_http_injection
-    async def test_unusable_traceparent_falls_through_to_header(self, traceparent: Any) -> None:
-        got = await _resolve(
-            meta={"traceparent": traceparent}, headers={"mcp-session-id": "from-header"}
-        )
         assert got == "from-header"
 
-    async def test_io_baton_session_id_used_when_no_traceparent(self) -> None:
-        assert await _resolve(meta={"io.baton/session_id": "vendor-app-handle"}) == (
-            "vendor-app-handle"
-        )
+    async def test_traceparent_alone_leaves_the_fallback(self) -> None:
+        assert await _resolve(meta={"traceparent": TRACEPARENT}) == "sdk-fallback"
 
-    async def test_io_baton_session_id_lower_priority_than_traceparent(self) -> None:
+    async def test_io_baton_session_id_alone_leaves_the_fallback(self) -> None:
+        assert await _resolve(meta={"io.baton/session_id": "vendor-app-handle"}) == "sdk-fallback"
+
+    @requires_http_injection
+    async def test_neither_key_outranks_the_header_even_together(self) -> None:
         got = await _resolve(
-            meta={"traceparent": TRACEPARENT, "io.baton/session_id": "vendor-app-handle"}
+            meta={"traceparent": TRACEPARENT, "io.baton/session_id": "vendor-app-handle"},
+            headers={"mcp-session-id": "from-header"},
         )
-        assert got == TRACE_ID
+        assert got == "from-header"
 
 
 class TestHeaderAndFallbackRungs:
@@ -164,13 +153,14 @@ class TestHookRungZero:
         assert got == "vendor-resolved"
 
     async def test_hook_returning_none_falls_through(self) -> None:
-        assert await _resolve(meta={"traceparent": TRACEPARENT}, hook=lambda ctx: None) == TRACE_ID
+        got = await _resolve(meta={"traceparent": TRACEPARENT}, hook=lambda ctx: None)
+        assert got == "sdk-fallback"
 
     async def test_raising_hook_falls_through_and_does_not_propagate(self) -> None:
         def broken(ctx: Any) -> str:
             raise RuntimeError("vendor bug")
 
-        assert await _resolve(meta={"traceparent": TRACEPARENT}, hook=broken) == TRACE_ID
+        assert await _resolve(meta={"traceparent": TRACEPARENT}, hook=broken) == "sdk-fallback"
 
     @requires_http_injection
     async def test_hook_sees_headers_and_meta(self) -> None:
@@ -227,10 +217,15 @@ class TestRung4bFastmcpContext:
         assert await _resolve(headers={"mcp-session-id": "from-header"}) == "from-header"
 
     @requires_http_injection
-    async def test_meta_outranks_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_meta_no_longer_outranks_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Before the rung-1/2 retirement a ``traceparent`` beat this rung. It
+        no longer does, so 4b now answers the SSE shape even when the client
+        propagates a trace context — which is the intended widening, not a
+        regression: 4b is an id the server library owns."""
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
         monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("per-connection-id"))
-        assert await _resolve(meta={"traceparent": TRACEPARENT}, headers={"host": "x"}) == TRACE_ID
+        got = await _resolve(meta={"traceparent": TRACEPARENT}, headers={"host": "x"})
+        assert got == "per-connection-id"
 
     @requires_http_injection
     async def test_gated_off_where_the_cache_does_not_survive(

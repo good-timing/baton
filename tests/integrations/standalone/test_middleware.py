@@ -450,15 +450,14 @@ class TestEnvelopeFields:
         for ev in tool_events:
             assert ev["agent_runtime"] == "claude-code"
 
-    async def test_explicit_baton_override_in_meta(
+    async def test_the_removed_override_cannot_suppress_the_heuristic(
         self, sink: Sink, captured: list[dict[str, Any]]
     ) -> None:
-        """``_meta["io.baton/agent_runtime"]`` takes precedence over heuristics.
+        """``_meta["io.baton/agent_runtime"]`` was REMOVED 2026-09-09.
 
-        The key is reverse-DNS per SPEC §5.2's table and the MCP ``_meta``
-        convention. It carries the ``claudecode/`` prefix alongside it so this
-        also proves the override beats a heuristic that WOULD have matched,
-        rather than merely being read when nothing else is there.
+        It carries the ``claudecode/`` prefix alongside it so this proves the
+        stronger half: not merely that the override is unread, but that a
+        client sending it cannot take a detection away from us.
         """
         mcp = _build_mcp(sink)
 
@@ -478,7 +477,7 @@ class TestEnvelopeFields:
 
         await sink.flush()
         for ev in without_surface_snapshots(captured):
-            assert ev["agent_runtime"] == "my-custom-runtime"
+            assert ev["agent_runtime"] == "claude-code"
 
     async def test_nested_baton_dict_is_no_longer_an_override(
         self, sink: Sink, captured: list[dict[str, Any]]

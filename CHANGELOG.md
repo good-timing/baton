@@ -8,6 +8,20 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased — the `io.baton/*` `_meta` keys are gone, and `session_id` stops keying on identifiers we did not mint
+
+### Removed
+
+- **All four `io.baton/*` keys in SPEC §5.2.** `io.baton/mcp_transport` and `io.baton/vendor_app_version` were specified and read by nothing. `io.baton/agent_runtime` (a caller-supplied override of the detected runtime) and `io.baton/session_id` (§3.4 rung 2) were read and are no longer. **Nothing ever sent any of the four** — checked across all eight repos — and the server-instructions text never told a client they existed, so the only discovery path was reading the spec.
+
+  The `agent_runtime` override is removed on evidence rather than disuse: that key was documented in two contradictory spellings at once, the code followed the wrong one, and with no users there was nobody to notice — which is the whole of the bug fixed in the entry below. `agent_runtime` is now derived only from signals the SDK controls, so a caller can neither assert one nor suppress one, and every value the detector can return is an SDK constant rather than client text.
+
+- **SPEC §3.4 rungs 1 and 2** — the trace-id out of `_meta.traceparent`, and a client-supplied `_meta["io.baton/session_id"]`. Both keyed the session on an identifier the SDK did not mint. Rung 1 was independently wrong on OpenTelemetry's terms: a trace spans one *turn*, not one conversation, so using its id as a session id over-fragments by construction. Rung numbering is preserved (3, 4, 4b, 5 keep their names) because those names are referenced across the code, the tests and the design notes.
+
+  ⚠ **Retired means "not keyed on", not "not captured".** `runtime_meta` forwards the whole `_meta` dict unchanged, so `traceparent` and any vendor-supplied handle still arrive at the Console and can be grouped on downstream — where the decision can be revised and re-run against stored events, which is precisely why it moved there. **Consumer-visible effect:** on a producer that sends either key, `session_id` now resolves one rung lower (the `mcp-session-id` header, rung 4b, or the install-time fallback), so events that used to group by trace-id group differently. Nothing observable was lost; a consumer wanting the old grouping can reproduce it from data it already receives.
+
+---
+
 ## Unreleased — `agent_runtime` was `unknown` on every official-adapter event ever sent
 
 ### Fixed
