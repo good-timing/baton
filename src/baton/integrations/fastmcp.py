@@ -38,7 +38,19 @@ is on the old paths at the pinned pointer), ``baton-spec``, ``baton-internal``
 two READMEs that tell a reader to paste the old path are also hits), and
 ``baton-proxy`` / ``baton-extmcp`` / ``baton-ts``, each of which vendors
 ``baton-spec`` at a pointer whose ``scripts/generate.py`` still uses the old
-paths. ``baton-console`` is already clear.
+paths, and ``baton-console``.
+
+``baton-console`` was written here as "already clear", and that was the third
+scope claim in this rename asserted instead of checked. Running the grep above
+from ITS repo root returns three hits: ``backend/tests/test_vendor_slug.py`` and
+``backend/tests/test_onboarding_mcp.py`` both do
+``from baton.integrations.fastmcp.annotation import derive_annotation_tool_name``
+— live imports that resolve only because these shims register submodules — and
+``docs/DEMO_SINGLESTORE.md`` hands a reader ``from baton.integrations.mcp import
+install_baton, VendorConfig`` to paste. Its switch commit (``82e4907``) moved
+``src/`` and the emitted recipe, which is what "the console switched" meant; the
+tests and that doc were never in it. So no repo is exempt from the check, and
+this list names WHERE to run it, not what it will find.
 
 Note the break does NOT wait for a release. ``baton-spec/scripts/generate.py``
 is documented to run against THIS repo's editable ``.venv``, so deleting on
