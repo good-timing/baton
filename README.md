@@ -203,7 +203,7 @@ Both paths emit identical events through the same sink — downstream of the sin
 ## Development
 
 ```sh
-make install          # uv / pip install -e ".[dev]" in .venv
+make install          # uv sync --locked --extra dev  (uv.lock is committed)
 make test             # pytest -q
 make ci               # lint + typecheck + test (CI gate)
 make format           # ruff format

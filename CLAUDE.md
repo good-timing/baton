@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-make install        # creates .venv, installs in editable mode with [dev,mcp] extras
+make install        # uv sync --locked --extra dev  (fails if uv.lock is stale)
 make ci             # canonical gate: lint + typecheck + test (matches GitHub Actions)
 
 make lint           # ruff check src/ tests/

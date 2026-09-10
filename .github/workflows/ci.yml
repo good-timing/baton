@@ -49,28 +49,31 @@ jobs:
         with:
           submodules: true
 
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v7
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+      - name: Install dependencies (from the LOCK)
+        # `--locked` fails if uv.lock and pyproject.toml disagree, instead of
+        # re-resolving quietly. That is the whole point: `make install` runs
+        # this same command, so a green local run and a green CI run describe
+        # the same tree. Three bugs in four days came from them not doing so.
+        # The `[mcp]`/`[fastmcp]` MATRIX legs deliberately do NOT use the lock
+        # — their job is to float to the version a customer would resolve.
+        run: uv sync --locked --extra dev --python ${{ matrix.python-version }}
 
       - name: Lint
-        run: ruff check src/ tests/
+        run: uv run --no-sync ruff check src/ tests/
 
       - name: Format check
-        run: ruff format --check src/ tests/
+        run: uv run --no-sync ruff format --check src/ tests/
 
       - name: Typecheck
-        run: mypy src/baton
+        run: uv run --no-sync mypy src/baton
 
       - name: Test
-        run: pytest -q -m "not perf"
+        run: uv run --no-sync pytest -q -m "not perf"
 
   perf-timing:
     # See the header comment above for why this is split out of `core` and
@@ -87,19 +90,16 @@ jobs:
         with:
           submodules: true
 
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.14"
-          cache: pip
-          cache-dependency-path: pyproject.toml
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+      - name: Install dependencies (from the LOCK)
+        run: uv sync --locked --extra dev --python 3.14
 
       - name: Perf timing gate
-        run: pytest tests/perf tests/functional -q -m perf
+        run: uv run --no-sync pytest tests/perf tests/functional -q -m perf
 
   mcp-matrix:
     # Verifies the baton.integrations.official adapter works against multiple
@@ -123,13 +123,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.14"
-          cache: pip
-          cache-dependency-path: pyproject.toml
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
 
-      - name: Install dependencies (pin mcp in ONE resolve)
+      - name: Install dependencies (pin mcp in ONE resolve, OFF the lock)
         # `[mcp,test]`, NOT `[dev]`. Two reasons, both measured 2026-09-10.
         # (1) `[dev]` drags `fastmcp`, whose 4.x needs `mcp>=2`, so a one-resolve
         #     `pip install -e ".[dev]" "mcp==1.20.0"` is UNSATISFIABLE — pip
@@ -144,9 +143,14 @@ jobs:
         # This leg only runs `tests/integrations/official/`, which imports
         # neither fastmcp nor httpx (checked), so dropping them costs no
         # coverage: 89 collected / 88 passed / 1 skipped either way.
+        # ⚠ OFF the lock, deliberately — `uv sync --locked` would install the
+        # one resolution the lock names, which is the opposite of what a matrix
+        # leg is for. `uv venv` + `uv pip install` resolves fresh, which is what
+        # a customer on this pin actually gets. Verified 2026-09-10 to land the
+        # same tree pip did: mcp 1.20.0 exactly, no fastmcp, 88 passed 1 skipped.
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[mcp,test]" "mcp==${{ matrix.mcp-version }}"
+          uv venv --python 3.14
+          uv pip install -e ".[mcp,test]" "mcp==${{ matrix.mcp-version }}"
 
       - name: Prove the tree is the pin, and is not a hybrid
         # `mcp` exposes no `__version__`, so the fastmcp-matrix trick ("import it
@@ -170,8 +174,8 @@ jobs:
         # beside `mcp 1.20.0` reds, and a clean 1.x tree with no `mcp-types` at
         # all passes.
         run: |
-          pip list | grep -iE "^(mcp|mcp-types|fastmcp|fastmcp-slim|pydantic) " || true
-          python - <<'PY'
+          uv pip list | grep -iE "^(mcp|mcp-types|fastmcp|fastmcp-slim|pydantic) " || true
+          uv run --no-sync python - <<'PY'
           import sys
           from importlib.metadata import PackageNotFoundError, version
 
@@ -208,7 +212,7 @@ jobs:
         # job cannot swing it. That is covered by `fastmcp-matrix` below, whose
         # absence is exactly how a `surface_snapshot` wire-format break on
         # mcp 2.x survived a green `mcp-matrix` (see CHANGELOG, `## Unreleased`).
-        run: pytest tests/integrations/official/ -q
+        run: uv run --no-sync pytest tests/integrations/official/ -q
 
   fastmcp-matrix:
     # Verifies the baton.integrations.standalone adapter against each major of the
@@ -236,13 +240,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.14"
-          cache: pip
-          cache-dependency-path: pyproject.toml
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
 
-      - name: Install dependencies (pin fastmcp in ONE resolve)
+      - name: Install dependencies (pin fastmcp in ONE resolve, OFF the lock)
         # Deliberately NOT `pip install -e ".[dev]"` followed by a downgrade.
         # `[dev]` resolves fastmcp 4.x, which ships its modules in a SEPARATE
         # distribution (`fastmcp-slim`); downgrading `fastmcp` afterwards does
@@ -253,9 +256,10 @@ jobs:
         # 'IdentityAssertionParams' from 'mcp.server.auth.provider'` — 4.x
         # oauth_proxy code against the mcp 1.30.0 that 2.14.7 correctly pulled.
         # One resolve carrying both constraints keeps fastmcp-slim out entirely.
+        # OFF the lock, same reason as mcp-matrix above.
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]" "fastmcp==${{ matrix.fastmcp-version }}"
+          uv venv --python 3.14
+          uv pip install -e ".[dev]" "fastmcp==${{ matrix.fastmcp-version }}"
 
       - name: Show resolved fastmcp + mcp, and prove the pin is what imports
         # The mcp version is the point of this matrix, so print what resolved
@@ -264,8 +268,8 @@ jobs:
         # while the importable package was 4.0.3, so a version-label assertion
         # alone would have passed. Import it and ask IT what it is.
         run: |
-          pip list | grep -iE "^(mcp|mcp-types|fastmcp|fastmcp-slim|pydantic) " || true
-          python - <<'PY'
+          uv pip list | grep -iE "^(mcp|mcp-types|fastmcp|fastmcp-slim|pydantic) " || true
+          uv run --no-sync python - <<'PY'
           import sys
           import fastmcp
           want = "${{ matrix.fastmcp-version }}"
@@ -289,5 +293,5 @@ jobs:
         # point, and the gap was the intersection neither covered — the same
         # shape as the fastmcp-slim hybrid this job's own guard was added for.
         run: >
-          pytest tests/integrations/standalone/ tests/functional/
+          uv run --no-sync pytest tests/integrations/standalone/ tests/functional/
           tests/test_entry_point_routing.py -q

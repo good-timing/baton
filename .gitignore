@@ -7,12 +7,17 @@ __pycache__
 build/
 dist/
 
-# The documented install path (Makefile's `install` target, CLAUDE.md) is
-# pip inside a venv, not uv — nothing in the Makefile or CI reads/enforces
-# uv.lock (no `uv lock --check` anywhere), so a locally-generated one would
-# be an unmaintained, silently-stale duplicate of pyproject.toml's
-# dependency resolution if committed. Keep it local-only.
-uv.lock
+# uv.lock IS committed as of 2026-09-10. The comment that used to sit here
+# argued the opposite, and its reasoning was right at the time: nothing read
+# or enforced the lock, so a committed one would be an unmaintained, silently
+# stale duplicate. The fix was to make it enforced rather than to keep it out
+# — `uv sync --locked` is now the documented install path in the Makefile AND
+# the `core`/`perf-timing` CI jobs, and `--locked` FAILS rather than silently
+# re-resolving when the lock and pyproject disagree.
+#
+# Do NOT re-ignore it without also removing those, or the two halves go back
+# to describing different environments — which is the whole class of bug this
+# change exists to close (three of them, 09-07 → 09-10).
 
 # Test + coverage caches
 .pytest_cache

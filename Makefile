@@ -7,10 +7,14 @@ BIN = $(VENV)/bin
 
 .PHONY: install test test-fast test-perf test-functional soak test-watch test-cov lint format format-check typecheck ci clean build spec-check
 
+# `--locked` is the point: it FAILS if uv.lock and pyproject.toml disagree,
+# rather than quietly re-resolving. That is what makes this venv the same one
+# CI builds — the property three separate bugs (09-07, 09-08, 09-10) turned on.
+# Run `uv lock` after changing a dependency; the failure tells you to.
+# $(PYTHON) is no longer read here: the interpreter comes from requires-python
+# via uv, so it is one fewer thing that can differ per machine.
 install:
-	$(PYTHON) -m venv $(VENV)
-	$(BIN)/pip install --upgrade pip
-	$(BIN)/pip install -e ".[dev]"
+	uv sync --locked --extra dev
 
 # Excludes only `perf` (wall-clock-timing tests — see perf-timing below for
 # that marker's own job/target) — mirrors the `core` CI job's Test step
