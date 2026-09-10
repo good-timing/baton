@@ -50,11 +50,13 @@ from baton.integrations._llm_text import (
     build_user_goal_param_description,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
+from baton.integrations.identity_adapter import USER_ID_MODE_HASHED, resolve_user_id
 from baton.integrations.runtime_adapter import (
     UNKNOWN_AGENT_RUNTIME,
     detect_agent_runtime,
     meta_to_dict,
 )
+from baton.integrations.standalone import _auth
 from baton.integrations.standalone._session import resolve_call_session_id
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
@@ -80,6 +82,8 @@ class BatonMiddleware(Middleware):
         proactive_tracker: ProactiveTracker | None = None,
         resolve_session_id_hook: ResolveSessionIdHook | None = None,
         server_meta: dict[str, Any] | None = None,
+        user_id_mode: str = USER_ID_MODE_HASHED,
+        user_id_hmac_key: bytes | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._vendor_id = vendor_id
@@ -93,6 +97,11 @@ class BatonMiddleware(Middleware):
         self._proactive = proactive_tracker or ProactiveTracker()
         self._resolve_session_id_hook = resolve_session_id_hook
         self._server_meta = server_meta or {}
+        self._user_id_mode = user_id_mode
+        self._user_id_hmac_key = user_id_hmac_key
+        # Warn-once state for the missing-HMAC-key line; per middleware
+        # instance, which is per install.
+        self._identity_warned: set[str] = set()
         # tool_name -> {param_name: "injected" | "native"}. Populated at
         # on_list_tools; read at on_call_tool to decide strip-vs-forward, per
         # param, independently. A plain dict (no lock) is safe: all access is
@@ -397,6 +406,20 @@ class BatonMiddleware(Middleware):
             detect_agent_runtime(raw_meta, context=context.fastmcp_context, scrubber=self._scrubber)
             or UNKNOWN_AGENT_RUNTIME
         )
+        # Identity resolves here, beside the runtime detect: one place per
+        # call, producing the FINISHED wire value so the raw principal never
+        # reaches the event constructions below. ``None`` on stdio and on any
+        # unauthenticated call, which is most of them.
+        call_user_id = resolve_user_id(
+            _auth.get_access_token_or_none()
+            if _auth.get_access_token_or_none is not None
+            else None,
+            mode=self._user_id_mode,
+            tenant_id=self._tenant_id,
+            hmac_key=self._user_id_hmac_key,
+            logger=logger,
+            warned=self._identity_warned,
+        )
         # Scrub the meta dict if a scrubber is configured — meta values may
         # carry runtime-supplied identifiers that vendors want filtered.
         scrubbed_meta = self._scrubber(meta_dict) if meta_dict is not None else None
@@ -425,6 +448,7 @@ class BatonMiddleware(Middleware):
                     sequence_number=seq_ann,
                     captured_at=datetime.now(UTC),
                     agent_runtime=runtime,
+                    user_id=call_user_id,
                     runtime_meta=scrubbed_meta,
                     payload=AnnotationPayload(
                         intent=scrubbed_intent,
@@ -450,6 +474,7 @@ class BatonMiddleware(Middleware):
                 sequence_number=seq_start,
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
+                user_id=call_user_id,
                 runtime_meta=scrubbed_meta,
                 payload=ToolCallStartPayload(
                     tool_name=tool_name,
@@ -486,6 +511,7 @@ class BatonMiddleware(Middleware):
                     sequence_number=seq_err,
                     captured_at=datetime.now(UTC),
                     agent_runtime=runtime,
+                    user_id=call_user_id,
                     runtime_meta=scrubbed_meta,
                     payload=ToolCallErrorPayload(
                         tool_name=tool_name,
@@ -510,6 +536,7 @@ class BatonMiddleware(Middleware):
                 sequence_number=seq_end,
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
+                user_id=call_user_id,
                 runtime_meta=scrubbed_meta,
                 payload=ToolCallEndPayload(
                     tool_name=tool_name,

@@ -23,6 +23,8 @@ from typing import Any
 from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
 from baton.integrations._llm_text import build_annotation_tool_description
+from baton.integrations.identity_adapter import USER_ID_MODE_HASHED, resolve_user_id
+from baton.integrations.official import _auth
 from baton.integrations.official._compat import ContextClass as Context
 from baton.integrations.official._compat import MCPServerClass as FastMCP
 from baton.integrations.official._tool_wrap import _extract_meta_from_context
@@ -65,9 +67,12 @@ def register_annotation_tool(
     proactive_mode: str = "off",
     scrubber: Callable[[Any], Any] = identity_scrub,
     proactive_tracker: ProactiveTracker | None = None,
+    user_id_mode: str = USER_ID_MODE_HASHED,
+    user_id_hmac_key: bytes | None = None,
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
     tracker = proactive_tracker or ProactiveTracker()
+    identity_warned: set[str] = set()
     name = derive_annotation_tool_name(vendor_id, annotation_tool_name)
     description = build_annotation_tool_description(
         vendor_display_name=vendor_display_name, proactive_mode=proactive_mode
@@ -167,6 +172,22 @@ def register_annotation_tool(
         # Emitting it becomes correct as soon as this tool resolves a real
         # session id instead of the fallback — unblocked, since the ``ctx``
         # that resolution needs is finally threaded in.
+        # Identity, on the same terms as the tool-call path: the finished
+        # wire value, resolved once, raw principal never travelling past it.
+        # Unlike ``runtime_meta`` just above, there is no asymmetry argument
+        # against emitting this one — ``user_id`` carries no session identity,
+        # so it cannot disagree with the envelope's ``session_id`` the way a
+        # forwarded meta key can.
+        annotation_user_id = resolve_user_id(
+            _auth.get_access_token_or_none()
+            if _auth.get_access_token_or_none is not None
+            else None,
+            mode=user_id_mode,
+            tenant_id=tenant_id,
+            hmac_key=user_id_hmac_key,
+            logger=logger,
+            warned=identity_warned,
+        )
         session_id = fallback_session_id
         # A proactive annotation (no signal_type) claims the session's proactive
         # slot so the wrap layer won't also synthesise one from an injected param.
@@ -183,6 +204,7 @@ def register_annotation_tool(
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
+                user_id=annotation_user_id,
                 payload=AnnotationPayload(
                     intent=scrubber(user_goal) if user_goal else None,
                     expected_outcome=(scrubber(expected_result) if expected_result else None),

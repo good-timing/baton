@@ -100,6 +100,8 @@ from baton.integrations._session import (
     session_id_from_headers,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
+from baton.integrations.identity_adapter import USER_ID_MODE_HASHED, resolve_user_id
+from baton.integrations.official import _auth
 from baton.integrations.official._registry import get_tool_manager, get_tool_registry
 from baton.integrations.runtime_adapter import UNKNOWN_AGENT_RUNTIME, detect_agent_runtime
 from baton.scrub import identity_scrub
@@ -169,9 +171,14 @@ def install_wraps(
     proactive_tracker: ProactiveTracker | None = None,
     resolve_session_id_hook: ResolveSessionIdHook | None = None,
     server_meta: dict[str, Any] | None = None,
+    user_id_mode: str = USER_ID_MODE_HASHED,
+    user_id_hmac_key: bytes | None = None,
 ) -> None:
     """Inject + wrap all currently-registered tools AND future registrations."""
     tracker = proactive_tracker or ProactiveTracker()
+    # Warn-once state for identity resolution, owned here so the "no HMAC key"
+    # line is logged once per install rather than once per tool call.
+    identity_warned: set[str] = set()
     # tool_name -> {param_name: "injected" | "native"}. Populated as tools are
     # injected; read in the wrapper to decide strip-vs-forward, per param,
     # independently. A plain dict (no lock) is safe: all access is on the one
@@ -240,6 +247,10 @@ def install_wraps(
                 param_registry=param_registry,
                 tracker=tracker,
                 fallback_session_id=fallback_session_id,
+                tenant_id=tenant_id,
+                user_id_mode=user_id_mode,
+                user_id_hmac_key=user_id_hmac_key,
+                identity_warned=identity_warned,
                 resolve_session_id_hook=resolve_session_id_hook,
                 surface_state=surface_state,
                 emit_surface=emit_surface,
@@ -393,15 +404,28 @@ def _wrap_tool_run(
     name: str,
     tool: Any,
     emit_before: Callable[
-        [str, str, dict[str, Any], dict[str, Any] | None, str | None, str | None, str | None, str],
+        [
+            str,
+            str,
+            dict[str, Any],
+            dict[str, Any] | None,
+            str | None,
+            str | None,
+            str | None,
+            str,
+            str | None,
+        ],
         Awaitable[None],
     ],
-    emit_after: Callable[[str, str, Any, float, dict[str, Any] | None, str], Awaitable[None]],
+    emit_after: Callable[
+        [str, str, Any, float, dict[str, Any] | None, str, str | None], Awaitable[None]
+    ],
     emit_error: Callable[
-        [str, str, BaseException, float, dict[str, Any] | None, str], Awaitable[None]
+        [str, str, BaseException, float, dict[str, Any] | None, str, str | None], Awaitable[None]
     ],
     emit_proactive: Callable[
-        [str, str, str, str | None, str | None, dict[str, Any] | None, str], Awaitable[None]
+        [str, str, str, str | None, str | None, dict[str, Any] | None, str, str | None],
+        Awaitable[None],
     ],
     scrubber: Callable[[Any], Any],
     *,
@@ -409,6 +433,10 @@ def _wrap_tool_run(
     param_registry: dict[str, dict[str, str]],
     tracker: ProactiveTracker,
     fallback_session_id: str,
+    tenant_id: str,
+    user_id_mode: str,
+    user_id_hmac_key: bytes | None,
+    identity_warned: set[str],
     resolve_session_id_hook: ResolveSessionIdHook | None,
     surface_state: _SurfaceState,
     emit_surface: Callable[[str, str, dict[str, Any]], Awaitable[None]],
@@ -499,6 +527,22 @@ def _wrap_tool_run(
             detect_agent_runtime(meta_dict, context=context, scrubber=scrubber)
             or UNKNOWN_AGENT_RUNTIME
         )
+        # Identity resolves HERE, beside the runtime detect and for the same
+        # structural reason: one place per call, before anything is emitted.
+        # ``resolve_user_id`` returns the FINISHED wire value — a hash or a
+        # deliberate raw principal — so the raw identity never travels past
+        # this line into the emitters, mirroring baton-proxy's edge-hash
+        # chokepoint. Unauthenticated calls (every stdio one) get ``None``.
+        call_user_id = resolve_user_id(
+            _auth.get_access_token_or_none()
+            if _auth.get_access_token_or_none is not None
+            else None,
+            mode=user_id_mode,
+            tenant_id=tenant_id,
+            hmac_key=user_id_hmac_key,
+            logger=logger,
+            warned=identity_warned,
+        )
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
         call_session_id = await _resolve_call_session_id(
             context,
@@ -523,6 +567,7 @@ def _wrap_tool_run(
                 scrubbed_task,
                 scrubbed_meta,
                 call_agent_runtime,
+                call_user_id,
             )
 
         # MRTR (mcp>=2.0): a continuation carries input_responses/request_state
@@ -542,6 +587,7 @@ def _wrap_tool_run(
                 scrubbed_expected,
                 scrubbed_task,
                 call_agent_runtime,
+                call_user_id,
             )
         called_at = monotonic()
         try:
@@ -558,6 +604,7 @@ def _wrap_tool_run(
                 monotonic() - called_at,
                 scrubbed_meta,
                 call_agent_runtime,
+                call_user_id,
             )
             raise
         # MRTR (mcp>=2.0): an InputRequiredResult means the call paused mid-flight
@@ -572,6 +619,7 @@ def _wrap_tool_run(
                 monotonic() - called_at,
                 scrubbed_meta,
                 call_agent_runtime,
+                call_user_id,
             )
         return result
 
@@ -731,12 +779,27 @@ def _make_emitters(
     scrubber: Callable[[Any], Any],
 ) -> tuple[
     Callable[
-        [str, str, dict[str, Any], dict[str, Any] | None, str | None, str | None, str | None, str],
+        [
+            str,
+            str,
+            dict[str, Any],
+            dict[str, Any] | None,
+            str | None,
+            str | None,
+            str | None,
+            str,
+            str | None,
+        ],
         Awaitable[None],
     ],
-    Callable[[str, str, Any, float, dict[str, Any] | None, str], Awaitable[None]],
-    Callable[[str, str, BaseException, float, dict[str, Any] | None, str], Awaitable[None]],
-    Callable[[str, str, str, str | None, str | None, dict[str, Any] | None, str], Awaitable[None]],
+    Callable[[str, str, Any, float, dict[str, Any] | None, str, str | None], Awaitable[None]],
+    Callable[
+        [str, str, BaseException, float, dict[str, Any] | None, str, str | None], Awaitable[None]
+    ],
+    Callable[
+        [str, str, str, str | None, str | None, dict[str, Any] | None, str, str | None],
+        Awaitable[None],
+    ],
     Callable[[str, str, dict[str, Any]], Awaitable[None]],
 ]:
     """Build five async emitters: ``tool_call_start`` / ``_end`` / ``_error``,
@@ -760,6 +823,7 @@ def _make_emitters(
         workflow: str | None,
         runtime_meta: dict[str, Any] | None,
         agent_runtime: str,
+        user_id: str | None,
     ) -> None:
         await safe_write(
             sink,
@@ -771,6 +835,7 @@ def _make_emitters(
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
+                user_id=user_id,
                 runtime_meta=runtime_meta,
                 payload=AnnotationPayload(
                     intent=intent,
@@ -792,6 +857,7 @@ def _make_emitters(
         call_expected: str | None,
         call_workflow: str | None,
         agent_runtime: str,
+        user_id: str | None,
     ) -> None:
         injected_any = any(v is not None for v in (call_intent, call_expected, call_workflow))
         await safe_write(
@@ -804,6 +870,7 @@ def _make_emitters(
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
+                user_id=user_id,
                 runtime_meta=runtime_meta,
                 payload=ToolCallStartPayload(
                     tool_name=name,
@@ -824,6 +891,7 @@ def _make_emitters(
         duration_s: float,
         runtime_meta: dict[str, Any] | None,
         agent_runtime: str,
+        user_id: str | None,
     ) -> None:
         await safe_write(
             sink,
@@ -835,6 +903,7 @@ def _make_emitters(
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
+                user_id=user_id,
                 runtime_meta=runtime_meta,
                 payload=ToolCallEndPayload(
                     tool_name=name,
@@ -852,6 +921,7 @@ def _make_emitters(
         duration_s: float,
         runtime_meta: dict[str, Any] | None,
         agent_runtime: str,
+        user_id: str | None,
     ) -> None:
         await safe_write(
             sink,
@@ -863,6 +933,7 @@ def _make_emitters(
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
+                user_id=user_id,
                 runtime_meta=runtime_meta,
                 payload=ToolCallErrorPayload(
                     tool_name=name,

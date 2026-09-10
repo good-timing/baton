@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from baton.integrations.identity_adapter import USER_ID_MODES
 from baton.sinks import Sink, StdoutSink
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,23 @@ def _resolve_tenant_id(explicit: str | None, vendor_id: str) -> str:
     return vendor_id
 
 
+def _resolve_user_id_hmac_key(explicit: bytes | None) -> bytes | None:
+    """``user_id_hmac_key``: explicit → ``BATON_USER_ID_HMAC_KEY`` → ``None``.
+
+    The env var is the contract baton-proxy and baton-extmcp have honoured
+    since 0.5.0 and the one the console's setup string names, so it keeps
+    working here unchanged. The explicit field is additive, for a vendor whose
+    secrets arrive from a manager rather than the environment.
+
+    ``None`` is a supported state, not an error: it means hashed-mode identity
+    is off and events emit without ``user_id``.
+    """
+    if explicit is not None:
+        return explicit
+    from_env = os.environ.get("BATON_USER_ID_HMAC_KEY")
+    return from_env.encode("utf-8") if from_env else None
+
+
 @dataclass
 class VendorConfig:
     """Vendor-side configuration for ``install_baton``."""
@@ -107,10 +125,6 @@ class VendorConfig:
     annotation_tool_name: str | None = None
     """Optional override for the annotation tool name. Default is
     ``{vendor_id}_annotate``."""
-
-    """Default value for the ``agent_runtime`` field on emitted events when
-    the SDK can't detect from ``_meta``. Set this explicitly when shipping
-    into a known runtime (e.g., ``"claude-code"`` for a Claude Code plugin)."""
 
     scrubber: Callable[[Any], Any] | None = None
     """PII scrubber per SPEC §7. Default (None) uses ``baton.scrub.Scrubber``
@@ -152,6 +166,47 @@ class VendorConfig:
     captures intent. The two are alternative intent channels, not additive —
     running both also makes two competing ``workflow`` labels that a consumer
     has to arbitrate."""
+
+    user_id_mode: str = "hashed"
+    """How an authenticated end-user principal reaches the wire (SPEC §11.4
+    ``user_id``). ``"hashed"`` (default) emits ``h1:<hex>`` — an HMAC computed
+    in this process, so the collector only ever sees the pseudonym. ``"raw"``
+    emits the subject verbatim.
+
+    **``"raw"`` puts real end-user identity in the collector's database.** It
+    is the right choice for a vendor instrumenting a server whose users are
+    themselves, or one with no residency obligation who would rather read a
+    name than a hash — and the wrong choice by default, which is why it is not
+    the default. On a multi-tenant vendor server the principals are the
+    VENDOR's customers, and shipping their identities to a third party is a
+    decision only that vendor can make.
+
+    Hashed mode needs ``user_id_hmac_key``; raw mode needs nothing. The two are
+    distinguishable on the wire without a second field, because a hashed value
+    always carries the ``h1:`` scheme prefix."""
+
+    user_id_hmac_key: bytes | None = None
+    """Secret keying the ``user_id`` HMAC in ``"hashed"`` mode.
+
+    Resolved explicit → ``BATON_USER_ID_HMAC_KEY`` → ``None``. Unset means
+    hashed identity is fail-open-skipped: ``user_id`` is dropped, events still
+    emit, and it is logged once. ``user_id`` is additive analytics — never a
+    consent or authorization gate.
+
+    **The vendor generates and holds this; Baton never sees it.** That is what
+    makes the pseudonym real: if the collector held the key it could hash a
+    list of candidate identities and reverse the column, which is exactly what
+    hashing at the edge exists to prevent.
+
+    ⚠ **Use a high-entropy secret** — ``openssl rand -hex 32`` or equivalent.
+    The input space here is emails and user ids, which is small and guessable,
+    so a memorable key defeats the entire purpose: anyone holding the database
+    could dictionary-attack the column. A weak key is not a weaker pseudonym,
+    it is none.
+
+    Rotation seam: cut to a new key and new hashes carry a new scheme prefix
+    while historical ones keep ``h1:``. The discontinuity is accepted and
+    documented — the raw value was never stored, so nothing can be re-hashed."""
 
     resolve_session_id: ResolveSessionIdHook | None = None
     """Optional vendor-supplied session-id resolver, checked BEFORE the SPEC
@@ -196,6 +251,12 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             "VendorConfig.consent_token is required per SPEC §2.3 — events "
             "without a valid consent_token MUST be rejected by the consumer. "
             "v0 form: a single UUID granted at SDK init."
+        )
+    if config.user_id_mode not in USER_ID_MODES:
+        raise ValueError(
+            f"user_id_mode {config.user_id_mode!r} must be one of "
+            f"{sorted(USER_ID_MODES)} — 'hashed' emits an HMAC pseudonym, "
+            f"'raw' emits the end user's identity verbatim to the collector."
         )
     if config.intent_param_mode not in _INTENT_PARAM_MODES:
         raise ValueError(

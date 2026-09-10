@@ -8,6 +8,41 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased — `user_id` is populated: the SDK reads the authenticated end user, and hashes it before it leaves the process
+
+### Added
+
+- **`user_id` now carries the authenticated end-user principal on both MCP adapters.** The field has been on the envelope since 0.3.0 and nothing ever filled it — `identity.py` shipped as a parity mirror of baton-proxy and no adapter called it, so every SDK-sourced event has carried a null actor while the proxy and the gateway adapter carried a real one. Both adapters now read the principal from the verified access token and attach it to every event of a call, including the annotation event.
+
+  **Where the value comes from.** The OIDC subject (`claims["sub"]`) of the token the vendor's own `TokenVerifier` already validated, keyed together with its issuer (`claims["iss"]`). **Never `client_id`** — that names the OAuth *application*, and was measured identical for two different users on every version tested, so keying on it would merge every user of one app into a single actor. `subject` is not read either: it is `None` for every user across the whole fastmcp 2.x/3.x band, and fastmcp 3.4.2's own token rebuild drops it, so the shortcut is the buggier path.
+
+  **The issuer is folded into the hash, and this diverges from baton-proxy deliberately.** A `sub` is unique only within the provider that minted it, so a vendor running two identity providers can hand the same `sub` to two different people — who would otherwise hash to one `user_id`, a silent merge invisible in every total. `hash_user_id(..., issuer=None)` produces the identical value it always has, so nothing baton-proxy or baton-extmcp has emitted since 0.5.0 changes; adopting the same signature there is a tracked follow-up.
+
+  **This is the attested half of identity, and the only one.** `agent_runtime` is what a client says it is; `user_id` comes from a token something checked. Keep the two claims apart — they are trustworthy to different degrees.
+
+- **`VendorConfig(user_id_mode=...)` — `"hashed"` (default) or `"raw"`.** Hashed emits `h1:<hex>`, an HMAC computed in the vendor's own process, so the collector only ever sees the pseudonym. Raw emits the subject verbatim.
+
+  ⚠ **`"raw"` puts real end-user identity in the collector's database**, with whatever retention and residency obligations that implies. It is the right choice for a vendor instrumenting a server whose users are themselves, and the wrong one by default — on a multi-tenant vendor server the principals are that vendor's own customers. The two modes are distinguishable on the wire without a second field: a hashed value always carries the `h1:` scheme prefix, and a value without one is a raw principal.
+
+- **`VendorConfig(user_id_hmac_key=...)`, resolved explicit → `BATON_USER_ID_HMAC_KEY` → unset.** The env var is the contract baton-proxy and baton-extmcp have honoured since 0.5.0, so it keeps working unchanged; the field is additive, for a vendor whose secrets come from a manager rather than the environment.
+
+  **The vendor generates and holds this secret — Baton never receives it.** That is what makes the pseudonym real: a collector holding the key could hash candidate identities and reverse the column. ⚠ **Use a high-entropy value** (`openssl rand -hex 32`). The input space is emails and user ids, which is small and guessable, so a memorable key is not a weaker pseudonym — it is none.
+
+  With no key set, hashed mode is **fail-open-skipped**: `user_id` is dropped, every event still emits, and it is logged once (never with the principal in the message). `user_id` is additive analytics and never a consent or authorization gate.
+
+### Known limits, all measured rather than assumed
+
+- **HTTP only.** MCP auth is ASGI middleware on every supported version, so a stdio deployment has no token to read and `user_id` is always absent there. That is the transport, not a gap in this change.
+- **`mcp < 1.27` cannot carry it.** `AccessToken` gained `claims` and `subject` somewhere in (1.25, 1.27] — on 1.20 and 1.25, two of the four legs the `mcp` matrix runs, the model has neither, and pydantic's default `extra="ignore"` means a verifier passing `claims=` there has them silently discarded. The read is a `getattr`, so those versions resolve to "no identity" rather than crashing, and a vendor whose verifier returns an `AccessToken` **subclass** declaring `claims` is read correctly even on 1.20 — pinned by a test that runs on every matrix leg. The `[mcp]` floor was deliberately not raised: 1.20 and 1.25 are green, and they lack only an optional field on a feature that needs HTTP plus OAuth to do anything at all.
+- **It says WHO, never which call.** That is `call_id`, a different field on a different condition.
+- `surface_snapshot` never carries it — it describes the server, and is captured outside any call.
+
+### Removed
+
+- **An orphaned `default_agent_runtime` docstring in `VendorConfig`.** The field was removed in the entry below; its documentation was left behind as a bare string literal, still describing a parameter that now raises `TypeError`.
+
+---
+
 ## Unreleased — the SDK reads the client's declared identity, so `agent_runtime` stops being `unknown` for everyone but Claude Code
 
 ### Added

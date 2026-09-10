@@ -32,6 +32,7 @@ from baton._uuid import uuid7
 from baton.integrations._config import (
     VendorConfig,
     _resolve_tenant_id,
+    _resolve_user_id_hmac_key,
     _validate_vendor_config,
 )
 from baton.integrations._handle import BatonHandle
@@ -74,6 +75,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     # tenant than its tool call is unjoinable — the one correlation the
     # sensor exists to produce.
     tenant_id = _resolve_tenant_id(config.tenant_id, config.vendor_id)
+    user_id_hmac_key = _resolve_user_id_hmac_key(config.user_id_hmac_key)
     fallback_session_id = f"sdk-{uuid7()}"
     counter = SessionCounter()
     # Shared across the wrap layer (synthesises a proactive from the first
@@ -125,6 +127,8 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         intent_param_mode=config.intent_param_mode,
         proactive_tracker=proactive_tracker,
         resolve_session_id_hook=config.resolve_session_id,
+        user_id_mode=config.user_id_mode,
+        user_id_hmac_key=user_id_hmac_key,
         server_meta=server_meta,
     )
 
@@ -141,6 +145,8 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         fallback_session_id=fallback_session_id,
         annotation_tool_name=config.annotation_tool_name,
         proactive_mode=config.proactive_mode,
+        user_id_mode=config.user_id_mode,
+        user_id_hmac_key=user_id_hmac_key,
         scrubber=scrubber,
         proactive_tracker=proactive_tracker,
     )

@@ -26,11 +26,13 @@ from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
 from baton.integrations._config import ResolveSessionIdHook
 from baton.integrations._llm_text import build_annotation_tool_description
+from baton.integrations.identity_adapter import USER_ID_MODE_HASHED, resolve_user_id
 from baton.integrations.runtime_adapter import (
     UNKNOWN_AGENT_RUNTIME,
     detect_agent_runtime,
     meta_to_dict,
 )
+from baton.integrations.standalone import _auth
 from baton.integrations.standalone._session import resolve_call_session_id
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
@@ -72,9 +74,12 @@ def register_annotation_tool(
     scrubber: Callable[[Any], Any] = identity_scrub,
     proactive_tracker: ProactiveTracker | None = None,
     resolve_session_id_hook: ResolveSessionIdHook | None = None,
+    user_id_mode: str = USER_ID_MODE_HASHED,
+    user_id_hmac_key: bytes | None = None,
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
     tracker = proactive_tracker or ProactiveTracker()
+    identity_warned: set[str] = set()
     name = derive_annotation_tool_name(vendor_id, annotation_tool_name)
     description = build_annotation_tool_description(
         vendor_display_name=vendor_display_name, proactive_mode=proactive_mode
@@ -143,6 +148,16 @@ def register_annotation_tool(
         if signal_type is None:
             tracker.mark(session_id)
         seq = await counter.next(session_id)
+        annotation_user_id = resolve_user_id(
+            _auth.get_access_token_or_none()
+            if _auth.get_access_token_or_none is not None
+            else None,
+            mode=user_id_mode,
+            tenant_id=tenant_id,
+            hmac_key=user_id_hmac_key,
+            logger=logger,
+            warned=identity_warned,
+        )
         await safe_write(
             sink,
             AnnotationEvent(
@@ -153,6 +168,7 @@ def register_annotation_tool(
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
+                user_id=annotation_user_id,
                 runtime_meta=scrubbed_meta,
                 payload=AnnotationPayload(
                     intent=scrubber(user_goal) if user_goal else None,
