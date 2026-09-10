@@ -38,6 +38,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
   With no key set, hashed mode is **fail-open-skipped**: `user_id` is dropped, every event still emits, and it is logged once (never with the principal in the message). `user_id` is additive analytics and never a consent or authorization gate.
 
+### Changed
+
+- **A `test` extra now holds the test tooling, and `dev` is `all` + `test`.** `pip install baton-sdk[dev]` is unchanged in content. The split exists so an environment can be built for ONE adapter: `[dev]` pulls `fastmcp`, whose 4.x requires `mcp>=2`, which makes `pip install -e ".[dev]" "mcp==1.20.0"` unsatisfiable rather than merely slow — so the CI leg that pins an old `mcp` had been installing in two steps, and a second `pip install` only replaces the package you name. It left mcp 2.x-era companions (`mcp-types`, `fastmcp-slim`) sitting beside the pinned `mcp`. That leg now resolves once, as a customer on that pin would.
+
 ### Known limits, all measured rather than assumed
 
 - **HTTP only.** MCP auth is ASGI middleware on every supported version, so a stdio deployment has no token to read and `user_id` is always absent there. That is the transport, not a gap in this change.

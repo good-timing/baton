@@ -101,15 +101,27 @@ all = [
     "baton-sdk[fastmcp]",
     "baton-sdk[http]",
 ]
-dev = [
-    "baton-sdk[all]",
-    "ruff>=0.6",
-    "mypy>=1.10",
+# Test tooling ALONE, no integrations. Split out of ``dev`` so a matrix leg can
+# build the environment for ONE adapter without dragging the other adapter's
+# library in behind it. ``mcp-matrix`` needs exactly that: it tests the official
+# adapter against a pinned ``mcp``, and ``[dev]`` pulls ``fastmcp``, whose 4.x
+# requires ``mcp>=2`` — so ``pip install -e ".[dev]" "mcp==1.20.0"`` is not
+# merely slow, it is UNSATISFIABLE (measured 2026-09-10: pip backtracks to
+# ``resolution-too-deep``). That is why that leg installed in two steps, and two
+# steps is what leaves a mixed tree behind. One resolve of ``[mcp,test]`` has
+# neither problem.
+test = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
     "pytest-httpserver>=1.0",
     "jsonschema>=4.0",
+]
+dev = [
+    "baton-sdk[all]",
+    "baton-sdk[test]",
+    "ruff>=0.6",
+    "mypy>=1.10",
 ]
 
 [tool.ruff]
