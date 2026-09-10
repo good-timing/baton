@@ -416,37 +416,29 @@ class TestEnvelopeFields:
         for ev in snapshots:
             assert ev["agent_runtime"] == "unknown"
 
-    async def test_explicit_default_agent_runtime(
-        self, sink: Sink, captured: list[dict[str, Any]]
-    ) -> None:
-        """Middleware accepts a `default_agent_runtime` constructor arg for
-        deployments where the runtime is known up front (e.g., shipping
-        specifically into a Claude Code plugin)."""
-        mcp = _build_mcp(sink, default_agent_runtime="claude-code")
+    async def test_there_is_no_vendor_settable_default_runtime(self, sink: Sink) -> None:
+        """``default_agent_runtime`` was REMOVED 2026-09-09.
 
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
+        It let a vendor assert the runtime of every caller from a value set
+        ONCE at install, so it could only be right in a single-client
+        deployment — and with the declared tiers in place it would assert over
+        a client that had just named itself. Nobody ever set it: no example, no
+        fixture, no other repo. Same disposition, and the same reasoning, as
+        the ``io.baton/agent_runtime`` override removed alongside it.
 
-        async with Client(mcp) as client:
-            await client.call_tool("echo", {"text": "x"})
-
-        await sink.flush()
-        # ⚠ `mcp`, not `claude-code`, since 2026-09-09: the in-process client
-        # DECLARES itself (as the library, having set no `client_info`), and a
-        # declaration beats the vendor's install-time default. The default was
-        # always a fallback — `detect(...) or default` — which was unobservable
-        # while detection fired on one key prefix. It now applies only to a
-        # client that declares nothing at all. A vendor who set this because
-        # they "ship into Claude Code" was guessing, and a bare mcp client
-        # genuinely is not Claude Code.
-        for ev in without_surface_snapshots(captured):
-            assert ev["agent_runtime"] == "mcp"
-        # The one place a configured default still lands: no caller to name.
-        snapshots = [ev for ev in captured if ev["event_type"] == "surface_snapshot"]
-        assert snapshots, "no surface_snapshot captured — the assertion below is vacuous"
-        for ev in snapshots:
-            assert ev["agent_runtime"] == "claude-code"
+        Pinned as a hard ``TypeError`` rather than a silently-ignored kwarg,
+        matching this SDK's refusal posture (design note D3): a vendor who was
+        setting it should find out at import, not by wondering months later why
+        their configured value never appears.
+        """
+        with pytest.raises(TypeError, match="default_agent_runtime"):
+            BatonMiddleware(  # type: ignore[call-arg]
+                tenant_id="t",
+                vendor_id="v",
+                consent_token="ct",
+                sink=sink,
+                default_agent_runtime="claude-code",
+            )
 
     async def test_detects_claude_code_from_meta(
         self, sink: Sink, captured: list[dict[str, Any]]
@@ -473,7 +465,12 @@ class TestEnvelopeFields:
         tool_events = without_surface_snapshots(captured)
         assert tool_events, "no events captured"
         for ev in tool_events:
-            assert ev["agent_runtime"] == "claude-code"
+            # ⚠ `mcp`, not `claude-code`: the ladder is declared-first, so the
+            # client's own `clientInfo` outranks a carried `claudecode/` key —
+            # and this driver declares the LIBRARY name, setting no
+            # `client_info`. The heuristic is near-unreachable end-to-end for
+            # that reason; it is pinned in tests/test_runtime_adapter.py.
+            assert ev["agent_runtime"] == "mcp"
 
     async def test_the_removed_override_cannot_suppress_the_heuristic(
         self, sink: Sink, captured: list[dict[str, Any]]
@@ -502,7 +499,12 @@ class TestEnvelopeFields:
 
         await sink.flush()
         for ev in without_surface_snapshots(captured):
-            assert ev["agent_runtime"] == "claude-code"
+            # ⚠ `mcp`, not `claude-code`: the ladder is declared-first, so the
+            # client's own `clientInfo` outranks a carried `claudecode/` key —
+            # and this driver declares the LIBRARY name, setting no
+            # `client_info`. The heuristic is near-unreachable end-to-end for
+            # that reason; it is pinned in tests/test_runtime_adapter.py.
+            assert ev["agent_runtime"] == "mcp"
 
     async def test_nested_baton_dict_is_no_longer_an_override(
         self, sink: Sink, captured: list[dict[str, Any]]

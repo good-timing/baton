@@ -108,7 +108,6 @@ class VendorConfig:
     """Optional override for the annotation tool name. Default is
     ``{vendor_id}_annotate``."""
 
-    default_agent_runtime: str = "unknown"
     """Default value for the ``agent_runtime`` field on emitted events when
     the SDK can't detect from ``_meta``. Set this explicitly when shipping
     into a known runtime (e.g., ``"claude-code"`` for a Claude Code plugin)."""

@@ -201,12 +201,25 @@ class TestTheDeclaredTiers:
         meta = {"io.modelcontextprotocol/clientInfo": {"name": "zed"}}
         assert detect_agent_runtime(meta, context=_Ctx(_Params2x("gateway"))) == "zed"
 
-    def test_a_per_call_key_outranks_the_connection(self) -> None:
-        """The ordering that looks wrong and is not: ``_meta`` survives a proxy
-        hop, ``clientInfo`` does not. This is Claude Code reaching us THROUGH a
-        middlebox, and the answer must name the agent, not the box."""
+    def test_a_declaration_outranks_the_prefix_heuristic(self) -> None:
+        """Declared beats inferred, and an earlier draft had this backwards.
+
+        That draft argued ``_meta`` survives a proxy hop while ``clientInfo``
+        does not, so the prefix would name the agent and the declaration the
+        middlebox. ``baton-proxy`` forwards ``initialize`` UNCHANGED, so the
+        server behind it sees the agent's own ``clientInfo`` — and a proxy
+        forwards ``_meta`` too, which makes ``claudecode/*`` evidence about
+        where the METADATA came from, not about who is calling.
+        """
         meta = {"claudecode/toolUseId": "tu_1"}
-        assert detect_agent_runtime(meta, context=_Ctx(_Params2x("some-gateway"))) == "claude-code"
+        got = detect_agent_runtime(meta, context=_Ctx(_Params2x("some-other-client")))
+        assert got == "some-other-client"
+
+    def test_the_heuristic_still_answers_when_nobody_declared(self) -> None:
+        """Demoted, not dropped — it is proven coverage for the one client it
+        knows, and discarding proven coverage needs evidence nobody relies on
+        it."""
+        assert detect_agent_runtime({"claudecode/toolUseId": "tu_1"}) == "claude-code"
 
     def test_the_connection_answers_when_the_call_says_nothing(self) -> None:
         """Claude Desktop's shape: no ``_meta`` at all. Unattributable before
@@ -262,3 +275,23 @@ class TestDeclaredNamesAreUntrustedInput:
     def test_a_junk_declared_name_falls_through(self, name: Any) -> None:
         meta = {"claudecode/toolUseId": "tu_1"}
         assert detect_agent_runtime(meta, context=_Ctx(_Params2x(name))) == "claude-code"
+
+    @pytest.mark.parametrize(
+        "scrubbed",
+        [
+            pytest.param(None, id="redacts-by-returning-None"),
+            pytest.param(object(), id="returns-some-object"),
+            pytest.param(b"bytes", id="returns-bytes"),
+        ],
+    )
+    def test_a_scrubber_returning_a_non_string_loses_the_TIER(self, scrubbed: Any) -> None:
+        """Not the whole ladder, and NOT a stringified value on the wire.
+
+        ``str(None)`` is ``"None"`` — truthy, and it would have shipped as the
+        reported runtime on every event of every call for any vendor whose
+        scrubber redacts that way. An arbitrary object would have shipped its
+        ``repr``. Falling through is the documented contract for a tier a
+        scrubber took away.
+        """
+        meta = {"io.modelcontextprotocol/clientInfo": {"name": "a"}, "claudecode/toolUseId": "t"}
+        assert detect_agent_runtime(meta, scrubber=lambda v: scrubbed) == "claude-code"

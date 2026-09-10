@@ -87,7 +87,7 @@ async def _drive(events_path: Path, meta: dict[str, Any] | None) -> list[dict[st
 @pytest.mark.parametrize(
     ("meta", "expected"),
     [
-        pytest.param({"claudecode/toolUseId": "tu_1"}, "claude-code", id="heuristic"),
+        pytest.param({"claudecode/toolUseId": "tu_1"}, "mcp", id="declaration-beats-the-key"),
         pytest.param({"io.baton/agent_runtime": "acme"}, "mcp", id="override-is-inert"),
         pytest.param({"progressToken": 7}, "mcp", id="no-per-call-signal"),
         pytest.param(None, "mcp", id="no-meta-at-all"),
@@ -119,7 +119,7 @@ async def test_the_annotation_tool_agrees_with_the_tool_calls(tmp_path: Path) ->
     assert "annotation" in by_type, f"no annotation event captured, got {sorted(by_type)}"
     assert "tool_call_start" in by_type, f"no tool_call_start captured, got {sorted(by_type)}"
     for event_type, runtime in by_type.items():
-        assert runtime == "claude-code", f"{event_type} reported {runtime!r}"
+        assert runtime == "mcp", f"{event_type} reported {runtime!r}"
 
 
 async def test_the_context_kwarg_stays_out_of_the_public_tool_schema(tmp_path: Path) -> None:
@@ -179,7 +179,7 @@ async def test_the_annotation_event_carries_no_session_bearing_meta(tmp_path: Pa
         {"io.baton/session_id": "app-handle", "claudecode/toolUseId": "tu_1"},
     )
     annotation = next(ev for ev in events if ev["event_type"] == "annotation")
-    assert annotation["agent_runtime"] == "claude-code", (
+    assert annotation["agent_runtime"] == "mcp", (
         "the meta is still READ for the runtime — only its emission is withheld"
     )
     assert not annotation.get("runtime_meta"), (

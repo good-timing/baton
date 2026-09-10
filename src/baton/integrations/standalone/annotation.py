@@ -26,7 +26,11 @@ from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
 from baton.integrations._config import ResolveSessionIdHook
 from baton.integrations._llm_text import build_annotation_tool_description
-from baton.integrations.runtime_adapter import detect_agent_runtime, meta_to_dict
+from baton.integrations.runtime_adapter import (
+    UNKNOWN_AGENT_RUNTIME,
+    detect_agent_runtime,
+    meta_to_dict,
+)
 from baton.integrations.standalone._session import resolve_call_session_id
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
@@ -63,7 +67,6 @@ def register_annotation_tool(
     sink: Sink,
     counter: SessionCounter,
     fallback_session_id: str,
-    default_agent_runtime: str = "unknown",
     annotation_tool_name: str | None = None,
     proactive_mode: str = "off",
     scrubber: Callable[[Any], Any] = identity_scrub,
@@ -113,7 +116,7 @@ def register_annotation_tool(
         raw_meta = rc.meta if rc else None
         meta_dict = meta_to_dict(raw_meta)
         runtime = detect_agent_runtime(raw_meta, context=ctx, scrubber=scrubber) or (
-            default_agent_runtime
+            UNKNOWN_AGENT_RUNTIME
         )
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
 

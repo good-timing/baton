@@ -545,7 +545,11 @@ class TestResolveSessionIdHookOnAnnotationTool:
         await handle.flush()
         annotation_events = [ev for ev in captured if ev["event_type"] == "annotation"]
         assert len(annotation_events) == 1
-        assert annotation_events[0]["agent_runtime"] == "claude-code"
+        # `mcp` since the ladder became declared-first — the driver's client
+        # declares the library name, which outranks the carried `claudecode/`
+        # key. The point of the assertion is unchanged: the annotation tool
+        # resolves the runtime the SAME way the tool-call path does.
+        assert annotation_events[0]["agent_runtime"] == "mcp"
 
 
 # =============================================================================

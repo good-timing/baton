@@ -26,7 +26,7 @@ from baton.integrations._llm_text import build_annotation_tool_description
 from baton.integrations.official._compat import ContextClass as Context
 from baton.integrations.official._compat import MCPServerClass as FastMCP
 from baton.integrations.official._tool_wrap import _extract_meta_from_context
-from baton.integrations.runtime_adapter import detect_agent_runtime
+from baton.integrations.runtime_adapter import UNKNOWN_AGENT_RUNTIME, detect_agent_runtime
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
 
@@ -61,7 +61,6 @@ def register_annotation_tool(
     sink: Sink,
     counter: SessionCounter,
     fallback_session_id: str,
-    default_agent_runtime: str = "unknown",
     annotation_tool_name: str | None = None,
     proactive_mode: str = "off",
     scrubber: Callable[[Any], Any] = identity_scrub,
@@ -147,7 +146,7 @@ def register_annotation_tool(
         # a vendor scrubber that touches meta keys must not be able to turn
         # runtime detection off. Same rule as both tool-call paths.
         runtime = detect_agent_runtime(meta_dict, context=ctx, scrubber=scrubber) or (
-            default_agent_runtime
+            UNKNOWN_AGENT_RUNTIME
         )
         # The meta is read for the RUNTIME and deliberately not emitted as
         # ``runtime_meta`` on this event, unlike the tool-call path. It can

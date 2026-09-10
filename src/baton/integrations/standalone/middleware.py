@@ -50,7 +50,11 @@ from baton.integrations._llm_text import (
     build_user_goal_param_description,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
-from baton.integrations.runtime_adapter import detect_agent_runtime, meta_to_dict
+from baton.integrations.runtime_adapter import (
+    UNKNOWN_AGENT_RUNTIME,
+    detect_agent_runtime,
+    meta_to_dict,
+)
 from baton.integrations.standalone._session import resolve_call_session_id
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
@@ -68,7 +72,6 @@ class BatonMiddleware(Middleware):
         vendor_id: str,
         consent_token: str,
         sink: Sink,
-        default_agent_runtime: str = "unknown",
         scrubber: Callable[[Any], Any] = identity_scrub,
         counter: SessionCounter | None = None,
         fallback_session_id: str | None = None,
@@ -82,7 +85,6 @@ class BatonMiddleware(Middleware):
         self._vendor_id = vendor_id
         self._consent_token = consent_token
         self._sink = sink
-        self._default_agent_runtime = default_agent_runtime
         self._scrubber = scrubber
         self._counter = counter or SessionCounter()
         self._fallback_session_id = fallback_session_id or f"sdk-{uuid7()}"
@@ -242,7 +244,7 @@ class BatonMiddleware(Middleware):
                 session_id=self._fallback_session_id,
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
-                agent_runtime=self._default_agent_runtime,
+                agent_runtime=UNKNOWN_AGENT_RUNTIME,
                 payload=SurfaceSnapshotPayload(
                     surface_hash=digest,
                     server_info=surface["server_info"],
@@ -393,7 +395,7 @@ class BatonMiddleware(Middleware):
         meta_dict = meta_to_dict(raw_meta)
         runtime = (
             detect_agent_runtime(raw_meta, context=context.fastmcp_context, scrubber=self._scrubber)
-            or self._default_agent_runtime
+            or UNKNOWN_AGENT_RUNTIME
         )
         # Scrub the meta dict if a scrubber is configured — meta values may
         # carry runtime-supplied identifiers that vendors want filtered.

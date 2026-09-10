@@ -101,7 +101,7 @@ from baton.integrations._session import (
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 from baton.integrations.official._registry import get_tool_manager, get_tool_registry
-from baton.integrations.runtime_adapter import detect_agent_runtime
+from baton.integrations.runtime_adapter import UNKNOWN_AGENT_RUNTIME, detect_agent_runtime
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
 
@@ -163,7 +163,6 @@ def install_wraps(
     sink: Sink,
     counter: SessionCounter,
     fallback_session_id: str,
-    default_agent_runtime: str = "unknown",
     scrubber: Callable[[Any], Any] = identity_scrub,
     annotation_tool_name: str | None = None,
     intent_param_mode: str = "optional",
@@ -185,7 +184,6 @@ def install_wraps(
         consent_token=consent_token,
         sink=sink,
         counter=counter,
-        default_agent_runtime=default_agent_runtime,
         scrubber=scrubber,
     )
 
@@ -238,7 +236,6 @@ def install_wraps(
                 emit_error,
                 emit_proactive,
                 scrubber,
-                default_agent_runtime,
                 intent_param_mode=intent_param_mode,
                 param_registry=param_registry,
                 tracker=tracker,
@@ -407,7 +404,6 @@ def _wrap_tool_run(
         [str, str, str, str | None, str | None, dict[str, Any] | None, str], Awaitable[None]
     ],
     scrubber: Callable[[Any], Any],
-    default_agent_runtime: str,
     *,
     intent_param_mode: str,
     param_registry: dict[str, dict[str, str]],
@@ -501,7 +497,7 @@ def _wrap_tool_run(
         # for the same reason (middleware.py, just above its own scrub call).
         call_agent_runtime = (
             detect_agent_runtime(meta_dict, context=context, scrubber=scrubber)
-            or default_agent_runtime
+            or UNKNOWN_AGENT_RUNTIME
         )
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
         call_session_id = await _resolve_call_session_id(
@@ -732,7 +728,6 @@ def _make_emitters(
     consent_token: str,
     sink: Sink,
     counter: SessionCounter,
-    default_agent_runtime: str,
     scrubber: Callable[[Any], Any],
 ) -> tuple[
     Callable[
@@ -899,7 +894,7 @@ def _make_emitters(
                 session_id=session_id,
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
-                agent_runtime=default_agent_runtime,
+                agent_runtime=UNKNOWN_AGENT_RUNTIME,
                 payload=SurfaceSnapshotPayload(
                     surface_hash=digest,
                     server_info=snapshot["server_info"],

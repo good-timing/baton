@@ -44,9 +44,20 @@ pytestmark = pytest.mark.functional
 # (case id, the _meta a client sends, the agent_runtime BOTH adapters must report)
 RUNTIME_CASES = [
     pytest.param(
+        # ⚠ `mcp`, not `claude-code`, since the ladder became declared-first.
+        # Both drivers' clients DECLARE themselves (as the library, setting no
+        # `client_info`) while this `_meta` merely carries a `claudecode/` key,
+        # and a declaration outranks that inference now.
+        #
+        # A consequence worth stating: the heuristic is close to unreachable
+        # end-to-end, because every real client declares something and Claude
+        # Code declares `claude-code` anyway — so where the heuristic would
+        # fire, the declaration already gives the same answer. It survives as a
+        # backstop for a client that declares nothing at all, which no driver
+        # here can produce; that path is pinned in the unit tests instead.
         {"claudecode/toolUseId": "tu_abc123"},
-        "claude-code",
-        id="claudecode-prefix-heuristic",
+        "mcp",
+        id="a-declaration-outranks-a-carried-claudecode-key",
     ),
     pytest.param(
         # The client override was REMOVED 2026-09-09. Parity matters as much
@@ -61,10 +72,11 @@ RUNTIME_CASES = [
         id="io.baton-override-is-inert",
     ),
     pytest.param(
-        # And it cannot SUPPRESS a heuristic that would otherwise match.
+        # And it cannot SUPPRESS detection: the declared name still wins, and
+        # the asserted `acme-plugin` appears nowhere.
         {"io.baton/agent_runtime": "acme-plugin", "claudecode/toolUseId": "tu_abc123"},
-        "claude-code",
-        id="removed-override-does-not-suppress-the-heuristic",
+        "mcp",
+        id="removed-override-does-not-suppress-detection",
     ),
     pytest.param(
         # Cursor's shape per SPEC §5.2: a progressToken and nothing else.
@@ -95,14 +107,15 @@ DECLARED_CASES = [
     pytest.param({}, "claude-ai", "claude-ai", id="desktops-declared-name"),
     pytest.param({"progressToken": 7}, "cursor", "cursor", id="cursor-declared"),
     pytest.param(
-        # The ordering case. `_meta` survives a proxy hop and `clientInfo` does
-        # not, so a per-call key beats a connection-level declaration: this is
-        # Claude Code reaching us THROUGH a middlebox, and the answer must name
-        # the agent, not the box.
+        # The ordering case, and it was briefly written the other way round.
+        # A DECLARATION outranks the prefix heuristic: `claudecode/*` says the
+        # metadata originated from Claude Code, not that the caller is Claude
+        # Code, and `baton-proxy` forwards `initialize` unchanged — so a server
+        # behind it sees the agent's own `clientInfo` anyway.
         {"claudecode/toolUseId": "tu_1"},
-        "some-gateway",
-        "claude-code",
-        id="per-call-key-outranks-the-hop",
+        "some-other-client",
+        "some-other-client",
+        id="a-declaration-outranks-the-prefix-heuristic",
     ),
     pytest.param(
         # And the new-spec carrier outranks both.

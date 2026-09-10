@@ -58,6 +58,15 @@ from typing import Any
 #: carrier was the one the spec deleted.
 CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo"
 
+#: What an event reports when no tier answered. A LITERAL, not a knob: the
+#: vendor-settable ``VendorConfig.default_agent_runtime`` was removed
+#: 2026-09-09 for the same reason the ``io.baton/agent_runtime`` override was.
+#: It let a vendor assert a runtime, nobody ever set it, and it is set ONCE at
+#: install for every connection — so it can only be right in a single-client
+#: deployment, and after the declared tiers landed it would be asserting over
+#: a client that just named itself.
+UNKNOWN_AGENT_RUNTIME = "unknown"
+
 #: Cap on any name the CLIENT supplied. Both declared tiers read arbitrary
 #: client text and copy it onto every event of the call, so an unbounded value
 #: reaches every ``HttpSink`` payload too. 128 is far above any real client
@@ -82,7 +91,15 @@ def _clean(name: Any, scrubber: Callable[[Any], Any] | None) -> str | None:
     cleaned: str = name
     if scrubber is not None:
         scrubbed = scrubber(cleaned)
-        cleaned = scrubbed if isinstance(scrubbed, str) else str(scrubbed)
+        # A scrubber that redacts by returning ``None`` — or anything else that
+        # is not a string — loses this TIER, it does not get stringified onto
+        # the wire. ``str(None)`` is ``"None"``, which is truthy and would ship
+        # as the reported runtime on every event of every call; an arbitrary
+        # object would ship its ``repr``. Only the empty-string case was
+        # handled before, which covered one redaction style and not the other.
+        if not isinstance(scrubbed, str):
+            return None
+        cleaned = scrubbed
     if not cleaned:
         return None
     return cleaned[:CLIENT_NAME_MAX_LEN]
@@ -164,49 +181,50 @@ def detect_agent_runtime(
     ``context`` is the adapter's MCP context, read only for the session's
     cached handshake; omitting it costs the declared tier and nothing else.
 
-    Detection precedence — **end-to-end signals before hop-local ones**, and
-    declared before inferred among equals. First hit wins:
+    Detection precedence — **declared before inferred**, freshest declaration
+    first. First hit wins:
 
     1. ``_meta["io.modelcontextprotocol/clientInfo"]`` — declared by the client,
        riding the request itself. New-spec clients only; empty today.
-    2. Heuristic on key prefixes (``claudecode/*`` → ``claude-code``). Inferred,
-       but also rides the request.
-    3. ``context.session.client_params`` — declared, from the ``initialize``
-       handshake. **This is the tier that does the work today**: every shipping
-       client declares here and nowhere else.
+    2. ``context.session.client_params`` — the same declaration, from the
+       ``initialize`` handshake. **This is the tier that does the work today**:
+       every shipping client declares here and nowhere else.
+    3. Heuristic on key prefixes (``claudecode/*`` → ``claude-code``). Kept
+       BELOW both declarations rather than dropped: it is proven coverage, and
+       discarding proven coverage needs evidence nobody relies on it.
     4. ``None`` — caller substitutes its configured default.
 
-    **Why the heuristic sits ABOVE a real declaration, when B1-R's whole point
-    was to prefer declarations.** Because the two answer different questions.
-    ``_meta`` travels END-TO-END from the agent — a proxy or gateway forwards it
-    verbatim, which is how baton-proxy detects a runtime at all — while
-    ``clientInfo`` describes only the IMMEDIATE connection hop. So for "which
-    agent runtime is calling", the per-call keys are the more end-to-end signal
-    even when one of them is an inference.
+    **The heuristic is LAST on purpose, and an earlier draft of this ladder got
+    it wrong.** That draft put the prefix scan above the handshake, arguing
+    ``_meta`` travels end-to-end through a proxy while ``clientInfo`` names only
+    the immediate hop — so a middlebox would make the declaration name the box
+    and the prefix name the agent. **The premise is false for the proxy we
+    actually ship:** ``baton-proxy`` forwards the client's ``initialize``
+    unchanged ("Forwarded unchanged (we only read it)", ``proxy.py``), so a
+    server behind it sees the AGENT's ``clientInfo``. The scenario was
+    generalised from a fastmcp test client naming itself ``mcp``, which is not a
+    middlebox at all.
 
-    This costs nothing anywhere it does not matter. On a direct connection
-    Claude Code declares ``claude-code`` AND sends ``claudecode/*``, so tiers 2
-    and 3 agree and the order is unobservable. They can only disagree when
-    something sits in between — and there tier 2 names the agent while tier 3
-    names the middlebox, so ordering it this way is strictly better rather than
-    a trade. Every other client reaches tier 3 untouched, because the heuristic
-    fires on exactly one prefix.
+    With that gone the argument inverts. A proxy forwards ``_meta`` verbatim
+    too, so ``claudecode/*`` means "this metadata ORIGINATED from Claude Code",
+    not "the caller IS Claude Code" — while ``clientInfo`` is the client saying
+    what it is. And the heuristic is a one-vendor hardcode: keeping it on top
+    special-cases Claude Code permanently and makes every new client a code
+    change, which is the prefix-table trap B1-R exists to escape.
+
+    Where they agree (Claude Code direct: declares ``claude-code``, sends
+    ``claudecode/*``) the order is unobservable either way.
 
     Tiers 1-2 return CLIENT-SUPPLIED text, so both are scrubbed and capped;
     tier 3 returns a constant this module owns and is neither. A tier whose
     value scrubs away to nothing falls through to the next one.
 
-    **On the vendor's ``default_agent_runtime``: it stays a FALLBACK, and it
-    now applies far less often.** Detection has always won over it
-    (``detect_agent_runtime(...) or default``), which was unobservable while
-    detection fired on one prefix only. Tier 3 fires for essentially every
-    client, so a vendor who configured a default because they "ship into Claude
-    Code" will now see whatever the client actually declared instead — often a
-    LIBRARY name like ``mcp`` rather than an agent. That is the right way round:
-    the default is for when nothing was observed, and a bare mcp client really
-    is not Claude Code, so the vendor's install-time guess was simply wrong on
-    that connection. It is a behaviour change for any vendor who set it, and
-    the CHANGELOG says so.
+    **There is no vendor-settable default.** When no tier answers, the event
+    reports ``UNKNOWN_AGENT_RUNTIME``. ``VendorConfig.default_agent_runtime``
+    was removed with this change: a vendor set it once at install, for every
+    connection, so it could only be right in a single-client deployment — and
+    with the declared tiers in place it would be asserting a runtime over a
+    client that had just named itself.
 
     ⚠ **Two things this does NOT claim.** The declared name identifies the
     IMMEDIATE MCP client, which behind a gateway is the gateway rather than the
@@ -217,18 +235,24 @@ def detect_agent_runtime(
     """
     meta_dict = meta_to_dict(meta)
 
+    # Tier 1 — declared, on the request.
     if meta_dict:
-        # Tier 1 — declared, on the request.
         declared = _clean(_client_name_from_meta(meta_dict), scrubber)
         if declared is not None:
             return declared
 
-        # Tier 2 — inferred, on the request. Above tier 3 because `_meta`
-        # survives a proxy hop and `clientInfo` does not; see the docstring.
+    # Tier 2 — declared, on the connection. The tier that answers for every
+    # client shipping today, including the ones that were unattributable
+    # before it existed.
+    declared = _clean(_client_name_from_context(context), scrubber)
+    if declared is not None:
+        return declared
+
+    # Tier 3 — inferred, and last: a key prefix says where the METADATA came
+    # from, not who the caller is. Only reached when nobody declared anything.
+    if meta_dict:
         for key in meta_dict:
             if isinstance(key, str) and key.startswith("claudecode/"):
                 return "claude-code"
 
-    # Tier 3 — declared, on the connection. Reached by every client that sends
-    # no recognized per-call key, which today is all of them but one.
-    return _clean(_client_name_from_context(context), scrubber)
+    return None
