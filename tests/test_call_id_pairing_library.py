@@ -19,9 +19,20 @@ therefore the Trace object itself, and "mint in a local variable inside the
 function that emits both legs" (SPEC §11.4) has to be read as "mint per Trace"
 on this path. The shipped mint resolves that as **per ENTRY** — ``__aenter__``
 assigns ``_call_id``, ``__init__`` only declares it — so a Trace entered a second
-time gets a second id rather than reusing the first call's. This file drives two
-separate instances, so that particular property is covered by the mutation run
-rather than by these assertions.
+time gets a second id rather than reusing the first call's.
+
+⚠ **The SYNC half was unpinned for one commit, and the check that should have
+caught it could not.** The async rig above drives ``AsyncClient`` only, while
+``Client`` / ``Trace`` mint on the same pattern in ``__enter__`` — a different
+line of code that no assertion here touched. The mutation run that "verified"
+this path replaced BOTH occurrences of the mint at once and then reported red
+off the async site alone, so the sync mutation was inert and its silence was
+indistinguishable from a pass. **A mutation against an untested site reds
+nothing**; the assertion has to exist first. The sync tests below are that
+assertion, and they cover one property the async ones structurally cannot: the
+async rig uses two SEPARATE ``Trace`` objects, so it cannot tell a per-ENTRY
+mint from a per-INSTANCE one. ``test_re_entering_one_trace_mints_a_fresh_id``
+can, and it is the test that fails if the mint ever moves to ``__init__``.
 """
 
 from __future__ import annotations
@@ -30,7 +41,7 @@ import asyncio
 
 import pytest
 
-from baton import AsyncClient
+from baton import AsyncClient, Client
 from baton.events import Event
 from tests._forced_reorder import (
     FAST,
@@ -146,4 +157,97 @@ async def test_call_id_pairs_each_leg_with_its_own_trace() -> None:
     assert joined == [(FAST, FAST), (SLOW, SLOW)], (
         f"each end must join its OWN start, got {joined} — FIFO produces "
         f"{sorted(fifo_pairs(starts, ends))} on this same stream"
+    )
+
+
+# =============================================================================
+# The SYNC half — Client / Trace, which mint in ``__enter__``
+# =============================================================================
+#
+# Deliberately NOT a copy of the async rig. Forcing an inversion here would
+# need two threads through the sync bridge, and the property that actually
+# went unpinned is the MINT SITE, not the join — the join is the same
+# ``_pair_key`` partition on either half. These assert the two things a
+# hoisted or mis-scoped sync mint breaks, each of which fails on its own
+# assertion with the ids in the message.
+
+
+def _sync_starts(traces: int) -> tuple[CapturingSink, list[Event]]:
+    """``traces`` sequential traces of ONE tool on one sync client."""
+    sink = CapturingSink()
+    with Client(
+        vendor_id="pairing",
+        consent_token="ct_pairing",
+        sink=sink,
+        tenant_id="tenant-pairing",
+    ) as client:
+        for i in range(traces):
+            with client.trace(tool_name=TOOL_NAME, params={"tag": f"call-{i}"}) as trace:
+                trace.observed({"i": i})
+    starts, _ = legs(sink.events)
+    return sink, starts
+
+
+def test_every_leg_of_a_sync_traced_call_carries_a_call_id() -> None:
+    sink, _ = _sync_starts(1)
+    starts, ends = legs(sink.events)
+    assert starts and ends, (
+        f"the sync rig emitted no legs to check: {[e.event_type for e in sink.events]} "
+        "— an empty run must fail here rather than pass vacuously"
+    )
+    missing = [e.event_type for e in [*starts, *ends] if call_id_of(e) is None]
+    assert not missing, f"sync legs with no call_id: {missing}"
+
+
+def test_two_sync_traces_of_one_tool_get_distinct_ids() -> None:
+    """The sync twin of the async distinctness assertion — a mint hoisted onto
+    the ``Client`` sends one id for every call it ever makes."""
+    _, starts = _sync_starts(2)
+    ids = [call_id_of(e) for e in starts]
+    assert len(ids) == 2, f"expected two starts, got {len(ids)}"
+    assert all(i is not None for i in ids), f"a sync start had no call_id: {ids}"
+    assert len(set(ids)) == 2, (
+        f"two sync traces must mint two ids, got {ids} — a shared id pairs "
+        "across calls of one tool, which is strictly worse than FIFO"
+    )
+
+
+def test_re_entering_one_trace_mints_a_fresh_id() -> None:
+    """The property NO other test in this suite can see.
+
+    Every other rig here uses two separate ``Trace`` objects, so a mint moved
+    from ``__enter__`` into ``__init__`` would still hand them different ids
+    and every assertion would stay green. Re-entering ONE object is what
+    separates per-ENTRY from per-INSTANCE, and the SDK's contract is per entry:
+    a Trace is the per-call scope only while it is entered.
+    """
+    sink = CapturingSink()
+    with Client(
+        vendor_id="pairing",
+        consent_token="ct_pairing",
+        sink=sink,
+        tenant_id="tenant-pairing",
+    ) as client:
+        trace = client.trace(tool_name=TOOL_NAME, params={"tag": "reused"})
+        with trace:
+            trace.observed({"i": 0})
+        # ⚠ The second entry warns, and the warning is a SEPARATE pre-existing
+        # defect this test happens to stand next to — see workplan §N12.
+        # ``__enter__`` resets ``_call_id``, ``_start_seq`` and
+        # ``_call_started_at``, but NOT ``_observed_result`` / ``_observed_error``
+        # / ``_observed_warned``, so a re-entered Trace carries the previous
+        # call's outcome. Asserted rather than filtered so it cannot become
+        # background noise, and so this test reds if the reset is ever added
+        # without updating the note. Reproduced on `main` too — not the mint's.
+        with pytest.warns(UserWarning, match="called multiple times"):
+            with trace:
+                trace.observed({"i": 1})
+    starts, _ = legs(sink.events)
+    ids = [call_id_of(e) for e in starts]
+    assert len(ids) == 2, f"expected two starts from two entries, got {len(ids)}"
+    assert all(i is not None for i in ids), f"a re-entered start had no call_id: {ids}"
+    assert len(set(ids)) == 2, (
+        f"re-entering one Trace must mint a FRESH id, got {ids} — an id minted "
+        "in __init__ survives the call it was minted for, so a reused Trace "
+        "reports two calls under one id"
     )
