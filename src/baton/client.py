@@ -14,13 +14,8 @@ running a persistent event loop; standard pattern for sync-over-async SDKs
 like Sentry):
 
     from baton import Client, SignalType
-    from baton.sinks import HttpSink
 
-    client = Client(
-        vendor_id="acme",
-        consent_token="...",
-        sink=HttpSink("https://acme.console.example.com", api_key="bk_live_..."),
-    )
+    client = Client(dsn="https://baton_pk_...@ingest.example.com/ten_.../acme")
     try:
         with client.trace(
             tool_name="chat.completions.create",
@@ -57,11 +52,22 @@ Async usage (no thread bridge; directly drives the async ``Sink``):
     finally:
         await client.aclose()
 
-Config loading: explicit kwargs win; env-var fallback supported for
-``vendor_id`` (``BATON_VENDOR_ID``), ``tenant_id`` (``BATON_TENANT_ID``) and
-``consent_token`` (``BATON_CONSENT_TOKEN``). ``sink`` is explicit only —
-construct your sink from env vars at the call site if you want that behavior.
-``consent_token`` may be overridden per-trace.
+One-value setup: a ``dsn`` — the packed string from ``/account`` — carries the
+ingest host, the workspace, the server and the key, and the client builds its
+own ``HttpSink`` from it::
+
+    client = Client(dsn="https://baton_pk_...@ingest.example.com/ten_.../acme")
+
+Config loading: explicit kwargs win; env-var fallback supported for ``dsn``
+(``BATON_DSN``), ``vendor_id`` (``BATON_VENDOR_ID``), ``tenant_id``
+(``BATON_TENANT_ID``) and ``consent_token`` (``BATON_CONSENT_TOKEN``).
+``consent_token`` is defaulted by the SDK when nothing supplies it, and may be
+overridden per-trace.
+
+**A ``dsn`` counts as EXPLICIT for everything it carries**, so it outranks the
+environment and cannot be combined with an explicit ``sink``, ``vendor_id`` or
+``tenant_id`` — passing both raises rather than picking a winner. Without one,
+``sink`` is required and is constructed by the caller, exactly as before.
 
 ``vendor_id`` and ``tenant_id`` are DIFFERENT things and the envelope carries
 both (SPEC §11.4): ``tenant_id`` is the ACCOUNT the collector authenticates,
@@ -79,14 +85,17 @@ import os
 import threading
 import traceback
 from collections.abc import Coroutine
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from time import monotonic
 from types import TracebackType
 from typing import Any, Self, TypeVar
 
+from baton._dsn import parse_dsn, resolve_dsn
 from baton._uuid import uuid7
 from baton.events import (
+    DEFAULT_CONSENT_TOKEN,
     AnnotationEvent,
     AnnotationPayload,
     ToolCallEndEvent,
@@ -97,7 +106,7 @@ from baton.events import (
     ToolCallStartPayload,
 )
 from baton.scrub import Scrubber, identity_scrub  # noqa: F401  identity_scrub kept exported
-from baton.sinks import Sink, safe_write
+from baton.sinks import HttpSink, Sink, safe_write
 
 T = TypeVar("T")
 
@@ -163,6 +172,107 @@ def _resolve_config_value(
             f"{name} must be supplied explicitly or via the {env_key} environment variable"
         )
     return None
+
+
+@dataclass(frozen=True)
+class _ClientConfig:
+    """What a ``Client`` needs to emit, however it was configured."""
+
+    sink: Sink
+    vendor_id: str
+    tenant_id: str
+    consent_token: str
+
+
+def _resolve_client_config(
+    *,
+    sink: Sink | None,
+    dsn: str | None,
+    vendor_id: str | None,
+    tenant_id: str | None,
+    consent_token: str | None,
+) -> _ClientConfig:
+    """The library API's config resolution — the twin of ``install_baton``'s.
+
+    Both doors take the same packed ``dsn`` and apply the same rules to it, in
+    one place, because the two capture paths having their own copy of a
+    resolution is exactly how this SDK once shipped an adapter that silently
+    disagreed with its sibling for two releases.
+
+    Precedence, unchanged from before the DSN existed: an explicit argument
+    wins, then the environment. What a DSN supplies counts as EXPLICIT — a
+    stale ``BATON_VENDOR_ID`` from an earlier install must not redirect a
+    client whose source states where it belongs.
+    """
+    dsn_string = resolve_dsn(dsn)
+    if dsn_string is not None:
+        for name, supplied in (
+            ("vendor_id", vendor_id is not None),
+            ("tenant_id", tenant_id is not None),
+            ("sink", sink is not None),
+        ):
+            if supplied:
+                raise ValueError(
+                    f"Client got both a dsn and an explicit {name} — the dsn "
+                    f"already supplies it. Drop one: the dsn is the single "
+                    f"value from /account, and {name} is what it unpacks to."
+                )
+        parsed = parse_dsn(dsn_string)
+        return _ClientConfig(
+            # Built here, not lazily: a missing ``[http]`` extra must fail
+            # where the vendor is looking rather than at the first traced call.
+            sink=HttpSink(parsed.origin, api_key=parsed.key),
+            vendor_id=parsed.vendor_id,
+            tenant_id=parsed.tenant_id,
+            consent_token=_resolve_consent_token(consent_token),
+        )
+
+    if sink is None:
+        raise ValueError(
+            "Client needs somewhere to send events: pass sink=... (for example "
+            "HttpSink(url, api_key=...) or StdoutSink()), or dsn=... — the "
+            "packed value from /account, which builds the sink for you."
+        )
+    vendor_id_resolved = _resolve_config_value(
+        vendor_id, "BATON_VENDOR_ID", required=True, name="vendor_id"
+    )
+    assert vendor_id_resolved is not None
+    # ``tenant_id`` is NOT required, and it falls back to vendor_id: SPEC §11.4
+    # wants the ACCOUNT here and vendor_id is the SERVER, but every install
+    # predating the split passes only the latter. The fallback is a migration
+    # shim for this repo's fixtures — it reproduces the collapse the split ends
+    # — and is the branch to delete once every install carries a dsn or the
+    # recipe emits BATON_TENANT_ID.
+    tenant_id_resolved = _resolve_config_value(
+        tenant_id, "BATON_TENANT_ID", required=False, name="tenant_id"
+    )
+    return _ClientConfig(
+        sink=sink,
+        vendor_id=vendor_id_resolved,
+        tenant_id=tenant_id_resolved or vendor_id_resolved,
+        consent_token=_resolve_consent_token(consent_token),
+    )
+
+
+def _resolve_consent_token(explicit: str | None) -> str:
+    """``consent_token``: explicit → ``BATON_CONSENT_TOKEN`` → the SDK default.
+
+    It used to be required from the caller. It is defaulted now because the
+    customer should not have to carry a value that reads to nobody — see
+    ``baton.events.DEFAULT_CONSENT_TOKEN``, which also records why the field
+    stays on the wire. An explicit empty string still raises: a value someone
+    deliberately emptied is a mistake, not a request for the default.
+    """
+    if explicit is not None and not explicit:
+        raise ValueError(
+            "consent_token was set to an empty string, and events without one "
+            "MUST be rejected by the consumer per SPEC §2.3. Omit it to take "
+            "the SDK's default."
+        )
+    resolved = _resolve_config_value(
+        explicit, "BATON_CONSENT_TOKEN", required=False, name="consent_token"
+    )
+    return resolved or DEFAULT_CONSENT_TOKEN
 
 
 def _resolve_signal_type(signal_type: SignalType | str | None) -> str | None:
@@ -540,34 +650,25 @@ class Client:
     def __init__(
         self,
         *,
-        sink: Sink,
+        sink: Sink | None = None,
+        dsn: str | None = None,
         vendor_id: str | None = None,
         tenant_id: str | None = None,
         consent_token: str | None = None,
         agent_runtime: str = "python-library",
         scrubber: Any = None,
     ) -> None:
-        vendor_id_resolved = _resolve_config_value(
-            vendor_id, "BATON_VENDOR_ID", required=True, name="vendor_id"
-        )
-        consent_token_resolved = _resolve_config_value(
-            consent_token, "BATON_CONSENT_TOKEN", required=True, name="consent_token"
-        )
-        # NOT required, and it falls back to vendor_id: SPEC §11.4 wants the
-        # ACCOUNT here and vendor_id is the SERVER, but every install predating
-        # the split passes only the latter. The fallback is a migration shim for
-        # this repo's fixtures — it reproduces the collapse the split ends — and
-        # is the branch to delete once the recipe emits BATON_TENANT_ID.
-        tenant_id_resolved = _resolve_config_value(
-            tenant_id, "BATON_TENANT_ID", required=False, name="tenant_id"
+        resolved = _resolve_client_config(
+            sink=sink,
+            dsn=dsn,
+            vendor_id=vendor_id,
+            tenant_id=tenant_id,
+            consent_token=consent_token,
         )
 
-        assert vendor_id_resolved is not None
-        assert consent_token_resolved is not None
-
-        self._vendor_id: str = vendor_id_resolved
-        self._tenant_id: str = tenant_id_resolved or vendor_id_resolved
-        self._consent_token: str = consent_token_resolved
+        self._vendor_id: str = resolved.vendor_id
+        self._tenant_id: str = resolved.tenant_id
+        self._consent_token: str = resolved.consent_token
         self._agent_runtime: str = agent_runtime
         # Default to a fresh Scrubber per Client so the per-category
         # counter is owned by the client instance (and not shared across
@@ -579,7 +680,7 @@ class Client:
         # sink's async primitives (locks, background drain tasks, httpx
         # clients) bind to one stable loop instead of a fresh one per emit.
         self._bridge = _SyncBridge()
-        self._sink: Sink = sink
+        self._sink: Sink = resolved.sink
 
         # Per-session sequence counters. Library mode = per-event mode (each
         # Trace generates a fresh session_id), so each session_id has exactly
@@ -957,34 +1058,25 @@ class AsyncClient:
     def __init__(
         self,
         *,
-        sink: Sink,
+        sink: Sink | None = None,
+        dsn: str | None = None,
         vendor_id: str | None = None,
         tenant_id: str | None = None,
         consent_token: str | None = None,
         agent_runtime: str = "python-library",
         scrubber: Any = None,
     ) -> None:
-        vendor_id_resolved = _resolve_config_value(
-            vendor_id, "BATON_VENDOR_ID", required=True, name="vendor_id"
-        )
-        consent_token_resolved = _resolve_config_value(
-            consent_token, "BATON_CONSENT_TOKEN", required=True, name="consent_token"
-        )
-        # NOT required, and it falls back to vendor_id: SPEC §11.4 wants the
-        # ACCOUNT here and vendor_id is the SERVER, but every install predating
-        # the split passes only the latter. The fallback is a migration shim for
-        # this repo's fixtures — it reproduces the collapse the split ends — and
-        # is the branch to delete once the recipe emits BATON_TENANT_ID.
-        tenant_id_resolved = _resolve_config_value(
-            tenant_id, "BATON_TENANT_ID", required=False, name="tenant_id"
+        resolved = _resolve_client_config(
+            sink=sink,
+            dsn=dsn,
+            vendor_id=vendor_id,
+            tenant_id=tenant_id,
+            consent_token=consent_token,
         )
 
-        assert vendor_id_resolved is not None
-        assert consent_token_resolved is not None
-
-        self._vendor_id: str = vendor_id_resolved
-        self._tenant_id: str = tenant_id_resolved or vendor_id_resolved
-        self._consent_token: str = consent_token_resolved
+        self._vendor_id: str = resolved.vendor_id
+        self._tenant_id: str = resolved.tenant_id
+        self._consent_token: str = resolved.consent_token
         self._agent_runtime: str = agent_runtime
         # Default to a fresh Scrubber per AsyncClient — see Client
         # docstring for the rationale (per-client counter, no
@@ -992,7 +1084,7 @@ class AsyncClient:
         # out.
         self._scrubber = scrubber if scrubber is not None else Scrubber()
 
-        self._sink: Sink = sink
+        self._sink: Sink = resolved.sink
         self._seq_counters: dict[str, int] = {}
         self._closed = False
 

@@ -33,6 +33,7 @@ from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Request, Response
 
 from baton import AsyncClient, Client, SignalType
+from baton.events import DEFAULT_CONSENT_TOKEN
 from baton.sinks import HttpSink
 
 # =============================================================================
@@ -147,15 +148,55 @@ class TestConfigLoading:
         finally:
             client.close()
 
-    def test_consent_token_required(self, capture_server: HTTPServer) -> None:
-        # Per SPEC §2.3 + §3.1, every event MUST carry a consent_token, so the
-        # SDK MUST be constructed with one (explicit or via env). Missing both
-        # raises at init.
+    def test_consent_token_defaults_when_omitted(self, capture_server: HTTPServer) -> None:
+        """Omitting it takes the SDK's default rather than raising.
+
+        This REPLACES a test asserting the opposite. Per SPEC §2.3 + §3.1 every
+        event MUST carry a consent_token, and every event still does — what
+        changed is who supplies it. The customer used to thread a constant
+        through an environment variable to a field that reads to nobody; the
+        SDK states it once instead, and the wire is byte-identical.
+        """
+        client = Client(
+            vendor_id="v",
+            sink=HttpSink(url=capture_server.url_for(""), api_key="k"),
+        )
+        try:
+            assert client._consent_token == DEFAULT_CONSENT_TOKEN
+        finally:
+            client.close()
+
+    def test_consent_token_explicitly_emptied_still_raises(
+        self, capture_server: HTTPServer
+    ) -> None:
+        """``""`` is a mistake, not a request for the default.
+
+        The distinction is the whole reason the default is not simply "any
+        falsy value is fine": a vendor who wires an empty variable into this
+        field has a broken config, and an event carrying an empty consent_token
+        MUST be rejected by the consumer — which is a failure they would meet
+        at the collector instead of at init.
+        """
         with pytest.raises(ValueError, match="consent_token"):
             Client(
                 vendor_id="v",
+                consent_token="",
                 sink=HttpSink(url=capture_server.url_for(""), api_key="k"),
             )
+
+    def test_consent_token_env_still_beats_the_default(
+        self, capture_server: HTTPServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``BATON_CONSENT_TOKEN`` keeps working — installs already set it."""
+        monkeypatch.setenv("BATON_CONSENT_TOKEN", "ct-from-env")
+        client = Client(
+            vendor_id="v",
+            sink=HttpSink(url=capture_server.url_for(""), api_key="k"),
+        )
+        try:
+            assert client._consent_token == "ct-from-env"
+        finally:
+            client.close()
 
 
 # =============================================================================

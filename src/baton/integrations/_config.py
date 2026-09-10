@@ -5,19 +5,22 @@ from __future__ import annotations
 import inspect
 import logging
 import os
-import re
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from typing import Any
 
+from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
+from baton._dsn import parse_dsn, resolve_dsn
+from baton.events import DEFAULT_CONSENT_TOKEN
 from baton.integrations.identity_adapter import USER_ID_MODES
-from baton.sinks import Sink, StdoutSink
+from baton.sinks import HttpSink, Sink, StdoutSink
 
 logger = logging.getLogger(__name__)
 
-# Vendor IDs become annotation tool name prefixes; same client-pattern as
-# annotation tool names. Reject dots so the default tool name is valid.
-_VENDOR_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
+# ``_VENDOR_ID_PATTERN`` is imported, not defined here, because a DSN's server
+# segment IS a vendor_id and both rules have to be one object. Restating the
+# ceiling as a second regex is how the two drift; this repo has already costed
+# that number wrong twice.
 
 # Per-tool intent-param injection modes (mirrors baton-proxy's BATON_INTENT_PARAM).
 _INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required", "off"})
@@ -105,28 +108,42 @@ def _resolve_user_id_hmac_key(explicit: bytes | str | None) -> bytes | None:
 class VendorConfig:
     """Vendor-side configuration for ``install_baton``."""
 
-    vendor_id: str
+    vendor_id: str = ""
     """Short stable identifier for the vendor (e.g., ``"acme"``,
     ``"example-vendor"``). Becomes the default annotation tool name prefix
-    (``{vendor_id}_annotate``); must match the cross-runtime tool-name pattern."""
+    (``{vendor_id}_annotate``); must match the cross-runtime tool-name pattern.
 
-    vendor_display_name: str
+    Required unless a ``dsn`` supplies it — the DSN's last path segment is
+    this value, and it is what the key is BOUND to."""
+
+    vendor_display_name: str = ""
     """Human-readable vendor name used in server instructions, annotation
     tool description, and any LLM-facing strings. Whitelabel obligation
-    (SPEC §5.4): no Baton-branded strings reach the calling agent."""
+    (SPEC §5.4): no Baton-branded strings reach the calling agent.
 
-    consent_token: str = ""
+    Defaults to the DSN's server segment verbatim when a ``dsn`` is given and
+    this is not. Verbatim rather than prettified: this string reaches the
+    calling agent, so inventing a capitalisation the vendor never chose would
+    put a fabricated name in front of their users."""
+
+    consent_token: str = DEFAULT_CONSENT_TOKEN
     """End-user consent token attached to every emitted event per SPEC §2.3 +
-    §3.1 (the consumer of the events MUST reject events missing it). v0 form:
-    a single UUID granted at SDK init; v0.x will extend to per-end-user
-    OAuth-scoped tokens (CHARTER ADR-1). Treated as effectively required —
-    empty string raises at ``install_baton`` time."""
+    §3.1 (the consumer of the events MUST reject events missing it).
 
-    sink: Sink = field(default_factory=StdoutSink)
-    """Where events go. Defaults to ``StdoutSink()`` — zero-config dev mode
-    that writes JSON Lines to stderr. Pass an ``HttpSink`` to ship to a
-    collector, ``FileSink`` to capture for later analysis, or ``MultiSink``
-    to fan out (e.g., stdout + http during development)."""
+    **Defaulted, so the customer never has to carry it** — see
+    ``baton.events.DEFAULT_CONSENT_TOKEN`` for why the field is kept on the
+    wire regardless. Passing ``""`` explicitly still raises: a value the vendor
+    deliberately emptied is a mistake, not a request for the default.
+    CHARTER ADR-1's per-end-user OAuth-scoped tokens land on this field."""
+
+    sink: Sink | None = None
+    """Where events go. ``None`` (the default) means the SDK picks: an
+    ``HttpSink`` built from ``dsn`` when there is one, otherwise ``StdoutSink``
+    — zero-config dev mode, writing JSON Lines to stderr. Pass an ``HttpSink``
+    to ship to a collector, ``FileSink`` to capture for later analysis, or
+    ``MultiSink`` to fan out (e.g., stdout + http during development).
+
+    Explicit and ``dsn`` together raise, rather than one quietly winning."""
 
     annotation_tool_name: str | None = None
     """Optional override for the annotation tool name. Default is
@@ -243,8 +260,129 @@ class VendorConfig:
     the diff a customer reviews in their pull request.
     """
 
+    # ⚠ APPENDED, and it must stay last. ``VendorConfig`` is a plain dataclass,
+    # so field ORDER is public API — inserting this at the top bound
+    # ``VendorConfig("acme", "Acme Corp", ...)``'s first argument to the dsn and
+    # shifted every value one slot along. That is the same silent break 0.7.0
+    # shipped when it inserted ``tenant_id`` third, and the test that caught it
+    # both times is ``test_tenant_id_is_appended_so_positional_construction_still_binds``.
+
+    dsn: str | None = None
+    """The packed connection string from ``/account`` — one value carrying the
+    ingest host, the workspace, the server and the key::
+
+        install_baton(mcp, dsn="https://baton_pk_...@ingest.example.com/ten_.../echo-server")
+
+    Supplying it fills ``vendor_id``, ``tenant_id`` and ``sink`` (an
+    ``HttpSink`` at the DSN's origin, authenticated with its key), and
+    ``vendor_display_name`` when that is not given. Grammar and rationale:
+    ``baton._dsn``.
+
+    Resolved explicit → ``BATON_DSN`` → unset. **Environment variables do not
+    override it** — a DSN is the value stated in the vendor's source, and a
+    stale ``BATON_*`` left over from an earlier install must not silently take
+    a server's events somewhere else.
+
+    Passing a DSN *and* an explicit ``vendor_id``, ``tenant_id`` or ``sink``
+    raises: two sources for one value cannot be reconciled here without
+    guessing, and a wrong guess routes a server's traffic under someone else's
+    identity. ``vendor_display_name``, the scrubber, the injection modes and
+    every identity option are unaffected — set them alongside a DSN freely."""
+
+
+def build_config(config: VendorConfig | None, dsn: str | None) -> VendorConfig:
+    """Resolve ``install_baton``'s two call shapes into one ``VendorConfig``.
+
+    ``install_baton(mcp, dsn=...)`` is the whole wrap block a distributable
+    server ships with; ``install_baton(mcp, VendorConfig(...))`` is what every
+    vendor needing more than the defaults keeps using. A config carrying its
+    own ``dsn`` field is the two combined, and is how you set a scrubber or an
+    injection mode alongside a packed key.
+    """
+    if config is not None and dsn is not None:
+        raise ValueError(
+            "install_baton got both a VendorConfig and a dsn= argument. Put "
+            "the dsn on the config — VendorConfig(dsn=...) — so there is one "
+            "place holding it."
+        )
+    if config is None:
+        if resolve_dsn(dsn) is None:
+            raise ValueError(
+                "install_baton needs either a VendorConfig or a dsn — the "
+                "packed value from /account, which starts with https:// and "
+                "can also arrive as BATON_DSN."
+            )
+        config = VendorConfig(dsn=dsn)
+    return resolve_config(config)
+
+
+def resolve_sink(config: VendorConfig) -> Sink:
+    """``sink``: explicit → built from the ``dsn`` → ``StdoutSink``.
+
+    The ``StdoutSink`` tail is the zero-config dev mode the SDK has always had:
+    a vendor who wires nothing still sees their events as JSON Lines on stderr,
+    which is the first thing that proves an install works at all.
+    """
+    return config.sink if config.sink is not None else StdoutSink()
+
+
+def resolve_config(config: VendorConfig) -> VendorConfig:
+    """Fill in whatever the DSN carries, returning a config nothing else has to
+    know about. Called by both adapters BEFORE validation; a no-op when there
+    is no DSN.
+
+    **Everything a DSN supplies lands at the EXPLICIT tier, above the
+    environment.** That is the whole point of the re-install shape it exists
+    for: a server being re-onboarded has a stale ``.env`` from its last
+    install sitting beside the new inline DSN, and if these values fell through
+    to ``BATON_TENANT_ID`` and friends, the stale environment would quietly win
+    and the events would arrive under the old identity. The DSN is the value
+    the vendor's source file states; nothing ambient outranks it.
+
+    Returns a NEW config rather than mutating the caller's — a vendor may hold
+    a module-level ``VendorConfig`` and hand it to two servers, and an install
+    that rewrites its argument would make the second one inherit the first's
+    resolution.
+    """
+    dsn_string = resolve_dsn(config.dsn)
+    if dsn_string is None:
+        return config
+
+    for name, supplied in (
+        ("vendor_id", bool(config.vendor_id)),
+        ("tenant_id", config.tenant_id is not None),
+        ("sink", config.sink is not None),
+    ):
+        if supplied:
+            # Refuse rather than pick. Whichever we chose would be right half
+            # the time and silent the other half, and the failure is a server
+            # reporting under an identity its owner did not intend.
+            raise ValueError(
+                f"VendorConfig carries both a dsn and an explicit {name} — the "
+                f"dsn already supplies it. Drop one: the dsn is the single "
+                f"value from /account, and {name} is what it unpacks to."
+            )
+
+    dsn = parse_dsn(dsn_string)
+    return replace(
+        config,
+        dsn=dsn_string,
+        vendor_id=dsn.vendor_id,
+        tenant_id=dsn.tenant_id,
+        vendor_display_name=config.vendor_display_name or dsn.vendor_id,
+        # Constructed here rather than lazily so a missing ``[http]`` extra
+        # raises at install, where the vendor is watching — not at the first
+        # tool call, in production, on somebody else's machine.
+        sink=HttpSink(dsn.origin, api_key=dsn.key),
+    )
+
 
 def _validate_vendor_config(config: VendorConfig) -> None:
+    if not config.vendor_id:
+        raise ValueError(
+            "VendorConfig needs a vendor_id — either directly, or via a dsn "
+            "whose last path segment names the server (see /account)."
+        )
     if not _VENDOR_ID_PATTERN.match(config.vendor_id):
         raise ValueError(
             f"vendor_id {config.vendor_id!r} must match "
@@ -252,11 +390,20 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             f"tool name prefix; dots and other separators are rejected by "
             f"Claude Desktop's tool-name validator."
         )
-    if not config.consent_token:
+    if not config.vendor_display_name:
         raise ValueError(
-            "VendorConfig.consent_token is required per SPEC §2.3 — events "
-            "without a valid consent_token MUST be rejected by the consumer. "
-            "v0 form: a single UUID granted at SDK init."
+            "VendorConfig needs a vendor_display_name — it names the vendor in "
+            "the server instructions and the annotation tool, both of which the "
+            "calling agent reads. A dsn supplies its server segment as the "
+            "default; there is none to fall back on here."
+        )
+    if not config.consent_token:
+        # Reachable only by passing ``""`` on purpose — the field defaults to a
+        # real value — so this is a vendor emptying it, not one forgetting it.
+        raise ValueError(
+            "VendorConfig.consent_token was set to an empty string, and events "
+            "without one MUST be rejected by the consumer per SPEC §2.3. Leave "
+            "it unset to take the SDK's default."
         )
     if config.user_id_hmac_key is not None and not isinstance(
         config.user_id_hmac_key, bytes | bytearray | str

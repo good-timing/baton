@@ -88,13 +88,27 @@ def _has_official_tool_registry(server: Any) -> bool:
         return False
 
 
-def install_baton(server: Any, config: VendorConfig) -> BatonHandle:
+def install_baton(
+    server: Any,
+    config: VendorConfig | None = None,
+    *,
+    dsn: str | None = None,
+) -> BatonHandle:
     """Install Baton into either MCP server implementation.
 
     Routes to ``baton.integrations.standalone`` for a standalone ``fastmcp``
     server and ``baton.integrations.official`` for the official SDK's, detecting on
     the seam each adapter needs. Raises ``TypeError`` — before mutating
     anything — only when the object is neither.
+
+    ``dsn`` is the packed value from ``/account``, and the two-line install::
+
+        from baton import install_baton
+
+        install_baton(mcp, dsn="https://baton_pk_...@host/ten_.../echo-server")
+
+    It is passed through untouched — the adapters resolve it, so one rule
+    governs both and neither can drift into its own parse.
     """
     is_fastmcp = _has_fastmcp_middleware_seam(server)
 
@@ -107,13 +121,13 @@ def install_baton(server: Any, config: VendorConfig) -> BatonHandle:
         from baton.integrations.standalone import install_baton as _install
 
         logger.debug("baton: routing to the standalone fastmcp adapter")
-        return _install(server, config)
+        return _install(server, config, dsn=dsn)
 
     if _has_official_tool_registry(server):
         from baton.integrations.official import install_baton as _install
 
         logger.debug("baton: routing to the official mcp SDK adapter")
-        return _install(server, config)
+        return _install(server, config, dsn=dsn)
 
     raise TypeError(
         "baton.install_baton does not recognise this object as an MCP server it "

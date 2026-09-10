@@ -150,6 +150,31 @@ class SurfaceSnapshotPayload(BaseModel):
 # =============================================================================
 
 
+DEFAULT_CONSENT_TOKEN = "customer-consented"
+"""What the SDK puts in ``consent_token`` when the vendor names no other value.
+
+**The field stays on the wire and the customer stops carrying it.** SPEC §2.3
+governs the envelope, not the config, so defaulting here changes nothing a
+consumer sees: this is byte-for-byte the value the onboarding recipe has been
+minting into ``BATON_CONSENT_TOKEN`` all along (``recipes.py``'s
+``CONSENT_TOKEN``), now stated once instead of threaded through an environment
+variable that reads to nobody.
+
+**Why the field is kept rather than removed**, since a field nothing reads is
+the obvious thing to cut: the collector's event schema is ``extra="forbid"``,
+and both SDKs are published and sending this field. Dropping it costs SPEC, two
+SDKs, two releases, regenerated cross-repo vectors and a collector that
+tolerates the field through the overlap anyway — and re-adding a REQUIRED
+envelope field later is precisely the change that stops being free once anyone
+is installed. "No customers" is the argument for keeping it.
+
+**This is not the consent surface.** What a server's users are told is a README
+paragraph and an opt-out switch, not a constant nobody reads. CHARTER ADR-1's
+per-end-user token lands on this field when it is due; the deployment model
+this default describes is a builder instrumenting their own server.
+"""
+
+
 class _EventEnvelope(BaseModel):
     """Fields every Baton event carries. Concrete event classes (below)
     inherit this + add a ``event_type`` literal and typed ``payload``.

@@ -13,7 +13,6 @@ mcp = FastMCP("your-vendor-mcp")
 handle = install_baton(mcp, VendorConfig(
     vendor_id="your-vendor",
     vendor_display_name="Your Vendor",
-    consent_token=os.environ["BATON_CONSENT_TOKEN"],
     sink=StdoutSink(),
 ))
 ```
@@ -21,6 +20,20 @@ handle = install_baton(mcp, VendorConfig(
 For the standalone ``fastmcp`` library, use ``baton.integrations.standalone``
 instead — different library, different hook mechanism (middleware vs.
 tool-handler wrapping).
+
+The whole install, for a server that SHIPS — one value from ``/account``
+carrying the ingest host, the workspace, the server and the key::
+
+    from baton import install_baton
+
+    install_baton(mcp, dsn="https://baton_pk_...@ingest.example.com/ten_.../acme")
+
+That form exists because a distributable server runs on every user's machine:
+five environment variables cannot ship with it, so a key that has to arrive
+that way means events that never arrive at all. ``VendorConfig`` stays the door
+for everything else — a scrubber, injection modes, identity options — and takes
+a ``dsn=`` field of its own so the two combine.
+
 """
 
 from __future__ import annotations
@@ -34,6 +47,8 @@ from baton.integrations._config import (
     _resolve_tenant_id,
     _resolve_user_id_hmac_key,
     _validate_vendor_config,
+    build_config,
+    resolve_sink,
 )
 from baton.integrations._handle import BatonHandle
 from baton.integrations._llm_text import build_server_instructions
@@ -56,7 +71,12 @@ from baton.scrub import Scrubber
 logger = logging.getLogger(__name__)
 
 
-def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
+def install_baton(
+    mcp: FastMCP,
+    config: VendorConfig | None = None,
+    *,
+    dsn: str | None = None,
+) -> BatonHandle:
     """Install Baton into an official-SDK FastMCP server. See module docstring for usage."""
     # FIRST, before any validation or mutation: everything below assumes a
     # high-level server, and the failures downstream are both late and
@@ -64,6 +84,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     # the instructions write silently succeeds on a bare ``Server``, and only
     # ``install_wraps`` finally dies, on a server Baton has already modified.
     require_high_level_server(mcp)
+    config = build_config(config, dsn)
     _validate_vendor_config(config)
 
     # Default to a fresh Scrubber per install so PII redaction is on out
@@ -86,7 +107,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     # injected intent) and the annotation tool (emits one when called
     # proactively) so a session opens at most one proactive.
     proactive_tracker = ProactiveTracker()
-    sink = config.sink
+    sink = resolve_sink(config)
 
     annotation_tool_name = derive_annotation_tool_name(
         config.vendor_id, config.annotation_tool_name

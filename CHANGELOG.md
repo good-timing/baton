@@ -8,6 +8,43 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased — one value configures an install, and it can ship inside the server
+
+### Added
+
+- **`dsn` — the packed connection string from the Console's `/account`**, carrying the ingest host, the workspace, the server and the key in one value:
+
+  ```python
+  from baton import install_baton
+
+  install_baton(mcp, dsn="https://baton_pk_...@ingest.example.com/ten_.../echo-server")
+  ```
+
+  That replaces eleven lines and five environment variables. It exists for the deployment the old shape could not serve: a **distributable stdio server runs on every user's machine**, so a configuration that has to arrive as `BATON_*` variables beside the process means, in practice, events that never arrive at all — measured on a real onboarding run whose server reported only from the laptop that installed it.
+
+  Accepted by all four configuration doors — both adapters' `install_baton`, `Client` and `AsyncClient` — resolved by one shared parser, and pinned by a test that drives all four with one string and asserts the values on the POSTed envelope. `VendorConfig` takes a `dsn=` field of its own, so a vendor who also wants a scrubber or an injection mode keeps one config object.
+
+  **Nothing about this reaches the wire.** The envelope still carries `tenant_id`, `vendor_id` and `consent_token` as separate fields; the SDK unpacks the string and fills them in. No SPEC change, no §13 entry, no collector change.
+
+  ⚠ **A DSN counts as EXPLICIT for everything it carries**, so it outranks the environment. That is deliberate and it is the re-install case: a server being onboarded a second time has last install's `.env` sitting beside the new inline DSN, and a stale `BATON_TENANT_ID` silently winning would file its events under the previous identity. Passing a DSN *and* an explicit `sink`, `vendor_id` or `tenant_id` raises rather than picking a winner.
+
+  ⚠ **A `baton_sk_` (workspace secret) in the key slot warns and still works.** The key ROW is the authority on what a key may do, not the string — an SDK enforcing a Console policy would turn a typo at the mint site into a confusing client-side error. But a workspace secret inside a server that ships to strangers is worth saying out loud, and this is the only place that can say it. The warning names the prefix and never the key, and goes to the logger rather than stdout, which under stdio transport is the JSON-RPC stream.
+
+- **`BATON_DSN`** as the environment fallback, for a hosted vendor who will not put the value in source: one variable instead of five.
+
+### Changed
+
+- **`consent_token` is now defaulted by the SDK** and the customer never has to carry it. Every event still carries the field — this is byte-for-byte the value the onboarding recipe has been minting into `BATON_CONSENT_TOKEN` all along — but a constant that reads to nobody should not be a line in a vendor's wrap block. `BATON_CONSENT_TOKEN` still wins over the default, so an existing install is unaffected. Passing `""` explicitly still raises: a field someone deliberately emptied is a mistake, not a request for the default, and an event carrying an empty one MUST be rejected by the consumer per SPEC §2.3.
+
+  **Why the field is kept rather than removed**, since a field nothing reads is the obvious thing to cut: the collector's event schema is `extra="forbid"` and both SDKs are published and sending it, so dropping it costs SPEC, two SDKs, two releases, regenerated cross-repo vectors and a collector that tolerates the field through the overlap anyway. Re-adding a *required* envelope field later is precisely the change that stops being free once anyone is installed. CHARTER ADR-1's per-end-user token lands on this field when it is due.
+
+  ⚠ **This is not the consent surface** and does not move it one inch. What a server's users are told is a README paragraph and an opt-out switch, neither of which exists yet.
+
+- **`install_baton(server, config)`'s second argument is now optional**, and `VendorConfig.sink` defaults to `None` rather than a `StdoutSink` instance. Behaviour is unchanged where nothing else is configured — no sink and no DSN still means `StdoutSink`, the zero-config dev mode — but `None` is what lets the SDK tell "the vendor chose stdout" apart from "the vendor chose nothing", which is what makes building a sink from a DSN safe.
+
+  ⚠ **`dsn` is appended as the LAST dataclass field, and must stay there.** `VendorConfig` is a plain dataclass, so field ORDER is public API: adding it at the top bound `VendorConfig("acme", "Acme Corp", ...)`'s first argument to the DSN and shifted every other value one slot along. That is the same silent break 0.7.0 shipped when it inserted `tenant_id` third, and the same test caught it both times.
+
+
 ## Unreleased — one paused-and-resumed tool call arrived as two complete calls
 
 ### Fixed
