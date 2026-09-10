@@ -426,10 +426,11 @@ class TestEnvelopeFields:
         fixture, no other repo. Same disposition, and the same reasoning, as
         the ``io.baton/agent_runtime`` override removed alongside it.
 
-        Pinned as a hard ``TypeError`` rather than a silently-ignored kwarg,
-        matching this SDK's refusal posture (design note D3): a vendor who was
-        setting it should find out at import, not by wondering months later why
-        their configured value never appears.
+        Pinned as an executable record of the DECISION, not as a migration
+        aid — there are no customers, which is precisely what made deleting a
+        public config field safe. The ``TypeError`` is just what removing a
+        dataclass field does; the reason to assert it is that re-adding the
+        knob should require arguing with this test rather than passing it.
         """
         with pytest.raises(TypeError, match="default_agent_runtime"):
             BatonMiddleware(  # type: ignore[call-arg]
