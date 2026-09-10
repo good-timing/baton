@@ -471,40 +471,48 @@ class BatonMiddleware(Middleware):
         # restarts at 1 per connection.
         call_id = str(uuid7())
 
+        # MRTR (mcp>=2.0 / fastmcp 4): a continuation carries the client's answers
+        # to an earlier ``InputRequiredResult`` — it is the SAME logical call
+        # resuming, not a new one, so it gets no second ``tool_call_start``. The
+        # continuation resends the original arguments, so without this every
+        # round would re-report the call, its params and its injected intent.
+        is_continuation = _is_mrtr_continuation(context)
+
         # tool_call_start — before invoking the vendor handler. safe_write
         # so a sink failure doesn't break the vendor's tool call (SPEC §11.2).
-        seq_start = await self._next_seq(session_id)
-        await safe_write(
-            self._sink,
-            ToolCallStartEvent(
-                tenant_id=self._tenant_id,
-                vendor_id=self._vendor_id,
-                consent_token=self._consent_token,
-                session_id=session_id,
-                sequence_number=seq_start,
-                captured_at=datetime.now(UTC),
-                agent_runtime=runtime,
-                user_id=call_user_id,
-                call_id=call_id,
-                runtime_meta=scrubbed_meta,
-                payload=ToolCallStartPayload(
-                    tool_name=tool_name,
-                    params=self._scrubber(params),
-                    call_intent=scrubbed_intent,
-                    call_expected=scrubbed_expected,
-                    call_workflow=scrubbed_task,
-                    intent_source=(
-                        INTENT_SOURCE_PARAM
-                        if any(
-                            v is not None
-                            for v in (scrubbed_intent, scrubbed_expected, scrubbed_task)
-                        )
-                        else None
+        if not is_continuation:
+            seq_start = await self._next_seq(session_id)
+            await safe_write(
+                self._sink,
+                ToolCallStartEvent(
+                    tenant_id=self._tenant_id,
+                    vendor_id=self._vendor_id,
+                    consent_token=self._consent_token,
+                    session_id=session_id,
+                    sequence_number=seq_start,
+                    captured_at=datetime.now(UTC),
+                    agent_runtime=runtime,
+                    user_id=call_user_id,
+                    call_id=call_id,
+                    runtime_meta=scrubbed_meta,
+                    payload=ToolCallStartPayload(
+                        tool_name=tool_name,
+                        params=self._scrubber(params),
+                        call_intent=scrubbed_intent,
+                        call_expected=scrubbed_expected,
+                        call_workflow=scrubbed_task,
+                        intent_source=(
+                            INTENT_SOURCE_PARAM
+                            if any(
+                                v is not None
+                                for v in (scrubbed_intent, scrubbed_expected, scrubbed_task)
+                            )
+                            else None
+                        ),
                     ),
                 ),
-            ),
-            logger,
-        )
+                logger,
+            )
 
         called_at = monotonic()
         try:
@@ -535,6 +543,24 @@ class BatonMiddleware(Middleware):
                 logger,
             )
             raise
+
+        # MRTR: an ``InputRequiredResult`` means the call PAUSED to ask the
+        # client for input, not that it finished. Emitting an end here would
+        # report the ask itself as the call's result — which is what this
+        # adapter did before, so one paused-and-resumed call arrived as TWO
+        # complete calls, the first carrying the ask as its outcome. The end
+        # rides the round that actually completes.
+        #
+        # ⚠ fastmcp frames this differently on purpose: its own
+        # ``InputRequiredToolResult`` docstring calls the ask "the legitimate
+        # result of this tool call — not a pause", because each MRTR leg is one
+        # complete request/response at the PROTOCOL level. That is true of the
+        # wire and not of the vendor's call: SPEC §11.4's legs describe one
+        # logical tool call, and the official adapter already treats the two
+        # rounds as one. Two adapters disagreeing about what a call IS costs
+        # more than either framing gains.
+        if _is_mrtr_pause(result):
+            return result
 
         duration_ms = int((monotonic() - called_at) * 1000)
         seq_end = await self._next_seq(session_id)
@@ -662,3 +688,51 @@ class BatonMiddleware(Middleware):
             # the floor path. Measured against the other versions, not assumed.
             return to_jsonable_python(body, serialize_unknown=True, by_alias=False)
         return str(result)
+
+
+def _is_mrtr_continuation(context: MiddlewareContext[Any]) -> bool:
+    """True if this middleware invocation is a CONTINUATION of a paused
+    multi-round tool call (MRTR, SEP-2322 / mcp>=2.0).
+
+    fastmcp 4 exposes the client's answers to an earlier
+    ``InputRequiredResult`` on the request context as ``input_responses``, and
+    the server's own resume token as ``request_state``. Either one present
+    means a round is resuming rather than starting.
+
+    Read off ``fastmcp_context`` and duck-typed rather than
+    ``isinstance``-checked: fastmcp 2.x/3.x have neither property, so this is
+    always ``False`` there and the adapter's behaviour on those versions does
+    not change at all. ``except Exception`` rather than an enumerated tuple —
+    both properties read the live request context, and which error a library
+    raises when there is no live request is a GUESS this repo has already got
+    wrong once (``8b4356d``: fastmcp raised ``RuntimeError`` where the docstring
+    promised ``ValueError``). A capture-path read must never fail the call.
+    """
+    fctx = context.fastmcp_context
+    if fctx is None:
+        return False
+    try:
+        return (
+            getattr(fctx, "input_responses", None) is not None
+            or getattr(fctx, "request_state", None) is not None
+        )
+    except Exception:  # pragma: no cover - defensive; see docstring
+        return False
+
+
+def _is_mrtr_pause(result: Any) -> bool:
+    """True if ``result`` is fastmcp 4's ``InputRequiredToolResult`` — this
+    round asked the client for input instead of completing.
+
+    Duck-typed on the field that distinguishes the subclass rather than
+    imported: the class does not exist on fastmcp 2.x/3.x, so an import would
+    have to be version-guarded to say the same thing this ``getattr`` says.
+
+    ⚠ NOT the official adapter's discriminator. That one reads
+    ``result_type == "input_required"`` off mcp's own ``InputRequiredResult``,
+    which is what the mcp seam hands back; the fastmcp seam sees the ask
+    already WRAPPED in a ``ToolResult`` subclass whose ``content`` is
+    deliberately empty, and the wrapper is what we get. Same event, two seams,
+    two shapes.
+    """
+    return getattr(result, "input_required", None) is not None

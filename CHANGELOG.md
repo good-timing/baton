@@ -8,6 +8,20 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased — one paused-and-resumed tool call arrived as two complete calls
+
+### Fixed
+
+- **The standalone (`fastmcp`) adapter had no multi-round tool call handling at all**, so a tool that pauses to ask the client for input (`InputRequiredResult`, SEP-2322, reachable on fastmcp 4) was captured as **two calls that both look finished** — the first carrying the ask itself as its result body, the second the real answer. The official adapter has suppressed the duplicate leg since `f509b20`; this one now does the same. A round that is resuming emits no second `tool_call_start`, and a round that ends in an ask emits no `tool_call_end`. One logical call, one pair, on both adapters.
+
+  **Both signals are duck-typed, and the two adapters read DIFFERENT ones.** A continuation is a request context carrying `input_responses` or `request_state`; an ask is a result carrying `input_required`. The official adapter reads mcp's own `result_type == "input_required"`, because the mcp seam hands back the raw result — the fastmcp seam sees it already wrapped in a `ToolResult` subclass whose content is deliberately empty. Same event, two seams, two shapes; neither is an `isinstance` check, so fastmcp 2.x/3.x — which have none of these properties — take the same path they always did. Verified inert there by running the detectors against a real `Context` on every supported version, not against a stand-in.
+
+  ⚠ **The two rounds still carry different `call_id`s and do not pair at tier 1.** That is the documented MRTR limitation, identical on both adapters and unchanged by this fix; what changes is that a consumer now sees one call that is honestly unpaired instead of two calls that never happened. Carrying the id across rounds remains tracked, not shipped.
+
+  ⚠ **fastmcp frames the ask as a legitimate result rather than a pause** — at the protocol level each round is a complete request/response, and its own `InputRequiredToolResult` docstring says so. That is right about the wire and wrong about the vendor's call: SPEC §11.4's legs describe one logical tool call. Adopting the protocol framing here would have left the two adapters disagreeing about what a tool call is, which costs more than either framing gains.
+
+---
+
 ## Unreleased — on the floor `fastmcp`, a tool's result reached the collector as a memory address
 
 ### Fixed
