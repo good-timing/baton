@@ -222,17 +222,45 @@ def _disabled_client_config(switch: str, surface: str, sink: Sink | None) -> _Cl
 def _close_sink_without_a_loop(sink: Sink) -> None:
     """Close a disabled sync client's sink, which has no bridge thread to run on.
 
-    ``asyncio.run`` rather than a bridge, because starting the daemon thread
-    just to shut a sink would break the promise that a disabled client runs no
-    background thread. Catches ``Exception`` and not an enumerated tuple —
-    ``asyncio.run`` raises ``RuntimeError`` from inside a running loop, a sink
-    may raise anything, and this is a close path on a client that is already
-    doing nothing. Nothing here may escape into a vendor's ``finally``.
+    ⚠ **On a TRANSIENT thread, and a bare ``asyncio.run`` here was a bug.**
+    ``asyncio.run`` refuses to run inside a thread that already has a running
+    loop, so an async application constructing a disabled sync ``Client`` and
+    closing it in a ``finally`` inside a coroutine got a swallowed
+    ``RuntimeError`` and a sink that was never closed — exactly the leak this
+    function was added to fix, and a regression against enabled mode, where
+    the bridge runs the coroutine on its own thread. It also left an un-awaited
+    coroutine, whose ``RuntimeWarning`` fails any vendor suite running under
+    ``-W error``.
+
+    The "no background thread" promise is about STEADY STATE — a disabled
+    client must not sit there holding a daemon thread and an event loop. A
+    thread started and joined inside ``close()`` leaves nothing behind, so it
+    keeps the promise and closes the sink in both worlds.
+
+    The coroutine is created INSIDE the thread, not passed into it: building it
+    here and failing to start the thread would leave the same un-awaited
+    coroutine the bare call did.
+
+    Catches ``Exception`` rather than an enumerated tuple — a vendor's sink may
+    raise anything, and nothing here may escape into their ``finally``.
     """
-    try:
-        asyncio.run(sink.aclose())
-    except Exception:
-        logger.debug("baton: closing a disabled client's sink failed", exc_info=True)
+    failure: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            asyncio.run(sink.aclose())
+        except Exception as exc:
+            failure.append(exc)
+
+    thread = threading.Thread(target=_run, name="baton-disabled-close", daemon=True)
+    thread.start()
+    # Bounded: a sink that hangs on close must not hang the vendor's shutdown.
+    thread.join(timeout=5.0)
+    if failure or thread.is_alive():
+        logger.debug(
+            "baton: closing a disabled client's sink did not complete",
+            exc_info=failure[0] if failure else None,
+        )
 
 
 def _resolve_client_config(

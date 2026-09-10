@@ -469,6 +469,60 @@ class TestASinkYouPassedIsNotDroppedOnTheFloor:
         # Closed even though there is no bridge thread to close it on.
         assert sink._closed is True
 
+    async def test_a_disabled_sync_client_closes_its_sink_from_INSIDE_a_running_loop(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The case the first version of this fix got wrong.
+
+        ``asyncio.run`` refuses to run inside a thread that already has a
+        running loop, so an async application that constructs a disabled sync
+        ``Client`` and closes it in a ``finally`` inside a coroutine got a
+        swallowed error and a sink that was never closed — the exact leak the
+        fix was written to close, and a regression against enabled mode where
+        the bridge runs the coroutine on its own thread.
+
+        ⚠ It also left an UN-AWAITED coroutine behind, so this test runs with
+        ``RuntimeWarning`` promoted to an error: a vendor whose suite uses
+        ``-W error`` would have had their tests fail inside our shutdown, and
+        an assertion on ``_closed`` alone would not have seen it.
+        """
+        import warnings
+
+        from baton import Client
+        from baton.sinks import FileSink
+
+        sink = FileSink(str(tmp_path / "events.jsonl"))
+        monkeypatch.setenv(SWITCH, "1")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            client = Client(vendor_id="v", sink=sink)
+            try:
+                with client.trace(tool_name="t") as trace:
+                    trace.observed({"ok": True})
+            finally:
+                client.close()
+
+        assert sink._closed is True, "closed from inside a running loop, the sink leaked"
+
+    def test_closing_leaves_no_thread_behind(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The transient close thread must be joined, not merely started.
+
+        "No background thread" is about steady state — but a thread that
+        outlives ``close()`` is a background thread by any other name.
+        """
+        from baton import Client
+        from baton.sinks import FileSink
+
+        monkeypatch.setenv(SWITCH, "1")
+        before = {t.name for t in threading.enumerate()}
+        client = Client(vendor_id="v", sink=FileSink(str(tmp_path / "e.jsonl")))
+        client.close()
+        after = {t.name for t in threading.enumerate()}
+        assert not [n for n in after - before if n.startswith("baton-")]
+
     async def test_a_disabled_async_client_keeps_and_closes_the_sink_it_was_given(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
