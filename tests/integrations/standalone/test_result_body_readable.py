@@ -298,14 +298,34 @@ class TestSerialisationIsFailOpen:
     """
 
     def test_unserialisable_value_degrades_instead_of_raising(self) -> None:
+        """The REAL ``ToolResult``, because the stand-in tested the wrong half.
+
+        A stand-in has no ``model_dump``, so it takes the duck-typed branch and
+        never exercises the one 3.x/4.x actually use — which raised. Caught in
+        review; this is the "test guards with real library objects" rule, and
+        the stub had been passing vacuously.
+        """
+
         class Unserialisable:
             pass
 
-        class FakeResult:
+        body = BatonMiddleware._result_to_jsonable(
+            ToolResult(content="ok", meta={"odd": Unserialisable()})
+        )
+        assert isinstance(body, dict), body
+        assert "Unserialisable" in str(body["meta"]["odd"]), body
+
+    def test_the_stand_in_path_degrades_too(self) -> None:
+        """The floor shape — a plain object with no ``model_dump``."""
+
+        class Unserialisable:
+            pass
+
+        class FloorResult:
             content: ClassVar[list[Any]] = []
             structured_content = None
             meta: ClassVar[dict[str, Any]] = {"odd": Unserialisable()}
 
-        body = BatonMiddleware._result_to_jsonable(FakeResult())
-        assert isinstance(body, dict)
+        body = BatonMiddleware._result_to_jsonable(FloorResult())
+        assert isinstance(body, dict), body
         assert "Unserialisable" in str(body["meta"]["odd"]), body

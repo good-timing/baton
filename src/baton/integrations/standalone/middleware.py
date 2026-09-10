@@ -663,14 +663,31 @@ class BatonMiddleware(Middleware):
         That matters because this runs while BUILDING the event, outside
         ``safe_write``'s guard, so a raise here would reach the vendor's tool
         call (cf. ``8b4356d``); ``TypeAdapter(Any).dump_python`` was measured
-        and DOES raise, which is what rules it out. ``pydantic-core`` is no new
-        dependency: pydantic 2.x pins it exactly, so it ships wherever pydantic
-        does — the argument ``pyproject.toml`` already makes for pydantic.
+        and DOES raise, which is what rules it out — and so does ``model_dump``,
+        which is why the branch below CATCHES rather than trusting it. That
+        catch was missing at first: the fail-open claim held only on the floor
+        path, while 3.x/4.x — the shipped one — could raise (caught in review).
+        ``pydantic-core`` is no new dependency: pydantic 2.x pins it exactly,
+        so it ships wherever pydantic does — the argument ``pyproject.toml``
+        already makes for pydantic.
+
+        ⚠ **Fail-open here means "capture is not the cause", not "the call is
+        saved".** Measured on 2.14.7 / 3.4.2 / 4.0.2 with a set, bytes, a
+        complex number and a bare object in ``meta``: everything the server can
+        itself put on the wire this function already handled, and the one value
+        that defeats it kills the call upstream with the middleware REMOVED. So
+        no shipped case exists where capture breaks a call that would otherwise
+        succeed. The guard is for the case that has not happened yet — a result
+        the server can send and pydantic cannot dump — which is the shape a
+        library change produces.
         """
         if result is None:
             return None
         if hasattr(result, "model_dump"):
-            return result.model_dump(mode="json")
+            try:
+                return result.model_dump(mode="json")
+            except Exception:
+                return to_jsonable_python(result, serialize_unknown=True, by_alias=False)
         if isinstance(result, (str, int, float, bool, list, dict)):
             return result
         if hasattr(result, "content") or hasattr(result, "structured_content"):
