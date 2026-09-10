@@ -286,6 +286,49 @@ class TestTheTwoLeaksReviewFound:
         assert KEY not in str(caught.value)
         assert "not a parseable URL" in str(caught.value)
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            f"https://h.example.com/{WORKSPACE}/{KEY}",
+            f"https://h.example.com/{KEY}/srv",
+            f"https://{KEY}@h.example.com/{WORKSPACE}/{KEY}",
+            f"https://{KEY}@h.example.com/{KEY}/srv",
+        ],
+        ids=[
+            "server-slot",
+            "workspace-slot",
+            "server-slot-with-a-real-key",
+            "workspace-slot-with-a-real-key",
+        ],
+    )
+    def test_a_key_pasted_into_a_PATH_slot_is_not_echoed(self, raw: str) -> None:
+        """The third leak of this kind, and the likeliest paste error of all.
+
+        A DSN's userinfo and its two path segments look alike to someone
+        copying by eye. Put the key in the path and there is no ``@`` at all,
+        so ``redact`` reported "no key" and then printed the path — with the
+        key in it — and the pattern-mismatch messages interpolated the segment
+        on top of that. Both halves are elided now, and the refusal names the
+        SLOT instead of repeating the value.
+        """
+        assert KEY not in redact(raw)
+        with pytest.raises(ValueError) as caught:
+            parse_dsn(raw)
+        assert KEY not in str(caught.value)
+        assert "a" * 43 not in str(caught.value)
+
+    def test_a_misplaced_key_is_told_which_mistake_it_made(self) -> None:
+        """Not merely refused. "carries no key" is true and useless when the
+        key is right there in the path."""
+        with pytest.raises(ValueError, match="the key is in the PATH"):
+            parse_dsn(f"https://h.example.com/{WORKSPACE}/{KEY}")
+
+    def test_a_genuinely_absent_key_keeps_the_original_message(self) -> None:
+        """The two cases must not collapse into one sentence: a vendor who
+        pasted half a DSN and one who pasted it wrong need different advice."""
+        with pytest.raises(ValueError, match="the value from /account"):
+            parse_dsn(f"https://h.example.com/{WORKSPACE}/srv")
+
     def test_the_redacted_message_has_no_cause_carrying_the_original(self) -> None:
         """``raise ... from None``, deliberately: chaining would put the very
         string we just redacted back into the traceback under ``__cause__``."""

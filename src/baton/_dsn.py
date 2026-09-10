@@ -77,9 +77,22 @@ _WORKSPACE_PATTERN = re.compile(r"^ten_[0-9a-fA-F]{32}$")
 _PUBLISHABLE_PREFIX = "baton_pk_"
 _SECRET_PREFIX = "baton_sk_"
 
+
 # What a bare key gets told. It is the single most likely paste error — the
 # /account page labels the key type "Publishable key" and the string you copy
 # "DSN" — so it earns a real sentence rather than a parse error.
+def _elide_key(segment: str) -> str:
+    """A path segment replaced wholesale if it looks like a credential.
+
+    Elided ENTIRELY rather than truncated: a truncated secret is still a
+    secret's prefix, and the reader does not need any of it to see what went
+    wrong — the slot it landed in is the whole message.
+    """
+    if segment.startswith((_PUBLISHABLE_PREFIX, _SECRET_PREFIX)):
+        return "<key>"
+    return segment
+
+
 _BARE_KEY_HINT = (
     "this looks like a bare key, not a DSN — copy the full value from "
     "/account, which starts with https:// and ends with your server's name"
@@ -128,10 +141,16 @@ def redact(raw: str) -> str:
     if not sep:
         return "<dsn>"
     netloc, slash, path = rest.partition("/")
+    # ⚠ **The PATH is redacted too, and skipping it was the third leak of this
+    # kind.** A key pasted into the workspace or server slot is a plausible
+    # mistake — the two halves of a DSN look alike to someone copying by eye —
+    # and such a string has no ``@`` at all, so every earlier version of this
+    # function reported "no key" and then printed the path with the key in it.
+    safe_path = "/".join(_elide_key(segment) for segment in path.split("/"))
     _, at, authority = netloc.rpartition("@")
     if not at:
-        return f"{scheme}://<no key>@{netloc}{slash}{path}"
-    return f"{scheme}://***@{authority}{slash}{path}"
+        return f"{scheme}://<no key>@{netloc}{slash}{safe_path}"
+    return f"{scheme}://***@{authority}{slash}{safe_path}"
 
 
 def resolve_dsn(explicit: str | None) -> str | None:
@@ -255,9 +274,21 @@ def parse_dsn(raw: str) -> Dsn:
 
     key, at, authority = parts.netloc.rpartition("@")
     if not at or not key:
+        # The likeliest way to arrive here is not a missing key but a
+        # MISPLACED one: the two path segments and the userinfo all look alike
+        # to someone copying by eye. Saying which mistake it is costs one
+        # scan and saves the reader the guess.
+        misplaced = any(
+            segment.startswith((_PUBLISHABLE_PREFIX, _SECRET_PREFIX))
+            for segment in parts.path.split("/")
+        )
+        detail = (
+            "the key is in the PATH — it goes before an @"
+            if misplaced
+            else "the value from /account has the key before an @"
+        )
         raise ValueError(
-            f"dsn {safe} carries no key — the value from /account has the key "
-            f"before an @, as in https://baton_pk_...@host/ten_.../server"
+            f"dsn {safe} carries no key: {detail}, as in https://baton_pk_...@host/ten_.../server"
         )
     if ":" in key:
         raise ValueError(
@@ -275,15 +306,26 @@ def parse_dsn(raw: str) -> Dsn:
         )
     workspace, server = segments
 
+    for slot, segment in (("workspace", workspace), ("server", server)):
+        if segment.startswith((_PUBLISHABLE_PREFIX, _SECRET_PREFIX)):
+            # Checked BEFORE the pattern tests below, which would otherwise
+            # interpolate the segment — and a key is far more useful to name by
+            # its slot than to print back.
+            raise ValueError(
+                f"dsn {safe} has a KEY in the {slot} slot. The key goes before "
+                f"the @, and the path carries the workspace and the server: "
+                f"https://baton_pk_...@host/ten_<32 hex>/<server>"
+            )
+
     if not _WORKSPACE_PATTERN.match(workspace):
         raise ValueError(
-            f"dsn {safe} has {workspace!r} where the workspace belongs — "
+            f"dsn {safe} has {_elide_key(workspace)!r} where the workspace belongs — "
             f"expected ten_ followed by 32 hex characters. If the two path "
             f"segments are the right way round, this is not a Baton DSN."
         )
     if not VENDOR_ID_PATTERN.match(server):
         raise ValueError(
-            f"dsn {safe} has {server!r} where the server belongs — it must "
+            f"dsn {safe} has {_elide_key(server)!r} where the server belongs — it must "
             f"match {VENDOR_ID_PATTERN.pattern!r}, because this value becomes "
             f"the annotation tool name prefix as well as the envelope's "
             f"vendor_id."

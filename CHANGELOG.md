@@ -30,6 +30,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
   ⚠ **`BATON_DSN` is a fallback and behaves like one**: it loses to an explicit `vendor_id`/`tenant_id`/`sink` rather than colliding with them, so exporting it for one server does not stop a second server in the same process from installing the old explicit way. Where it is ignored, it says so on the logger — a vendor who expected it to configure this server would otherwise get a healthy install whose events go nowhere near the collector they named. It still outranks `BATON_VENDOR_ID` and friends: environment against environment, the packed value is the one someone chose today.
 
+  ⚠ **A key pasted into the wrong slot is refused by the SLOT it landed in, never by echoing it.** No error this SDK raises about a DSN repeats the credential — not in the message, not in an exception's `__context__`, and not when the key was pasted into the path where there is no `@` to redact around. A misplaced key is told which mistake it made ("the key is in the PATH") rather than the true-but-useless "carries no key".
+
   ⚠ **A `baton_sk_` (workspace secret) in the key slot warns and still works.** The key ROW is the authority on what a key may do, not the string — an SDK enforcing a Console policy would turn a typo at the mint site into a confusing client-side error. But a workspace secret inside a server that ships to strangers is worth saying out loud, and this is the only place that can say it. The warning names the prefix and never the key, and goes to the logger rather than stdout, which under stdio transport is the JSON-RPC stream.
 
 - **`BATON_DSN`** as the environment fallback, for a hosted vendor who will not put the value in source: one variable instead of five.

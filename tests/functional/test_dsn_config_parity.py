@@ -381,6 +381,25 @@ class TestAnAmbientDsnDoesNotBreakAnExplicitInstall:
         assert {(t, v) for t, v, _ in _identity(events)} == {(WORKSPACE, SERVER)}
 
 
+def test_the_bare_install_door_takes_an_ambient_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``install_baton(mcp)`` with nothing but ``BATON_DSN`` exported.
+
+    A distinct path: ``build_config(None, None)`` has to reach the environment
+    before deciding there is nothing to install with, and its "needs either a
+    VendorConfig or a dsn" refusal sits on exactly that line. The ambient-DSN
+    tests above drive ``Client``; this is the door a hosted vendor uses.
+    """
+    from fastmcp import FastMCP
+
+    from baton.install import install_baton
+    from baton.sinks import HttpSink
+
+    monkeypatch.setenv("BATON_DSN", f"https://{KEY}@h.example.com/{WORKSPACE}/{SERVER}")
+    handle = install_baton(FastMCP("ambient"))
+    assert handle.vendor_id == SERVER
+    assert isinstance(handle.sink, HttpSink)
+
+
 def test_a_failing_config_never_leaves_a_sink_behind(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
