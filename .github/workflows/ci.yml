@@ -148,12 +148,27 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[mcp,test]" "mcp==${{ matrix.mcp-version }}"
 
-      - name: Prove the tree is the pin, and holds no companions
+      - name: Prove the tree is the pin, and is not a hybrid
         # `mcp` exposes no `__version__`, so the fastmcp-matrix trick ("import it
         # and ask IT what it is") does not transfer — metadata is all there is,
-        # and metadata is the half that LIED in the hybrid. So guard the actual
-        # failure mode instead: assert the companion distributions are ABSENT.
-        # A mixed tree is exactly what their presence means here.
+        # and metadata is the half that LIED in the hybrid. So guard the failure
+        # mode directly instead. Two different rules, because the two package
+        # families mean different things here:
+        #
+        #   fastmcp / fastmcp-slim — must be ABSENT. This leg resolves
+        #     `[mcp,test]`, so either one present means a second resolve
+        #     happened and the tree is not what was asked for.
+        #   mcp-types — must MATCH `mcp`, not be absent. mcp 2.x legitimately
+        #     ships as two distributions, so its presence is normal on that
+        #     band; what is never normal is a version SKEW between them, which
+        #     is exactly the residue a downgrade leaves (`mcp` replaced,
+        #     `mcp-types` left at the version the first resolve chose).
+        #
+        # ⚠ The first cut of this step failed the mcp 2.0.0 leg for having
+        # `mcp-types 2.0.0`, treating a matched pair as a hybrid. Verified all
+        # three ways since: matched 2.0.0 pair passes, planted `mcp-types 2.2.0`
+        # beside `mcp 1.20.0` reds, and a clean 1.x tree with no `mcp-types` at
+        # all passes.
         run: |
           pip list | grep -iE "^(mcp|mcp-types|fastmcp|fastmcp-slim|pydantic) " || true
           python - <<'PY'
@@ -165,16 +180,26 @@ jobs:
           if got != want:
               sys.exit(f"::error::resolved mcp {got}, pinned {want}")
 
-          for companion in ("fastmcp", "fastmcp-slim", "mcp-types"):
+          for foreign in ("fastmcp", "fastmcp-slim"):
               try:
-                  bad = version(companion)
+                  bad = version(foreign)
               except PackageNotFoundError:
                   continue
-              sys.exit(f"::error::mixed tree — {companion} {bad} installed beside mcp {got}")
+              sys.exit(
+                  f"::error::{foreign} {bad} is installed; this leg resolves"
+                  " [mcp,test] and must not have it"
+              )
+
+          try:
+              types_v = version("mcp-types")
+          except PackageNotFoundError:
+              types_v = None
+          if types_v is not None and types_v != got:
+              sys.exit(f"::error::mixed tree — mcp-types {types_v} beside mcp {got}")
 
           import mcp  # noqa: F401  — it must at least import
 
-          print(f"mcp {got} imports, no companions")
+          print(f"mcp {got} imports; mcp-types {types_v or '<absent>'}; no fastmcp")
           PY
 
       - name: Test (mcp adapter only)
