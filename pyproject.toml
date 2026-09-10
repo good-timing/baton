@@ -51,6 +51,18 @@ Issues = "https://github.com/good-timing/baton/issues"
 # integrations (managed-agents, a2a) added here as they land. See
 # Sentry / Datadog / OpenTelemetry pattern: core SDK + opt-in integrations under baton.integrations.* with pip extras.
 [project.optional-dependencies]
+# ⚠ CEILING POLICY, decided 2026-09-10. Both integration extras carry an upper
+# bound on the MAJOR (`mcp<3`, `fastmcp<5`), and they stay. A cap in a LIBRARY
+# is a rule imposed on every customer's resolve, not a note to ourselves, so it
+# is only defensible while it is maintained — and here it has been: `fastmcp<4`
+# said something true (4.0 was tested and BROKEN, six adapter behaviours), and
+# was lifted to `<5` when those were fixed rather than waived.
+# **The rule is: review the cap per major, do not let it rot.** When a new major
+# ships, add a matrix leg, fix what it breaks, then raise the bound. Leaving a
+# cap in place because nobody looked is the failure mode; removing caps so
+# nobody has to look is the other one.
+# Caps never reach transitive deps — `mcp` arrives under `fastmcp` and no
+# ceiling of ours bounds it. That gap is a lock file's job, not a cap's.
 # Adapts the official Anthropic ``mcp`` package's server class — ``FastMCP``
 # (``mcp.server.fastmcp``) on 1.x, renamed ``MCPServer`` (``mcp.server.mcpserver``)
 # in 2.0. ``baton.integrations.official._compat`` resolves both; the internal struct
