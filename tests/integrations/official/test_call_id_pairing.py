@@ -21,6 +21,10 @@ calls concurrently and produce the inversion.
 The rig, the ground truth, and why the ground truth is the event TYPE rather
 than the result body, all live in ``tests/_forced_reorder.py``.
 
+The third emit surface — the library API's ``Trace`` / ``AsyncTrace`` — is
+pinned by ``tests/test_call_id_pairing_library.py``. All three or the mint
+has not landed.
+
 The tier these tests are about is SPEC §11.5.4. ``baton-console`` already
 implements it and keys on ``(call_id, tool_name)``; the reason for that compound
 key is why distinctness is asserted separately from the join.
@@ -161,10 +165,19 @@ async def test_call_id_pairs_each_leg_with_its_own_start() -> None:
     by_id = {call_id_of(s): tag_of_start(s) for s in starts}
     assert None not in by_id, f"a start had no call_id: {list(by_id)}"
 
-    joined = sorted(
-        (by_id.get(call_id_of(e)), tag_of_end(e))
-        for e in ends  # type: ignore[arg-type]
+    # Before joining: every end must resolve to a start. A mint threaded
+    # through the success path but NOT the error path — the branch the failing
+    # FAST leg exists to expose — leaves one end unresolvable, and sorting
+    # ``None`` beside a string raises TypeError, which a strict
+    # ``xfail(raises=AssertionError)`` reports as an opaque error rather than
+    # the diagnostic below.
+    unjoined = [tag_of_end(e) for e in ends if call_id_of(e) not in by_id]
+    assert not unjoined, (
+        f"end legs whose call_id matches no start: {unjoined} — the id did not "
+        "survive the whole call, so this leg can pair with nothing"
     )
+
+    joined = sorted((by_id[call_id_of(e)], tag_of_end(e)) for e in ends)
     assert joined == [(FAST, FAST), (SLOW, SLOW)], (
         f"each end must join its OWN start, got {joined} — FIFO produces "
         f"{sorted(fifo_pairs(starts, ends))} on this same stream"
