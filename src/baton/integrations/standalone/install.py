@@ -38,6 +38,12 @@ that way means events that never arrive at all. ``VendorConfig`` stays the door
 for everything else — a scrubber, injection modes, identity options — and takes
 a ``dsn=`` field of its own so the two combine.
 
+**The off switch.** Setting ``BATON_DISABLED=1`` or ``DO_NOT_TRACK=1`` in the
+environment makes this function install NOTHING and raise nothing: no
+middleware, no wrapped tools, no annotation tool on the surface, no
+instructions rewrite, no sink. The server behaves exactly as it would without
+this call. See ``baton._optout``.
+
 """
 
 from __future__ import annotations
@@ -47,6 +53,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from baton._optout import capture_disabled
 from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
 from baton.integrations._config import (
@@ -57,7 +64,7 @@ from baton.integrations._config import (
     build_config,
     resolve_sink,
 )
-from baton.integrations._handle import BatonHandle
+from baton.integrations._handle import BatonHandle, disabled_handle
 from baton.integrations._llm_text import build_server_instructions
 from baton.integrations._surface import build_server_meta
 from baton.integrations.official._registry import get_tool_manager
@@ -140,6 +147,16 @@ def install_baton(
     dsn: str | None = None,
 ) -> BatonHandle:
     """Install Baton into a FastMCP server. See module docstring for usage."""
+    # ⚠ **FIRST — ahead of the server-shape guard, the config build and every
+    # validation below.** Off means install nothing and never throw, so this
+    # cannot sit after a check that raises: a switch that can still abort a
+    # vendor's boot is worse than no switch. It also has to precede
+    # ``build_config``, which would otherwise construct an ``HttpSink`` (and
+    # its httpx client) from a dsn for a capture that is not going to happen.
+    switch = capture_disabled()
+    if switch is not None:
+        return disabled_handle(switch, "install_baton (standalone fastmcp adapter)")
+
     # FIRST, before any validation or mutation: everything below assumes this
     # library's FastMCP, and the failure downstream is both late and
     # uninformative — the surface capture and the instructions write both

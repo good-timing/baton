@@ -8,6 +8,27 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased — an off switch, and it has to be unable to break anything
+
+### Added
+
+- **`BATON_DISABLED=1` and `DO_NOT_TRACK=1` turn capture off.** The SDK had no opt-out of any kind. `DO_NOT_TRACK` is the cross-vendor console convention, honoured because someone who set it once, globally, should not have to learn our variable's name to be listened to.
+
+  **Off means install NOTHING**: no middleware, no wrapped tools, no annotation tool on the surface, no instructions rewrite, no sink, no buffer, and — on the sync `Client` — no background thread. Not capture-and-discard. The vendor's server starts and behaves exactly as it would if `install_baton` were not in the file. Honoured at all five entry points: both adapters directly, `baton.install_baton`, `Client` and `AsyncClient`.
+
+  **Off also means NEVER THROW**, and that is the half worth stating. Every guard the SDK would otherwise raise from — a server object of the wrong shape, a config with no `vendor_id`, an unparseable DSN — is skipped along with everything else, because a switch that can still abort a boot is worse than no switch: the user believes they opted out, and the thing they opted out of took the process with it.
+
+  ⚠ **The consequence, which is real and is the price of the above:** a malformed `install_baton` call cannot fail while the switch is on. If your CI exports `DO_NOT_TRACK` globally, a broken install surfaces the first time capture is enabled, not in the test run. The disabled path logs a line naming which variable fired — at INFO, so it reaches whoever has logging turned up and is invisible by default. That is a debugging aid, not a discoverability guarantee.
+
+  ⚠ **Nothing on stdout, ever.** A stdio MCP server speaks JSON-RPC on stdout, so a courteous "Baton is disabled" line printed there corrupts the stream and breaks the server — in precisely the deployment this switch exists for. The one line goes to a logger at INFO. Pinned by a test that asserts stdout is empty across an install and a driven call, because the `T20` lint rule bans `print()` in `src/` and says nothing about `sys.stdout.write` or a logger someone has pointed at stdout.
+
+  **Values**: anything that is not an explicit off — `""`, `0`, `false`, `no`, `off`, case-insensitive — counts as on. Deliberately permissive, because the two failure directions are not symmetric: honouring an opt-out that was not meant costs some telemetry, while ignoring one that was collects data from a person who asked us not to. `DO_NOT_TRACK=0` therefore does **not** disable — that is someone saying tracking is fine.
+
+  Read once, at install/init. A process that starts with capture on keeps it on; re-reading per event would let a mid-flight environment change split one session's events across two answers.
+
+  This is environment-only on purpose — there is no `VendorConfig` field for it, so the recipe a wrapped server ships has one story to tell about how capture is switched off.
+
+
 ## Unreleased — one value configures an install, and it can ship inside the server
 
 ### Added

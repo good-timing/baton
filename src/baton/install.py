@@ -50,12 +50,21 @@ predates the module. Only ``baton.install_baton`` was affected;
 low-level ``Server`` must be refused rather than half-installed, because a
 mis-route installs a capture that looks healthy and produces nothing
 (→ ``broken and unbuilt must not look alike``).
+**The off switch.** Setting ``BATON_DISABLED=1`` or ``DO_NOT_TRACK=1`` in the
+environment makes this function install NOTHING and raise nothing: no
+middleware, no wrapped tools, no annotation tool on the surface, no
+instructions rewrite, no sink. The server behaves exactly as it would without
+this call. See ``baton._optout``.
+
 """
 
 from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Any
+
+from baton._optout import capture_disabled
+from baton.integrations._handle import disabled_handle
 
 if TYPE_CHECKING:
     from baton.integrations._config import VendorConfig
@@ -110,6 +119,16 @@ def install_baton(
     It is passed through untouched — the adapters resolve it, so one rule
     governs both and neither can drift into its own parse.
     """
+    # ⚠ **Before the seam detection, because the detection's own miss RAISES.**
+    # Both adapters carry this guard too — they are the shipped public entry
+    # points and are called directly — but leaving it out here would keep one
+    # throw path alive under a switch whose whole promise is that it cannot
+    # break a boot: hand this function something it does not recognise with
+    # DO_NOT_TRACK set, and it would still ``TypeError``.
+    switch = capture_disabled()
+    if switch is not None:
+        return disabled_handle(switch, "install_baton")
+
     is_fastmcp = _has_fastmcp_middleware_seam(server)
 
     # Checked FIRST and on its own. ``fastmcp`` 2.x carries a ``_tool_manager``

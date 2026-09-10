@@ -115,3 +115,28 @@ class BatonHandle:
             "ticket_id": str(data.get("ticket_id", "")),
             "ticket_url": data.get("ticket_url"),
         }
+
+
+def disabled_handle(switch: str, surface: str) -> BatonHandle:
+    """The handle ``install_baton`` returns when the off switch is set.
+
+    Shaped so a vendor's existing code keeps working untouched: ``flush()`` and
+    ``aclose()`` in a ``finally`` do nothing, and ``escalate()`` takes the
+    already-existing dev-mode path (no Console URL ⇒ a logged warning and a
+    queued ticket id) rather than needing a branch of its own. Nothing here is
+    a second way to configure capture off — the switch is an environment
+    variable, deliberately, so the recipe C14 writes has one story to tell.
+
+    ``vendor_id`` is empty and ``session_id`` is a constant, because when the
+    switch is on nothing was resolved: inventing a session id would put a real
+    identifier on a handle whose whole meaning is that no events exist under it.
+    """
+    from baton._optout import DisabledSink, log_disabled
+
+    log_disabled(switch, surface)
+    return BatonHandle(
+        sink=DisabledSink(),
+        annotation_tool_name="",
+        vendor_id="",
+        session_id="baton-disabled",
+    )

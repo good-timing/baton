@@ -64,6 +64,13 @@ Config loading: explicit kwargs win; env-var fallback supported for ``dsn``
 ``consent_token`` is defaulted by the SDK when nothing supplies it, and may be
 overridden per-trace.
 
+**The off switch.** ``BATON_DISABLED=1`` or ``DO_NOT_TRACK=1`` in the
+environment makes a client emit nothing and start no background thread.
+``trace()`` and ``annotate()`` keep working and returning what they always
+did — the vendor's code holds those objects — they simply reach no sink.
+Nothing is read or validated in that state, and nothing raises. See
+``baton._optout``.
+
 **A ``dsn`` counts as EXPLICIT for everything it carries**, so it outranks the
 environment and cannot be combined with an explicit ``sink``, ``vendor_id`` or
 ``tenant_id`` — passing both raises rather than picking a winner. Without one,
@@ -93,6 +100,7 @@ from types import TracebackType
 from typing import Any, Self, TypeVar
 
 from baton._dsn import parse_dsn, select_dsn
+from baton._optout import DisabledSink, capture_disabled, log_disabled
 from baton._uuid import uuid7
 from baton.events import (
     DEFAULT_CONSENT_TOKEN,
@@ -182,6 +190,22 @@ class _ClientConfig:
     vendor_id: str
     tenant_id: str
     consent_token: str
+
+
+def _disabled_client_config(switch: str, surface: str) -> _ClientConfig:
+    """What a client resolves to when the off switch is set.
+
+    Nothing is read and nothing is validated — not the dsn, not ``vendor_id``,
+    not the sink — because off means never throw, and a client that refuses to
+    construct is the switch breaking the vendor's process by another route.
+    The identity fields are empty rather than defaulted: no event will carry
+    them, and inventing values would put a plausible-looking identity on
+    objects that describe nothing.
+    """
+    log_disabled(switch, surface)
+    return _ClientConfig(
+        sink=DisabledSink(), vendor_id="", tenant_id="", consent_token=DEFAULT_CONSENT_TOKEN
+    )
 
 
 def _resolve_client_config(
@@ -659,12 +683,18 @@ class Client:
         agent_runtime: str = "python-library",
         scrubber: Any = None,
     ) -> None:
-        resolved = _resolve_client_config(
-            sink=sink,
-            dsn=dsn,
-            vendor_id=vendor_id,
-            tenant_id=tenant_id,
-            consent_token=consent_token,
+        switch = capture_disabled()
+        self._disabled: bool = switch is not None
+        resolved = (
+            _disabled_client_config(switch, "Client")
+            if switch is not None
+            else _resolve_client_config(
+                sink=sink,
+                dsn=dsn,
+                vendor_id=vendor_id,
+                tenant_id=tenant_id,
+                consent_token=consent_token,
+            )
         )
 
         self._vendor_id: str = resolved.vendor_id
@@ -680,7 +710,12 @@ class Client:
         # Sync mode uses a background thread + persistent loop bridge so the
         # sink's async primitives (locks, background drain tasks, httpx
         # clients) bind to one stable loop instead of a fresh one per emit.
-        self._bridge = _SyncBridge()
+        # ⚠ **No bridge when the switch is on.** ``_SyncBridge.__init__``
+        # starts a daemon thread and blocks until its event loop is running —
+        # a background thread is exactly what "no wrap, no buffer, no queue"
+        # forbids, and the sync client is the one path with no wrap to skip,
+        # so this is where that promise is kept or broken.
+        self._bridge: _SyncBridge | None = None if self._disabled else _SyncBridge()
         self._sink: Sink = resolved.sink
 
         # Per-session sequence counters. Library mode = per-event mode (each
@@ -770,13 +805,18 @@ class Client:
 
     def flush(self) -> None:
         """Block until pending events drain."""
-        if self._closed:
+        if self._closed or self._bridge is None:
+            # No bridge means the off switch is set and nothing was ever
+            # queued. A vendor's ``finally: client.flush()`` must keep working.
             return
         self._bridge.run(self._sink.flush())
 
     def close(self) -> None:
         """Flush + close the sink + stop the bridge thread."""
         if self._closed:
+            return
+        if self._bridge is None:
+            self._closed = True
             return
         try:
             self._bridge.run(self._sink.aclose())
@@ -806,6 +846,13 @@ class Client:
         # `with client.trace(...)` block, ahead of the vendor's real call in
         # the proactive case. SPEC §11.2 fail-open applies here exactly as it
         # does to the MCP adapters' tool-call wrapping.
+        if self._bridge is None:
+            # Disabled. The envelope above was still BUILT and is dropped here
+            # — a local that reaches no buffer, no thread and no socket. The
+            # alternative is a guard at each of the twelve places ``Trace``
+            # constructs one, which buys a pydantic model's allocation and
+            # costs twelve chances to miss one.
+            return
         self._bridge.run(safe_write(self._sink, event, logger))
 
     def _next_seq(self, session_id: str) -> int:
@@ -1067,12 +1114,18 @@ class AsyncClient:
         agent_runtime: str = "python-library",
         scrubber: Any = None,
     ) -> None:
-        resolved = _resolve_client_config(
-            sink=sink,
-            dsn=dsn,
-            vendor_id=vendor_id,
-            tenant_id=tenant_id,
-            consent_token=consent_token,
+        switch = capture_disabled()
+        self._disabled: bool = switch is not None
+        resolved = (
+            _disabled_client_config(switch, "AsyncClient")
+            if switch is not None
+            else _resolve_client_config(
+                sink=sink,
+                dsn=dsn,
+                vendor_id=vendor_id,
+                tenant_id=tenant_id,
+                consent_token=consent_token,
+            )
         )
 
         self._vendor_id: str = resolved.vendor_id
