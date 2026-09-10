@@ -24,6 +24,7 @@ from typing import Any
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools import Tool
 from mcp.types import CallToolRequestParams, ListToolsRequest
+from pydantic_core import to_jsonable_python
 
 from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
@@ -608,11 +609,56 @@ class BatonMiddleware(Middleware):
     @staticmethod
     def _result_to_jsonable(result: Any) -> Any:
         """Convert FastMCP's ToolResult (or anything else) to a JSON-serializable
-        shape for the ``tool_call_end`` payload."""
+        shape for the ``tool_call_end`` payload.
+
+        ``ToolResult`` is a pydantic model on fastmcp 3.x/4.x and a PLAIN
+        OBJECT on 2.14.7, our floor — so the ``model_dump`` branch misses
+        there and the ``str()`` fallthrough used to put
+        ``"<fastmcp.tools.tool.ToolResult object at 0x…>"`` on the wire: a
+        memory address in place of the tool's output, changing every run
+        (N10, measured 2026-09-09). The duck-typed branch below rebuilds the
+        SAME keys ``model_dump`` produces, so one shape reaches the console on
+        every supported version. It is keyed on the attributes rather than the
+        version because the class has already changed shape once.
+
+        The DEEP conversion is the load-bearing half, and it is about the
+        SCRUBBER, not about readability: ``scrub.py`` walks ``dict`` /
+        ``list`` / ``str`` and returns anything else untouched, so any model
+        left intact anywhere in that tree — a ``mcp.types`` block in
+        ``content``, a vendor object nested in ``meta`` — carries its text
+        straight past the vendor's scrubber, while the envelope's own pydantic
+        dump still puts that text on the wire. Shallow-copying ``meta`` shipped
+        `alice@example.com` in the clear on 2.14.7 and redacted on 3.4.2
+        (measured; caught in review). ``to_jsonable_python`` is what fastmcp
+        2.14.7 itself uses for ``structured_content``, and matches
+        ``model_dump(mode="json")`` key for key. ``serialize_unknown`` keeps a
+        capture boundary fail-open: an object nothing can serialise degrades to
+        its repr — the old behaviour, for that value only — instead of raising.
+        That matters because this runs while BUILDING the event, outside
+        ``safe_write``'s guard, so a raise here would reach the vendor's tool
+        call (cf. ``8b4356d``); ``TypeAdapter(Any).dump_python`` was measured
+        and DOES raise, which is what rules it out. ``pydantic-core`` is no new
+        dependency: pydantic 2.x pins it exactly, so it ships wherever pydantic
+        does — the argument ``pyproject.toml`` already makes for pydantic.
+        """
         if result is None:
             return None
         if hasattr(result, "model_dump"):
             return result.model_dump(mode="json")
         if isinstance(result, (str, int, float, bool, list, dict)):
             return result
+        if hasattr(result, "content") or hasattr(result, "structured_content"):
+            body: dict[str, Any] = {
+                "content": getattr(result, "content", None),
+                "structured_content": getattr(result, "structured_content", None),
+                "meta": getattr(result, "meta", None),
+            }
+            # 2.14.7's ToolResult has no ``is_error``; do not fabricate one.
+            if hasattr(result, "is_error"):
+                body["is_error"] = result.is_error
+            # ``by_alias=False`` matches ``model_dump(mode="json")``, which is what
+            # 3.x/4.x take above — ``to_jsonable_python`` defaults the other way,
+            # and that alone renamed a content block's ``meta`` to ``_meta`` on
+            # the floor path. Measured against the other versions, not assumed.
+            return to_jsonable_python(body, serialize_unknown=True, by_alias=False)
         return str(result)

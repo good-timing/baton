@@ -8,6 +8,22 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased — on the floor `fastmcp`, a tool's result reached the collector as a memory address
+
+### Fixed
+
+- **`tool_call_end.result` carried `"<fastmcp.tools.tool.ToolResult object at 0x…>"` on fastmcp 2.14.7**, the declared floor of the `[fastmcp]` extra. `ToolResult` is a pydantic model on 3.x and 4.x and a PLAIN OBJECT on 2.14.7, so the serialiser's `model_dump` branch missed it and fell through to `str()`. A vendor pinned to the floor shipped every result body as an object repr: the tool's actual output nowhere on the wire, and an address that changes on every run in its place. The middleware now rebuilds the same `content` / `structured_content` / `meta` keys `model_dump` produces, keyed on the attributes rather than the version, so one shape reaches the collector from every supported fastmcp. `is_error` is emitted only where the class has it — 2.14.7 does not, and inventing the field would be a fact about our serialiser rather than about the call.
+
+  **The conversion is DEEP, and that is the load-bearing half.** `scrub.py` walks `dict` / `list` / `str` and returns anything else untouched, so a model left intact anywhere in the result tree — an `mcp.types` block in `content`, a vendor object nested in the free-form `meta` — carries its text straight past the vendor's scrubber, while the envelope's own pydantic dump still puts that text on the wire. The first cut of this fix converted the blocks but shallow-copied `meta`, which shipped `alice@example.com` in the clear on 2.14.7 and redacted on 3.4.2; the repr it replaced had been redacting by accident. It now runs the whole body through `to_jsonable_python` — what fastmcp 2.14.7 itself uses for `structured_content` — with `by_alias=False`, which is what makes it match `model_dump(mode="json")` key for key. (`to_jsonable_python` defaults the other way, which renamed a content block's `meta` to `_meta` on the 2.x path only; caught by diffing real payloads across versions, and now pinned.) A value nothing can serialise degrades to its repr rather than raising, because this is a capture boundary and a tool call must not fail on our serialiser. Pinned by two tests: an email in a tool's return, and an email inside a model nested in `meta`, both asserted `[REDACTED]` on the floor and above it.
+
+  **Why no test caught it for two releases.** Every result assertion in the standalone suite was `result is not None`, which a repr satisfies, and `fastmcp-matrix` ran those same assertions against the floor without ever asking whether the body was READABLE. The new tests are positive — the value the tool returned has to be findable in the payload — because a negative check ("no `object at 0x`") passes vacuously the moment the extractor looks in the wrong place.
+
+  ⚠ **If you are pinned to fastmcp 2.x, your `tool_call_end.result` changes shape**: from a string to the same structured body 3.x and 4.x have always sent. Anything downstream that special-cased the string is reading a bug.
+
+  ⚠ **`is_error` is present on 3.x/4.x bodies and absent on 2.14.7 ones**, because the floor's class has no such field and this fix does not invent one. The asymmetry is inherited from `model_dump`, not introduced here, but it is now reachable by more consumers: read it with `.get`, not by indexing. SPEC §11.4 specifies `result` as opaque — `{tool_name, result, duration_ms}` — so there is no wire-contract change and no §13 entry.
+
+---
+
 ## Unreleased — identity and correlation: the SDK mints a per-call `call_id`, and fills `user_id` with the authenticated end user, hashed before it leaves the process
 
 ### Added
