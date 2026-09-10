@@ -461,6 +461,15 @@ class BatonMiddleware(Middleware):
                 logger,
             )
 
+        # The per-call join key (SPEC §11.4). A LOCAL, minted here in the
+        # scope that emits all three legs below, which is what makes it
+        # per-call by construction and correct across processes — hoisting it
+        # onto ``self`` or the module would send one id for a whole session and
+        # degrade tier 1 to the FIFO floor it outranks, invisibly (a mispair is
+        # a permutation, so every total holds). Never ``ctx.request_id``: it
+        # restarts at 1 per connection.
+        call_id = str(uuid7())
+
         # tool_call_start — before invoking the vendor handler. safe_write
         # so a sink failure doesn't break the vendor's tool call (SPEC §11.2).
         seq_start = await self._next_seq(session_id)
@@ -475,6 +484,7 @@ class BatonMiddleware(Middleware):
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
                 user_id=call_user_id,
+                call_id=call_id,
                 runtime_meta=scrubbed_meta,
                 payload=ToolCallStartPayload(
                     tool_name=tool_name,
@@ -512,6 +522,7 @@ class BatonMiddleware(Middleware):
                     captured_at=datetime.now(UTC),
                     agent_runtime=runtime,
                     user_id=call_user_id,
+                    call_id=call_id,
                     runtime_meta=scrubbed_meta,
                     payload=ToolCallErrorPayload(
                         tool_name=tool_name,
@@ -537,6 +548,7 @@ class BatonMiddleware(Middleware):
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
                 user_id=call_user_id,
+                call_id=call_id,
                 runtime_meta=scrubbed_meta,
                 payload=ToolCallEndPayload(
                     tool_name=tool_name,

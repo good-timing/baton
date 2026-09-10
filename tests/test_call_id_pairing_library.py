@@ -9,14 +9,19 @@ the NON-nullable envelope fields, and SPEC §11.4 makes ``call_id`` optional and
 nullable by design. So a mint that lands in both adapters and not here goes
 green everywhere while library-API vendors keep pairing on the FIFO floor —
 which is the same shape as the ``agent_runtime`` gap that survived a rename and
-a release because each surface's suite asserted only about itself.
+a release because each surface's suite asserted only about itself. Written as
+strict ``xfail``s before the mint and un-marked when it landed.
 
 The rig differs from the adapters' in one way worth stating: a ``Trace``
 brackets the call in the VENDOR's code, so the two legs are emitted by
 ``__aenter__`` and ``__aexit__`` rather than by one function. Per-call scope is
 therefore the Trace object itself, and "mint in a local variable inside the
 function that emits both legs" (SPEC §11.4) has to be read as "mint per Trace"
-on this path. That is a note for N2-SDK, not a licence to key on anything else.
+on this path. The shipped mint resolves that as **per ENTRY** — ``__aenter__``
+assigns ``_call_id``, ``__init__`` only declares it — so a Trace entered a second
+time gets a second id rather than reusing the first call's. This file drives two
+separate instances, so that particular property is covered by the mutation run
+rather than by these assertions.
 """
 
 from __future__ import annotations
@@ -40,16 +45,6 @@ from tests._forced_reorder import (
     legs,
     tag_of_end,
     tag_of_start,
-)
-
-_MINT_PENDING = pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "no emit path mints a call_id yet — workplan N2-SDK. The field is "
-        "specified (SPEC §11.4) and baton-console already pairs on it "
-        "(§11.5.4); this is the library half. Remove with the mint."
-    ),
 )
 
 
@@ -110,7 +105,6 @@ async def test_the_failing_trace_propagates_its_exception() -> None:
                 raise FastLegFailed("the fast leg fails on purpose")
 
 
-@_MINT_PENDING
 async def test_every_leg_of_a_traced_call_carries_a_call_id() -> None:
     _, starts, ends = await _drive()
     missing = [
@@ -121,7 +115,6 @@ async def test_every_leg_of_a_traced_call_carries_a_call_id() -> None:
     assert not missing, f"legs with no call_id: {missing}"
 
 
-@_MINT_PENDING
 async def test_two_traces_of_one_tool_get_distinct_ids() -> None:
     """A mint hoisted onto the CLIENT rather than the Trace sends one id for
     every call of that client — the library path's version of the hoisted mint,
@@ -136,7 +129,6 @@ async def test_two_traces_of_one_tool_get_distinct_ids() -> None:
     )
 
 
-@_MINT_PENDING
 async def test_call_id_pairs_each_leg_with_its_own_trace() -> None:
     gates, starts, ends = await _drive()
     assert_the_rig_inverted(gates, starts, ends)

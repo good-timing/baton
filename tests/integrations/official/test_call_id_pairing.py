@@ -1,12 +1,15 @@
 """``call_id`` must pair a call's legs when completion order INVERTS — official
 mcp SDK adapter.
 
-**Written before the field exists (workplan N2a).** The pairing tests are strict
-``xfail``s: they red today on their own assertions, XPASS the day the mint lands
-(N2-SDK), and a strict marker turns that XPASS into a suite failure, so the
-marker cannot outlive the fix. That order is deliberate — a correlation test
-written after its fix tends to be written around the implementation it is
-supposed to police.
+**Written before the field existed (workplan N2a)** as strict ``xfail``s, which
+XPASSed the day the mint landed (N2-SDK) and turned the suite red until the
+markers came out — so a marker could not outlive its fix. They are plain tests
+now. That order is why they are worth trusting: a correlation test written after
+its fix tends to be written around the implementation it is supposed to police.
+Both mutations were re-run against the shipped mint — hoisting the id out of
+per-call scope reds ``test_the_two_calls_get_distinct_ids``, and dropping it from
+the error leg reds ``test_every_leg_of_a_call_carries_a_call_id``, each on its
+own assertion rather than on a timeout or a ``TypeError``.
 
 Here rather than in ``tests/functional/`` for the reason ``test_user_id.py`` and
 ``test_agent_runtime.py`` are: **``mcp-matrix`` runs
@@ -34,8 +37,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from baton.events import Event
 from baton.integrations.official import VendorConfig, install_baton
 from baton.integrations.official._compat import MCPServerClass as FastMCP
@@ -52,16 +53,6 @@ from tests._forced_reorder import (
     tag_of_start,
 )
 from tests._mcp_session import connected_session
-
-_MINT_PENDING = pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "no adapter mints a call_id yet — workplan N2-SDK. The field is "
-        "specified (SPEC §11.4) and baton-console already pairs on it "
-        "(§11.5.4); this is the SDK half. Remove this marker with the mint."
-    ),
-)
 
 
 async def _drive() -> tuple[ReorderGates, list[Event], list[Event]]:
@@ -103,9 +94,9 @@ async def _drive() -> tuple[ReorderGates, list[Event], list[Event]]:
 async def test_the_rig_inverts_and_fifo_mispairs_because_of_it() -> None:
     """The green half: prove the run exercised the defect.
 
-    This test passes today and must keep passing after the mint — it asserts
+    This test passed before the mint and must keep passing after it — it asserts
     about the emitted STREAM, which the mint does not change. Its job is to
-    stop the ``xfail``s below from being satisfied by a run in which nothing
+    stop the assertions below from being satisfied by a run in which nothing
     overlapped: a rig that quietly stopped inverting would make a pairing test
     pass for the wrong reason, which is the exact failure V2 shipped.
     """
@@ -123,7 +114,6 @@ async def test_the_rig_inverts_and_fifo_mispairs_because_of_it() -> None:
     )
 
 
-@_MINT_PENDING
 async def test_every_leg_of_a_call_carries_a_call_id() -> None:
     _, starts, ends = await _drive()
     missing = [
@@ -134,7 +124,6 @@ async def test_every_leg_of_a_call_carries_a_call_id() -> None:
     assert not missing, f"legs with no call_id: {missing}"
 
 
-@_MINT_PENDING
 async def test_the_two_calls_get_distinct_ids() -> None:
     """Separate from the join assertion on purpose.
 
@@ -155,7 +144,6 @@ async def test_the_two_calls_get_distinct_ids() -> None:
     )
 
 
-@_MINT_PENDING
 async def test_call_id_pairs_each_leg_with_its_own_start() -> None:
     """The assertion the whole file exists for: the join is right where FIFO's
     is wrong."""

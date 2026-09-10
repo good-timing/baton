@@ -184,6 +184,25 @@ class _EventEnvelope(BaseModel):
     ``(tenant_id, vendor_id, user_id)``. Null when no identity resolved or no
     HMAC key configured; additive + nullable so pre-user_id consumers are
     unaffected."""
+    call_id: str | None = None
+    """The minted per-call correlation key (SPEC §11.4, OPTIONAL + nullable).
+
+    The SAME value on a tool call's ``tool_call_start`` and its
+    ``tool_call_end`` / ``tool_call_error``, so a worker pairs the two legs on
+    an identifier this producer controls rather than inferring the pairing.
+    Consumers key tier 1 on ``(call_id, tool_name)`` (SPEC §11.5.4), not on the
+    id alone.
+
+    Null on every event emitted before this field existed, and on the
+    ``annotation`` event, which SPEC defines no ``call_id`` for — the field is
+    specified for a tool call's legs, and putting one on an annotation would
+    invent semantics no spec text defines. Null is never an error.
+
+    Minted as a bare opaque UUID string in a local variable inside the scope
+    that emits both legs — per-call by construction and correct across
+    processes. Never derived from the JSON-RPC request id, which restarts at 1
+    per connection. It says WHICH CALL, never WHO; the principal is ``user_id``.
+    """
     runtime_meta: dict[str, Any] | None = None
     """Runtime-supplied ``_meta`` envelope from the MCP request (SPEC §11.4).
     Per SPEC §11.5 the Console worker uses this to derive turn / cycle

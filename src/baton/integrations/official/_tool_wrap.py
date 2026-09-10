@@ -70,6 +70,7 @@ from time import monotonic
 from typing import Any
 
 from baton._state import ProactiveTracker, SessionCounter
+from baton._uuid import uuid7
 from baton.events import (
     AnnotationEvent,
     AnnotationPayload,
@@ -416,14 +417,16 @@ def _wrap_tool_run(
             str | None,
             str,
             str | None,
+            str,
         ],
         Awaitable[None],
     ],
     emit_after: Callable[
-        [str, str, Any, float, dict[str, Any] | None, str, str | None], Awaitable[None]
+        [str, str, Any, float, dict[str, Any] | None, str, str | None, str], Awaitable[None]
     ],
     emit_error: Callable[
-        [str, str, BaseException, float, dict[str, Any] | None, str, str | None], Awaitable[None]
+        [str, str, BaseException, float, dict[str, Any] | None, str, str | None, str],
+        Awaitable[None],
     ],
     emit_proactive: Callable[
         [str, str, str, str | None, str | None, dict[str, Any] | None, str, str | None],
@@ -570,6 +573,26 @@ def _wrap_tool_run(
                 call_user_id,
             )
 
+        # The per-call join key (SPEC §11.4). A LOCAL of this wrapper call,
+        # which is the scope that emits both legs, so it is per-call by
+        # construction and correct across processes. Hoisting it — onto the
+        # closure, the tool, or the module — would send one id for a whole
+        # session and degrade tier 1 to the FIFO floor it outranks, invisibly
+        # (a mispair is a permutation, so every total holds). Never
+        # ``ctx.request_id``: it restarts at 1 per connection, so it collides
+        # under exactly the merged-session conditions where pairing already
+        # hurts.
+        #
+        # ⚠ An MRTR call spans TWO wrapper invocations, so its start (round 1)
+        # and its end (round 2) get DIFFERENT ids and pair with nothing. That
+        # is deliberate and is the console's live behaviour today: the tiers
+        # never mix, so both legs stay honestly unpaired rather than one
+        # stealing a neighbour's. It is also not fixable here — the two rounds
+        # of a distributed MRTR call reach different processes with different
+        # fallback session ids, so they never reach the pairer in one list at
+        # all. See baton-internal workplan §N2.
+        call_id = str(uuid7())
+
         # MRTR (mcp>=2.0): a continuation carries input_responses/request_state
         # from an earlier InputRequiredResult pause — it's the SAME logical call
         # resuming, not a new one, so it gets no new tool_call_start. The goal-
@@ -588,6 +611,7 @@ def _wrap_tool_run(
                 scrubbed_task,
                 call_agent_runtime,
                 call_user_id,
+                call_id,
             )
         called_at = monotonic()
         try:
@@ -605,6 +629,7 @@ def _wrap_tool_run(
                 scrubbed_meta,
                 call_agent_runtime,
                 call_user_id,
+                call_id,
             )
             raise
         # MRTR (mcp>=2.0): an InputRequiredResult means the call paused mid-flight
@@ -620,6 +645,7 @@ def _wrap_tool_run(
                 scrubbed_meta,
                 call_agent_runtime,
                 call_user_id,
+                call_id,
             )
         return result
 
@@ -789,12 +815,14 @@ def _make_emitters(
             str | None,
             str,
             str | None,
+            str,
         ],
         Awaitable[None],
     ],
-    Callable[[str, str, Any, float, dict[str, Any] | None, str, str | None], Awaitable[None]],
+    Callable[[str, str, Any, float, dict[str, Any] | None, str, str | None, str], Awaitable[None]],
     Callable[
-        [str, str, BaseException, float, dict[str, Any] | None, str, str | None], Awaitable[None]
+        [str, str, BaseException, float, dict[str, Any] | None, str, str | None, str],
+        Awaitable[None],
     ],
     Callable[
         [str, str, str, str | None, str | None, dict[str, Any] | None, str, str | None],
@@ -858,6 +886,7 @@ def _make_emitters(
         call_workflow: str | None,
         agent_runtime: str,
         user_id: str | None,
+        call_id: str,
     ) -> None:
         injected_any = any(v is not None for v in (call_intent, call_expected, call_workflow))
         await safe_write(
@@ -871,6 +900,7 @@ def _make_emitters(
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
                 user_id=user_id,
+                call_id=call_id,
                 runtime_meta=runtime_meta,
                 payload=ToolCallStartPayload(
                     tool_name=name,
@@ -892,6 +922,7 @@ def _make_emitters(
         runtime_meta: dict[str, Any] | None,
         agent_runtime: str,
         user_id: str | None,
+        call_id: str,
     ) -> None:
         await safe_write(
             sink,
@@ -904,6 +935,7 @@ def _make_emitters(
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
                 user_id=user_id,
+                call_id=call_id,
                 runtime_meta=runtime_meta,
                 payload=ToolCallEndPayload(
                     tool_name=name,
@@ -922,6 +954,7 @@ def _make_emitters(
         runtime_meta: dict[str, Any] | None,
         agent_runtime: str,
         user_id: str | None,
+        call_id: str,
     ) -> None:
         await safe_write(
             sink,
@@ -934,6 +967,7 @@ def _make_emitters(
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
                 user_id=user_id,
+                call_id=call_id,
                 runtime_meta=runtime_meta,
                 payload=ToolCallErrorPayload(
                     tool_name=name,

@@ -290,6 +290,12 @@ class Trace:
         self._observed_error: tuple[str, str] | None = None
         self._start_seq: int | None = None
         self._call_started_at: float | None = None
+        # SPEC §11.4's per-call join key. Minted on ENTRY, not here: this
+        # object is the per-call scope only while it is entered, and a
+        # Trace re-entered for a second call must not reuse the first
+        # call's id — a shared id pairs across calls of one tool, which is
+        # strictly worse than the FIFO floor tier 1 outranks.
+        self._call_id: str | None = None
         self._observed_warned = False
 
     @property
@@ -401,6 +407,7 @@ class Trace:
 
     def __enter__(self) -> Self:
         self._call_started_at = monotonic()
+        self._call_id = str(uuid7())
         self._start_seq = self._client._next_seq(self._session_id)
         start_event = ToolCallStartEvent(
             tenant_id=self._client._tenant_id,
@@ -410,6 +417,7 @@ class Trace:
             captured_at=datetime.now(UTC),
             consent_token=self._consent_token,
             agent_runtime=self._client._agent_runtime,
+            call_id=self._call_id,
             payload=ToolCallStartPayload(
                 tool_name=self._tool_name,
                 params=self._params,
@@ -454,6 +462,7 @@ class Trace:
                 captured_at=datetime.now(UTC),
                 consent_token=self._consent_token,
                 agent_runtime=self._client._agent_runtime,
+                call_id=self._call_id,
                 payload=ToolCallErrorPayload(
                     tool_name=self._tool_name,
                     error_type=exc.__class__.__name__,
@@ -485,6 +494,7 @@ class Trace:
                 captured_at=datetime.now(UTC),
                 consent_token=self._consent_token,
                 agent_runtime=self._client._agent_runtime,
+                call_id=self._call_id,
                 payload=ToolCallErrorPayload(
                     tool_name=self._tool_name,
                     error_type=error_type,
@@ -502,6 +512,7 @@ class Trace:
                 captured_at=datetime.now(UTC),
                 consent_token=self._consent_token,
                 agent_runtime=self._client._agent_runtime,
+                call_id=self._call_id,
                 payload=ToolCallEndPayload(
                     tool_name=self._tool_name,
                     result=(self._observed_result if self._observed_result is not _UNSET else None),
@@ -732,6 +743,12 @@ class AsyncTrace:
         self._observed_error: tuple[str, str] | None = None
         self._start_seq: int | None = None
         self._call_started_at: float | None = None
+        # SPEC §11.4's per-call join key. Minted on ENTRY, not here: this
+        # object is the per-call scope only while it is entered, and a
+        # Trace re-entered for a second call must not reuse the first
+        # call's id — a shared id pairs across calls of one tool, which is
+        # strictly worse than the FIFO floor tier 1 outranks.
+        self._call_id: str | None = None
         self._observed_warned = False
 
     @property
@@ -811,6 +828,7 @@ class AsyncTrace:
 
     async def __aenter__(self) -> Self:
         self._call_started_at = monotonic()
+        self._call_id = str(uuid7())
         self._start_seq = self._client._next_seq(self._session_id)
         start_event = ToolCallStartEvent(
             tenant_id=self._client._tenant_id,
@@ -820,6 +838,7 @@ class AsyncTrace:
             captured_at=datetime.now(UTC),
             consent_token=self._consent_token,
             agent_runtime=self._client._agent_runtime,
+            call_id=self._call_id,
             payload=ToolCallStartPayload(
                 tool_name=self._tool_name,
                 params=self._params,
@@ -867,6 +886,7 @@ class AsyncTrace:
                 captured_at=datetime.now(UTC),
                 consent_token=self._consent_token,
                 agent_runtime=self._client._agent_runtime,
+                call_id=self._call_id,
                 payload=ToolCallErrorPayload(
                     tool_name=self._tool_name,
                     error_type=exc.__class__.__name__,
@@ -896,6 +916,7 @@ class AsyncTrace:
                 captured_at=datetime.now(UTC),
                 consent_token=self._consent_token,
                 agent_runtime=self._client._agent_runtime,
+                call_id=self._call_id,
                 payload=ToolCallErrorPayload(
                     tool_name=self._tool_name,
                     error_type=error_type,
@@ -913,6 +934,7 @@ class AsyncTrace:
                 captured_at=datetime.now(UTC),
                 consent_token=self._consent_token,
                 agent_runtime=self._client._agent_runtime,
+                call_id=self._call_id,
                 payload=ToolCallEndPayload(
                     tool_name=self._tool_name,
                     result=(self._observed_result if self._observed_result is not _UNSET else None),

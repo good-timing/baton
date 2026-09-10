@@ -8,9 +8,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased — `user_id` is populated: the SDK reads the authenticated end user, and hashes it before it leaves the process
+## Unreleased — identity and correlation: the SDK mints a per-call `call_id`, and fills `user_id` with the authenticated end user, hashed before it leaves the process
 
 ### Added
+
+- **`call_id` — the SDK now mints a per-call correlation key, on all three emit paths.** Every `tool_call_start` and its matching `tool_call_end` / `tool_call_error` carry the same opaque UUID, so a collector pairs a call's two legs on an identifier this SDK controls instead of inferring the pairing. Both MCP adapters and the library API's `Trace` / `AsyncTrace` emit it; `annotation` and `surface_snapshot` do not, because SPEC §11.4 specifies the field for a tool call's legs only.
+
+  **Why it exists.** The two pairing tiers below it are both keyed on something no producer minted. `claudecode/toolUseId` is Claude Code's and no other client sends it; below that is FIFO per `tool_name`, keyed on nothing, which mispairs whenever two calls to one tool overlap. Measured on a 1,048-start production capture, pairing with an id and then again on the FIFO floor moves **60 starts (5.7%) to a different end while the pair totals stay identical** — a mispair is a permutation, so totals, sums and completeness checks are all blind to it, and a mispaired row reads as a coherent call that never happened, carrying one call's duration beside another call's result body.
+
+  **The mint is per call by construction.** It is a local variable in the scope that emits both legs, never `ctx.request_id` (which restarts at 1 per connection). On the library path the entered `Trace` is that scope, so `__aenter__` assigns the id and a `Trace` entered twice mints twice. Hoisting it anywhere wider would send one id for a whole session and silently degrade pairing below the FIFO floor it outranks; that property is covered by its own test on each path.
+
+  ⚠ **A multi-round tool call (MRTR, mcp ≥ 2.0) does not pair, and on a single-process server that is a regression.** Its two rounds are two emit scopes, so the start and the end mint different ids, land in different tier-1 partitions, and both stay unpaired rather than one stealing a neighbour's. Where the call is served by ONE process, those two legs were previously paired correctly by the FIFO tier, so a collector that showed one complete call with a duration and a result now shows a dangling start beside an orphan end. Where it is served by MORE than one, the rounds arrive under different fallback `session_id`s and were never pairable under any tier, before or after. The single-process case could be fixed by carrying the id across rounds on the MRTR continuation state; that is tracked, not shipped. If your server exposes tools that return `InputRequiredResult`, this is the paragraph that affects you.
 
 - **`user_id` now carries the authenticated end-user principal on both MCP adapters.** The field has been on the envelope since 0.3.0 and nothing ever filled it — `identity.py` shipped as a parity mirror of baton-proxy and no adapter called it, so every SDK-sourced event has carried a null actor while the proxy and the gateway adapter carried a real one. Both adapters now read the principal from the verified access token and attach it to every event of a call, including the annotation event.
 

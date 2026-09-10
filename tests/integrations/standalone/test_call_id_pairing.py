@@ -10,9 +10,9 @@ or it has not landed. **``fastmcp-matrix`` runs this directory** against fastmcp
 2.14.7 / 3.4.2 / 4.0.2, which is the only place the floor's mcp 1.30 and
 fastmcp 4's mcp 2.2 are exercised.
 
-Both files are strict ``xfail``s written before the mint (workplan N2a); see
-the official file's docstring for why that order matters, and
-``tests/_forced_reorder.py`` for the rig.
+Both files were written before the mint (workplan N2a) as strict ``xfail``s and
+un-marked when it landed; see the official file's docstring for why that order
+matters, and ``tests/_forced_reorder.py`` for the rig.
 
 The third emit surface — the library API's ``Trace`` / ``AsyncTrace`` — is
 pinned by ``tests/test_call_id_pairing_library.py``. All three or the mint
@@ -31,7 +31,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-import pytest
 from fastmcp import Client, FastMCP
 
 from baton.events import Event
@@ -47,16 +46,6 @@ from tests._forced_reorder import (
     legs,
     tag_of_end,
     tag_of_start,
-)
-
-_MINT_PENDING = pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "no adapter mints a call_id yet — workplan N2-SDK. The field is "
-        "specified (SPEC §11.4) and baton-console already pairs on it "
-        "(§11.5.4); this is the SDK half. Remove this marker with the mint."
-    ),
 )
 
 
@@ -118,7 +107,6 @@ async def test_the_rig_inverts_and_fifo_mispairs_because_of_it() -> None:
     )
 
 
-@_MINT_PENDING
 async def test_every_leg_of_a_call_carries_a_call_id() -> None:
     _, starts, ends = await _drive()
     missing = [
@@ -129,7 +117,6 @@ async def test_every_leg_of_a_call_carries_a_call_id() -> None:
     assert not missing, f"legs with no call_id: {missing}"
 
 
-@_MINT_PENDING
 async def test_the_two_calls_get_distinct_ids() -> None:
     """Separate from the join assertion on purpose — see the official file: a
     mint hoisted out of per-call scope pairs ACROSS calls of one tool, which is
@@ -144,7 +131,6 @@ async def test_the_two_calls_get_distinct_ids() -> None:
     )
 
 
-@_MINT_PENDING
 async def test_call_id_pairs_each_leg_with_its_own_start() -> None:
     """The assertion the whole file exists for: the join is right where FIFO's
     is wrong."""
