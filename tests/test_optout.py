@@ -31,58 +31,62 @@ import pytest
 
 from baton._optout import capture_disabled
 
-SWITCHES = ["BATON_DISABLED", "DO_NOT_TRACK"]
+SWITCH = "BATON_DISABLED"
 
-
-@pytest.fixture(autouse=True)
-def _no_ambient_switch(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The developer running this suite may have DO_NOT_TRACK exported."""
-    for name in SWITCHES:
-        monkeypatch.delenv(name, raising=False)
+# Reversed 2026-09-10 — pinned below so it cannot creep back in unnoticed.
+REVERSED = "DO_NOT_TRACK"
 
 
 class TestWhichValuesCount:
-    @pytest.mark.parametrize("switch", SWITCHES)
     @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", "anything"])
     def test_a_value_that_is_not_an_explicit_off_disables(
-        self, monkeypatch: pytest.MonkeyPatch, switch: str, value: str
+        self, monkeypatch: pytest.MonkeyPatch, value: str
     ) -> None:
         """Permissive toward the opt-out on purpose. The two failure directions
         are not symmetric: honouring an unintended opt-out costs telemetry,
         ignoring an intended one collects data from someone who asked us not
         to."""
-        monkeypatch.setenv(switch, value)
-        assert capture_disabled() == switch
+        monkeypatch.setenv(SWITCH, value)
+        assert capture_disabled() == SWITCH
 
-    @pytest.mark.parametrize("switch", SWITCHES)
     @pytest.mark.parametrize("value", ["", "0", "false", "FALSE", "no", "off", "  0  "])
     def test_an_explicit_off_does_not_disable(
-        self, monkeypatch: pytest.MonkeyPatch, switch: str, value: str
+        self, monkeypatch: pytest.MonkeyPatch, value: str
     ) -> None:
         """``DO_NOT_TRACK=0`` is someone saying tracking is FINE. Reading it as
         "the variable is present, therefore opted out" would ignore the only
         thing they actually said."""
-        monkeypatch.setenv(switch, value)
+        monkeypatch.setenv(SWITCH, value)
         assert capture_disabled() is None
 
     def test_unset_is_not_disabled(self) -> None:
         assert capture_disabled() is None
 
-    def test_our_own_switch_is_the_one_named_when_both_are_set(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("value", ["1", "true", "yes"])
+    def test_DO_NOT_TRACK_does_NOT_disable_and_that_is_deliberate(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
     ) -> None:
-        """It is the one our documentation tells a vendor about and the one
-        they control; DO_NOT_TRACK is equally binding and usually someone
-        else's."""
-        monkeypatch.setenv("BATON_DISABLED", "1")
-        monkeypatch.setenv("DO_NOT_TRACK", "1")
-        assert capture_disabled() == "BATON_DISABLED"
+        """It was implemented, then reversed 2026-09-10 — measured, not argued.
+
+        An MCP client hands the server it spawns a fixed allowlist (``HOME``,
+        ``LOGNAME``, ``PATH``, ``SHELL``, ``TERM``, ``USER``), and
+        ``DO_NOT_TRACK`` is not on it. So a global export never reaches a stdio
+        server, and a user who edits their client config's ``env`` block to add
+        it could have typed ``BATON_DISABLED=1`` there instead — the
+        convenience the convention was worth buying does not exist in this
+        deployment model. What it did cost was a contributor with the variable
+        exported getting a silently disabled SDK and a red suite.
+
+        This test is the record. If it starts failing, someone re-added the
+        variable; read ``baton._optout``'s module docstring before deciding
+        that is right."""
+        monkeypatch.setenv("DO_NOT_TRACK", value)
+        assert capture_disabled() is None
 
 
 class TestTheInstallDoorInstallsNothing:
-    @pytest.mark.parametrize("switch", SWITCHES)
     async def test_the_server_is_left_exactly_as_it_was(
-        self, monkeypatch: pytest.MonkeyPatch, switch: str
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Asserted on the SERVER, not on the handle. A handle that reports
         itself disabled while the middleware is attached and the annotation
@@ -101,7 +105,7 @@ class TestTheInstallDoorInstallsNothing:
             before = sorted(t.name for t in await client.list_tools())
         instructions_before = mcp.instructions
 
-        monkeypatch.setenv(switch, "1")
+        monkeypatch.setenv(SWITCH, "1")
         install_baton(mcp, dsn="https://baton_pk_x@h.example.com/ten_" + "0" * 32 + "/srv")
 
         async with Client(mcp) as client:
@@ -113,9 +117,8 @@ class TestTheInstallDoorInstallsNothing:
         assert mcp.instructions == instructions_before, "the instructions were rewritten"
         assert result is not None
 
-    @pytest.mark.parametrize("switch", SWITCHES)
     async def test_a_driven_tool_call_emits_nothing_through_a_WORKING_sink(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, switch: str
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """The install door's twin of the library-door test above.
 
@@ -149,11 +152,11 @@ class TestTheInstallDoorInstallsNothing:
             finally:
                 await handle.aclose()
 
-        monkeypatch.setenv(switch, "1")
+        monkeypatch.setenv(SWITCH, "1")
         await _run()
         assert not events.exists() or events.read_text() == ""
 
-        monkeypatch.delenv(switch)
+        monkeypatch.delenv(SWITCH)
         await _run()
         assert events.read_text().strip(), "the same rig captures nothing with the switch OFF"
 
@@ -168,7 +171,7 @@ class TestTheInstallDoorInstallsNothing:
         from baton._optout import DisabledSink
         from baton.install import install_baton
 
-        monkeypatch.setenv("BATON_DISABLED", "1")
+        monkeypatch.setenv(SWITCH, "1")
         handle = install_baton(
             FastMCP("optout"),
             dsn="https://baton_pk_x@h.example.com/ten_" + "0" * 32 + "/srv",
@@ -187,10 +190,7 @@ class TestEachAdapterCarriesItsOwnGuard:
     router holds is a guard half the callers never reach.
     """
 
-    @pytest.mark.parametrize("switch", SWITCHES)
-    async def test_the_standalone_adapter_directly(
-        self, monkeypatch: pytest.MonkeyPatch, switch: str
-    ) -> None:
+    async def test_the_standalone_adapter_directly(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from fastmcp import Client, FastMCP
 
         from baton._optout import DisabledSink
@@ -202,17 +202,14 @@ class TestEachAdapterCarriesItsOwnGuard:
         def echo(text: str) -> str:
             return text
 
-        monkeypatch.setenv(switch, "1")
+        monkeypatch.setenv(SWITCH, "1")
         handle = install_baton(mcp, dsn="https://baton_pk_x@h/ten_" + "0" * 32 + "/s")
 
         assert isinstance(handle.sink, DisabledSink)
         async with Client(mcp) as client:
             assert sorted(t.name for t in await client.list_tools()) == ["echo"]
 
-    @pytest.mark.parametrize("switch", SWITCHES)
-    async def test_the_official_adapter_directly(
-        self, monkeypatch: pytest.MonkeyPatch, switch: str
-    ) -> None:
+    async def test_the_official_adapter_directly(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from baton._optout import DisabledSink
         from baton.integrations.official import install_baton
         from baton.integrations.official._compat import MCPServerClass as FastMCP
@@ -224,7 +221,7 @@ class TestEachAdapterCarriesItsOwnGuard:
         def echo(text: str) -> str:
             return text
 
-        monkeypatch.setenv(switch, "1")
+        monkeypatch.setenv(SWITCH, "1")
         handle = install_baton(mcp, dsn="https://baton_pk_x@h/ten_" + "0" * 32 + "/s")
 
         assert isinstance(handle.sink, DisabledSink)
@@ -232,16 +229,15 @@ class TestEachAdapterCarriesItsOwnGuard:
             listed = await client.list_tools()
             assert sorted(t.name for t in listed.tools) == ["echo"]
 
-    @pytest.mark.parametrize("switch", SWITCHES)
     def test_each_adapter_refuses_to_throw_on_its_own(
-        self, monkeypatch: pytest.MonkeyPatch, switch: str
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Both adapters' shape guards raise when the switch is off; neither
         may raise while it is on."""
         from baton.integrations.official import install_baton as official_install
         from baton.integrations.standalone import install_baton as standalone_install
 
-        monkeypatch.setenv(switch, "1")
+        monkeypatch.setenv(SWITCH, "1")
         assert standalone_install(object()) is not None  # type: ignore[arg-type]
         assert official_install(object()) is not None  # type: ignore[arg-type]
 
@@ -249,13 +245,12 @@ class TestEachAdapterCarriesItsOwnGuard:
 class TestItCannotBreakABoot:
     """Every one of these raises when the switch is OFF. That is the point."""
 
-    @pytest.mark.parametrize("switch", SWITCHES)
     def test_an_object_that_is_no_kind_of_server_does_not_raise(
-        self, monkeypatch: pytest.MonkeyPatch, switch: str
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from baton.install import install_baton
 
-        monkeypatch.setenv(switch, "1")
+        monkeypatch.setenv(SWITCH, "1")
         assert install_baton(object()) is not None
 
     def test_a_config_missing_its_vendor_id_does_not_raise(
@@ -266,7 +261,7 @@ class TestItCannotBreakABoot:
         from baton.install import install_baton
         from baton.integrations._config import VendorConfig
 
-        monkeypatch.setenv("BATON_DISABLED", "1")
+        monkeypatch.setenv(SWITCH, "1")
         assert install_baton(FastMCP("x"), VendorConfig()) is not None
 
     def test_an_unparseable_dsn_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -274,7 +269,7 @@ class TestItCannotBreakABoot:
 
         from baton.install import install_baton
 
-        monkeypatch.setenv("BATON_DISABLED", "1")
+        monkeypatch.setenv(SWITCH, "1")
         assert install_baton(FastMCP("x"), dsn="not-a-dsn-at-all") is not None
 
     def test_nothing_at_all_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -284,7 +279,7 @@ class TestItCannotBreakABoot:
 
         from baton.install import install_baton
 
-        monkeypatch.setenv("BATON_DISABLED", "1")
+        monkeypatch.setenv(SWITCH, "1")
         assert install_baton(FastMCP("x")) is not None
 
     def test_the_handle_survives_the_vendors_finally_block(
@@ -297,7 +292,7 @@ class TestItCannotBreakABoot:
 
         from baton.install import install_baton
 
-        monkeypatch.setenv("DO_NOT_TRACK", "1")
+        monkeypatch.setenv(SWITCH, "1")
         handle = install_baton(FastMCP("x"), dsn="https://baton_pk_x@h/ten_" + "0" * 32 + "/s")
 
         import asyncio
@@ -316,15 +311,14 @@ class TestItCannotBreakABoot:
 class TestNothingReachesStdout:
     """The trap that breaks the server rather than merely annoying someone."""
 
-    @pytest.mark.parametrize("switch", SWITCHES)
     def test_the_install_path_writes_nothing_to_stdout(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], switch: str
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         from fastmcp import FastMCP
 
         from baton.install import install_baton
 
-        monkeypatch.setenv(switch, "1")
+        monkeypatch.setenv(SWITCH, "1")
         install_baton(FastMCP("x"), dsn="https://baton_pk_x@h/ten_" + "0" * 32 + "/s")
         assert capsys.readouterr().out == ""
 
@@ -333,7 +327,7 @@ class TestNothingReachesStdout:
     ) -> None:
         from baton import Client
 
-        monkeypatch.setenv("BATON_DISABLED", "1")
+        monkeypatch.setenv(SWITCH, "1")
         client = Client()
         try:
             with client.trace(tool_name="t") as trace:
@@ -352,21 +346,20 @@ class TestNothingReachesStdout:
 
         from baton.install import install_baton
 
-        monkeypatch.setenv("DO_NOT_TRACK", "1")
+        monkeypatch.setenv(SWITCH, "1")
         with caplog.at_level(logging.INFO, logger="baton._optout"):
-            install_baton(FastMCP("x"))
-        assert "DO_NOT_TRACK" in caplog.text
+            install_baton(FastMCP("x"), dsn="https://baton_pk_x@h/ten_" + "0" * 32 + "/s")
+        assert SWITCH in caplog.text
 
 
 class TestTheLibraryDoor:
-    @pytest.mark.parametrize("switch", SWITCHES)
     def test_a_disabled_sync_client_starts_no_background_thread(
-        self, monkeypatch: pytest.MonkeyPatch, switch: str
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """ "No wrap, no buffer, no queue" — and the sync client is the one path
         with no wrap to skip, so the daemon thread IS the promise here.
         ``_SyncBridge.__init__`` starts it unconditionally."""
-        monkeypatch.setenv(switch, "1")
+        monkeypatch.setenv(SWITCH, "1")
         from baton import Client
 
         before = {t.name for t in threading.enumerate()}
@@ -390,9 +383,8 @@ class TestTheLibraryDoor:
         finally:
             client.close()
 
-    @pytest.mark.parametrize("switch", SWITCHES)
     async def test_a_disabled_async_client_ignores_a_WORKING_sink(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, switch: str
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Handed a real ``FileSink``, it must still write nothing.
 
@@ -403,7 +395,7 @@ class TestTheLibraryDoor:
         broken cannot pass the first half.
         """
         events = tmp_path / "events.jsonl"
-        monkeypatch.setenv(switch, "1")
+        monkeypatch.setenv(SWITCH, "1")
 
         from baton import AsyncClient
         from baton.sinks import FileSink
@@ -416,7 +408,7 @@ class TestTheLibraryDoor:
             await client.aclose()
         assert not events.exists() or events.read_text() == ""
 
-        monkeypatch.delenv(switch)
+        monkeypatch.delenv(SWITCH)
         enabled = AsyncClient(vendor_id="v", sink=FileSink(str(events)))
         try:
             async with enabled.trace(tool_name="t") as trace:
@@ -432,7 +424,7 @@ class TestTheLibraryDoor:
         Emitting nothing must not mean returning nothing."""
         from baton import Client, SignalType
 
-        monkeypatch.setenv("BATON_DISABLED", "1")
+        monkeypatch.setenv(SWITCH, "1")
         client = Client()
         try:
             with client.trace(tool_name="work", intent="do a thing", params={"a": 1}) as trace:
@@ -440,3 +432,123 @@ class TestTheLibraryDoor:
             client.annotate(signal_type=SignalType.DEAD_END, suggested_improvement="x")
         finally:
             client.close()
+
+
+class TestASinkYouPassedIsNotDroppedOnTheFloor:
+    """The client took ownership of that object when it was handed over, and
+    ``close()`` is what releases it. Switching capture off does not undo that
+    — a resource the vendor expected us to close would simply never be closed.
+
+    ⚠ **Keeping it is also how the switch nearly broke.** While a disabled
+    client was handed a no-op sink, ``AsyncClient._emit`` needed no guard and
+    had none: nothing could reach a real destination. The moment the caller's
+    sink was kept, every disabled async client emitted for real. The tests
+    below hand a disabled client a WORKING sink for exactly that reason —
+    against a no-op sink they would pass on a build with the switch removed.
+    """
+
+    def test_a_disabled_sync_client_keeps_and_closes_the_sink_it_was_given(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from baton import Client
+        from baton.sinks import FileSink
+
+        events = tmp_path / "events.jsonl"
+        sink = FileSink(str(events))
+        monkeypatch.setenv(SWITCH, "1")
+
+        client = Client(vendor_id="v", sink=sink)
+        try:
+            assert client._sink is sink, "the caller's sink was swapped out and dropped"
+            with client.trace(tool_name="t") as trace:
+                trace.observed({"ok": True})
+        finally:
+            client.close()
+
+        assert not events.exists() or events.read_text() == "", "a disabled client emitted"
+        # Closed even though there is no bridge thread to close it on.
+        assert sink._closed is True
+
+    async def test_a_disabled_async_client_keeps_and_closes_the_sink_it_was_given(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from baton import AsyncClient
+        from baton.sinks import FileSink
+
+        sink = FileSink(str(tmp_path / "events.jsonl"))
+        monkeypatch.setenv(SWITCH, "1")
+
+        client = AsyncClient(vendor_id="v", sink=sink)
+        try:
+            assert client._sink is sink
+        finally:
+            await client.aclose()
+        assert sink._closed is True
+
+    def test_the_install_handle_keeps_the_sink_from_the_config(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from fastmcp import FastMCP
+
+        from baton.install import install_baton
+        from baton.integrations._config import VendorConfig
+        from baton.sinks import FileSink
+
+        sink = FileSink(str(tmp_path / "events.jsonl"))
+        monkeypatch.setenv(SWITCH, "1")
+        handle = install_baton(
+            FastMCP("x"), VendorConfig(vendor_id="v", vendor_display_name="V", sink=sink)
+        )
+        assert handle.sink is sink
+
+
+class TestEscalateNamesTheRightCause:
+    """``escalate()`` reused the dev-mode message under the off switch, which
+    said "sink has no Console URL … switch to HttpSink" — a confident,
+    actionable, WRONG diagnosis, at WARNING where it is the only line a vendor
+    sees, while the true cause sat at INFO where nothing shows it. A vendor
+    with a perfectly good dsn would swap sinks, redeploy, and change nothing.
+    """
+
+    async def test_it_names_the_switch_not_the_sink(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from fastmcp import FastMCP
+
+        from baton.install import install_baton
+
+        monkeypatch.setenv(SWITCH, "1")
+        handle = install_baton(FastMCP("x"), dsn="https://baton_pk_x@h/ten_" + "0" * 32 + "/s")
+
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            ticket = await handle.escalate()
+
+        assert ticket["ticket_id"] == "queued"
+        assert SWITCH in caplog.text
+        assert "Switch to HttpSink" not in caplog.text
+
+    async def test_a_disabled_handle_holding_a_real_HttpSink_makes_no_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sharp edge of keeping the caller's sink: a disabled handle can
+        now be holding a working ``HttpSink``. ``escalate()`` reads its url and
+        api_key, so without the switch check it would make a REAL network call
+        from a Baton that is supposed to be doing nothing."""
+        from fastmcp import FastMCP
+
+        from baton.install import install_baton
+        from baton.integrations._config import VendorConfig
+        from baton.sinks import HttpSink
+
+        monkeypatch.setenv(SWITCH, "1")
+        handle = install_baton(
+            FastMCP("x"),
+            VendorConfig(
+                vendor_id="v",
+                vendor_display_name="V",
+                # A host that would fail loudly if anything dialled it.
+                sink=HttpSink("https://console.invalid", api_key="k"),
+            ),
+        )
+        assert handle._console_url is None
+        assert (await handle.escalate())["ticket_id"] == "queued"

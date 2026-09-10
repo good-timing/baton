@@ -1,8 +1,28 @@
-"""The off switch — two environment variables that stop Baton doing anything.
+"""The off switch — one environment variable that stops Baton doing anything.
 
-``BATON_DISABLED=1`` is ours. ``DO_NOT_TRACK=1`` is the cross-vendor console
-convention (consoledonottrack.com), honoured because a person who has set it
-once, globally, should not have to learn our variable's name to be listened to.
+``BATON_DISABLED=1``, and deliberately nothing else.
+
+⚠ **``DO_NOT_TRACK`` was implemented and then REVERSED (2026-09-10), so do not
+re-add it on the strength of the convention alone.** The argument for honouring
+it was that someone who sets it once, globally, should not have to learn our
+variable's name. **Measured, that is false for the deployment this switch
+exists for.** An MCP client does not hand its own environment to the server it
+spawns — both SDKs pass a fixed allowlist (``HOME``, ``LOGNAME``, ``PATH``,
+``SHELL``, ``TERM``, ``USER`` in the Python one, the same shape in the
+TypeScript one that Claude Code and Desktop use), and ``DO_NOT_TRACK`` is not
+on it. So a global export never reaches a stdio server; the user has to put it
+in their client config's ``env`` block, where they could as easily have typed
+``BATON_DISABLED=1``. The convenience the convention was worth buying does not
+exist here.
+
+What it cost instead was real: a contributor with ``DO_NOT_TRACK`` exported —
+Homebrew and the .NET CLI both honour it, so people do have it set — got a
+silently disabled SDK and a broad red test suite.
+
+It still worked on the library-API path, where the process is started from the
+user's own shell. If that path ever becomes the main one, this is the note to
+re-read; the reversal is about MCP's spawn model, not about the convention
+being wrong.
 
 **Off means INSTALL NOTHING, and it means NEVER THROW.** Not capture-and-
 discard: no middleware, no tool wrapping, no annotation tool on the surface, no
@@ -48,10 +68,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["DisabledSink", "capture_disabled", "log_disabled"]
 
-# Ours first, so a vendor's own switch is what gets named in the log line when
-# both are set — it is the one they control and the one our docs tell them
-# about. `DO_NOT_TRACK` is deliberately second and equally binding.
-_SWITCHES = ("BATON_DISABLED", "DO_NOT_TRACK")
+_SWITCH = "BATON_DISABLED"
 
 # ⚠ **Permissive toward the opt-out, on purpose.** The convention says ``=1``,
 # but someone who writes ``DO_NOT_TRACK=true`` has said what they want as
@@ -65,14 +82,13 @@ _OFF_VALUES = frozenset({"", "0", "false", "no", "off"})
 def capture_disabled() -> str | None:
     """The NAME of the variable switching capture off, or ``None``.
 
-    The name rather than a bool, so the log line can tell a vendor which of the
-    two fired — the answer to "why are no events arriving" is usually a
-    ``DO_NOT_TRACK`` somebody exported months ago for something else entirely.
+    The name rather than a bool, so the log line and the disabled handle can
+    say which variable did it. There is only one today; returning the name
+    keeps the callers unchanged if that ever stops being true.
     """
-    for name in _SWITCHES:
-        value = os.environ.get(name)
-        if value is not None and value.strip().lower() not in _OFF_VALUES:
-            return name
+    value = os.environ.get(_SWITCH)
+    if value is not None and value.strip().lower() not in _OFF_VALUES:
+        return _SWITCH
     return None
 
 

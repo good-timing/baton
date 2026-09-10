@@ -12,22 +12,27 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Added
 
-- **`BATON_DISABLED=1` and `DO_NOT_TRACK=1` turn capture off.** The SDK had no opt-out of any kind. `DO_NOT_TRACK` is the cross-vendor console convention, honoured because someone who set it once, globally, should not have to learn our variable's name to be listened to.
+- **`BATON_DISABLED=1` turns capture off.** The SDK had no opt-out of any kind. The Console's install recipe writes a key into a server that ships to strangers, and its README will tell those users how to switch capture off — without a real switch, that sentence is a lie.
 
   **Off means install NOTHING**: no middleware, no wrapped tools, no annotation tool on the surface, no instructions rewrite, no sink, no buffer, and — on the sync `Client` — no background thread. Not capture-and-discard. The vendor's server starts and behaves exactly as it would if `install_baton` were not in the file. Honoured at all five entry points: both adapters directly, `baton.install_baton`, `Client` and `AsyncClient`.
 
-  **Off also means NEVER THROW**, and that is the half worth stating. Every guard the SDK would otherwise raise from — a server object of the wrong shape, a config with no `vendor_id`, an unparseable DSN — is skipped along with everything else, because a switch that can still abort a boot is worse than no switch: the user believes they opted out, and the thing they opted out of took the process with it.
+  **Off also means NEVER THROW.** Every guard the SDK would otherwise raise from — a server object of the wrong shape, a config with no `vendor_id`, an unparseable DSN — is skipped along with everything else, because a switch that can still abort a boot is worse than no switch: the user believes they opted out, and the thing they opted out of took the process with it.
 
-  ⚠ **The consequence, which is real and is the price of the above:** a malformed `install_baton` call cannot fail while the switch is on. If your CI exports `DO_NOT_TRACK` globally, a broken install surfaces the first time capture is enabled, not in the test run. The disabled path logs a line naming which variable fired — at INFO, so it reaches whoever has logging turned up and is invisible by default. That is a debugging aid, not a discoverability guarantee.
+  ⚠ **The consequence, which is real and is the price of the above:** a malformed `install_baton` call cannot fail while the switch is on. If your CI exports it globally, a broken install surfaces the first time capture is enabled, not in the test run. The disabled path logs a line naming the variable — at INFO, so it reaches whoever has logging turned up and is invisible by default. A debugging aid, not a discoverability guarantee.
 
-  ⚠ **Nothing on stdout, ever.** A stdio MCP server speaks JSON-RPC on stdout, so a courteous "Baton is disabled" line printed there corrupts the stream and breaks the server — in precisely the deployment this switch exists for. The one line goes to a logger at INFO. Pinned by a test that asserts stdout is empty across an install and a driven call, because the `T20` lint rule bans `print()` in `src/` and says nothing about `sys.stdout.write` or a logger someone has pointed at stdout.
+  ⚠ **Nothing on stdout, ever.** A stdio MCP server speaks JSON-RPC on stdout, so a courteous "Baton is disabled" line printed there corrupts the stream and breaks the server — in precisely the deployment this switch exists for. The one line goes to a logger. Pinned by a test asserting stdout is empty across an install and a driven call, because the `T20` lint rule bans `print()` in `src/` and says nothing about `sys.stdout.write`.
 
-  **Values**: anything that is not an explicit off — `""`, `0`, `false`, `no`, `off`, case-insensitive — counts as on. Deliberately permissive, because the two failure directions are not symmetric: honouring an opt-out that was not meant costs some telemetry, while ignoring one that was collects data from a person who asked us not to. `DO_NOT_TRACK=0` therefore does **not** disable — that is someone saying tracking is fine.
+  **Values**: anything that is not an explicit off — `""`, `0`, `false`, `no`, `off`, case-insensitive — counts as on. Deliberately permissive: honouring an opt-out that was not meant costs some telemetry, while ignoring one that was collects data from a person who asked us not to. `BATON_DISABLED=0` therefore does **not** disable.
 
   Read once, at install/init. A process that starts with capture on keeps it on; re-reading per event would let a mid-flight environment change split one session's events across two answers.
 
-  This is environment-only on purpose — there is no `VendorConfig` field for it, so the recipe a wrapped server ships has one story to tell about how capture is switched off.
+  Environment-only on purpose — no `VendorConfig` field — so the recipe a wrapped server ships has one story to tell about how capture is switched off.
 
+  ⚠ **`DO_NOT_TRACK` is deliberately NOT honoured.** It was implemented alongside `BATON_DISABLED` and then reversed, on a measurement rather than an argument: **an MCP client does not hand its environment to the server it spawns.** Both SDKs pass a fixed allowlist — `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER` in the Python one, the same shape in the TypeScript one Claude Code and Desktop use — and `DO_NOT_TRACK` is not on it. A global export never reaches a stdio server, and a user editing their client config's `env` block to add it could have typed `BATON_DISABLED=1` there instead. The convenience the convention was worth buying does not exist in this deployment model, while the cost was concrete: a contributor with it exported (Homebrew and the .NET CLI both honour it) got a silently disabled SDK and a red suite. It did work on the library-API path, where the process starts from the user's own shell — if that ever becomes the main path, `baton._optout`'s docstring is the note to re-read.
+
+  **A per-end-user opt-out remains unbuilt.** Where the vendor hosts the server, this switch expresses the vendor's choice and nothing else — an end user cannot set an environment variable on someone else's machine. That is CHARTER ADR-1's per-end-user consent token, and it is not due.
+
+---
 
 ## Unreleased — one value configures an install, and it can ship inside the server
 

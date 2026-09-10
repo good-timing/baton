@@ -38,7 +38,7 @@ that way means events that never arrive at all. ``VendorConfig`` stays the door
 for everything else — a scrubber, injection modes, identity options — and takes
 a ``dsn=`` field of its own so the two combine.
 
-**The off switch.** Setting ``BATON_DISABLED=1`` or ``DO_NOT_TRACK=1`` in the
+**The off switch.** Setting ``BATON_DISABLED=1`` in the
 environment makes this function install NOTHING and raise nothing: no
 middleware, no wrapped tools, no annotation tool on the surface, no
 instructions rewrite, no sink. The server behaves exactly as it would without
@@ -155,7 +155,11 @@ def install_baton(
     # its httpx client) from a dsn for a capture that is not going to happen.
     switch = capture_disabled()
     if switch is not None:
-        return disabled_handle(switch, "install_baton (standalone fastmcp adapter)")
+        return disabled_handle(
+            switch,
+            "install_baton (standalone fastmcp adapter)",
+            config.sink if config is not None else None,
+        )
 
     # FIRST, before any validation or mutation: everything below assumes this
     # library's FastMCP, and the failure downstream is both late and

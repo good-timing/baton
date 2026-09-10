@@ -34,6 +34,7 @@ class BatonHandle:
         annotation_tool_name: str,
         vendor_id: str,
         session_id: str,
+        disabled_switch: str | None = None,
     ) -> None:
         from baton.sinks import HttpSink
 
@@ -41,9 +42,16 @@ class BatonHandle:
         self.annotation_tool_name = annotation_tool_name
         self.vendor_id = vendor_id
         self.session_id = session_id
-        # Extracted from HttpSink when present; None in dev mode (StdoutSink/FileSink).
-        self._console_url: str | None = sink.url if isinstance(sink, HttpSink) else None
-        self._console_api_key: str | None = sink.api_key if isinstance(sink, HttpSink) else None
+        # The env var that switched capture off, or None. Load-bearing twice
+        # below: it suppresses the Console URL so a disabled handle cannot make
+        # a network call, and it lets ``escalate`` name the real cause.
+        self._disabled_switch = disabled_switch
+        # Extracted from HttpSink when present; None in dev mode (StdoutSink/FileSink)
+        # and always None when capture is off — a handle that holds a vendor's
+        # own HttpSink (so it can still close it) must not go on to USE it.
+        usable = sink if isinstance(sink, HttpSink) and disabled_switch is None else None
+        self._console_url: str | None = usable.url if usable else None
+        self._console_api_key: str | None = usable.api_key if usable else None
         # Shared httpx client for escalate() calls — created lazily, closed in aclose().
         self._http_client: httpx.AsyncClient | None = None
 
@@ -84,6 +92,19 @@ class BatonHandle:
         Falls back to ``{"ticket_id": "queued", "ticket_url": None}`` when no
         Console URL is configured (dev mode — StdoutSink / FileSink).
         """
+        if self._disabled_switch is not None:
+            # ⚠ Named separately from dev mode, because reusing that message
+            # here told a vendor to "switch to HttpSink" when their sink was
+            # never the problem — advice that cannot work, at WARNING, while
+            # the true cause sat at INFO where nothing shows it. A message that
+            # confidently names the wrong cause is worse than a vague one.
+            _log.warning(
+                "handle.escalate() called but Baton capture is OFF (%s is set), "
+                "so there is no session to escalate. Unset it to file real "
+                "tickets.",
+                self._disabled_switch,
+            )
+            return {"ticket_id": "queued", "ticket_url": None}
         if self._console_url is None:
             _log.warning(
                 "handle.escalate() called but sink has no Console URL "
@@ -117,7 +138,7 @@ class BatonHandle:
         }
 
 
-def disabled_handle(switch: str, surface: str) -> BatonHandle:
+def disabled_handle(switch: str, surface: str, supplied_sink: Sink | None = None) -> BatonHandle:
     """The handle ``install_baton`` returns when the off switch is set.
 
     Shaped so a vendor's existing code keeps working untouched: ``flush()`` and
@@ -135,8 +156,14 @@ def disabled_handle(switch: str, surface: str) -> BatonHandle:
 
     log_disabled(switch, surface)
     return BatonHandle(
-        sink=DisabledSink(),
+        # A sink the VENDOR constructed is held rather than dropped, so their
+        # ``handle.aclose()`` still releases it — we took ownership of that
+        # object the moment they passed it, and the switch does not undo that.
+        # Nothing writes to it (nothing is wrapped) and ``_disabled_switch``
+        # stops it being used as a Console endpoint.
+        sink=supplied_sink if supplied_sink is not None else DisabledSink(),
         annotation_tool_name="",
         vendor_id="",
         session_id="baton-disabled",
+        disabled_switch=switch,
     )

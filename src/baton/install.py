@@ -50,7 +50,7 @@ predates the module. Only ``baton.install_baton`` was affected;
 low-level ``Server`` must be refused rather than half-installed, because a
 mis-route installs a capture that looks healthy and produces nothing
 (→ ``broken and unbuilt must not look alike``).
-**The off switch.** Setting ``BATON_DISABLED=1`` or ``DO_NOT_TRACK=1`` in the
+**The off switch.** Setting ``BATON_DISABLED=1`` in the
 environment makes this function install NOTHING and raise nothing: no
 middleware, no wrapped tools, no annotation tool on the surface, no
 instructions rewrite, no sink. The server behaves exactly as it would without
@@ -124,10 +124,13 @@ def install_baton(
     # points and are called directly — but leaving it out here would keep one
     # throw path alive under a switch whose whole promise is that it cannot
     # break a boot: hand this function something it does not recognise with
-    # DO_NOT_TRACK set, and it would still ``TypeError``.
+    # BATON_DISABLED set, and it would still ``TypeError``.
     switch = capture_disabled()
     if switch is not None:
-        return disabled_handle(switch, "install_baton")
+        # ``config.sink`` passed through for the same reason the adapters do
+        # it: a sink the caller constructed is theirs to have closed, and this
+        # door returns before either adapter is reached.
+        return disabled_handle(switch, "install_baton", config.sink if config else None)
 
     is_fastmcp = _has_fastmcp_middleware_seam(server)
 

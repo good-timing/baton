@@ -64,7 +64,7 @@ Config loading: explicit kwargs win; env-var fallback supported for ``dsn``
 ``consent_token`` is defaulted by the SDK when nothing supplies it, and may be
 overridden per-trace.
 
-**The off switch.** ``BATON_DISABLED=1`` or ``DO_NOT_TRACK=1`` in the
+**The off switch.** ``BATON_DISABLED=1`` in the
 environment makes a client emit nothing and start no background thread.
 ``trace()`` and ``annotate()`` keep working and returning what they always
 did — the vendor's code holds those objects — they simply reach no sink.
@@ -192,7 +192,7 @@ class _ClientConfig:
     consent_token: str
 
 
-def _disabled_client_config(switch: str, surface: str) -> _ClientConfig:
+def _disabled_client_config(switch: str, surface: str, sink: Sink | None) -> _ClientConfig:
     """What a client resolves to when the off switch is set.
 
     Nothing is read and nothing is validated — not the dsn, not ``vendor_id``,
@@ -201,11 +201,38 @@ def _disabled_client_config(switch: str, surface: str) -> _ClientConfig:
     The identity fields are empty rather than defaulted: no event will carry
     them, and inventing values would put a plausible-looking identity on
     objects that describe nothing.
+
+    ⚠ **A sink the caller PASSED is kept, not swapped for the no-op one.** This
+    client took ownership of that object the moment it was handed over, and
+    ``close()`` is what releases it; dropping it on the floor because capture
+    is off means a resource the vendor expected us to close never gets closed.
+    Nothing writes to it — every emit path returns early — so keeping it costs
+    an attribute. The no-op sink is for the case where there is nothing to
+    keep.
     """
     log_disabled(switch, surface)
     return _ClientConfig(
-        sink=DisabledSink(), vendor_id="", tenant_id="", consent_token=DEFAULT_CONSENT_TOKEN
+        sink=sink if sink is not None else DisabledSink(),
+        vendor_id="",
+        tenant_id="",
+        consent_token=DEFAULT_CONSENT_TOKEN,
     )
+
+
+def _close_sink_without_a_loop(sink: Sink) -> None:
+    """Close a disabled sync client's sink, which has no bridge thread to run on.
+
+    ``asyncio.run`` rather than a bridge, because starting the daemon thread
+    just to shut a sink would break the promise that a disabled client runs no
+    background thread. Catches ``Exception`` and not an enumerated tuple —
+    ``asyncio.run`` raises ``RuntimeError`` from inside a running loop, a sink
+    may raise anything, and this is a close path on a client that is already
+    doing nothing. Nothing here may escape into a vendor's ``finally``.
+    """
+    try:
+        asyncio.run(sink.aclose())
+    except Exception:
+        logger.debug("baton: closing a disabled client's sink failed", exc_info=True)
 
 
 def _resolve_client_config(
@@ -686,7 +713,7 @@ class Client:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
         resolved = (
-            _disabled_client_config(switch, "Client")
+            _disabled_client_config(switch, "Client", sink)
             if switch is not None
             else _resolve_client_config(
                 sink=sink,
@@ -816,7 +843,10 @@ class Client:
         if self._closed:
             return
         if self._bridge is None:
+            # Disabled: no bridge to run on, but a sink the caller handed us
+            # still has to be released.
             self._closed = True
+            _close_sink_without_a_loop(self._sink)
             return
         try:
             self._bridge.run(self._sink.aclose())
@@ -846,7 +876,10 @@ class Client:
         # `with client.trace(...)` block, ahead of the vendor's real call in
         # the proactive case. SPEC §11.2 fail-open applies here exactly as it
         # does to the MCP adapters' tool-call wrapping.
-        if self._bridge is None:
+        # ``_disabled`` is the REASON; the bridge check is the invariant that
+        # follows from it (no bridge exists when disabled) and is what makes
+        # the narrowing hold for the call below.
+        if self._disabled or self._bridge is None:
             # Disabled. The envelope above was still BUILT and is dropped here
             # — a local that reaches no buffer, no thread and no socket. The
             # alternative is a guard at each of the twelve places ``Trace``
@@ -1117,7 +1150,7 @@ class AsyncClient:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
         resolved = (
-            _disabled_client_config(switch, "AsyncClient")
+            _disabled_client_config(switch, "AsyncClient", sink)
             if switch is not None
             else _resolve_client_config(
                 sink=sink,
@@ -1234,6 +1267,16 @@ class AsyncClient:
     # =========================================================================
 
     async def _emit(self, event: Any) -> None:
+        if self._disabled:
+            # ⚠ **The async door's ONLY emission guard.** The sync twin's is
+            # ``self._bridge is None``, which reads as a guard about threads
+            # and happens to also mean "disabled" — so while a disabled client
+            # was given a no-op sink, this method needed nothing and had
+            # nothing. The moment a caller's real sink was kept (so it could be
+            # closed), that made every disabled async client emit for real.
+            # Caught by the test that hands a disabled client a WORKING sink,
+            # which is the only kind of test that could have caught it.
+            return
         # safe_write — see Client._emit_sync for why.
         await safe_write(self._sink, event, logger)
 
