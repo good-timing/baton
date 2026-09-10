@@ -2,28 +2,6 @@
 
 ``BATON_DISABLED=1``, and deliberately nothing else.
 
-⚠ **``DO_NOT_TRACK`` was implemented and then REVERSED (2026-09-10), so do not
-re-add it on the strength of the convention alone.** The argument for honouring
-it was that someone who sets it once, globally, should not have to learn our
-variable's name. **Measured, that is false for the deployment this switch
-exists for.** An MCP client does not hand its own environment to the server it
-spawns — both SDKs pass a fixed allowlist (``HOME``, ``LOGNAME``, ``PATH``,
-``SHELL``, ``TERM``, ``USER`` in the Python one, the same shape in the
-TypeScript one that Claude Code and Desktop use), and ``DO_NOT_TRACK`` is not
-on it. So a global export never reaches a stdio server; the user has to put it
-in their client config's ``env`` block, where they could as easily have typed
-``BATON_DISABLED=1``. The convenience the convention was worth buying does not
-exist here.
-
-What it cost instead was real: a contributor with ``DO_NOT_TRACK`` exported —
-Homebrew and the .NET CLI both honour it, so people do have it set — got a
-silently disabled SDK and a broad red test suite.
-
-It still worked on the library-API path, where the process is started from the
-user's own shell. If that path ever becomes the main one, this is the note to
-re-read; the reversal is about MCP's spawn model, not about the convention
-being wrong.
-
 **Off means INSTALL NOTHING, and it means NEVER THROW.** Not capture-and-
 discard: no middleware, no tool wrapping, no annotation tool on the surface, no
 instructions rewrite, no sink, no buffer, no background thread. The vendor's
@@ -41,14 +19,11 @@ the file at all. That is the contract, and both halves are load-bearing:
   is worse than no switch at all.
 
 ⚠ **The consequence of never-throw, recorded rather than argued away:** a
-vendor whose CI exports ``DO_NOT_TRACK`` globally will not learn that their
+vendor whose CI exports ``BATON_DISABLED`` globally will not learn that their
 ``install_baton`` call is malformed, because the call cannot fail while the
 switch is on. It surfaces the first time capture is enabled. That is the price
-of the contract above. The disabled path logs a line naming which variable
-fired, which helps whoever has logging turned up — but at INFO that line is
-invisible by default, so it is a debugging aid and NOT the answer to "broken
-and unbuilt must not look alike". That answer is vendor-facing documentation,
-which is a different piece of work.
+of the contract above; ``log_disabled`` below is what softens it, and its
+docstring says how far that goes.
 
 ⚠ **Read at install/init time, once, and never re-read.** A process that starts
 with capture on keeps it on: this is a boot-time switch, not a live one. A
@@ -70,9 +45,9 @@ __all__ = ["DisabledSink", "capture_disabled", "log_disabled"]
 
 _SWITCH = "BATON_DISABLED"
 
-# ⚠ **Permissive toward the opt-out, on purpose.** The convention says ``=1``,
-# but someone who writes ``DO_NOT_TRACK=true`` has said what they want as
-# plainly as someone who writes ``1``, and the two failure directions are not
+# ⚠ **Permissive toward the opt-out, on purpose.** The documented form is
+# ``=1``, but someone who writes ``BATON_DISABLED=true`` has said what they want
+# as plainly as someone who writes ``1``, and the two failure directions are not
 # symmetric: honouring an unintended opt-out costs some telemetry, while
 # ignoring an intended one collects data from a person who asked us not to.
 # So anything that is not an explicit "off" counts as on.
@@ -83,8 +58,7 @@ def capture_disabled() -> str | None:
     """The NAME of the variable switching capture off, or ``None``.
 
     The name rather than a bool, so the log line and the disabled handle can
-    say which variable did it. There is only one today; returning the name
-    keeps the callers unchanged if that ever stops being true.
+    say what did it without every entry point repeating the string.
     """
     value = os.environ.get(_SWITCH)
     if value is not None and value.strip().lower() not in _OFF_VALUES:
@@ -95,10 +69,16 @@ def capture_disabled() -> str | None:
 def log_disabled(switch: str, surface: str) -> None:
     """Say so once, on the logger, never on stdout.
 
-    INFO rather than WARNING: for ``DO_NOT_TRACK`` this is an end user's
-    standing preference being honoured, and warning them about it once per
-    process start is nagging someone for a choice they already made. The real
-    discoverability answer is the vendor-facing documentation, not a log level.
+    INFO rather than WARNING: a line emitted on every process start, for a
+    switch somebody set deliberately, is how a codebase teaches people to
+    ignore its warnings.
+
+    ⚠ **Not a discoverability guarantee, and it must not be sold as one.**
+    Python's default handler emits WARNING and above, so in a server that
+    configures no logging this prints nothing. It is for the vendor who turns
+    logging up while asking why no events are arriving. The answer for one who
+    has not thought to look is vendor-facing documentation, which is a
+    different piece of work.
     """
     logger.info(
         "baton: %s is set, so capture is OFF — %s installed nothing and will "

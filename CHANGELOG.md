@@ -28,8 +28,6 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
   Environment-only on purpose — no `VendorConfig` field — so the recipe a wrapped server ships has one story to tell about how capture is switched off.
 
-  ⚠ **`DO_NOT_TRACK` is deliberately NOT honoured.** It was implemented alongside `BATON_DISABLED` and then reversed, on a measurement rather than an argument: **an MCP client does not hand its environment to the server it spawns.** Both SDKs pass a fixed allowlist — `HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER` in the Python one, the same shape in the TypeScript one Claude Code and Desktop use — and `DO_NOT_TRACK` is not on it. A global export never reaches a stdio server, and a user editing their client config's `env` block to add it could have typed `BATON_DISABLED=1` there instead. The convenience the convention was worth buying does not exist in this deployment model, while the cost was concrete: a contributor with it exported (Homebrew and the .NET CLI both honour it) got a silently disabled SDK and a red suite. It did work on the library-API path, where the process starts from the user's own shell — if that ever becomes the main path, `baton._optout`'s docstring is the note to re-read.
-
   **A per-end-user opt-out remains unbuilt.** Where the vendor hosts the server, this switch expresses the vendor's choice and nothing else — an end user cannot set an environment variable on someone else's machine. That is CHARTER ADR-1's per-end-user consent token, and it is not due.
 
 ---

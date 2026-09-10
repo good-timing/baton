@@ -1,4 +1,4 @@
-"""The off switch — ``BATON_DISABLED`` and ``DO_NOT_TRACK``.
+"""The off switch — ``BATON_DISABLED``.
 
 Two promises, and each one is a way the switch could be worse than not having
 it at all:
@@ -15,7 +15,7 @@ it at all:
 
 ⚠ **The consequence, pinned deliberately rather than left to be discovered:** a
 malformed ``install_baton`` call cannot fail while the switch is on. A vendor
-whose CI exports ``DO_NOT_TRACK`` globally learns about it the first time
+whose CI exports the switch globally learns about it the first time
 capture is enabled. That is the cost of promise 2, and the tests below assert
 it on purpose so nobody "fixes" it into a raise.
 """
@@ -32,9 +32,6 @@ import pytest
 from baton._optout import capture_disabled
 
 SWITCH = "BATON_DISABLED"
-
-# Reversed 2026-09-10 — pinned below so it cannot creep back in unnoticed.
-REVERSED = "DO_NOT_TRACK"
 
 
 class TestWhichValuesCount:
@@ -53,34 +50,13 @@ class TestWhichValuesCount:
     def test_an_explicit_off_does_not_disable(
         self, monkeypatch: pytest.MonkeyPatch, value: str
     ) -> None:
-        """``DO_NOT_TRACK=0`` is someone saying tracking is FINE. Reading it as
-        "the variable is present, therefore opted out" would ignore the only
+        """``BATON_DISABLED=0`` is someone saying capture is FINE. Reading it
+        as "the variable is present, therefore opted out" would ignore the only
         thing they actually said."""
         monkeypatch.setenv(SWITCH, value)
         assert capture_disabled() is None
 
     def test_unset_is_not_disabled(self) -> None:
-        assert capture_disabled() is None
-
-    @pytest.mark.parametrize("value", ["1", "true", "yes"])
-    def test_DO_NOT_TRACK_does_NOT_disable_and_that_is_deliberate(
-        self, monkeypatch: pytest.MonkeyPatch, value: str
-    ) -> None:
-        """It was implemented, then reversed 2026-09-10 — measured, not argued.
-
-        An MCP client hands the server it spawns a fixed allowlist (``HOME``,
-        ``LOGNAME``, ``PATH``, ``SHELL``, ``TERM``, ``USER``), and
-        ``DO_NOT_TRACK`` is not on it. So a global export never reaches a stdio
-        server, and a user who edits their client config's ``env`` block to add
-        it could have typed ``BATON_DISABLED=1`` there instead — the
-        convenience the convention was worth buying does not exist in this
-        deployment model. What it did cost was a contributor with the variable
-        exported getting a silently disabled SDK and a red suite.
-
-        This test is the record. If it starts failing, someone re-added the
-        variable; read ``baton._optout``'s module docstring before deciding
-        that is right."""
-        monkeypatch.setenv("DO_NOT_TRACK", value)
         assert capture_disabled() is None
 
 
@@ -340,8 +316,7 @@ class TestNothingReachesStdout:
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Silence would leave "why are no events arriving" answerable only by
-        reading source. The usual answer is a DO_NOT_TRACK somebody exported
-        months ago for something else."""
+        reading source."""
         from fastmcp import FastMCP
 
         from baton.install import install_baton
