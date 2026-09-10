@@ -50,12 +50,20 @@ from typing import Any
 
 #: The per-request carrier for the client's declared identity, reserved by MCP
 #: 2026-07-28. Present in the mcp 2.x library today (``mcp.shared.inbound``
-#: names the same constant) and EMPTY in practice, because no shipping client
-#: negotiates that revision yet — verified 2026-09-09 against claude-code
-#: 2.1.267, which asks for ``2025-11-25`` and carries only ``claudecode/*``
-#: and ``progressToken`` on a call. Wired anyway: it costs one dict lookup,
-#: and the alternative is discovering the day clients move that our only
-#: carrier was the one the spec deleted.
+#: names the same constant).
+#:
+#: **Empty from every AGENT client measured, and NOT empty in general** —
+#: verified 2026-09-09 against claude-code 2.1.267, which asks for
+#: ``2025-11-25`` and carries only ``claudecode/*`` and ``progressToken``; and
+#: against **fastmcp 4's own ``Client``, which negotiates ``2026-07-28`` and
+#: writes this key on every request**. So the day clients move arrived through
+#: a dependency rather than through an agent, and this tier is live traffic on
+#: that band rather than a wire for later.
+#:
+#: Where the LIBRARY writes it, this tier cannot be forged: a value planted by
+#: whoever composed the tool call is overwritten with the client's own
+#: declaration. That is stronger than the ladder claims below, and it holds
+#: only on new-spec clients.
 CLIENT_INFO_META_KEY = "io.modelcontextprotocol/clientInfo"
 
 #: What an event reports when no tier answered. A LITERAL, not a knob: the
@@ -122,9 +130,21 @@ def _client_name_from_context(context: Any) -> Any:
     """The declared name off the session's cached ``initialize`` params.
 
     Duck-typed and never raising, like every other context read in this SDK:
-    ``ctx.session`` and its neighbours raise ``ValueError`` outside a live
-    request — which a plain ``getattr(..., None)`` does NOT swallow, since its
-    default only covers ``AttributeError``.
+    ``ctx.session`` and its neighbours raise outside a live request — which a
+    plain ``getattr(..., None)`` does NOT swallow, since its default only
+    covers ``AttributeError``.
+
+    ⚠ **Catches ``Exception``, and the enumerated tuple that was here first is
+    why.** It listed ``(AttributeError, ValueError, TypeError)`` on the basis
+    that "``ctx.session`` raises ``ValueError`` outside a live request" — true
+    of the official SDK and FALSE of fastmcp, whose ``Context.session`` raises
+    ``RuntimeError("session is not available...")``. So on the standalone
+    adapter a tool invoked outside a live session had that escape into
+    ``BatonMiddleware`` and FAIL THE VENDOR'S TOOL CALL — the one thing SPEC
+    §11.2 says capture may never do, from the module whose own docstring cites
+    the rule. These attributes belong to two third-party libraries across seven
+    supported versions and are free to raise anything they like; enumerating
+    what they raise today is a guess that has already been wrong once.
 
     ⚠ **Both spellings are required.** mcp 1.x names the attribute
     ``clientInfo``; mcp 2.x renamed it to ``client_info`` (the wire aliases are
@@ -149,7 +169,8 @@ def _client_name_from_context(context: Any) -> Any:
         if info is None:
             return None
         return getattr(info, "name", None)
-    except (AttributeError, ValueError, TypeError):
+    except Exception:
+        # See the docstring: an enumerated tuple already shipped one escape.
         return None
 
 
@@ -185,7 +206,9 @@ def detect_agent_runtime(
     first. First hit wins:
 
     1. ``_meta["io.modelcontextprotocol/clientInfo"]`` — declared by the client,
-       riding the request itself. New-spec clients only; empty today.
+       riding the request itself. New-spec clients only: empty from every agent
+       client measured, and populated on every request by fastmcp 4's own
+       ``Client``, which negotiates that revision.
     2. ``context.session.client_params`` — the same declaration, from the
        ``initialize`` handshake. **This is the tier that does the work today**:
        every shipping client declares here and nowhere else.

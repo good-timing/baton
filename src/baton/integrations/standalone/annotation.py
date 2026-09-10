@@ -76,10 +76,11 @@ def register_annotation_tool(
     resolve_session_id_hook: ResolveSessionIdHook | None = None,
     user_id_mode: str = USER_ID_MODE_HASHED,
     user_id_hmac_key: bytes | None = None,
+    identity_warned: set[str] | None = None,
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
     tracker = proactive_tracker or ProactiveTracker()
-    identity_warned: set[str] = set()
+    warned = identity_warned if identity_warned is not None else set()
     name = derive_annotation_tool_name(vendor_id, annotation_tool_name)
     description = build_annotation_tool_description(
         vendor_display_name=vendor_display_name, proactive_mode=proactive_mode
@@ -149,14 +150,12 @@ def register_annotation_tool(
             tracker.mark(session_id)
         seq = await counter.next(session_id)
         annotation_user_id = resolve_user_id(
-            _auth.get_access_token_or_none()
-            if _auth.get_access_token_or_none is not None
-            else None,
+            _auth.current_access_token(),
             mode=user_id_mode,
             tenant_id=tenant_id,
             hmac_key=user_id_hmac_key,
             logger=logger,
-            warned=identity_warned,
+            warned=warned,
         )
         await safe_write(
             sink,

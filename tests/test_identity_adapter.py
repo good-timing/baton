@@ -274,3 +274,50 @@ def test_a_hostile_token_object_cannot_fail_a_tool_call() -> None:
 
     assert principal_from_access_token(_Exploding()) is None
     assert _resolve(_Exploding()) is None
+
+
+# --------------------------------------------------------------------------
+# Review findings, 2026-09-09 — each of these failed before its fix
+# --------------------------------------------------------------------------
+
+
+def test_a_str_hmac_key_is_encoded_rather_than_exploding_at_call_time() -> None:
+    """``VendorConfig(user_id_hmac_key="secret")`` must work.
+
+    ``hmac.new`` takes bytes and raises ``TypeError: key: expected bytes`` on a
+    ``str`` — and it raises inside the tool call, not at install, so the vendor
+    sees it only once a real authenticated request arrives. That is the ONE
+    deployment shape they cannot reach in local testing (identity needs HTTP
+    plus OAuth), which makes it the worst possible place to fail. The env var
+    has always accepted a string, so a vendor moving a working secret out of
+    ``BATON_USER_ID_HMAC_KEY`` and into the field hits exactly this.
+    """
+    from baton.integrations._config import _resolve_user_id_hmac_key
+
+    assert _resolve_user_id_hmac_key("secret") == b"secret"
+    assert _resolve_user_id_hmac_key(b"secret") == b"secret"
+    # And the two spellings must agree, or moving the secret between them
+    # would silently re-pseudonymise every user.
+    from baton.identity import hash_user_id
+
+    assert hash_user_id("alice", tenant_id=TENANT, key=b"secret") == hash_user_id(
+        "alice", tenant_id=TENANT, key=_resolve_user_id_hmac_key("secret") or b""
+    )
+
+
+def test_a_token_accessor_that_raises_cannot_reach_the_tool_call() -> None:
+    """fastmcp's ``get_access_token()`` ends in an explicit ``raise TypeError``
+    on its conversion path, reachable when a vendor's verifier returns a
+    non-fastmcp ``AccessToken``. Called in an argument expression it sat
+    OUTSIDE ``resolve_user_id``'s never-raise boundary."""
+    from baton.integrations.standalone import _auth
+
+    def _boom() -> Any:
+        raise TypeError("Expected fastmcp.server.auth.auth.AccessToken, got ...")
+
+    original = _auth.get_access_token_or_none
+    try:
+        _auth.get_access_token_or_none = _boom  # type: ignore[assignment]
+        assert _auth.current_access_token() is None
+    finally:
+        _auth.get_access_token_or_none = original  # type: ignore[assignment]

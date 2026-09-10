@@ -78,7 +78,7 @@ def _resolve_tenant_id(explicit: str | None, vendor_id: str) -> str:
     return vendor_id
 
 
-def _resolve_user_id_hmac_key(explicit: bytes | None) -> bytes | None:
+def _resolve_user_id_hmac_key(explicit: bytes | str | None) -> bytes | None:
     """``user_id_hmac_key``: explicit → ``BATON_USER_ID_HMAC_KEY`` → ``None``.
 
     The env var is the contract baton-proxy and baton-extmcp have honoured
@@ -90,7 +90,13 @@ def _resolve_user_id_hmac_key(explicit: bytes | None) -> bytes | None:
     is off and events emit without ``user_id``.
     """
     if explicit is not None:
-        return explicit
+        # A ``str`` is encoded rather than refused, because the env path has
+        # always taken one and a vendor moving a working secret from
+        # ``BATON_USER_ID_HMAC_KEY`` into the field would otherwise hit
+        # ``hmac.new``'s "expected bytes" TypeError — and only in the
+        # deployment shape this field exists for (HTTP + OAuth), so never in
+        # their local testing. Same secret, same bytes, either way.
+        return explicit.encode("utf-8") if isinstance(explicit, str) else explicit
     from_env = os.environ.get("BATON_USER_ID_HMAC_KEY")
     return from_env.encode("utf-8") if from_env else None
 
@@ -185,7 +191,7 @@ class VendorConfig:
     distinguishable on the wire without a second field, because a hashed value
     always carries the ``h1:`` scheme prefix."""
 
-    user_id_hmac_key: bytes | None = None
+    user_id_hmac_key: bytes | str | None = None
     """Secret keying the ``user_id`` HMAC in ``"hashed"`` mode.
 
     Resolved explicit → ``BATON_USER_ID_HMAC_KEY`` → ``None``. Unset means
@@ -251,6 +257,16 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             "VendorConfig.consent_token is required per SPEC §2.3 — events "
             "without a valid consent_token MUST be rejected by the consumer. "
             "v0 form: a single UUID granted at SDK init."
+        )
+    if config.user_id_hmac_key is not None and not isinstance(
+        config.user_id_hmac_key, bytes | bytearray | str
+    ):
+        raise ValueError(
+            f"user_id_hmac_key must be bytes or str, got "
+            f"{type(config.user_id_hmac_key).__name__} — it keys an HMAC, and "
+            f"a wrong type fails at the FIRST AUTHENTICATED CALL rather than "
+            f"here, which is a deployment a vendor cannot reach in local "
+            f"testing."
         )
     if config.user_id_mode not in USER_ID_MODES:
         raise ValueError(

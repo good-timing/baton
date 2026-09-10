@@ -84,6 +84,7 @@ class BatonMiddleware(Middleware):
         server_meta: dict[str, Any] | None = None,
         user_id_mode: str = USER_ID_MODE_HASHED,
         user_id_hmac_key: bytes | None = None,
+        identity_warned: set[str] | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._vendor_id = vendor_id
@@ -99,9 +100,10 @@ class BatonMiddleware(Middleware):
         self._server_meta = server_meta or {}
         self._user_id_mode = user_id_mode
         self._user_id_hmac_key = user_id_hmac_key
-        # Warn-once state for the missing-HMAC-key line; per middleware
-        # instance, which is per install.
-        self._identity_warned: set[str] = set()
+        # Warn-once state for the missing-HMAC-key line. SHARED with the
+        # annotation path via install.py so the line is logged once per
+        # install, not once per emit path.
+        self._identity_warned = identity_warned if identity_warned is not None else set()
         # tool_name -> {param_name: "injected" | "native"}. Populated at
         # on_list_tools; read at on_call_tool to decide strip-vs-forward, per
         # param, independently. A plain dict (no lock) is safe: all access is
@@ -411,9 +413,7 @@ class BatonMiddleware(Middleware):
         # reaches the event constructions below. ``None`` on stdio and on any
         # unauthenticated call, which is most of them.
         call_user_id = resolve_user_id(
-            _auth.get_access_token_or_none()
-            if _auth.get_access_token_or_none is not None
-            else None,
+            _auth.current_access_token(),
             mode=self._user_id_mode,
             tenant_id=self._tenant_id,
             hmac_key=self._user_id_hmac_key,

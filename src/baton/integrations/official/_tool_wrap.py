@@ -173,12 +173,14 @@ def install_wraps(
     server_meta: dict[str, Any] | None = None,
     user_id_mode: str = USER_ID_MODE_HASHED,
     user_id_hmac_key: bytes | None = None,
+    identity_warned: set[str] | None = None,
 ) -> None:
     """Inject + wrap all currently-registered tools AND future registrations."""
     tracker = proactive_tracker or ProactiveTracker()
-    # Warn-once state for identity resolution, owned here so the "no HMAC key"
-    # line is logged once per install rather than once per tool call.
-    identity_warned: set[str] = set()
+    # Warn-once state for identity resolution — SHARED with the annotation
+    # path via install.py, so "logged once per install" is once, not once per
+    # emit path.
+    warned = identity_warned if identity_warned is not None else set()
     # tool_name -> {param_name: "injected" | "native"}. Populated as tools are
     # injected; read in the wrapper to decide strip-vs-forward, per param,
     # independently. A plain dict (no lock) is safe: all access is on the one
@@ -250,7 +252,7 @@ def install_wraps(
                 tenant_id=tenant_id,
                 user_id_mode=user_id_mode,
                 user_id_hmac_key=user_id_hmac_key,
-                identity_warned=identity_warned,
+                identity_warned=warned,
                 resolve_session_id_hook=resolve_session_id_hook,
                 surface_state=surface_state,
                 emit_surface=emit_surface,
@@ -534,9 +536,7 @@ def _wrap_tool_run(
         # this line into the emitters, mirroring baton-proxy's edge-hash
         # chokepoint. Unauthenticated calls (every stdio one) get ``None``.
         call_user_id = resolve_user_id(
-            _auth.get_access_token_or_none()
-            if _auth.get_access_token_or_none is not None
-            else None,
+            _auth.current_access_token(),
             mode=user_id_mode,
             tenant_id=tenant_id,
             hmac_key=user_id_hmac_key,

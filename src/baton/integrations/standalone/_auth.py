@@ -17,3 +17,22 @@ try:
     from fastmcp.server.dependencies import get_access_token as get_access_token_or_none
 except ImportError:  # pragma: no cover - defensive across the version band
     get_access_token_or_none = None
+
+
+def current_access_token() -> Any | None:
+    """The verified token for the request in flight, or ``None``.
+
+    Never raises. The accessor itself can: fastmcp's ``get_access_token()``
+    ends in an explicit ``raise TypeError`` on its conversion path, reachable
+    when a vendor's ``TokenVerifier`` returns a non-fastmcp ``AccessToken``
+    whose ``model_dump()`` is missing a key it wants. Calling it in an argument
+    expression put that raise OUTSIDE ``resolve_user_id``'s never-raise
+    boundary, where it would reach the vendor's tool call — the same fail-open
+    hole the runtime detector had one layer over.
+    """
+    if get_access_token_or_none is None:
+        return None
+    try:
+        return get_access_token_or_none()
+    except Exception:
+        return None

@@ -295,3 +295,40 @@ class TestDeclaredNamesAreUntrustedInput:
         """
         meta = {"io.modelcontextprotocol/clientInfo": {"name": "a"}, "claudecode/toolUseId": "t"}
         assert detect_agent_runtime(meta, scrubber=lambda v: scrubbed) == "claude-code"
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [RuntimeError, ValueError, AttributeError, TypeError, KeyError],
+    ids=lambda e: e.__name__,
+)
+def test_a_context_whose_session_raises_does_not_escape(exc: type[Exception]) -> None:
+    """fastmcp's ``Context.session`` raises **RuntimeError** outside a live
+    session — not ``ValueError``, which is what the official SDK raises and
+    what this module's except tuple originally enumerated.
+
+    The consequence was not a lost tier: the ``RuntimeError`` escaped
+    ``detect_agent_runtime`` into ``BatonMiddleware._on_call_tool``, which does
+    not guard it, and **failed the vendor's tool call** — the one thing SPEC
+    §11.2 forbids capture from doing. Reproduced against fastmcp 3.4.2 through
+    the public ``mcp.call_tool(...)``; the end-to-end version of this lives in
+    ``tests/integrations/standalone/test_fail_open_boundary.py``, and it is the
+    one that would actually have caught it, since the guard's original unit
+    test fed it a context raising the exception the guard already handled.
+
+    Parameterised over what the two libraries really raise plus a few they
+    might: enumerating what a third-party property raises has been wrong once
+    here already.
+    """
+
+    class _RaisingSessionCtx:
+        @property
+        def session(self) -> Any:
+            raise exc("outside a live request")
+
+    assert detect_agent_runtime({}, context=_RaisingSessionCtx()) is None
+    # A raising context must cost ONE tier, not the whole ladder.
+    assert (
+        detect_agent_runtime({"claudecode/toolUseId": "t"}, context=_RaisingSessionCtx())
+        == "claude-code"
+    )

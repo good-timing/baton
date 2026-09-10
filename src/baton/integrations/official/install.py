@@ -76,6 +76,10 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
     # sensor exists to produce.
     tenant_id = _resolve_tenant_id(config.tenant_id, config.vendor_id)
     user_id_hmac_key = _resolve_user_id_hmac_key(config.user_id_hmac_key)
+    # ONE set for the whole install. Two would make "logged once per install"
+    # into twice — the tool path and the annotation path each warning — which
+    # is precisely what a duplicated warn-once guard buys.
+    identity_warned: set[str] = set()
     fallback_session_id = f"sdk-{uuid7()}"
     counter = SessionCounter()
     # Shared across the wrap layer (synthesises a proactive from the first
@@ -129,6 +133,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         resolve_session_id_hook=config.resolve_session_id,
         user_id_mode=config.user_id_mode,
         user_id_hmac_key=user_id_hmac_key,
+        identity_warned=identity_warned,
         server_meta=server_meta,
     )
 
@@ -147,6 +152,7 @@ def install_baton(mcp: FastMCP, config: VendorConfig) -> BatonHandle:
         proactive_mode=config.proactive_mode,
         user_id_mode=config.user_id_mode,
         user_id_hmac_key=user_id_hmac_key,
+        identity_warned=identity_warned,
         scrubber=scrubber,
         proactive_tracker=proactive_tracker,
     )

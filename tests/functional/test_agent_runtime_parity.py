@@ -117,14 +117,30 @@ DECLARED_CASES = [
         "some-other-client",
         id="a-declaration-outranks-the-prefix-heuristic",
     ),
-    pytest.param(
-        # And the new-spec carrier outranks both.
-        {"io.modelcontextprotocol/clientInfo": {"name": "zed"}, "claudecode/toolUseId": "tu_1"},
-        "some-gateway",
-        "zed",
-        id="new-spec-per-request-declaration-wins",
-    ),
 ]
+
+# ⚠ **The new-spec carrier CANNOT be a parity case, and trying made this file
+# red on a fresh resolve.** A case here planted
+# `io.modelcontextprotocol/clientInfo: {"name": "zed"}` in `_meta` and expected
+# both adapters to report `zed`, on the reasoning that tier 1 outranks tier 2.
+# The precedence is right and is pinned in
+# `tests/test_runtime_adapter.py::test_the_per_request_key_outranks_the_connection`,
+# where the meta can be forged. What cannot be forged is a REAL client's
+# request: **fastmcp 4's `Client` negotiates `2026-07-28` and writes that
+# reserved key itself on every request**, overwriting whatever the caller
+# passed, so the standalone driver reported its own declared name and the case
+# failed — while the official driver on mcp 2.2 does NOT inject it, so the
+# planted value survived there and that half passed.
+#
+# The two drivers therefore disagree for a reason that has nothing to do with
+# the code under test: the two CLIENT libraries behave differently on the same
+# protocol revision. A parity case cannot have two right answers. The
+# fastmcp-4 behaviour is pinned on its own in
+# `tests/integrations/standalone/test_new_spec_reserved_keys.py`.
+#
+# Worth carrying forward: this is the first observed client that actually
+# speaks the new spec and populates the reserved keys, which is the traffic
+# E1 concluded does not exist yet and N4 was told to expect empty.
 
 
 def _read_events(path: Path) -> list[dict[str, Any]]:

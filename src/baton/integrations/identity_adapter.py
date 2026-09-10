@@ -102,7 +102,12 @@ def principal_from_access_token(token: Any) -> Principal | None:
         if not isinstance(issuer, str) or not issuer:
             issuer = None
         return Principal(user_id=sub, issuer=issuer)
-    except (AttributeError, TypeError, ValueError):
+    except Exception:
+        # Broad on purpose, same reason ``runtime_adapter`` is: this reads
+        # attributes off an object a VENDOR's verifier constructed, and an
+        # identity read may not be able to fail a tool call. An enumerated
+        # tuple in the sibling module missed fastmcp's ``RuntimeError`` and
+        # shipped exactly that escape.
         return None
 
 
@@ -174,9 +179,18 @@ def resolve_user_id(
             )
         return None
 
-    return hash_user_id(
-        principal.user_id,
-        tenant_id=tenant_id,
-        key=hmac_key,
-        issuer=principal.issuer,
-    )
+    try:
+        return hash_user_id(
+            principal.user_id,
+            tenant_id=tenant_id,
+            key=hmac_key,
+            issuer=principal.issuer,
+        )
+    except Exception:
+        # The docstring above says nothing here may raise; this is the call
+        # that could. ``hmac.new`` rejects a non-bytes key, and while the
+        # public path now coerces and validates at install, this function is
+        # reachable by constructing an adapter directly. A guard costs nothing
+        # and makes the contract literally true rather than nearly true.
+        logger.warning("baton: user_id hashing failed; dropping user_id", exc_info=True)
+        return None
