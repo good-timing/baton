@@ -114,14 +114,24 @@ def redact(raw: str) -> str:
     workspace, server) and drops the one part that must not be repeated.
     Falls back to a bare marker if the string is too malformed to split, since
     "I could not parse it" must never become "here is your token".
+
+    ⚠ **It splits where the PARSER splits — the LAST ``@`` of the authority,
+    and only inside the authority.** The first cut partitioned the whole string
+    on its first ``@`` while ``parse_dsn`` used ``rpartition`` on the netloc, so
+    a string with two ``@``s in it put the credential on the right-hand side of
+    the split and the "redacted" message carried the whole key. Found by review,
+    and the existing tests could not see it: every case had exactly one ``@``.
+    Two functions splitting one string two ways is the defect, so this one is
+    written to mirror the parser rather than to look reasonable on its own.
     """
-    scheme, _, rest = raw.partition("://")
-    if not rest:
-        return "<dsn>"
-    _, sep, after_key = rest.partition("@")
+    scheme, sep, rest = raw.partition("://")
     if not sep:
-        return f"{scheme}://<no key>@{rest}" if scheme else "<dsn>"
-    return f"{scheme}://***@{after_key}"
+        return "<dsn>"
+    netloc, slash, path = rest.partition("/")
+    _, at, authority = netloc.rpartition("@")
+    if not at:
+        return f"{scheme}://<no key>@{netloc}{slash}{path}"
+    return f"{scheme}://***@{authority}{slash}{path}"
 
 
 def resolve_dsn(explicit: str | None) -> str | None:
@@ -136,6 +146,63 @@ def resolve_dsn(explicit: str | None) -> str | None:
         return explicit
     from_env = os.environ.get("BATON_DSN")
     return from_env or None
+
+
+def select_dsn(explicit: str | None, supplied: dict[str, bool], door: str) -> str | None:
+    """Which DSN applies, given what the caller ALSO configured by hand.
+
+    ⚠ **An environment variable is not something the caller passed, and the
+    first cut of this treated the two as one value.** ``resolve_dsn`` folded
+    ``BATON_DSN`` in before the conflict check ran, so a vendor who exported it
+    for one server could not install a SECOND server the old explicit way in the
+    same process: the install died accusing them of passing a ``dsn`` that
+    appears nowhere in their code. Found by review. It also contradicted the
+    precedence rule this SDK states everywhere else — explicit wins, the
+    environment is the fallback — by letting an ambient value beat an explicit
+    one and then blaming the caller for the collision.
+
+    So the two sources are separated:
+
+    - **An explicit DSN beside an explicit ``vendor_id`` / ``tenant_id`` /
+      ``sink`` still raises.** Both are in the vendor's own source; picking one
+      would be a guess, and a wrong guess routes a server's traffic under
+      someone else's identity.
+    - **An ambient ``BATON_DSN`` loses to explicit configuration and is
+      ignored**, which is just "explicit wins" applied to a value the caller
+      did not write. It still outranks ``BATON_VENDOR_ID`` and friends, which
+      is the re-install case the DSN exists for: environment against
+      environment, the packed one is the one someone chose today.
+    - **Being ignored is announced.** A vendor who exported ``BATON_DSN``
+      expecting it to configure this server would otherwise get a healthy
+      install that ships events nowhere near the collector — broken and
+      unbuilt looking alike, at the one boundary where nobody is watching.
+    """
+    conflicts = sorted(name for name, was_set in supplied.items() if was_set)
+
+    if explicit is not None:
+        if conflicts:
+            raise ValueError(
+                f"{door} got both a dsn and an explicit {conflicts[0]} — the "
+                f"dsn already supplies it. Drop one: the dsn is the single "
+                f"value from /account, and {conflicts[0]} is what it unpacks "
+                f"to."
+            )
+        return explicit
+
+    ambient = os.environ.get("BATON_DSN") or None
+    if ambient is None:
+        return None
+    if conflicts:
+        logger.warning(
+            "baton: BATON_DSN is set, but this %s supplies %s directly, so "
+            "BATON_DSN is being IGNORED and these events are NOT going to the "
+            "collector it names. Remove the explicit value to use it, or unset "
+            "BATON_DSN if it was meant for a different server.",
+            door,
+            ", ".join(conflicts),
+        )
+        return None
+    return ambient
 
 
 def parse_dsn(raw: str) -> Dsn:
@@ -156,8 +223,29 @@ def parse_dsn(raw: str) -> Dsn:
         # the thing redact() exists to prevent.
         raise ValueError(f"dsn is not a URL: {_BARE_KEY_HINT}")
 
-    parts = urlsplit(raw)
     safe = redact(raw)
+    # ⚠ ``urlsplit`` raises on a netloc that is not NFKC-safe — an IDN host, or
+    # one full-width character in a pasted string — and CPython puts the WHOLE
+    # netloc in the message, userinfo included. That exception would propagate
+    # untouched, carrying the bearer into a traceback: the single thing this
+    # module exists to prevent, arriving through the one line that runs before
+    # any of our own checks.
+    #
+    # ⚠ **Re-raised OUTSIDE the except block, and that placement is the fix.**
+    # ``raise ... from None`` was the obvious form and it is not enough: it
+    # sets ``__suppress_context__`` so the default traceback printer stays
+    # quiet, but ``__context__`` still holds the original exception with the
+    # key in it, reachable by anything that walks the chain — an error reporter,
+    # a structured logger, pytest's own repr. Raising after the handler has
+    # finished leaves no context at all. Only the exception's TYPE NAME crosses
+    # over; it carries no input.
+    parts = None
+    try:
+        parts = urlsplit(raw)
+    except ValueError as exc:
+        reason = type(exc).__name__
+    if parts is None:
+        raise ValueError(f"dsn {safe} is not a parseable URL ({reason})")
 
     if parts.scheme not in ("https", "http"):
         raise ValueError(

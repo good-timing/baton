@@ -312,3 +312,102 @@ class TestWhatTheDsnDoesNotTakeOver:
         assert isinstance(
             resolve_sink(VendorConfig(vendor_id="v", vendor_display_name="V")), StdoutSink
         )
+
+
+class TestAnAmbientDsnDoesNotBreakAnExplicitInstall:
+    """The regression review found, on both doors.
+
+    ``BATON_DSN`` is advertised as the fallback for a hosted vendor. Export it
+    for one server, and every OTHER install in that process — a second server,
+    a fixture, a CI job — was configured the old explicit way and now died at
+    ``install_baton`` naming a ``dsn`` that appears nowhere in the caller's
+    code. The environment is a fallback, not something the caller passed.
+    """
+
+    def test_the_install_door_still_takes_an_explicit_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fastmcp import FastMCP
+
+        from baton.install import install_baton
+        from baton.integrations._config import VendorConfig
+        from baton.sinks import StdoutSink
+
+        monkeypatch.setenv("BATON_DSN", f"https://{KEY}@h.example.com/{WORKSPACE}/{SERVER}")
+        handle = install_baton(
+            FastMCP("legacy"),
+            VendorConfig(vendor_id="legacy", vendor_display_name="Legacy", sink=StdoutSink()),
+        )
+        # The explicit config wins outright — not a merge, which would give a
+        # server one half of each identity.
+        assert handle.vendor_id == "legacy"
+        assert isinstance(handle.sink, StdoutSink)
+
+    def test_the_client_door_still_takes_explicit_arguments(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from baton import Client
+        from baton.sinks import StdoutSink
+
+        monkeypatch.setenv("BATON_DSN", f"https://{KEY}@h.example.com/{WORKSPACE}/{SERVER}")
+        client = Client(vendor_id="legacy", sink=StdoutSink())
+        try:
+            assert (client._vendor_id, client._tenant_id) == ("legacy", "legacy")
+        finally:
+            client.close()
+
+    def test_an_ambient_dsn_still_configures_a_caller_that_asks_for_nothing(
+        self,
+        collector: tuple[HTTPServer, list[dict[str, Any]], list[str]],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The other half, and the reason the variable exists: with nothing
+        explicit to lose to, ``BATON_DSN`` configures the whole install."""
+        server, events, _ = collector
+        monkeypatch.setenv("BATON_DSN", _dsn_for(server))
+        monkeypatch.setenv("BATON_VENDOR_ID", "stale-vendor")
+
+        from baton import Client
+
+        events.clear()
+        client = Client()
+        try:
+            with client.trace(tool_name="lookup") as trace:
+                trace.observed({"ok": True})
+        finally:
+            client.close()
+        # It outranks BATON_VENDOR_ID: environment against environment, the
+        # packed value is the one someone chose today.
+        assert {(t, v) for t, v, _ in _identity(events)} == {(WORKSPACE, SERVER)}
+
+
+def test_a_failing_config_never_leaves_a_sink_behind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``HttpSink.__init__`` eagerly builds an ``httpx.AsyncClient``.
+
+    Constructing it before validation meant a config that failed for an
+    unrelated reason left that client unreachable and unclosed, printing a
+    transport warning on top of the error the vendor actually needs to read.
+    Asserted by counting constructions rather than by watching for a warning,
+    because a warning that stops being emitted would silently retire the test.
+    """
+    from baton.integrations import _config
+
+    built: list[str] = []
+
+    class _CountingSink(_config.HttpSink):  # type: ignore[misc,valid-type]
+        def __init__(self, url: str, **kwargs: Any) -> None:
+            built.append(url)
+            super().__init__(url, **kwargs)
+
+    monkeypatch.setattr(_config, "HttpSink", _CountingSink)
+
+    with pytest.raises(ValueError, match="consent_token"):
+        _config.resolve_config(
+            _config.VendorConfig(
+                dsn=f"https://{KEY}@h.example.com/{WORKSPACE}/{SERVER}",
+                consent_token="",
+            )
+        )
+    assert built == [], f"a sink was constructed before the config was rejected: {built}"

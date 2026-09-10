@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
-from baton._dsn import parse_dsn, resolve_dsn
+from baton._dsn import parse_dsn, resolve_dsn, select_dsn
 from baton.events import DEFAULT_CONSENT_TOKEN
 from baton.integrations.identity_adapter import USER_ID_MODES
 from baton.sinks import HttpSink, Sink, StdoutSink
@@ -344,32 +344,38 @@ def resolve_config(config: VendorConfig) -> VendorConfig:
     that rewrites its argument would make the second one inherit the first's
     resolution.
     """
-    dsn_string = resolve_dsn(config.dsn)
+    dsn_string = select_dsn(
+        config.dsn,
+        {
+            "vendor_id": bool(config.vendor_id),
+            "tenant_id": config.tenant_id is not None,
+            "sink": config.sink is not None,
+        },
+        "VendorConfig",
+    )
     if dsn_string is None:
         return config
 
-    for name, supplied in (
-        ("vendor_id", bool(config.vendor_id)),
-        ("tenant_id", config.tenant_id is not None),
-        ("sink", config.sink is not None),
-    ):
-        if supplied:
-            # Refuse rather than pick. Whichever we chose would be right half
-            # the time and silent the other half, and the failure is a server
-            # reporting under an identity its owner did not intend.
-            raise ValueError(
-                f"VendorConfig carries both a dsn and an explicit {name} — the "
-                f"dsn already supplies it. Drop one: the dsn is the single "
-                f"value from /account, and {name} is what it unpacks to."
-            )
-
     dsn = parse_dsn(dsn_string)
-    return replace(
+    identity = replace(
         config,
         dsn=dsn_string,
         vendor_id=dsn.vendor_id,
         tenant_id=dsn.tenant_id,
         vendor_display_name=config.vendor_display_name or dsn.vendor_id,
+    )
+
+    # ⚠ **Validated BEFORE the sink is built, and the order is the point.**
+    # ``HttpSink.__init__`` eagerly constructs an ``httpx.AsyncClient``, so a
+    # config that fails validation for an unrelated reason — an emptied
+    # consent_token, a bad user_id_mode — used to leave that client
+    # unreachable and never closed, printing an unclosed-transport warning on
+    # top of the real error. The callers validate again; it is pure, and a
+    # second call costs nothing next to a resource that outlives its error.
+    _validate_vendor_config(identity)
+
+    return replace(
+        identity,
         # Constructed here rather than lazily so a missing ``[http]`` extra
         # raises at install, where the vendor is watching — not at the first
         # tool call, in production, on somebody else's machine.

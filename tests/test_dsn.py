@@ -22,7 +22,14 @@ import logging
 
 import pytest
 
-from baton._dsn import VENDOR_ID_PATTERN, Dsn, parse_dsn, redact, resolve_dsn
+from baton._dsn import (
+    VENDOR_ID_PATTERN,
+    Dsn,
+    parse_dsn,
+    redact,
+    resolve_dsn,
+    select_dsn,
+)
 
 WORKSPACE = "ten_655b084e118b43f88992ee6357fcc23c"
 KEY = "baton_pk_" + "a" * 43
@@ -250,3 +257,97 @@ class TestResolveDsn:
         vendor never wrote."""
         monkeypatch.setenv("BATON_DSN", "")
         assert resolve_dsn(None) is None
+
+
+class TestTheTwoLeaksReviewFound:
+    """Both got past the suite above, and both are the one failure this module
+    exists to prevent: a bearer token in an exception. Kept as their own class
+    because the lesson is shared — a redaction is only as good as the WORST
+    input anyone can hand it, and the cases already written all happened to be
+    well-formed."""
+
+    def test_a_second_at_sign_does_not_carry_the_key_through_redact(self) -> None:
+        """``redact`` split on the FIRST ``@`` while the parser split on the
+        last, so this input put the credential on the safe-looking side of the
+        split and the "redacted" message shipped it whole."""
+        raw = f"ftp://x@{KEY}@h.example.com/{WORKSPACE}/srv"
+        assert KEY not in redact(raw)
+        with pytest.raises(ValueError) as caught:
+            parse_dsn(raw)
+        assert KEY not in str(caught.value)
+
+    def test_a_host_urlsplit_refuses_does_not_leak_the_key(self) -> None:
+        """``urlsplit`` raises on a netloc that is not NFKC-safe and puts the
+        WHOLE netloc — userinfo included — in its message. That exception used
+        to propagate untouched from the line before the first redaction."""
+        raw = f"https://{KEY}@h℀.example.com/{WORKSPACE}/srv"
+        with pytest.raises(ValueError) as caught:
+            parse_dsn(raw)
+        assert KEY not in str(caught.value)
+        assert "not a parseable URL" in str(caught.value)
+
+    def test_the_redacted_message_has_no_cause_carrying_the_original(self) -> None:
+        """``raise ... from None``, deliberately: chaining would put the very
+        string we just redacted back into the traceback under ``__cause__``."""
+        raw = f"https://{KEY}@h℀.example.com/{WORKSPACE}/srv"
+        with pytest.raises(ValueError) as caught:
+            parse_dsn(raw)
+        assert caught.value.__cause__ is None
+        assert KEY not in repr(caught.value.__context__)
+
+
+class TestSelectDsn:
+    """An environment variable is not something the caller passed.
+
+    Folding the two together let an ambient ``BATON_DSN`` collide with an
+    explicit config and then blame the caller for a value that appears nowhere
+    in their code — while also inverting this SDK's precedence rule, under
+    which explicit wins and the environment is the fallback.
+    """
+
+    def test_an_explicit_dsn_beside_an_explicit_value_still_raises(self) -> None:
+        with pytest.raises(ValueError, match="already supplies it"):
+            select_dsn(DSN, {"vendor_id": True}, "VendorConfig")
+
+    def test_an_explicit_dsn_alone_is_used(self) -> None:
+        assert select_dsn(DSN, {"vendor_id": False}, "VendorConfig") == DSN
+
+    def test_an_ambient_dsn_alone_is_used(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The hosted-vendor case it exists for: one variable instead of five."""
+        monkeypatch.setenv("BATON_DSN", DSN)
+        assert select_dsn(None, {"vendor_id": False, "sink": False}, "Client") == DSN
+
+    def test_an_ambient_dsn_LOSES_to_an_explicit_value_instead_of_raising(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The regression this fixes: a vendor who exported BATON_DSN for one
+        server could not install a second one the old explicit way — the
+        install died naming a ``dsn`` they never wrote."""
+        monkeypatch.setenv("BATON_DSN", DSN)
+        assert select_dsn(None, {"vendor_id": True}, "VendorConfig") is None
+
+    def test_being_ignored_is_announced(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Silence here is the shape where broken and unbuilt look alike: a
+        healthy install whose events go nowhere near the collector the vendor
+        thinks they configured."""
+        monkeypatch.setenv("BATON_DSN", DSN)
+        with caplog.at_level(logging.WARNING, logger="baton._dsn"):
+            select_dsn(None, {"vendor_id": True, "sink": True}, "VendorConfig")
+        assert "BATON_DSN" in caplog.text
+        assert "IGNORED" in caplog.text
+        # It names WHICH values won, so the vendor can act on it.
+        assert "sink" in caplog.text and "vendor_id" in caplog.text
+
+    def test_the_announcement_does_not_repeat_the_key(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setenv("BATON_DSN", DSN)
+        with caplog.at_level(logging.WARNING, logger="baton._dsn"):
+            select_dsn(None, {"vendor_id": True}, "VendorConfig")
+        assert KEY not in caplog.text
+
+    def test_nothing_anywhere_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("BATON_DSN", raising=False)
+        assert select_dsn(None, {"vendor_id": True}, "Client") is None

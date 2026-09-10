@@ -92,7 +92,7 @@ from time import monotonic
 from types import TracebackType
 from typing import Any, Self, TypeVar
 
-from baton._dsn import parse_dsn, resolve_dsn
+from baton._dsn import parse_dsn, select_dsn
 from baton._uuid import uuid7
 from baton.events import (
     DEFAULT_CONSENT_TOKEN,
@@ -204,27 +204,28 @@ def _resolve_client_config(
     stale ``BATON_VENDOR_ID`` from an earlier install must not redirect a
     client whose source states where it belongs.
     """
-    dsn_string = resolve_dsn(dsn)
+    dsn_string = select_dsn(
+        dsn,
+        {
+            "vendor_id": vendor_id is not None,
+            "tenant_id": tenant_id is not None,
+            "sink": sink is not None,
+        },
+        "Client",
+    )
     if dsn_string is not None:
-        for name, supplied in (
-            ("vendor_id", vendor_id is not None),
-            ("tenant_id", tenant_id is not None),
-            ("sink", sink is not None),
-        ):
-            if supplied:
-                raise ValueError(
-                    f"Client got both a dsn and an explicit {name} — the dsn "
-                    f"already supplies it. Drop one: the dsn is the single "
-                    f"value from /account, and {name} is what it unpacks to."
-                )
         parsed = parse_dsn(dsn_string)
+        # Consent resolved BEFORE the sink is constructed: an explicitly
+        # emptied token raises, and ``HttpSink.__init__`` eagerly builds an
+        # ``httpx.AsyncClient`` that nothing would then be able to close.
+        consent = _resolve_consent_token(consent_token)
         return _ClientConfig(
             # Built here, not lazily: a missing ``[http]`` extra must fail
             # where the vendor is looking rather than at the first traced call.
             sink=HttpSink(parsed.origin, api_key=parsed.key),
             vendor_id=parsed.vendor_id,
             tenant_id=parsed.tenant_id,
-            consent_token=_resolve_consent_token(consent_token),
+            consent_token=consent,
         )
 
     if sink is None:
