@@ -36,6 +36,20 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    # Mondays 06:00 UTC — the DRIFT CHECK, and the only run that resolves
+    # dependencies fresh. Committing uv.lock (2026-09-10) fixed "a version
+    # reached us because nobody chose it" and cost the thing that came with it:
+    # `core` used to resolve fresh on every push, which is how fastmcp 4.0.0
+    # was found to break six adapter behaviours within hours of release, with
+    # nobody looking for it. Locked, nothing here would ever install a new
+    # release again, and a year of upstream changes would arrive in one pile at
+    # whoever next ran `uv lock`. This run puts that signal back WITHOUT
+    # letting upstream redden a merge: it is not part of any push or PR.
+    # ⚠ It is bounded by the ceilings in pyproject.toml (`mcp<3`, `fastmcp<5`),
+    # so it catches new releases UNDER them and never a new major. Majors are
+    # reviewed by hand — see the ceiling policy above the extras there.
+    - cron: "0 6 * * 1"
 
 jobs:
   core:
@@ -63,7 +77,21 @@ jobs:
         # their job is to float to what a customer resolves at a pin, and the
         # first attempt to move them onto uv reddened the fastmcp floor leg
         # (see that job's comment).
+        if: github.event_name != 'schedule'
         run: uv sync --locked --extra dev --python ${{ matrix.python-version }}
+
+      - name: Install dependencies (RESOLVE FRESH — the weekly drift check)
+        # The scheduled run, and ONLY the scheduled run, ignores the lock and
+        # takes the newest versions the ceilings allow. A red here means an
+        # upstream release broke us; it blocks nothing, because no merge and no
+        # deploy waits on a cron. The versions are printed rather than inferred
+        # from the lock diff, so the failure email says WHAT moved.
+        if: github.event_name == 'schedule'
+        run: |
+          uv lock --upgrade
+          git --no-pager diff --stat uv.lock || true
+          uv sync --extra dev --python ${{ matrix.python-version }}
+          uv pip list | grep -iE "^(mcp|mcp-types|fastmcp|fastmcp-slim|pydantic) " || true
 
       - name: Lint
         run: uv run --no-sync ruff check src/ tests/
