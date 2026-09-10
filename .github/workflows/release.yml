@@ -41,16 +41,23 @@ jobs:
           # Without the submodule, test_spec_conformance.py silently skips —
           # the release gate must actually pin the SDK against the spec schema.
           submodules: true
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.14"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-      - run: python -m pip install --upgrade pip && pip install -e ".[dev]"
-      - run: ruff check src/ tests/
-      - run: ruff format --check src/ tests/
-      - run: mypy src/baton
-      - run: pytest -q
+          version: "0.11.19"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      # FROM THE LOCK, like ci.yml's `core`. Until 2026-09-10 this was
+      # `pip install -e ".[dev]"` — a fresh resolve — which after the lock
+      # landed made the RELEASE gate the only workflow still floating, and the
+      # comment above it ("the same gate CI uses") false. That is the worst
+      # place to float: it either reds at tag time on an upstream release that
+      # has nothing to do with the tag, or it validates a tree no CI job ever
+      # built and then ships it.
+      - run: uv sync --locked --extra dev --python 3.14
+      - run: uv run --no-sync ruff check src/ tests/
+      - run: uv run --no-sync ruff format --check src/ tests/
+      - run: uv run --no-sync mypy src/baton
+      - run: uv run --no-sync pytest -q
 
   build:
     needs: [ci]

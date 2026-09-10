@@ -50,10 +50,27 @@ on:
     # so it catches new releases UNDER them and never a new major. Majors are
     # reviewed by hand — see the ceiling policy above the extras there.
     - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      drift:
+        description: >-
+          Resolve dependencies FRESH instead of from the lock — the same thing
+          the Monday cron does. Exists so the drift path can be exercised on
+          demand; without it, `schedule` fires only on the default branch and
+          that branch of the `if:` below could not be run even once before its
+          first unattended production run.
+        type: boolean
+        default: false
+
+# One definition of "this run is the drift check", read by every `if:` below.
+# Repeating the expression per step is how the two halves drift apart.
+env:
+  DRIFT: ${{ github.event_name == 'schedule' || inputs.drift }}
 
 jobs:
   core:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -65,6 +82,11 @@ jobs:
 
       - uses: astral-sh/setup-uv@v7
         with:
+          # Pinned for the same reason everything else here is: uv writes and
+          # reads uv.lock's `revision`, so an uv that floats can rewrite the
+          # lock into a shape the version on a laptop refuses. Bump it
+          # deliberately, like any other dependency.
+          version: "0.11.19"
           enable-cache: true
           cache-dependency-glob: uv.lock
 
@@ -77,7 +99,7 @@ jobs:
         # their job is to float to what a customer resolves at a pin, and the
         # first attempt to move them onto uv reddened the fastmcp floor leg
         # (see that job's comment).
-        if: github.event_name != 'schedule'
+        if: env.DRIFT != 'true'
         run: uv sync --locked --extra dev --python ${{ matrix.python-version }}
 
       - name: Install dependencies (RESOLVE FRESH — the weekly drift check)
@@ -86,17 +108,25 @@ jobs:
         # upstream release broke us; it blocks nothing, because no merge and no
         # deploy waits on a cron. The versions are printed rather than inferred
         # from the lock diff, so the failure email says WHAT moved.
-        if: github.event_name == 'schedule'
+        if: env.DRIFT == 'true'
         run: |
           uv lock --upgrade
           git --no-pager diff --stat uv.lock || true
           uv sync --extra dev --python ${{ matrix.python-version }}
           uv pip list | grep -iE "^(mcp|mcp-types|fastmcp|fastmcp-slim|pydantic) " || true
 
+      # ⚠ Skipped on the drift run. `uv lock --upgrade` floats EVERY dependency,
+      # dev tools included, so a new ruff would red these four legs with an
+      # email that reads "an upstream release broke us" when no library moved.
+      # Lint and format check OUR style against whatever ruff shipped; they are
+      # not what the drift run is asking about. Typecheck and Test stay, because
+      # mypy failing on a changed upstream signature is exactly the signal.
       - name: Lint
+        if: env.DRIFT != 'true'
         run: uv run --no-sync ruff check src/ tests/
 
       - name: Format check
+        if: env.DRIFT != 'true'
         run: uv run --no-sync ruff format --check src/ tests/
 
       - name: Typecheck
@@ -114,6 +144,7 @@ jobs:
     # TIGHT_SINK_KWARGS) so they stay fast and deterministic; scripts/soak.py
     # (not run in CI) is what exercises the real defaults.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     continue-on-error: true
     steps:
       - uses: actions/checkout@v5
@@ -122,6 +153,11 @@ jobs:
 
       - uses: astral-sh/setup-uv@v7
         with:
+          # Pinned for the same reason everything else here is: uv writes and
+          # reads uv.lock's `revision`, so an uv that floats can rewrite the
+          # lock into a shape the version on a laptop refuses. Bump it
+          # deliberately, like any other dependency.
+          version: "0.11.19"
           enable-cache: true
           cache-dependency-glob: uv.lock
 
@@ -138,6 +174,7 @@ jobs:
     # renamed the server class + instructions backing (handled in _compat.py)
     # but preserved the tool-registry internals the adapter wraps.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -265,6 +302,7 @@ jobs:
     # is what a customer's resolve actually does: 2.x/3.x pull mcp 1.x, 4.x
     # lifted fastmcp's `mcp<2` pin and pulls mcp 2.x.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

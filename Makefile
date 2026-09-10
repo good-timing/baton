@@ -1,7 +1,9 @@
 # Baton SDK — thin event capture
 # See docs/SPEC.md (the wire protocol) and docs/CHARTER.md (the load-bearing decisions).
 
-PYTHON ?= $(shell command -v python3.14 >/dev/null 2>&1 && echo python3.14 || echo python3)
+# PYTHON is gone: `uv sync` selects the interpreter from PYTHON_VERSION below,
+# so a second way to name one could only disagree with it.
+PYTHON_VERSION ?= 3.14
 VENV ?= .venv
 BIN = $(VENV)/bin
 
@@ -11,10 +13,14 @@ BIN = $(VENV)/bin
 # rather than quietly re-resolving. That is what makes this venv the same one
 # CI builds — the property three separate bugs (09-07, 09-08, 09-10) turned on.
 # Run `uv lock` after changing a dependency; the failure tells you to.
-# $(PYTHON) is no longer read here: the interpreter comes from requires-python
-# via uv, so it is one fewer thing that can differ per machine.
+#
+# UV_PROJECT_ENVIRONMENT honours $(VENV). Without it uv always writes .venv
+# while $(BIN) still points at $(VENV), so `make install VENV=x` built one
+# venv and every other target then ran out of another. PYTHON_VERSION is what
+# lets you reproduce a single matrix leg locally:
+#   make install PYTHON_VERSION=3.11 VENV=.venv311 && make test VENV=.venv311
 install:
-	uv sync --locked --extra dev
+	UV_PROJECT_ENVIRONMENT=$(VENV) uv sync --locked --extra dev --python $(PYTHON_VERSION)
 
 # Excludes only `perf` (wall-clock-timing tests — see perf-timing below for
 # that marker's own job/target) — mirrors the `core` CI job's Test step
@@ -72,8 +78,13 @@ typecheck:
 # `perf-timing` job; run it explicitly.
 ci: lint format-check typecheck test
 
+# `--with build` rather than $(BIN)/python: `uv sync` PRUNES anything not in the
+# lock, unlike the additive pip install this replaced, so a hand-installed
+# `build` now disappears on the next `make install`. `build` is a packaging
+# tool, not a dependency of the SDK, so it belongs in neither the lock nor an
+# extra — uv supplies it for the one command that needs it.
 build:
-	$(BIN)/python -m build
+	uv run --with build python -m build
 
 # Validate SPEC.md cross-references and section numbering.
 # (Implementation lives in scripts/spec_check.py; placeholder until written.)
