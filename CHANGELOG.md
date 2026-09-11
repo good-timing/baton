@@ -8,6 +8,110 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased — the DSN parser stops printing the bearer
+
+⚠ **Not released, and the version number is not this session's to pick.** Every
+item below is a defect live in the published **0.8.1**. Written here at fix
+time so whoever cuts the release inherits the entry rather than reconstructing
+it.
+
+### Fixed
+
+- **Four ways a publishable key reached an error message, a log line or a
+  `repr`.** These, and the three items after them, were found while porting
+  this parser to `baton-ts`, and every one was **reproduced in Python before
+  being fixed** rather than
+  translated from the TypeScript patch — two of them behave differently enough
+  here that a line-by-line port would have fixed nothing.
+
+  1. **A key with a scheme in front of it was printed whole.** ⚠ Its
+     replacement sentence was too eager on the first cut, and review caught it:
+     it also fired on a complete DSN whose `@` had been dropped while editing,
+     telling that vendor the host and both path segments were "missing" while
+     echoing all three in the same sentence. It is gated on the path being
+     empty now, so each input gets the message that is true of it.
+     `parse_dsn("https://" + key)`
+     — which is the retry this module *steers people into*, because the
+     bare-key refusal says "copy the full value from /account, which starts
+     with `https://`". The elision only ever ran on path segments and an
+     authority has none, so the refusal echoed the bearer under a marker
+     saying there was no key. It now gets a sentence naming what is actually
+     missing.
+  2. **A key GLUED to a path segment was printed whole** — `srv-<key>`, the
+     shape a paste into a half-filled field makes. Deterministic, not a near
+     miss: a segment with a key glued on is over 48 characters, so it always
+     fails the server pattern and always reaches the message that interpolates
+     it. The prefix-anchored elision is deleted rather than taught a second
+     rule; redaction is now one scan of the finished string, so a slot added
+     later cannot forget.
+  3. **`repr(Dsn)` and `repr(VendorConfig)` printed the credential.** A frozen
+     dataclass prints every field, so `repr()`, `str()`, an f-string and
+     `"%s" % config` each wrote a key out — and `VendorConfig` *retains* the
+     packed string after resolution, so the exposure outlives the parse. Both
+     fields are `repr=False`. Reading them by name is unchanged.
+     `user_id_hmac_key` is `repr=False` too: pre-existing rather than part of
+     this lane, the same defect in the same `repr`, fixed alongside it.
+  4. **The test suite did not scrub `BATON_DSN`.** An ambient DSN supplies the
+     vendor id, the tenant id *and the sink*, so a developer with one exported
+     for a real server had the suite building `HttpSink`s at a live collector
+     and POSTing fixture events into a real workspace. It now scrubs the whole
+     `BATON_*` namespace: adding `BATON_DSN` alone left five variables getting
+     through, which review measured at five failing tests — two of them in this
+     lane's own parity file.
+
+- **A key in the HOST slot is refused instead of PARSING.** Found by review of
+  the four fixes above, and the worst of the set because nothing it does is a
+  message: `https://x@<key>/ten_.../srv` splits on the last `@`, so any
+  userinfo at all — one character — puts the credential in the authority and
+  out of reach of the sentence written for the no-`@` case. Both path segments
+  then validate and the DSN parses, with `origin` = `https://baton_pk_...`. That
+  origin rides on the resolved config, prints through the `repr` the previous
+  item had just made safe, and is handed to `httpx` **as a hostname** — putting
+  the bearer into `httpcore`'s connection trace at DEBUG on every delivery
+  attempt. It is the same paste error as a key in the workspace or server slot,
+  one field to the left, and it now gets the same slot-naming refusal.
+
+- **An authority that is not a host is refused at install.** `https://<key>@ingest.example.com\evil/...`
+  parsed, and `httpx` kept the whole thing as the host — so the first tool call
+  raised `ConnectError`, the fail-open capture boundary logged it, and what the
+  vendor saw was a successful install whose events never arrived. A port that
+  is not a number is the same silent class and is refused with it. ⚠ **The
+  TypeScript fix does not port**: WHATWG folds `\` into a *path*, so there the
+  check asserts the parsed authority's `pathname` is `/`; Python's `urlsplit`
+  folds nothing, so the question is whether the authority contains something a
+  host cannot. Deliberately a denylist and not a host pattern — an IDN host and
+  its punycode form both resolve, and this parser must never be stricter than
+  the mint.
+
+- **A tab, carriage return or line break inside a DSN is refused instead of
+  silently deleted.** `urlsplit` removes those three before splitting, and
+  `httpx` strips identically, so nothing downstream notices: a line-wrapped
+  paste produced the single host `ingest.example.comevil.com`, and a break in
+  the last segment produced `vendor_id="srvx"` — *the server the key is bound
+  to*, rewritten into one nobody minted. A **trailing** newline is still just
+  whitespace; only a break inside the value is a refusal.
+
+### Changed
+
+- **An empty config value counts as unset, not as supplied — at every door.**
+  `VendorConfig(dsn=os.environ.get("MY_DSN", ""), vendor_id="acme")` used to die
+  at install with "got both a dsn and an explicit vendor_id", naming a value the
+  vendor never filled and pointing them at the wrong one to delete. `BATON_DSN=""`
+  already meant unset two functions away, and every other config value in this
+  SDK treats empty as absent. `baton-ts` diverged first, on purpose, so this
+  back-port would be made once rather than discovered twice.
+
+  ⚠ **The first cut of this fix changed one check of four**, and review found
+  the other three still refusing the exact shape the fix cites:
+  `install_baton(mcp, config, dsn=os.environ.get("MY_DSN", ""))`, an empty
+  `tenant_id` beside a DSN, and — the one that matters most — `Client(dsn=...,
+  vendor_id="")` raising where the identical `VendorConfig(dsn=..., vendor_id="")`
+  did not. The two doors this SDK keeps in lockstep had come to disagree about
+  the empty string. All four now read the same rule, and the agreement is
+  asserted rather than described.
+
+---
+
 ## 0.8.1 — `VendorConfig` cannot mis-bind, and a handle cannot dial
 
 ⚠ **A PATCH number carrying two breaking removals** — Ujwal's call, recorded

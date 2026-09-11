@@ -19,6 +19,7 @@ Two rules this file is built to hold:
 from __future__ import annotations
 
 import logging
+import os
 
 import pytest
 
@@ -162,6 +163,20 @@ class TestWhatItRefuses:
             f"https://{KEY}@h.example.com/{WORKSPACE}/srv/extra",
             f"https://{KEY}@h.example.com/srv/{WORKSPACE}",
             f"https://{KEY}@h.example.com/{WORKSPACE}/my.server",
+            # Added after the TypeScript port found them. They belong in the
+            # PROPERTY test and not only in the class below: every earlier leak
+            # of this kind was a shape nobody had thought to parametrize, so
+            # the guarantee is worth stating over the widest input list there
+            # is rather than case by case.
+            f"https://{KEY}",
+            f"https://{KEY}/",
+            f"https://{KEY}@h.example.com/{WORKSPACE}/srv-{KEY}",
+            f"https://{KEY}@h.example.com/tenant-{KEY}/srv",
+            f"https://{KEY}@h.example.com\\evil.com/{WORKSPACE}/srv",
+            f"https://{KEY}@h.example.com\nevil.com/{WORKSPACE}/srv",
+            f"https://{KEY}@h.example.com:notaport/{WORKSPACE}/srv",
+            f"https://x@{KEY}/{WORKSPACE}/srv",
+            f"https://h.example.com@{KEY}/{WORKSPACE}/srv",
         ],
         ids=[
             "wrong-scheme",
@@ -170,6 +185,15 @@ class TestWhatItRefuses:
             "three-segments",
             "swapped-segments",
             "bad-server-name",
+            "key-in-the-authority",
+            "key-in-the-authority-trailing-slash",
+            "key-glued-to-the-server",
+            "key-glued-to-the-workspace",
+            "backslash-in-the-host",
+            "line-break-in-the-host",
+            "port-that-is-not-a-number",
+            "key-in-the-host-slot-behind-userinfo",
+            "key-and-host-the-wrong-way-round",
         ],
     )
     def test_no_refusal_ever_repeats_the_credential(self, raw: str) -> None:
@@ -394,3 +418,294 @@ class TestSelectDsn:
     def test_nothing_anywhere_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("BATON_DSN", raising=False)
         assert select_dsn(None, {"vendor_id": True}, "Client") is None
+
+
+class TestTheLeaksTheTypeScriptPortFound:
+    """Five more, found by reviewing this module while porting it to
+    ``baton-ts`` and by ``/code-review`` on that port — every one of them live
+    in the published 0.8.1.
+
+    **Each was reproduced in Python before being fixed, not translated.** Two
+    of the TypeScript fixes do not carry over: there, WHATWG folds a backslash
+    into a path, so the check asserts the parsed authority's ``pathname`` is
+    ``/``; here ``urlsplit`` folds nothing and the authority is simply not a
+    host, which is a different question with a different answer. And the
+    TypeScript object leaked through ``toJSON`` and ``util.inspect``, where
+    Python's leaks through a dataclass ``repr``.
+    """
+
+    def test_a_key_with_a_scheme_in_front_of_it_is_not_printed(self) -> None:
+        """⚠ **The retry this module CAUSES.** A bare key is told to copy the
+        full value, "which starts with https://" — so the obvious second
+        attempt is that key with a scheme glued on. It has no ``@`` and no
+        path, the elision only ever ran on path segments, and the refusal
+        printed the whole bearer under a marker claiming there was no key."""
+        raw = f"https://{KEY}"
+        assert KEY not in redact(raw)
+        with pytest.raises(ValueError) as caught:
+            parse_dsn(raw)
+        assert KEY not in str(caught.value)
+
+    def test_it_is_told_what_is_MISSING_rather_than_that_it_has_no_key(self) -> None:
+        """Redacting it is not enough. "carries no key" is false to the reader
+        holding the key, and sends someone who has already followed the hint
+        once round the same loop."""
+        with pytest.raises(ValueError, match="is a key with a scheme in front of it"):
+            parse_dsn(f"https://{KEY}")
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            f"https://{KEY}@h.example.com/{WORKSPACE}/srv-{KEY}",
+            f"https://{KEY}@h.example.com/tenant-{KEY}/srv",
+            f"https://{KEY}@h.example.com/{WORKSPACE}/srv-baton_sk_{'b' * 43}",
+        ],
+        ids=["glued-to-the-server", "glued-to-the-workspace", "glued-secret-key"],
+    )
+    def test_a_key_GLUED_to_a_path_segment_is_not_printed(self, raw: str) -> None:
+        """⚠ **Deterministic, not a near miss.** The elision was prefix-anchored
+        and a glued-on key starts with neither prefix — while a segment with a
+        key glued to it is over 48 characters, so it ALWAYS fails
+        ``VENDOR_ID_PATTERN`` and always reaches the interpolation that prints
+        it. The bearer landed in the same sentence as its own redaction."""
+        with pytest.raises(ValueError) as caught:
+            parse_dsn(raw)
+        assert KEY not in str(caught.value)
+        assert "b" * 43 not in str(caught.value)
+
+    def test_a_glued_key_is_still_told_which_SLOT_it_is_in(self) -> None:
+        """The sweep decides what no sentence may contain; the refusal decides
+        which sentence. Without this the vendor gets the pattern-mismatch
+        message, which is true and unhelpful when the reason it does not match
+        is a credential."""
+        with pytest.raises(ValueError, match="has a KEY in the server slot"):
+            parse_dsn(f"https://{KEY}@h.example.com/{WORKSPACE}/srv-{KEY}")
+
+    def test_a_DSN_missing_only_its_at_sign_is_not_told_its_path_is_missing(
+        self,
+    ) -> None:
+        """⚠ **The sentence added above was too eager**, and review caught it
+        pointing at a complete DSN whose ``@`` was dropped while editing. That
+        input has a host and both path segments — visible in the redacted echo
+        in the very same sentence — so "what is missing is the rest: an @, the
+        host, and the two path segments" is false twice over. The older message
+        is the right one here; the new one is for the retry where a bare key
+        really is all the vendor has."""
+        with pytest.raises(ValueError, match="the value from /account"):
+            parse_dsn(f"https://{KEY}h.example.com/{WORKSPACE}/srv")
+
+    def test_the_bare_key_retry_still_gets_the_new_sentence(self) -> None:
+        """The gate must not cost the case it was written for."""
+        with pytest.raises(ValueError, match="is a key with a scheme in front of it"):
+            parse_dsn(f"https://{KEY}")
+
+    def test_the_sweep_does_not_eat_the_modules_own_help_text(self) -> None:
+        """The scan runs over finished sentences, and those sentences contain
+        ``https://baton_pk_...@host/ten_.../server``. The tail floor is what
+        separates an example from a credential — dots are not in the key
+        alphabet, so the ellipsis survives."""
+        with pytest.raises(ValueError) as caught:
+            parse_dsn(f"https://h.example.com/{WORKSPACE}/srv")
+        assert "baton_pk_...@host" in str(caught.value)
+
+
+class TestTheAuthorityMustBeAHost:
+    """⚠ **The one place this parser is deliberately STRICT.** Everywhere else
+    it is looser than the grammar, on the stated grounds that a collector
+    rejects a typo readably — but a bad host is exactly the case where nothing
+    ever reaches a collector to do the rejecting. Measured: the request raises
+    ``ConnectError``, ``safe_write``'s fail-open boundary logs it, and the
+    vendor sees an install that succeeded and events that never arrive.
+    """
+
+    def test_a_key_in_the_HOST_slot_is_refused_rather_than_parsed(self) -> None:
+        """⚠ **The worst shape of the lot, and it survived the first pass of
+        this lane.** With ANY userinfo — one character will do —
+        ``rpartition("@")`` puts the key in the authority, so it misses the
+        no-``@`` branch that has a sentence for it, and nothing else objects:
+        both path segments validate and the DSN PARSES.
+
+        What that produces is not a leaked message but a leaked object.
+        ``origin`` becomes ``https://baton_pk_...``, which rides on the config,
+        prints through the ``repr`` this lane had just made safe, and is handed
+        to ``httpx`` as a hostname — putting the bearer in ``httpcore``'s
+        connection trace at DEBUG on every delivery attempt.
+        """
+        for raw in (
+            f"https://x@{KEY}/{WORKSPACE}/srv",
+            f"https://h.example.com@{KEY}/{WORKSPACE}/srv",
+            f"https://a@{KEY}:8443/{WORKSPACE}/srv",
+        ):
+            with pytest.raises(ValueError, match="has the KEY where the host belongs"):
+                parse_dsn(raw)
+
+    def test_that_refusal_does_not_repeat_the_credential_either(self) -> None:
+        with pytest.raises(ValueError) as caught:
+            parse_dsn(f"https://x@{KEY}/{WORKSPACE}/srv")
+        assert KEY not in str(caught.value)
+
+    def test_a_backslash_in_the_host_is_refused(self) -> None:
+        """``urlsplit`` does not fold ``\\`` the way WHATWG does — the whole
+        string stays the authority and ``httpx`` keeps it whole as the host."""
+        with pytest.raises(ValueError, match="something other than a host"):
+            parse_dsn(f"https://{KEY}@ingest.example.com\\evil.com/{WORKSPACE}/srv")
+
+    def test_a_space_in_the_host_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="something other than a host"):
+            parse_dsn(f"https://{KEY}@ingest.example.com evil.com/{WORKSPACE}/srv")
+
+    def test_a_port_that_is_not_a_number_is_refused(self) -> None:
+        """Same silent class: it cannot be dialled, and the only thing that
+        would say so is a connection attempt nobody is watching."""
+        with pytest.raises(ValueError, match="port that is not a number"):
+            parse_dsn(f"https://{KEY}@h.example.com:notaport/{WORKSPACE}/srv")
+
+    @pytest.mark.parametrize(
+        "authority",
+        [
+            "h.example.com",
+            "h.example.com:8443",
+            "localhost:8000",
+            "127.0.0.1:9",
+            "[::1]:8000",
+            "HOST.Example.COM",
+            "xn--caf-dma.example",
+            "ünïcode.example",
+        ],
+        ids=["host", "host-port", "localhost", "ipv4", "ipv6", "uppercase", "punycode", "idn"],
+    )
+    def test_every_host_that_actually_works_still_parses(self, authority: str) -> None:
+        """⚠ **The reason this is a denylist and not a host pattern.** A
+        ``[A-Za-z0-9.-]`` allowlist would read as obviously correct and would
+        refuse the last two — an IDN host and its punycode form both resolve,
+        and a parser stricter than the mint is what breaks a customer. IPv6 and
+        the local-development cases are here because ``examples/03_local_https``
+        is a real install shape, not a hypothetical."""
+        parsed = parse_dsn(f"https://{KEY}@{authority}/{WORKSPACE}/srv")
+        assert parsed.origin == f"https://{authority}"
+
+
+class TestATabOrLineBreakIsDeletedRatherThanRefused:
+    """⚠ **The strip is the defect, not the defence.** ``urlsplit`` removes
+    ``\\t``, ``\\r`` and ``\\n`` from the URL before splitting it
+    (``_UNSAFE_URL_BYTES_TO_REMOVE``), so every check in this module runs on a
+    string the vendor did not write — and ``httpx`` strips identically, so
+    nothing downstream notices either.
+
+    Refused in ``parse_dsn`` against the RAW value, which is the last place
+    that can still see the character. A closed set rather than a sample: every
+    other control character and the space survive into the authority, where the
+    host check catches them.
+    """
+
+    @pytest.mark.parametrize("character", ["\t", "\r", "\n"], ids=["tab", "cr", "lf"])
+    def test_a_break_inside_the_host_is_refused_not_silently_joined(self, character: str) -> None:
+        """Without this the origin becomes ``https://ingest.example.comevil.com``
+        — one host, well-formed, and not one anybody typed."""
+        with pytest.raises(ValueError, match="probably a line wrap"):
+            parse_dsn(f"https://{KEY}@ingest.example.com{character}evil.com/{WORKSPACE}/srv")
+
+    @pytest.mark.parametrize("character", ["\t", "\r", "\n"], ids=["tab", "cr", "lf"])
+    def test_a_break_inside_the_SERVER_segment_is_refused_too(self, character: str) -> None:
+        """The worse half, and the reason this is checked over the whole string
+        rather than the authority alone: ``srv{c}x`` parses as ``vendor_id``
+        ``"srvx"`` — the server the key is BOUND to, rewritten into one nobody
+        minted, on events that then carry it."""
+        with pytest.raises(ValueError, match="probably a line wrap"):
+            parse_dsn(f"https://{KEY}@h.example.com/{WORKSPACE}/srv{character}x")
+
+    def test_a_TRAILING_newline_is_still_just_whitespace(self) -> None:
+        """The common case — a value read from a file, or a shell heredoc — and
+        it must keep working. ``strip()`` above handles it; only a break INSIDE
+        the value is a refusal."""
+        assert parse_dsn(f"{DSN}\n").vendor_id == "echo-server"
+
+    def test_the_refusal_does_not_repeat_the_credential(self) -> None:
+        with pytest.raises(ValueError) as caught:
+            parse_dsn(f"https://{KEY}@h.example.com\nevil.com/{WORKSPACE}/srv")
+        assert KEY not in str(caught.value)
+
+
+class TestTheParsedObjectDoesNotPrintItsBearer:
+    """⚠ **A frozen dataclass prints every field.** Four ways a parsed config
+    reaches a log line by accident, none of them deliberate — and its
+    TypeScript twin needed a different fix (``toJSON`` plus the inspect
+    symbol), which is why this was worth reproducing rather than porting.
+    """
+
+    def test_repr_omits_the_key(self) -> None:
+        assert KEY not in repr(parse_dsn(DSN))
+
+    def test_str_and_f_string_and_percent_s_omit_it_too(self) -> None:
+        """All three render through ``__repr__`` for a dataclass, but they are
+        the three shapes that actually appear in logging calls, so they are
+        asserted rather than reasoned about."""
+        parsed = parse_dsn(DSN)
+        assert KEY not in str(parsed)
+        assert KEY not in f"{parsed}"
+        assert KEY not in "%s" % (parsed,)  # noqa: UP031 — the %-format path IS the case
+
+    def test_what_a_reader_still_needs_is_all_there(self) -> None:
+        """Omitted, not masked — and everything that helps someone diagnose an
+        install stays visible."""
+        shown = repr(parse_dsn(DSN))
+        assert "ingest.goodtiming.ai" in shown
+        assert WORKSPACE in shown
+        assert "echo-server" in shown
+
+    def test_reading_the_key_by_name_is_unchanged(self) -> None:
+        """``repr=False`` hides it from printing, not from the SDK: the sink is
+        built from this field."""
+        assert parse_dsn(DSN).key == KEY
+
+
+class TestAnEmptyDsnIsUnsetRatherThanSupplied:
+    """⚠ **``is not None`` was the odd one out**, and ``baton-ts`` diverged
+    from it deliberately in ``9cde895`` so the back-port would be found once
+    rather than twice. Two functions in this module already map
+    ``BATON_DSN=""`` to unset, and every other config value in this SDK treats
+    empty as absent.
+    """
+
+    def test_an_empty_dsn_beside_an_explicit_value_does_not_raise(self) -> None:
+        """The shape that broke: ``dsn=os.environ.get("MY_DSN", "")`` beside a
+        ``vendor_id``. The install died naming a dsn the vendor never filled,
+        and pointed them at the wrong value to delete."""
+        assert select_dsn("", {"vendor_id": True}, "VendorConfig") is None
+
+    def test_an_empty_dsn_falls_through_to_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unset means unset, including for precedence — an empty explicit
+        value must not shadow the variable the way a real one does."""
+        monkeypatch.setenv("BATON_DSN", DSN)
+        assert select_dsn("", {"vendor_id": False}, "Client") == DSN
+        assert resolve_dsn("") == DSN
+
+    def test_a_real_dsn_beside_an_explicit_value_still_raises(self) -> None:
+        """The refusal this must not weaken: both values are in the vendor's
+        own source, and picking one would route a server's traffic under
+        someone else's identity."""
+        with pytest.raises(ValueError, match="already supplies it"):
+            select_dsn(DSN, {"vendor_id": True}, "VendorConfig")
+
+
+def test_the_suite_never_runs_with_an_ambient_baton_variable() -> None:
+    """``conftest.py``'s autouse fixture scrubs the whole ``BATON_*``
+    namespace, and this is the assertion that says so out loud.
+
+    ⚠ **Written for ``BATON_DSN`` alone first, which is how it missed the other
+    five.** Review reproduced it: four exported variables redded five tests,
+    two of them in this lane's own parity file. Asserted over the namespace so
+    a variable the SDK gains later cannot reopen the gap.
+
+    ⚠ **It can only fail on a machine that has one exported**, which is exactly
+    the population it protects: an ambient DSN supplies the vendor id, the
+    tenant id AND the sink, so a developer who set one for a real server would
+    have this suite building ``HttpSink``s at a live collector and POSTing
+    fixture events into a real workspace. The fixture scrubbed
+    ``BATON_DISABLED`` only until this lane; a failing test is a nuisance, and
+    this was test data in production.
+    """
+    leaked = sorted(name for name in os.environ if name.startswith("BATON_"))
+    assert leaked == []

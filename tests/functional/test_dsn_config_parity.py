@@ -430,3 +430,171 @@ def test_a_failing_config_never_leaves_a_sink_behind(
             )
         )
     assert built == [], f"a sink was constructed before the config was rejected: {built}"
+
+
+class TestNothingTheDsnBUILDSPrintsTheBearer:
+    """The packed string carries a credential, and the SDK now hands it around:
+    a vendor passes one value they never handle again, and it ends up on a
+    config that is retained and in a sink that is hung off the handle.
+
+    So "does an accidental print show it?" is asked of every object it reaches,
+    not only of the parser. ``baton-ts`` needed this in three places — the
+    parsed DSN, the config and the sink — which is why each is checked here
+    rather than reasoned about from the one that was reported.
+    """
+
+    def _config(self) -> Any:
+        from baton.integrations.official.install import VendorConfig
+
+        return VendorConfig(
+            vendor_id=SERVER,
+            vendor_display_name="Echo",
+            consent_token="ct",
+            dsn=f"https://{KEY}@ingest.example.com/{WORKSPACE}/{SERVER}",
+            user_id_hmac_key="a-vendor-secret-nobody-else-holds",
+        )
+
+    def test_the_config_does_not_print_the_dsn(self) -> None:
+        """⚠ Measured, and worse than the parser's: ``resolve_config`` copies
+        the packed string ONTO the config it returns, so this object outlives
+        the parse. A traceback rendering locals, a structured log line taking a
+        config, a plain ``print`` — all three wrote a publishable key out."""
+        assert KEY not in repr(self._config())
+
+    def test_the_config_does_not_print_the_HMAC_KEY_either(self) -> None:
+        """Pre-existing rather than this lane's, and fixed with it: the same
+        defect in the same ``repr``, on a field whose own docstring says the
+        vendor holds it and Baton never sees it."""
+        assert "a-vendor-secret-nobody-else-holds" not in repr(self._config())
+
+    def test_reading_either_field_by_name_is_unchanged(self) -> None:
+        config = self._config()
+        assert config.dsn is not None and KEY in config.dsn
+        assert config.user_id_hmac_key == "a-vendor-secret-nobody-else-holds"
+
+    def test_the_sink_the_dsn_built_does_not_print_its_bearer(self) -> None:
+        """⚠ **Checked because the TypeScript sink DID leak here, not because
+        this one looked suspicious.** The answer differs: ``HttpSink`` is a
+        plain class, so the default ``repr`` names the type and an address and
+        no fields at all, where a JS object enumerates them. Recorded as a
+        measurement so "probably the same" does not get asked a third time.
+        ``vars()`` and ``.api_key`` still reach it — both are someone asking
+        for the credential by name, the same line this draws for ``Dsn.key``.
+        """
+        from baton.integrations._config import resolve_config
+        from baton.integrations.official.install import VendorConfig
+
+        resolved = resolve_config(
+            VendorConfig(
+                consent_token="ct",
+                dsn=f"https://{KEY}@ingest.example.com/{WORKSPACE}/{SERVER}",
+            )
+        )
+        sink = resolved.sink
+        assert sink is not None
+        assert KEY not in repr(sink)
+        assert KEY not in str(sink)
+        assert KEY not in f"{sink}"
+
+    async def test_a_sink_whose_collector_is_GONE_does_not_log_the_bearer(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The realistic accidental-print path for a sink: it fails, something
+        catches it, and the traceback goes to a log aggregator.
+
+        Captured at DEBUG over EVERY logger, not just ours — ``httpx`` and
+        ``httpcore`` trace each attempt, and a third-party library printing the
+        request is as much of a leak as our own line would be. The host is
+        asserted present first: it proves the sink actually dialled the DSN's
+        origin, without which "the key is not in the log" is a statement about
+        an empty log."""
+        import logging
+        from datetime import UTC, datetime
+
+        from baton.events import ToolCallStartEvent, ToolCallStartPayload
+        from baton.integrations._config import resolve_config
+        from baton.integrations.official.install import VendorConfig
+        from baton.sinks import safe_write
+
+        resolved = resolve_config(
+            VendorConfig(
+                consent_token="ct",
+                # Port 1 with nothing on it: a connection refused at the first
+                # write, which is the shape a wrong origin actually takes.
+                dsn=f"http://{KEY}@127.0.0.1:1/{WORKSPACE}/{SERVER}",
+            )
+        )
+        sink = resolved.sink
+        assert sink is not None
+        with caplog.at_level(logging.DEBUG):
+            event = ToolCallStartEvent(
+                tenant_id=WORKSPACE,
+                vendor_id=SERVER,
+                session_id="sess_test",
+                sequence_number=1,
+                captured_at=datetime.now(UTC),
+                consent_token="ct",
+                agent_runtime="claude-code",
+                payload=ToolCallStartPayload(tool_name="lookup"),
+            )
+            await safe_write(sink, event, logging.getLogger("baton"))
+            await sink.flush()
+            await sink.aclose()
+        # ⚠ **Assert that something was checked.** "the key is not in an empty
+        # log" is vacuously true, and this repo has already shipped a rig that
+        # reported zero mispairs while matching nothing at all. The sink must
+        # actually have tried and failed for the assertion below to mean
+        # anything.
+        assert "127.0.0.1" in caplog.text, "the sink never tried — the assertion below is vacuous"
+        assert KEY not in caplog.text
+
+
+class TestAnEmptyValueIsUnsetAtEVERYDoor:
+    """⚠ **Falsy-means-unset was applied to ``select_dsn`` and to nothing
+    else**, so the shape its own comment cites —
+    ``os.environ.get("MY_DSN", "")`` — still died at three other checks. Found
+    by review of that fix, each one reproduced before being changed.
+
+    This file is where they belong: every one of them is two doors disagreeing
+    about the same input, which is the class of defect this file exists for.
+    """
+
+    def test_an_empty_dsn_KWARG_beside_a_config_does_not_raise(self) -> None:
+        """``build_config``'s conflict check was still ``dsn is not None``, so
+        ``install_baton(mcp, my_config, dsn=os.environ.get("MY_DSN", ""))``
+        raised — naming a ``dsn`` argument the vendor never filled in."""
+        from baton.integrations._config import build_config
+        from baton.integrations.official.install import VendorConfig
+
+        config = VendorConfig(vendor_id="acme", vendor_display_name="Acme", consent_token="ct")
+        assert build_config(config, "").vendor_id == "acme"
+
+    def test_an_empty_tenant_id_beside_a_dsn_does_not_raise(self) -> None:
+        """The ``supplied`` map read ``bool(vendor_id)`` on one line and
+        ``tenant_id is not None`` on the next — one rule written two ways, one
+        line apart."""
+        from baton.integrations._config import resolve_config
+        from baton.integrations.official.install import VendorConfig
+
+        dsn = f"https://{KEY}@ingest.example.com/{WORKSPACE}/{SERVER}"
+        resolved = resolve_config(VendorConfig(dsn=dsn, consent_token="ct", tenant_id=""))
+        assert resolved.tenant_id == WORKSPACE
+
+    def test_both_doors_agree_that_an_empty_vendor_id_is_unset(self) -> None:
+        """The one that matters most here: ``Client(dsn=..., vendor_id="")``
+        raised where the identical ``VendorConfig(dsn=..., vendor_id="")`` did
+        not. Asserted as an AGREEMENT rather than as two separate cases,
+        because a door drifting from its twin is what this file is for."""
+        from baton.client import _resolve_client_config
+        from baton.integrations._config import resolve_config
+        from baton.integrations.official.install import VendorConfig
+
+        dsn = f"https://{KEY}@ingest.example.com/{WORKSPACE}/{SERVER}"
+        through_install = resolve_config(
+            VendorConfig(dsn=dsn, consent_token="ct", vendor_id="", tenant_id="")
+        )
+        through_client = _resolve_client_config(
+            sink=None, dsn=dsn, vendor_id="", tenant_id="", consent_token="ct"
+        )
+        assert through_install.vendor_id == through_client.vendor_id == SERVER
+        assert through_install.tenant_id == through_client.tenant_id == WORKSPACE

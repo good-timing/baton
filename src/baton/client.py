@@ -286,8 +286,15 @@ def _resolve_client_config(
     dsn_string = select_dsn(
         dsn,
         {
-            "vendor_id": vendor_id is not None,
-            "tenant_id": tenant_id is not None,
+            # ⚠ **Falsy means unset on BOTH doors.** These three used to read
+            # ``is not None`` while the install door read ``bool(...)`` for
+            # ``vendor_id``, so ``Client(dsn=..., vendor_id="")`` raised where
+            # the identical ``VendorConfig(dsn=..., vendor_id="")`` did not —
+            # the two doors this helper exists to keep in lockstep, disagreeing
+            # about the empty string. ``sink`` stays an identity check: it is an
+            # object, not a string, and there is no empty one.
+            "vendor_id": bool(vendor_id),
+            "tenant_id": bool(tenant_id),
             "sink": sink is not None,
         },
         "Client",

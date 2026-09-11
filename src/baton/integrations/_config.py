@@ -6,7 +6,7 @@ import inspect
 import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
@@ -228,8 +228,13 @@ class VendorConfig:
     distinguishable on the wire without a second field, because a hashed value
     always carries the ``h1:`` scheme prefix."""
 
-    user_id_hmac_key: bytes | str | None = None
+    user_id_hmac_key: bytes | str | None = field(default=None, repr=False)
     """Secret keying the ``user_id`` HMAC in ``"hashed"`` mode.
+
+    ⚠ **``repr=False`` — PRE-EXISTING, and not part of the DSN lane that
+    brought the other two.** It is the same defect in the same ``repr`` for the
+    same reason, found while fixing them: a field whose own docstring says the
+    vendor holds it and Baton never sees it has no business printing itself.
 
     Resolved explicit → ``BATON_USER_ID_HMAC_KEY`` → ``None``. Unset means
     hashed identity is fail-open-skipped: ``user_id`` is dropped, events still
@@ -286,7 +291,7 @@ class VendorConfig:
     # the opposite, and cited a test that could not see the break 0.8.0 then
     # shipped — see the class docstring for what replaced the promise.
 
-    dsn: str | None = None
+    dsn: str | None = field(default=None, repr=False)
     """The packed connection string from ``/account`` — one value carrying the
     ingest host, the workspace, the server and the key::
 
@@ -296,6 +301,13 @@ class VendorConfig:
     ``HttpSink`` at the DSN's origin, authenticated with its key), and
     ``vendor_display_name`` when that is not given. Grammar and rationale:
     ``baton._dsn``.
+
+    ⚠ **``repr=False``, because this string contains the bearer.** Measured:
+    ``repr(config)`` printed the whole DSN, key included, and this config is
+    RETAINED after resolution (``resolve_config`` copies the packed string onto
+    the config it returns) — so any traceback rendering locals, any structured
+    log line taking a config, and every plain ``print`` of one wrote a
+    publishable key out. Its Python twin is ``Dsn.key``, fixed the same way.
 
     Resolved explicit → ``BATON_DSN`` → unset. **Environment variables do not
     override it** — a DSN is the value stated in the vendor's source, and a
@@ -318,7 +330,12 @@ def build_config(config: VendorConfig | None, dsn: str | None) -> VendorConfig:
     own ``dsn`` field is the two combined, and is how you set a scrubber or an
     injection mode alongside a packed key.
     """
-    if config is not None and dsn is not None:
+    # ⚠ ``and dsn``, not ``and dsn is not None`` — the falsy-means-unset rule
+    # has to hold at EVERY door or it is not a rule. This check was missed when
+    # `select_dsn` was fixed, so the exact shape that fix cites,
+    # ``dsn=os.environ.get("MY_DSN", "")``, still died one door over. Found by
+    # review, reproduced before fixing.
+    if config is not None and dsn:
         raise ValueError(
             "install_baton got both a VendorConfig and a dsn= argument. Put "
             "the dsn on the config — VendorConfig(dsn=...) — so there is one "
@@ -367,7 +384,11 @@ def resolve_config(config: VendorConfig) -> VendorConfig:
         config.dsn,
         {
             "vendor_id": bool(config.vendor_id),
-            "tenant_id": config.tenant_id is not None,
+            # ``bool``, matching ``vendor_id`` directly above: an empty
+            # ``tenant_id`` is a value nobody set, so it must not be reported as
+            # a conflict against a DSN. The line above was already ``bool`` and
+            # this one was not — the same rule written two ways, one line apart.
+            "tenant_id": bool(config.tenant_id),
             "sink": config.sink is not None,
         },
         "VendorConfig",
