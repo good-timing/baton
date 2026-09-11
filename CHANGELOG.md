@@ -26,7 +26,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
   **What went with it:** the Console URL and API key the handle extracted off an `HttpSink`, the lazily-created shared `httpx` client, and the `disabled_switch` the handle carried to suppress that URL under `BATON_DISABLED`. **A `BatonHandle` now makes no network calls of any kind** — its whole surface is `session_id`, `flush()` and `aclose()` — so the suppression it needed has nothing left to suppress. A vendor tool that wants to file a ticket calls the Console endpoint directly, with a key scoped to do it; the endpoint is unchanged and the Console keeps it.
 
-  ⚠ **Also corrected in SPEC §8.3**: that block documented a `{session_id, title, body}` request returning `200`. The endpoint has never accepted that shape — its request model is `extra="forbid"` and takes `{session_id, annotation_seq}`, returning `201` — so the spec described a request the Console rejects. Corrected against the running implementation.
+  ⚠ **SPEC §8.3 is DELETED rather than corrected.** It specified this endpoint and this helper, and its request block was wrong besides — `{session_id, title, body}` returning `200`, where the endpoint is `extra="forbid"` over `{session_id, annotation_seq}` returning `201`, so a request in the published shape is rejected before reaching any Channel. With no SDK caller, the protocol does not need a section for a Console endpoint: the section, and the references to it from §1, §2.1, §2.4, §10 and §14, are gone. The Console may keep serving the route; that is now its business and not this spec's.
 
 ---
 

@@ -33,7 +33,7 @@ The protocol involves four parties:
 1. **End user** — the human using an agent runtime.
 2. **Calling agent** — the LLM-driven agent (Claude Code, Cursor, Cowork, ChatGPT, etc.) that invokes vendor tools on behalf of the end user.
 3. **Vendor capture surface** — the SDK boundary where Baton observes agent–tool interactions. Today: a vendor MCP server wrapped via `install_baton(mcp, ...)` middleware, or vendor code instrumented directly with `baton.Client` / `AsyncClient` for the Skills (non-MCP) pattern. Future: customer-side agent-runtime plugins (§14).
-4. **Vendor collector** — the vendor's signal-assembly + workflow surface, receiving event streams from the SDK and (on the deferred sync return channel per §8.3) pushing response returns back.
+4. **Vendor collector** — the vendor's signal-assembly + workflow surface, receiving event streams from the SDK.
 
 Baton is the protocol substrate connecting (3) ↔ (4).
 
@@ -53,9 +53,9 @@ End User ──► Calling Agent ──MCP──► Vendor MCP Server [Baton SDK
 - All Baton wire traffic MUST be HTTPS.
 - Primary endpoint (relative to the collector base URL):
   - `POST /v0/events` — SDK → collector (event-stream ingest; see §11.4 for the envelope)
-- Deferred endpoints — sync return channel (see §8.3):
-  - `GET  /v0/signals/{signal_id}` — collector return channel: lazy re-query
-  - `GET  /v0/signals?session_id=...` — collector return channel: session-scoped lookup
+- Deferred endpoints — collector return channel, no specified caller:
+  - `GET  /v0/signals/{signal_id}` — lazy re-query
+  - `GET  /v0/signals?session_id=...` — session-scoped lookup
 
 ### 2.2 Encoding
 - All payloads MUST be JSON, UTF-8.
@@ -74,7 +74,7 @@ The collector MUST reject any request without a valid bearer. The collector MUST
 
 ### 2.4 Idempotency
 - Event POSTs MUST carry a client-generated `event_id` (UUIDv7 recommended for sortability). The collector MUST treat repeated POSTs with the same `event_id` as the same event (no duplicate ingestion).
-- Response updates on the deferred sync return-channel (§8.3) are collector-authoritative; no client idempotency key needed.
+- Response updates on the deferred return-channel endpoints above are collector-authoritative; no client idempotency key needed.
 
 ---
 
@@ -652,72 +652,6 @@ The vendor's Console triggers an email / Slack DM / push notification / similar 
 
 - **No SDK-side disk persistence.** The SDK MUST NOT persist signal state to disk; any cache (when one lands) MUST be in-memory only. Cross-vendor sharding and remote MCP topologies make disk persistence useless as a unified view.
 
-### 8.3 Client-triggered escalation — a Console endpoint, with no SDK helper
-
-Two escalation paths exist. The Console-driven path (§11 Channels) is the
-primary flow: Console worker applies vendor policy and dispatches to ticketing
-systems asynchronously. The client-triggered path — where the end user asks the
-agent to file a ticket in-session — requires in-channel confirmation and is
-handled differently.
-
-**`POST /v0/escalate` — implemented in the Console, not reachable from the SDK.**
-
-A dedicated Console endpoint separate from the event ingest path (`/v0/events`).
-Accepts a request from a vendor-side tool call, calls the vendor's configured
-ticketing Channel (e.g., Pylon) synchronously, and returns the result in the
-same HTTP response.
-
-```
-POST /v0/escalate
-Authorization: Bearer <vendor-api-key>
-{
-  "session_id": "sdk-...",
-  "annotation_seq": 3        // optional; omitted ⇒ latest reactive annotation
-}
-→ 201 { "ticket_id": "1042", "ticket_url": "https://..." }
-→ 409 if the session holds no reactive annotation to escalate
-→ 502 if the downstream ticketing system is unavailable
-```
-
-⚠ This block described `title` and `body` fields, a `200`, and a `503` until
-2026-09-11.
-The endpoint has never accepted them — its request model is `extra="forbid"`,
-so a request in the shape this spec documented is rejected before it reaches
-any Channel. Corrected against the running implementation rather than from
-memory; `annotation_seq` doubles as the idempotency key.
-
-The Console MUST also write an event to the event stream when it handles an
-escalation (same `session_id`, event type TBD in §14) so the audit trail is
-complete without the vendor emitting separately.
-
-The `session_id` field is sourced from `BatonHandle.session_id` (§11.4), which
-is the same value baked into every emitted event. This is the correlation
-primitive that lets the Console link the ticket back to the full signal history
-for that session.
-
-**SDK surface: REMOVED in 0.9.0, and not deferred — withdrawn.**
-`baton-sdk` shipped a `handle.escalate()` helper through 0.8.0. **Nothing ever
-called it** — not the SDK, its examples, `baton-proxy`, `baton-extmcp` or
-`baton-ts`, which never implemented it — while this section listed it as
-*planned*, so broken and unbuilt looked alike from both directions. It also
-had no future: since the publishable-key split, the key an installed SDK holds
-is scoped `write_events`, and this endpoint is specified to refuse that scope.
-⚠ **It does not refuse it yet** — key scope is unread at auth today, so such a
-call currently authenticates; the refusal is the Console's task C7, unshipped
-as of 2026-09-11. The helper was therefore a method whose only credential is
-one this endpoint is on its way to rejecting, which is a reason to withdraw it
-rather than a reason it was already failing. The method, the Console URL and
-API key it read off the sink, and its shared HTTP client are gone — **a
-`BatonHandle` now makes no network calls of any kind.** A vendor tool that
-wants to file a ticket calls the Console endpoint itself, with a key scoped to
-do it.
-
-**Why not agent-side polling (original §8.3 sketch):**
-Polling (`GET /v0/signals?session_id=...`) requires the SDK to cache
-outstanding IDs, adds two round-trips, and still can't guarantee in-turn
-confirmation. The sync Console endpoint provides a clean single round-trip with
-a deterministic response shape.
-
 ### 8.4 Deferred (see §14)
 
 - **Runtime-memory adapters.** A `MemoryAdapter` interface (`write(scope, summary)`)
@@ -745,7 +679,7 @@ Vendors who need richer consent semantics today MUST implement them outside the 
 
 The Console MUST:
 - Accept event POSTs at `/v0/events`, validate bearer + consent_token, return `201 Created` (or `200 OK` with existing record on idempotent retry by `event_id`).
-- Serve return-channel queries when the synchronous autopickup path lands (§8.3).
+- Serve return-channel queries if the deferred endpoints in §2.1 are built.
 - Reject malformed payloads with `400 Bad Request` + `{ "error": { "code": ..., "message": ... } }`.
 - Reject bad auth with `401 Unauthorized`.
 
@@ -1054,7 +988,7 @@ Defined error codes:
 > ⚠ **Entries below dated before 2026-09-09 still read "Unreleased" and are not.** They shipped across 0.5.x–0.7.2; the version stamp this list used through `0.2.8` stopped being applied after it, and restamping them means mapping fifteen entries to the releases that actually carried them — archaeology, easy to get wrong, and not a thing to do inside a release. Recorded here so the word "Unreleased" below is read as a stale label rather than a claim.
 
 
-- **0.9.0 (SDK-only, 2026-09-11)** — **no envelope, field or shape change; two SDK-surface REMOVALS and one correction to this document.** (1) **`handle.escalate()` is withdrawn.** §8.3 above carried it as *planned* while 0.8.0 shipped it, so broken and unbuilt looked alike from both directions, and nothing anywhere called it. ⚠ **It was not already failing** — an earlier draft of this entry said the endpoint refuses the `write_events` key an installed SDK holds; key scope is unread at auth today (the Console's task C7 is unshipped as of 2026-09-11), so such a call authenticates. The claim was about the intended state, checked against a design note rather than the running service. What is true is narrower and still decisive: nothing called the method, and its only credential is one the endpoint is specified to reject. The method, the Console URL and API key the handle read off an `HttpSink`, its shared HTTP client, and the disabled-switch that existed to suppress that URL are all gone — **a `BatonHandle` makes no network calls of any kind**, and its surface is `session_id`, `flush()` and `aclose()`. **Consumer consequence: none.** No event type, field or value is involved; the Console endpoint is unchanged and still served. A vendor tool that files tickets calls it directly with a key scoped to do so. (2) **`VendorConfig` is keyword-only**, so its field ORDER is no longer public API. Positional construction mis-bound silently in two consecutive releases — 0.7.0 put a `Sink` into `consent_token`, where a truthiness check let it onto the wire, and 0.8.0's removal of `default_agent_runtime` from slot 6 binds `scrubber="unknown"` for a 0.7.2-shaped call — and the guard written after the first asserts four slots, so it was green through the second. Constructing positionally now raises `TypeError` at the call. **Consumer consequence: none** — this is a vendor-side install-time API, invisible on the wire. (3) §8.3's request block documented `{session_id, title, body}` returning `200`; the endpoint's model is `extra="forbid"` over `{session_id, annotation_seq}` returning `201`, so a request in the documented shape is rejected before reaching any Channel. Corrected against the running implementation, not from memory.
+- **0.9.0 (SDK-only, 2026-09-11)** — **no envelope, field or shape change; two SDK-surface REMOVALS, and §8.3 is DELETED.** (1) **The client-triggered escalation section is gone, not corrected.** It specified a synchronous Console endpoint and an SDK helper for it; the helper is removed from `baton-sdk` (nothing anywhere called it, and a `BatonHandle` now makes no network calls of any kind), and the endpoint is not something this protocol needs a section for. References to it from §1, §2.1, §2.4, §10 and §14 are removed with it; §2.1's deferred return-channel endpoints remain listed, now with no specified caller. **Consumer consequence: none** — no event type, field or value was ever involved, and a Console that serves the endpoint may keep doing so. ⚠ An earlier draft of this entry justified the SDK removal by saying the endpoint refuses the `write_events` key an installed SDK holds; that is the intended state, not the shipped one — key scope is unread at auth as of 2026-09-11 — and the real reason is the simpler one, that nothing called the method. (2) **`VendorConfig` is keyword-only**, so its field ORDER is no longer public API. Positional construction mis-bound silently in two consecutive releases — 0.7.0 put a `Sink` into `consent_token`, where a truthiness check let it onto the wire, and 0.8.0's removal of `default_agent_runtime` from slot 6 binds `scrubber="unknown"` for a 0.7.2-shaped call — and the guard written after the first asserts four slots, so it was green through the second. Constructing positionally now raises `TypeError` at the call. **Consumer consequence: none** — this is a vendor-side install-time API, invisible on the wire.
 - **0.8.0 (SDK-only, 2026-09-09f)** — **the SDK now MINTS `call_id`; the field specified in `2026-09-09e` has a producer.** All three emit paths fill it: both MCP adapters (`baton.integrations.official`, `baton.integrations.standalone`) and the library API's `Trace` / `AsyncTrace`. The value is a bare UUID string minted in a local variable inside the scope that emits both legs — the wrapper invocation on the official adapter, the middleware call on the standalone one, and the entered `Trace` on the library path, where `__aenter__` assigns it and `__init__` only declares it, so a `Trace` entered twice mints twice. `annotation` and `surface_snapshot` carry no `call_id`: §11.4 specifies the field for a tool call's legs, and putting one on an annotation would invent semantics no section defines. **Consumer consequence:** events from an SDK producer at this version or later pair on tier 1 (§11.5.4) where they previously fell through to tier 2 or tier 3, so a consumer keyed on `(call_id, tool_name)` starts joining calls that FIFO was mispairing — on the measured corpus that is 5.7% of starts. Nothing is removed and nothing is required: tier 3 stays until `call_id` is flowing from every producer, older SDKs keep emitting null, and a consumer that treats a missing `call_id` as an error is still wrong. There is still no backfill. ⚠ **An MRTR call does not pair, and on a single-process server this is a REGRESSION — stated plainly because the honest version of it is narrower than it first looks.** An MRTR call spans two rounds and therefore two emit scopes, so its start and its end mint DIFFERENT ids and land in different tier-1 partitions, which §11.5.4 forbids mixing. Two cases, and they are not the same claim: **(a) single process** — both legs were id-less before this change and tier 3 paired them correctly, so a consumer that previously showed one complete call with a duration and a result body now shows a dangling start beside an orphan end. That is a real loss, not merely an unrealised gain. **(b) more than one process** — the two rounds arrive with different fallback `session_id`s, so no consumer receives them in one partition at all, and they are unpairable under every tier including the FIFO floor, before and after this change. Case (a) is fixable at the producer, by carrying the id across rounds on the MRTR continuation state the adapter already reads; it is deliberately not done here, and no producer should read this entry as saying it cannot be. What both cases do keep is the never-mix guarantee: a leg stays honestly unpaired rather than stealing a neighbour's.
 - **0.8.0 (2026-09-09e)** — **`call_id` (OPTIONAL, envelope) is specified, and the collector already reads it.** The producer's minted per-call correlation key, identical on a call's `tool_call_start` and its `tool_call_end` / `tool_call_error`, plus the three pairing tiers that consume it (§11.5.4). Added because both existing tiers are keyed on something no producer minted: `claudecode/toolUseId` is Claude Code's, and no other client sends it; the FIFO fallback is keyed on nothing and mispairs whenever two calls to one tool overlap. **Measured, on the Aug-13 Workfront capture** (1,048 starts, 80 of 107 sessions carrying overlapping calls): pairing once as captured and again with `runtime_meta` stripped — `claudecode/toolUseId` against the FIFO floor — moves **60 starts, 5.7%, across 22 sessions** to a different end, while the pair totals are identical at 1,047 both ways. A mispair is a permutation, so totals, sums and completeness checks cannot see it; a mispaired row reads as a coherent call that never happened, carrying one call's duration beside another's result body. **Consumer consequence: none yet, and that is deliberate.** This entry documents a field **no producer emits today** — `baton-console` ingest accepts and persists it and `match_tool_calls` has the tier, shipped ahead of the producers on purpose, because ingest is `extra="forbid"` and an envelope carrying an unknown field is rejected outright (the same drift that once rejected `user_id`). The SDK's mint is the next step and lands under its own entry. Until then every event pairs on tier 2 or tier 3 exactly as before, and a consumer that treats a missing `call_id` as an error is wrong. There is no backfill: an id nobody minted at capture cannot be recovered from a recorded stream.
 - **0.8.0 (SDK-only, 2026-09-09d)** — **`user_id` is DOCUMENTED in §11.4 and is now populated by both MCP adapters.** The field has existed on the envelope and in collector ingest since 0.3.0 but was never written into §11.4's envelope, so the wire contract described a field the SDK shipped — a documentation gap, corrected above, not a new field. What is new is that the SDK now fills it: the authenticated principal is read from the verified access token's `claims["sub"]` (keyed with `claims["iss"]`) on both adapters and turned into its final wire form in the producer's process. **Consumer consequence:** events from an SDK producer whose vendor has OAuth configured begin carrying `user_id` where they previously carried none, so a consumer treating the field as "proxy-sourced only" must stop. It stays absent on stdio (no auth exists there), on unauthenticated HTTP calls, and — measured — on `mcp < 1.27`, whose `AccessToken` has no `claims` field at all, unless the vendor's verifier returns a subclass that declares one. `VendorConfig(user_id_mode=...)` selects `"hashed"` (default, `h1:` pseudonym) or `"raw"` (the subject verbatim); `"raw"` puts real end-user identity in the collector's database and is the vendor's deliberate choice, so **a consumer must not treat this field as anonymous** — see §11.4's discriminator rule. Hashed mode needs a secret (`VendorConfig(user_id_hmac_key=...)` → `BATON_USER_ID_HMAC_KEY`); with none set the field is fail-open-skipped and events emit unchanged, since `user_id` is additive analytics and never a consent or authorization gate. The hash folds in the issuer alongside the subject, because a `sub` is unique only per issuer and two identity providers behind one vendor would otherwise merge two people into one actor; issuer-less hashes are byte-identical to the pre-existing form, so nothing baton-proxy or baton-extmcp has emitted changes value. `surface_snapshot` never carries it: it describes the server and is captured outside any call.
@@ -1095,7 +1029,7 @@ Open spec-level design questions. Resolutions land in subsequent minor versions 
 - **Cost knobs for annotation turn-count overhead.** Each annotation call is its own LLM inference turn, so proactive + reactive annotation around one real tool call triples the turn count. This is not extra reasoning load per turn — by the time the agent decides to call a tool, it has already internally answered what the user wants (`intent`), what the call should return (`expected_outcome`), and what bigger task this is part of (`workflow`). Annotation transcribes that existing state; the fields are deliberately scoped so the model emits known conclusions, not new analysis. What costs is the turn structure itself — each call re-tokenizes context and round-trips through inference regardless of how short the output is. The four-things-in-one-context payload is unobtainable without that turn overhead, so it's an inherent design tax. Open: is a cost knob needed? Every candidate targets turn count, not content: annotation-on-signal-only (skip proactive; keep `intent`/`expected_outcome` on failure traces only), per-tool toggles (vendor opts in only high-value tools), sampling. **Partly answered (2026-08-10, `baton-internal/spikes/overall_task_a5/`):** measured 2× amplification (4 annotation calls serving 4 tool calls in one session), and since `call_intent`/`call_expected`/`call_workflow` now ride every `tool_call_start`, the proactive annotation is redundant *as a data carrier* — which makes annotation-on-signal-only the leading candidate. Two constraints on it: (1) it must mean *no agent-initiated proactive calls*, NOT removal of the annotation tool — suppressing the tool outright also lost the reactive `feature_gap` on a dead end, i.e. the product signal; (2) proactive annotations currently supply **54% of turn boundaries** on real traffic (§11.5 tier 2), and no time-gap threshold substitutes — shortening the gap starts shattering turns before it stops collapsing them. The unblock is deriving conversations from call-level signals directly, which only becomes possible once `call_workflow` is present on the capture surface in question (SDK today; proxy/extmcp after the port).
 - **`proactive_mode` parity across producers.** _Partly closed 2026-09-01 (§13): baton-proxy now has the knob. **baton-ts still does not**, and is the remainder of this open question._ `VendorConfig.proactive_mode` (§13, 2026-08-10b) made the pre-call annotation request optional and defaulted it **off** in baton-sdk (Python): the injected params already carry `call_intent`/`call_expected`/`call_workflow` on every `tool_call_start`, so the proactive turn is redundant as a data carrier. baton-ts still unconditionally renders the "BEFORE invoking any tool … you MUST call" clause into its instructions, so every TS-wrapped server pays the proactive turn whether or not that deployment wants it, and it should gain the same option. **A spelling caution for whoever ports it:** the proxy's `on` is not the SDK's `on` — the proxy drops the pre-call clause in both modes, so its knob governs only the tool description and the handler. A third producer picking yet another meaning for the same word is the failure this bullet now exists to prevent; state which legs the knob governs when adding it. The *default* is deliberately left open here: baton-sdk wraps a server the vendor owns, whereas baton-proxy sits in front of servers it does not own, so flipping proxy's default silently changes capture on live traffic its operator may not control. **Ordering constraint:** proxy must not turn proactive off before the `overall_task` port (§13, 2026-08-10) lands — until proxy injects that param it emits no `call_workflow`, so disabling proactive annotation would drop the task label entirely rather than move it to a better-measured field. baton-extmcp is moot: it injects no annotation tool and no instructions suffix, so it has no proactive request to disable.
 - **Inline annotation via reserved tool-param prefix.** One alternative to the separate annotation tool (§5.1) is letting the agent pass `intent` / `expected_outcome` as arguments on the regular tool call — e.g., `vendor_tool(query="...", _baton_intent="...", _baton_expected="...")` — with the SDK extracting and stripping the reserved-prefix params before forwarding to the vendor handler. Single round-trip instead of two; nudges agents toward populating intent by exposing the fields directly on the tool schemas they're already looking at. Tradeoffs not yet evaluated: collision with vendor-owned param namespaces, whether agents actually populate the fields when threaded inline, schema-pollution concerns. Not implemented; revisit if the §5.1 path's turn-count cost becomes a blocker.
-- **Console-provided tool proxy (SDK action surface).** The SDK MAY register Console-provided tools as stateless proxies on the vendor's MCP server. Vendors opt in via `VendorConfig`; the SDK fetches the Console's tool catalogue at install time and registers handlers that forward calls to Console verbatim. The SDK contains no business logic about when to invoke these tools or how to interpret results — all of that lives in Console (ADR-4 preserved). Open design questions: catalogue fetch auth (same API key as the sink?), startup resilience (static snapshot fallback when Console unreachable at install time?), tool description/schema serving (dynamic from Console vs. baked into SDK release?), event written by Console on each proxy call for audit trail. Deferred until Console tool catalogue design is ready. Companion to §8.3 (`POST /v0/escalate`) — `create_support_ticket` is the first planned Console-provided tool.
+- **Console-provided tool proxy (SDK action surface).** The SDK MAY register Console-provided tools as stateless proxies on the vendor's MCP server. Vendors opt in via `VendorConfig`; the SDK fetches the Console's tool catalogue at install time and registers handlers that forward calls to Console verbatim. The SDK contains no business logic about when to invoke these tools or how to interpret results — all of that lives in Console (ADR-4 preserved). Open design questions: catalogue fetch auth (same API key as the sink?), startup resilience (static snapshot fallback when Console unreachable at install time?), tool description/schema serving (dynamic from Console vs. baked into SDK release?), event written by Console on each proxy call for audit trail. Deferred until Console tool catalogue design is ready.
 
 - **Customer-side capture via agent-runtime plugins.** The two emission surfaces in §5 (MCP middleware, library API) both run on the vendor's side and require the vendor to integrate. A third path — plugins inside the agent runtime itself (Claude Code hooks, Cursor extensions, etc.) — would capture tool usage from the customer's side, complementing the vendor-side paths when the vendor hasn't integrated. Same `Sink` ABC and same event envelope (§11.4); the plugin translates runtime-native hook events into Baton events and hands them to a sink. Open design questions: per-event vendor inference (parsing `mcp__<vendor>__<tool>` namespaces or similar), multi-vendor consent model (one plugin captures across many vendors per session — who consents to what?), sink routing across multiple vendor collectors, dual-source dedup when a Baton-wrapped MCP server is also installed (likely keyed on `_meta.claudecode/toolUseId` or equivalent). Payload completeness: a plugin sees user prompt + tool call + observed outcome but **not** agent-emitted `expected_outcome` — the four-things-in-one-context payload is incomplete on this path unless a synthesizer is added. **Implementation note:** when this lands, it will ship as a **separate package** (e.g., `baton-claude-code`), not as an integration under `baton.integrations.*`, because the deployer (end user, not vendor), install mechanism (runtime plugin system, not pip), and release cadence (couples to the runtime's hook API, not the wire spec) all differ. The wire envelope is the contract that binds the separate package back to this spec — which is why this §14 entry exists rather than being deferred entirely.
 

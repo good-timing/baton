@@ -584,8 +584,8 @@ class TestTheHandleHasNoNetworkSurface:
     nothing and could not have: no caller existed in ``src/``, ``examples/``,
     ``baton-proxy`` outside its own tests, or ``baton-ts`` at all, so the dead
     code and the coverage gap were the same fact. The property it leaves
-    behind is the one SPEC §8.3 now states — a ``BatonHandle`` makes NO
-    network calls — and that is what re-adding a Console helper would break,
+    behind is the one SPEC §13's 0.9.0 entry states — a ``BatonHandle`` makes
+    NO network calls — and that is what re-adding a Console helper would break,
     silently, in a release that would again ship a method whose only
     credential is the ``write_events`` key ``/v0/escalate`` is specified to
     refuse (task C7 — specified, and not shipped: scope is unread at auth
