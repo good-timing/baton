@@ -1,14 +1,6 @@
 # Baton SDK
 
-*Structured signal capture for agent-mediated tool use. A thin event surface with pluggable sinks (stdout / file / HTTP / fan-out); a collector on the other side of the sink assembles signals, applies policy, and dispatches.*
-
 **Pre-1.0** — the public API is not yet stable, and breaking changes are flagged in [SPEC §13](docs/SPEC.md) and [CHANGELOG.md](CHANGELOG.md).
-
-![Baton in action — events streaming to stderr](docs/demo.gif)
-
-*`python examples/01_stdout/demo.py` emits structured signals you can pipe through `jq`. See [`examples/`](examples/) for the four-rung sink ladder.*
-
----
 
 ## What Baton is
 
@@ -119,7 +111,7 @@ with client.trace(
 
 ## Sinks
 
-`StdoutSink()` (the default — JSON Lines to stderr), `FileSink(path)`, `HttpSink(url, api_key=...)` (bounded buffer, retry, circuit breaker; built for you from a DSN) and `MultiSink([...])`. The four-rung ladder in [`examples/`](examples/) runs the same demo against each one.
+`StdoutSink()` (the default — JSON Lines to stderr), `FileSink(path)`, `HttpSink(url, api_key=...)` (bounded buffer, retry, circuit breaker; built for you from a DSN) and `MultiSink([...])`. The four-rung ladder in [`examples/`](examples/) runs the same demo against each one — start with `python examples/01_stdout/demo.py`, which needs no key and no extras.
 
 ## Docs and contracts
 
