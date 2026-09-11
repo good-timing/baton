@@ -8,7 +8,132 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased — a reused trace reported the previous call's result
+## 0.8.0 — one packed `dsn`; an off switch; `call_id` and `user_id` on the wire; `agent_runtime` stops being `unknown`; the `io.baton/*` keys are gone (breaking)
+
+### Added
+
+- **`BATON_DISABLED=1` turns capture off.** The SDK had no opt-out of any kind. The Console's install recipe writes a key into a server that ships to strangers, and its README will tell those users how to switch capture off — without a real switch, that sentence is a lie.
+
+  **Off means install NOTHING**: no middleware, no wrapped tools, no annotation tool on the surface, no instructions rewrite, no sink, no buffer, and — on the sync `Client` — no background thread. Not capture-and-discard. The vendor's server starts and behaves exactly as it would if `install_baton` were not in the file. Honoured at all five entry points: both adapters directly, `baton.install_baton`, `Client` and `AsyncClient`.
+
+  **Off also means NEVER THROW.** Every guard the SDK would otherwise raise from — a server object of the wrong shape, a config with no `vendor_id`, an unparseable DSN — is skipped along with everything else, because a switch that can still abort a boot is worse than no switch: the user believes they opted out, and the thing they opted out of took the process with it.
+
+  ⚠ **The consequence, which is real and is the price of the above:** a malformed `install_baton` call cannot fail while the switch is on. If your CI exports it globally, a broken install surfaces the first time capture is enabled, not in the test run. The disabled path logs a line naming the variable — at INFO, so it reaches whoever has logging turned up and is invisible by default. A debugging aid, not a discoverability guarantee.
+
+  ⚠ **Nothing on stdout, ever.** A stdio MCP server speaks JSON-RPC on stdout, so a courteous "Baton is disabled" line printed there corrupts the stream and breaks the server — in precisely the deployment this switch exists for. The one line goes to a logger. Pinned by a test asserting stdout is empty across an install and a driven call, because the `T20` lint rule bans `print()` in `src/` and says nothing about `sys.stdout.write`.
+
+  **Values**: anything that is not an explicit off — `""`, `0`, `false`, `no`, `off`, case-insensitive — counts as on. Deliberately permissive: honouring an opt-out that was not meant costs some telemetry, while ignoring one that was collects data from a person who asked us not to. `BATON_DISABLED=0` therefore does **not** disable.
+
+  Read once, at install/init. A process that starts with capture on keeps it on; re-reading per event would let a mid-flight environment change split one session's events across two answers.
+
+  Environment-only on purpose — no `VendorConfig` field — so the recipe a wrapped server ships has one story to tell about how capture is switched off.
+
+  **A per-end-user opt-out remains unbuilt.** Where the vendor hosts the server, this switch expresses the vendor's choice and nothing else — an end user cannot set an environment variable on someone else's machine. That is CHARTER ADR-1's per-end-user consent token, and it is not due.
+
+
+
+- **`dsn` — the packed connection string from the Console's `/account`**, carrying the ingest host, the workspace, the server and the key in one value:
+
+  ```python
+  from baton import install_baton
+
+  install_baton(mcp, dsn="https://baton_pk_...@ingest.example.com/ten_.../echo-server")
+  ```
+
+  That replaces eleven lines and five environment variables. It exists for the deployment the old shape could not serve: a **distributable stdio server runs on every user's machine**, so a configuration that has to arrive as `BATON_*` variables beside the process means, in practice, events that never arrive at all — measured on a real onboarding run whose server reported only from the laptop that installed it.
+
+  Accepted by all four configuration doors — both adapters' `install_baton`, `Client` and `AsyncClient` — resolved by one shared parser, and pinned by a test that drives all four with one string and asserts the values on the POSTed envelope. `VendorConfig` takes a `dsn=` field of its own, so a vendor who also wants a scrubber or an injection mode keeps one config object.
+
+  **Nothing about this reaches the wire.** The envelope still carries `tenant_id`, `vendor_id` and `consent_token` as separate fields; the SDK unpacks the string and fills them in. No SPEC change, no §13 entry, no collector change.
+
+  ⚠ **A DSN passed in code counts as EXPLICIT for everything it carries**, so it outranks the environment. That is deliberate and it is the re-install case: a server being onboarded a second time has last install's `.env` sitting beside the new inline DSN, and a stale `BATON_TENANT_ID` silently winning would file its events under the previous identity. Passing a DSN *and* an explicit `sink`, `vendor_id` or `tenant_id` raises rather than picking a winner.
+
+  ⚠ **`BATON_DSN` is a fallback and behaves like one**: it loses to an explicit `vendor_id`/`tenant_id`/`sink` rather than colliding with them, so exporting it for one server does not stop a second server in the same process from installing the old explicit way. Where it is ignored, it says so on the logger — a vendor who expected it to configure this server would otherwise get a healthy install whose events go nowhere near the collector they named. It still outranks `BATON_VENDOR_ID` and friends: environment against environment, the packed value is the one someone chose today.
+
+  ⚠ **A key pasted into the wrong slot is refused by the SLOT it landed in, never by echoing it.** No error this SDK raises about a DSN repeats the credential — not in the message, not in an exception's `__context__`, and not when the key was pasted into the path where there is no `@` to redact around. A misplaced key is told which mistake it made ("the key is in the PATH") rather than the true-but-useless "carries no key".
+
+  ⚠ **A `baton_sk_` (workspace secret) in the key slot warns and still works.** The key ROW is the authority on what a key may do, not the string — an SDK enforcing a Console policy would turn a typo at the mint site into a confusing client-side error. But a workspace secret inside a server that ships to strangers is worth saying out loud, and this is the only place that can say it. The warning names the prefix and never the key, and goes to the logger rather than stdout, which under stdio transport is the JSON-RPC stream.
+
+- **`BATON_DSN`** as the environment fallback, for a hosted vendor who will not put the value in source: one variable instead of five.
+
+
+- **`call_id` — the SDK now mints a per-call correlation key, on all three emit paths.** Every `tool_call_start` and its matching `tool_call_end` / `tool_call_error` carry the same opaque UUID, so a collector pairs a call's two legs on an identifier this SDK controls instead of inferring the pairing. Both MCP adapters and the library API's `Trace` / `AsyncTrace` emit it; `annotation` and `surface_snapshot` do not, because SPEC §11.4 specifies the field for a tool call's legs only.
+
+  **Why it exists.** The two pairing tiers below it are both keyed on something no producer minted. `claudecode/toolUseId` is Claude Code's and no other client sends it; below that is FIFO per `tool_name`, keyed on nothing, which mispairs whenever two calls to one tool overlap. Measured on a 1,048-start production capture, pairing with an id and then again on the FIFO floor moves **60 starts (5.7%) to a different end while the pair totals stay identical** — a mispair is a permutation, so totals, sums and completeness checks are all blind to it, and a mispaired row reads as a coherent call that never happened, carrying one call's duration beside another call's result body.
+
+  **The mint is per call by construction.** It is a local variable in the scope that emits both legs, never `ctx.request_id` (which restarts at 1 per connection). On the library path the entered `Trace` is that scope, so `__aenter__` assigns the id and a `Trace` entered twice mints twice. Hoisting it anywhere wider would send one id for a whole session and silently degrade pairing below the FIFO floor it outranks; that property is covered by its own test on each path.
+
+  ⚠ **A multi-round tool call (MRTR, mcp ≥ 2.0) does not pair, and on a single-process server that is a regression.** Its two rounds are two emit scopes, so the start and the end mint different ids, land in different tier-1 partitions, and both stay unpaired rather than one stealing a neighbour's. Where the call is served by ONE process, those two legs were previously paired correctly by the FIFO tier, so a collector that showed one complete call with a duration and a result now shows a dangling start beside an orphan end. Where it is served by MORE than one, the rounds arrive under different fallback `session_id`s and were never pairable under any tier, before or after. The single-process case could be fixed by carrying the id across rounds on the MRTR continuation state; that is tracked, not shipped. If your server exposes tools that return `InputRequiredResult`, this is the paragraph that affects you.
+
+- **`user_id` now carries the authenticated end-user principal on both MCP adapters.** The field has been on the envelope since 0.3.0 and nothing ever filled it — `identity.py` shipped as a parity mirror of baton-proxy and no adapter called it, so every SDK-sourced event has carried a null actor while the proxy and the gateway adapter carried a real one. Both adapters now read the principal from the verified access token and attach it to every event of a call, including the annotation event.
+
+  **Where the value comes from.** The OIDC subject (`claims["sub"]`) of the token the vendor's own `TokenVerifier` already validated, keyed together with its issuer (`claims["iss"]`). **Never `client_id`** — that names the OAuth *application*, and was measured identical for two different users on every version tested, so keying on it would merge every user of one app into a single actor. `subject` is not read either: it is `None` for every user across the whole fastmcp 2.x/3.x band, and fastmcp 3.4.2's own token rebuild drops it, so the shortcut is the buggier path.
+
+  **The issuer is folded into the hash, and this diverges from baton-proxy deliberately.** A `sub` is unique only within the provider that minted it, so a vendor running two identity providers can hand the same `sub` to two different people — who would otherwise hash to one `user_id`, a silent merge invisible in every total. `hash_user_id(..., issuer=None)` produces the identical value it always has, so nothing baton-proxy or baton-extmcp has emitted since 0.5.0 changes; adopting the same signature there is a tracked follow-up.
+
+  **This is the attested half of identity, and the only one.** `agent_runtime` is what a client says it is; `user_id` comes from a token something checked. Keep the two claims apart — they are trustworthy to different degrees.
+
+- **`VendorConfig(user_id_mode=...)` — `"hashed"` (default) or `"raw"`.** Hashed emits `h1:<hex>`, an HMAC computed in the vendor's own process, so the collector only ever sees the pseudonym. Raw emits the subject verbatim.
+
+  ⚠ **`"raw"` puts real end-user identity in the collector's database**, with whatever retention and residency obligations that implies. It is the right choice for a vendor instrumenting a server whose users are themselves, and the wrong one by default — on a multi-tenant vendor server the principals are that vendor's own customers. The two modes are distinguishable on the wire without a second field: a hashed value always carries the `h1:` scheme prefix, and a value without one is a raw principal.
+
+- **`VendorConfig(user_id_hmac_key=...)`, resolved explicit → `BATON_USER_ID_HMAC_KEY` → unset.** The env var is the contract baton-proxy and baton-extmcp have honoured since 0.5.0, so it keeps working unchanged; the field is additive, for a vendor whose secrets come from a manager rather than the environment.
+
+  **The vendor generates and holds this secret — Baton never receives it.** That is what makes the pseudonym real: a collector holding the key could hash candidate identities and reverse the column. ⚠ **Use a high-entropy value** (`openssl rand -hex 32`). The input space is emails and user ids, which is small and guessable, so a memorable key is not a weaker pseudonym — it is none.
+
+  With no key set, hashed mode is **fail-open-skipped**: `user_id` is dropped, every event still emits, and it is logged once (never with the principal in the message). `user_id` is additive analytics and never a consent or authorization gate.
+
+
+- **`agent_runtime` is now resolved from `clientInfo` — the name the client declares for itself — with the key-prefix heuristic kept below it.** Detection previously read a caller's identity off the NAMESPACE PREFIX of `_meta["claudecode/toolUseId"]`, a per-call tool-use id that exists for another purpose entirely. It worked for one vendor by accident of naming and yielded nothing for anyone else, which is why Claude Desktop (sends no `_meta` at all), Cursor (sends only a progress token) and every other client reported `"unknown"` on both adapters.
+
+  Both carriers are read, because the protocol is mid-move: `_meta["io.modelcontextprotocol/clientInfo"]` on the request (reserved by MCP 2026-07-28; empty from every *agent* client measured — a current Claude Code, 2.1.267, still negotiates `2025-11-25` — though **not empty in general**: fastmcp 4's own `Client` negotiates `2026-07-28` and writes the key on every request), and the `initialize` handshake's `clientInfo` for everything shipping now. **No `initialize` hook is involved** — the handshake params are cached on the session and read at tool-call time through the public `ctx.session.client_params`, verified end to end from mcp 1.20.0 and fastmcp 2.14.7 up through fastmcp 4.0.2. Priority is `io.modelcontextprotocol/clientInfo` → the handshake → the `claudecode/*` heuristic → `"unknown"`. **Declared outranks inferred:** a key prefix says where the METADATA came from, not who is calling — a proxy forwards `_meta` verbatim, and `baton-proxy` forwards `initialize` unchanged too, so a server behind it sees the agent's own `clientInfo`. The heuristic survives as a backstop for a client that declares nothing at all, which in practice is nobody.
+
+  **Consumer consequence, and it is broad:** `"unknown"` becomes rare. Events that reported `"unknown"` will now report whatever the client calls itself — `claude-ai` for Claude Desktop, `cursor`, or a LIBRARY name like `mcp` for a client that sets no `clientInfo` of its own. Any downstream rule that treated `"unknown"` as a population (an "unattributed" bucket, a filter, a funnel stage) will see it shrink toward empty. Values are reported **verbatim**, not normalised: `claude-ai` and `claude-code` are two different strings for two Anthropic products, and folding them together is a downstream decision so it can be revised without a producer release.
+
+### Changed
+
+- **`consent_token` is now defaulted by the SDK** and the customer never has to carry it. Every event still carries the field — this is byte-for-byte the value the onboarding recipe has been minting into `BATON_CONSENT_TOKEN` all along — but a constant that reads to nobody should not be a line in a vendor's wrap block. `BATON_CONSENT_TOKEN` still wins over the default, so an existing install is unaffected. Passing `""` explicitly still raises: a field someone deliberately emptied is a mistake, not a request for the default, and an event carrying an empty one MUST be rejected by the consumer per SPEC §2.3.
+
+  **Why the field is kept rather than removed**, since a field nothing reads is the obvious thing to cut: the collector's event schema is `extra="forbid"` and both SDKs are published and sending it, so dropping it costs SPEC, two SDKs, two releases, regenerated cross-repo vectors and a collector that tolerates the field through the overlap anyway. Re-adding a *required* envelope field later is precisely the change that stops being free once anyone is installed. CHARTER ADR-1's per-end-user token lands on this field when it is due.
+
+  ⚠ **This is not the consent surface** and does not move it one inch. What a server's users are told is a README paragraph and an opt-out switch, neither of which exists yet.
+
+- **`install_baton(server, config)`'s second argument is now optional**, and `VendorConfig.sink` defaults to `None` rather than a `StdoutSink` instance. Behaviour is unchanged where nothing else is configured — no sink and no DSN still means `StdoutSink`, the zero-config dev mode — but `None` is what lets the SDK tell "the vendor chose stdout" apart from "the vendor chose nothing", which is what makes building a sink from a DSN safe.
+
+  ⚠ **`dsn` is appended as the LAST dataclass field, and must stay there.** `VendorConfig` is a plain dataclass, so field ORDER is public API: adding it at the top bound `VendorConfig("acme", "Acme Corp", ...)`'s first argument to the DSN and shifted every other value one slot along. That is the same silent break 0.7.0 shipped when it inserted `tenant_id` third, and the same test caught it both times.
+
+
+
+- **A `test` extra now holds the test tooling, and `dev` is `all` + `test`.** `pip install baton-sdk[dev]` is unchanged in content. The split exists so an environment can be built for ONE adapter: `[dev]` pulls `fastmcp`, whose 4.x requires `mcp>=2`, which makes `pip install -e ".[dev]" "mcp==1.20.0"` unsatisfiable rather than merely slow — so the CI leg that pins an old `mcp` had been installing in two steps, and a second `pip install` only replaces the package you name. It left mcp 2.x-era companions (`mcp-types`, `fastmcp-slim`) sitting beside the pinned `mcp`. That leg now resolves once, as a customer on that pin would.
+
+
+- ~~**The runtime override key is `_meta["io.baton/agent_runtime"]`; the nested `_meta["baton"]["agent_runtime"]` form is gone.**~~ **SUPERSEDED in this same unreleased cycle — both spellings are gone, because the override itself is.** Neither form ever shipped as the documented-and-implemented pair, so no release ever behaved this way. Kept for the sender audit it records.
+
+  Original entry: SPEC §5.2's key table has always specified the reverse-DNS form, while a prose line at the end of the same section specified the nested one — and the code followed the prose, so a vendor asserting its runtime the way the spec's table documents was silently ignored. The SPEC paragraph is corrected rather than the table. Taken as a clean break rather than an accept-both: a check across all eight repos found nothing that SENDS the nested form (the only senders were this repo's middleware test and baton-proxy's, which reads its own copy of the heuristic), there are no customers, and `instructions.py` never told a client to set it — so supporting both would have enshrined two wire shapes for one assertion as compatibility for an audience of zero. Pinned in the negative direction too, so re-adding the nested read as a "harmless" compatibility branch fails. **baton-proxy and baton-ts still read the nested form.** Neither is broken by this change — each reads its own `_meta` independently — but they are separate sensors that can observe the same client, so until they follow, a client setting `io.baton/agent_runtime` is recorded with its asserted value here and with a detected or default value there, splitting one client across any query that groups on `agent_runtime`. A deployment running more than one sensor should update them together. Recorded, with the two stale docstrings that point at this module's old path, in `project_sdk_sensor_parity_gap`.
+
+- **`runtime_adapter.py` moved from `baton/integrations/standalone/` to `baton/integrations/`,** beside the other modules both adapters share. Checked before moving rather than after: no repo imports it at the old path — the only references anywhere are docstrings and design notes. Note the compat shims discover submodules rather than listing them, so this drops `baton.integrations.fastmcp.runtime_adapter` from the old dotted path *and* from the alias test's coverage set with nothing going red; the grep is what makes that safe, not the suite.
+
+### Removed
+
+- **An orphaned `default_agent_runtime` docstring in `VendorConfig`.** The field was removed in the entry below; its documentation was left behind as a bare string literal, still describing a parameter that now raises `TypeError`.
+
+
+
+- **`VendorConfig(default_agent_runtime=...)`.** A vendor set it once at install, for every connection, so it could only be right in a single-client deployment — and with the declared tiers in place it would assert a runtime over a client that had just named itself. Nothing set it: no example, no fixture, no other repo. Same disposition and the same reasoning as the `io.baton/agent_runtime` override removed alongside it, of which this was the server-side twin. Passing it now raises `TypeError` — which is simply what removing a dataclass field does, and is harmless here because nothing constructs `VendorConfig` with it. When no tier answers, events report `"unknown"`; `surface_snapshot` always does, since it describes the server and is captured outside any call.
+
+  ⚠ **The declared name is self-asserted and one hop deep.** A client chooses its own `clientInfo`, and behind a gateway the value names the gateway rather than the agent. It is not attested identity — that is `user_id`, a different field on a different condition. Both declared tiers are scrubbed through `VendorConfig(scrubber=...)` and capped at 128 characters, since they carry client-supplied text onto every event of the call.
+
+  Internally, the read goes through both attribute spellings: mcp 1.x names it `clientInfo` and mcp 2.x renamed it to `client_info` (wire aliases unchanged). Reading one would report the correct name on one major version and `"unknown"` across the other — the same silent-`unknown` shape as the bug fixed below, and pinned by a parity test that drives both adapters with a client that names itself.
+
+
+
+- **All four `io.baton/*` keys in SPEC §5.2.** `io.baton/mcp_transport` and `io.baton/vendor_app_version` were specified and read by nothing. `io.baton/agent_runtime` (a caller-supplied override of the detected runtime) and `io.baton/session_id` (§3.4 rung 2) were read and are no longer. **Nothing ever sent any of the four** — checked across all eight repos — and the server-instructions text never told a client they existed, so the only discovery path was reading the spec.
+
+  The `agent_runtime` override is removed on evidence rather than disuse: that key was documented in two contradictory spellings at once, the code followed the wrong one, and with no users there was nobody to notice — which is the whole of the bug fixed in the entry below. `agent_runtime` is now derived only from signals the SDK controls, so a caller can neither assert one nor suppress one, and every value the detector can return is an SDK constant rather than client text.
+
+- **SPEC §3.4 rungs 1 and 2** — the trace-id out of `_meta.traceparent`, and a client-supplied `_meta["io.baton/session_id"]`. Both keyed the session on an identifier the SDK did not mint. Rung 1 was independently wrong on OpenTelemetry's terms: a trace spans one *turn*, not one conversation, so using its id as a session id over-fragments by construction. Rung numbering is preserved (3, 4, 4b, 5 keep their names) because those names are referenced across the code, the tests and the design notes.
+
+  ⚠ **Retired means "not keyed on", not "not captured".** `runtime_meta` forwards the whole `_meta` dict unchanged, so `traceparent` and any vendor-supplied handle still arrive at the Console and can be grouped on downstream — where the decision can be revised and re-run against stored events, which is precisely why it moved there. **Consumer-visible effect:** on a producer that sends either key, `session_id` now resolves one rung lower (the `mcp-session-id` header, rung 4b, or the install-time fallback), so events that used to group by trace-id group differently. Nothing observable was lost; a consumer wanting the old grouping can reproduce it from data it already receives.
 
 ### Fixed
 
@@ -39,76 +164,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 Both fixes land on `Trace` and `AsyncTrace`, and the async half is verified by driving it rather than by symmetry with the sync edit.
 
----
 
-## Unreleased — an off switch, and it has to be unable to break anything
-
-### Added
-
-- **`BATON_DISABLED=1` turns capture off.** The SDK had no opt-out of any kind. The Console's install recipe writes a key into a server that ships to strangers, and its README will tell those users how to switch capture off — without a real switch, that sentence is a lie.
-
-  **Off means install NOTHING**: no middleware, no wrapped tools, no annotation tool on the surface, no instructions rewrite, no sink, no buffer, and — on the sync `Client` — no background thread. Not capture-and-discard. The vendor's server starts and behaves exactly as it would if `install_baton` were not in the file. Honoured at all five entry points: both adapters directly, `baton.install_baton`, `Client` and `AsyncClient`.
-
-  **Off also means NEVER THROW.** Every guard the SDK would otherwise raise from — a server object of the wrong shape, a config with no `vendor_id`, an unparseable DSN — is skipped along with everything else, because a switch that can still abort a boot is worse than no switch: the user believes they opted out, and the thing they opted out of took the process with it.
-
-  ⚠ **The consequence, which is real and is the price of the above:** a malformed `install_baton` call cannot fail while the switch is on. If your CI exports it globally, a broken install surfaces the first time capture is enabled, not in the test run. The disabled path logs a line naming the variable — at INFO, so it reaches whoever has logging turned up and is invisible by default. A debugging aid, not a discoverability guarantee.
-
-  ⚠ **Nothing on stdout, ever.** A stdio MCP server speaks JSON-RPC on stdout, so a courteous "Baton is disabled" line printed there corrupts the stream and breaks the server — in precisely the deployment this switch exists for. The one line goes to a logger. Pinned by a test asserting stdout is empty across an install and a driven call, because the `T20` lint rule bans `print()` in `src/` and says nothing about `sys.stdout.write`.
-
-  **Values**: anything that is not an explicit off — `""`, `0`, `false`, `no`, `off`, case-insensitive — counts as on. Deliberately permissive: honouring an opt-out that was not meant costs some telemetry, while ignoring one that was collects data from a person who asked us not to. `BATON_DISABLED=0` therefore does **not** disable.
-
-  Read once, at install/init. A process that starts with capture on keeps it on; re-reading per event would let a mid-flight environment change split one session's events across two answers.
-
-  Environment-only on purpose — no `VendorConfig` field — so the recipe a wrapped server ships has one story to tell about how capture is switched off.
-
-  **A per-end-user opt-out remains unbuilt.** Where the vendor hosts the server, this switch expresses the vendor's choice and nothing else — an end user cannot set an environment variable on someone else's machine. That is CHARTER ADR-1's per-end-user consent token, and it is not due.
-
----
-
-## Unreleased — one value configures an install, and it can ship inside the server
-
-### Added
-
-- **`dsn` — the packed connection string from the Console's `/account`**, carrying the ingest host, the workspace, the server and the key in one value:
-
-  ```python
-  from baton import install_baton
-
-  install_baton(mcp, dsn="https://baton_pk_...@ingest.example.com/ten_.../echo-server")
-  ```
-
-  That replaces eleven lines and five environment variables. It exists for the deployment the old shape could not serve: a **distributable stdio server runs on every user's machine**, so a configuration that has to arrive as `BATON_*` variables beside the process means, in practice, events that never arrive at all — measured on a real onboarding run whose server reported only from the laptop that installed it.
-
-  Accepted by all four configuration doors — both adapters' `install_baton`, `Client` and `AsyncClient` — resolved by one shared parser, and pinned by a test that drives all four with one string and asserts the values on the POSTed envelope. `VendorConfig` takes a `dsn=` field of its own, so a vendor who also wants a scrubber or an injection mode keeps one config object.
-
-  **Nothing about this reaches the wire.** The envelope still carries `tenant_id`, `vendor_id` and `consent_token` as separate fields; the SDK unpacks the string and fills them in. No SPEC change, no §13 entry, no collector change.
-
-  ⚠ **A DSN passed in code counts as EXPLICIT for everything it carries**, so it outranks the environment. That is deliberate and it is the re-install case: a server being onboarded a second time has last install's `.env` sitting beside the new inline DSN, and a stale `BATON_TENANT_ID` silently winning would file its events under the previous identity. Passing a DSN *and* an explicit `sink`, `vendor_id` or `tenant_id` raises rather than picking a winner.
-
-  ⚠ **`BATON_DSN` is a fallback and behaves like one**: it loses to an explicit `vendor_id`/`tenant_id`/`sink` rather than colliding with them, so exporting it for one server does not stop a second server in the same process from installing the old explicit way. Where it is ignored, it says so on the logger — a vendor who expected it to configure this server would otherwise get a healthy install whose events go nowhere near the collector they named. It still outranks `BATON_VENDOR_ID` and friends: environment against environment, the packed value is the one someone chose today.
-
-  ⚠ **A key pasted into the wrong slot is refused by the SLOT it landed in, never by echoing it.** No error this SDK raises about a DSN repeats the credential — not in the message, not in an exception's `__context__`, and not when the key was pasted into the path where there is no `@` to redact around. A misplaced key is told which mistake it made ("the key is in the PATH") rather than the true-but-useless "carries no key".
-
-  ⚠ **A `baton_sk_` (workspace secret) in the key slot warns and still works.** The key ROW is the authority on what a key may do, not the string — an SDK enforcing a Console policy would turn a typo at the mint site into a confusing client-side error. But a workspace secret inside a server that ships to strangers is worth saying out loud, and this is the only place that can say it. The warning names the prefix and never the key, and goes to the logger rather than stdout, which under stdio transport is the JSON-RPC stream.
-
-- **`BATON_DSN`** as the environment fallback, for a hosted vendor who will not put the value in source: one variable instead of five.
-
-### Changed
-
-- **`consent_token` is now defaulted by the SDK** and the customer never has to carry it. Every event still carries the field — this is byte-for-byte the value the onboarding recipe has been minting into `BATON_CONSENT_TOKEN` all along — but a constant that reads to nobody should not be a line in a vendor's wrap block. `BATON_CONSENT_TOKEN` still wins over the default, so an existing install is unaffected. Passing `""` explicitly still raises: a field someone deliberately emptied is a mistake, not a request for the default, and an event carrying an empty one MUST be rejected by the consumer per SPEC §2.3.
-
-  **Why the field is kept rather than removed**, since a field nothing reads is the obvious thing to cut: the collector's event schema is `extra="forbid"` and both SDKs are published and sending it, so dropping it costs SPEC, two SDKs, two releases, regenerated cross-repo vectors and a collector that tolerates the field through the overlap anyway. Re-adding a *required* envelope field later is precisely the change that stops being free once anyone is installed. CHARTER ADR-1's per-end-user token lands on this field when it is due.
-
-  ⚠ **This is not the consent surface** and does not move it one inch. What a server's users are told is a README paragraph and an opt-out switch, neither of which exists yet.
-
-- **`install_baton(server, config)`'s second argument is now optional**, and `VendorConfig.sink` defaults to `None` rather than a `StdoutSink` instance. Behaviour is unchanged where nothing else is configured — no sink and no DSN still means `StdoutSink`, the zero-config dev mode — but `None` is what lets the SDK tell "the vendor chose stdout" apart from "the vendor chose nothing", which is what makes building a sink from a DSN safe.
-
-  ⚠ **`dsn` is appended as the LAST dataclass field, and must stay there.** `VendorConfig` is a plain dataclass, so field ORDER is public API: adding it at the top bound `VendorConfig("acme", "Acme Corp", ...)`'s first argument to the DSN and shifted every other value one slot along. That is the same silent break 0.7.0 shipped when it inserted `tenant_id` third, and the same test caught it both times.
-
-
-## Unreleased — one paused-and-resumed tool call arrived as two complete calls
-
-### Fixed
 
 - **The standalone (`fastmcp`) adapter had no multi-round tool call handling at all**, so a tool that pauses to ask the client for input (`InputRequiredResult`, SEP-2322, reachable on fastmcp 4) was captured as **two calls that both look finished** — the first carrying the ask itself as its result body, the second the real answer. The official adapter has suppressed the duplicate leg since `f509b20`; this one now does the same. A round that is resuming emits no second `tool_call_start`, and a round that ends in an ask emits no `tool_call_end`. One logical call, one pair, on both adapters.
 
@@ -118,11 +174,7 @@ Both fixes land on `Trace` and `AsyncTrace`, and the async half is verified by d
 
   ⚠ **fastmcp frames the ask as a legitimate result rather than a pause** — at the protocol level each round is a complete request/response, and its own `InputRequiredToolResult` docstring says so. That is right about the wire and wrong about the vendor's call: SPEC §11.4's legs describe one logical tool call. Adopting the protocol framing here would have left the two adapters disagreeing about what a tool call is, which costs more than either framing gains.
 
----
 
-## Unreleased — on the floor `fastmcp`, a tool's result reached the collector as a memory address
-
-### Fixed
 
 - **`tool_call_end.result` carried `"<fastmcp.tools.tool.ToolResult object at 0x…>"` on fastmcp 2.14.7**, the declared floor of the `[fastmcp]` extra. `ToolResult` is a pydantic model on 3.x and 4.x and a PLAIN OBJECT on 2.14.7, so the serialiser's `model_dump` branch missed it and fell through to `str()`. A vendor pinned to the floor shipped every result body as an object repr: the tool's actual output nowhere on the wire, and an address that changes on every run in its place. The middleware now rebuilds the same `content` / `structured_content` / `meta` keys `model_dump` produces, keyed on the attributes rather than the version, so one shape reaches the collector from every supported fastmcp. `is_error` is emitted only where the class has it — 2.14.7 does not, and inventing the field would be a fact about our serialiser rather than about the call.
 
@@ -134,92 +186,7 @@ Both fixes land on `Trace` and `AsyncTrace`, and the async half is verified by d
 
   ⚠ **`is_error` is present on 3.x/4.x bodies and absent on 2.14.7 ones**, because the floor's class has no such field and this fix does not invent one. The asymmetry is inherited from `model_dump`, not introduced here, but it is now reachable by more consumers: read it with `.get`, not by indexing. SPEC §11.4 specifies `result` as opaque — `{tool_name, result, duration_ms}` — so there is no wire-contract change and no §13 entry.
 
----
 
-## Unreleased — identity and correlation: the SDK mints a per-call `call_id`, and fills `user_id` with the authenticated end user, hashed before it leaves the process
-
-### Added
-
-- **`call_id` — the SDK now mints a per-call correlation key, on all three emit paths.** Every `tool_call_start` and its matching `tool_call_end` / `tool_call_error` carry the same opaque UUID, so a collector pairs a call's two legs on an identifier this SDK controls instead of inferring the pairing. Both MCP adapters and the library API's `Trace` / `AsyncTrace` emit it; `annotation` and `surface_snapshot` do not, because SPEC §11.4 specifies the field for a tool call's legs only.
-
-  **Why it exists.** The two pairing tiers below it are both keyed on something no producer minted. `claudecode/toolUseId` is Claude Code's and no other client sends it; below that is FIFO per `tool_name`, keyed on nothing, which mispairs whenever two calls to one tool overlap. Measured on a 1,048-start production capture, pairing with an id and then again on the FIFO floor moves **60 starts (5.7%) to a different end while the pair totals stay identical** — a mispair is a permutation, so totals, sums and completeness checks are all blind to it, and a mispaired row reads as a coherent call that never happened, carrying one call's duration beside another call's result body.
-
-  **The mint is per call by construction.** It is a local variable in the scope that emits both legs, never `ctx.request_id` (which restarts at 1 per connection). On the library path the entered `Trace` is that scope, so `__aenter__` assigns the id and a `Trace` entered twice mints twice. Hoisting it anywhere wider would send one id for a whole session and silently degrade pairing below the FIFO floor it outranks; that property is covered by its own test on each path.
-
-  ⚠ **A multi-round tool call (MRTR, mcp ≥ 2.0) does not pair, and on a single-process server that is a regression.** Its two rounds are two emit scopes, so the start and the end mint different ids, land in different tier-1 partitions, and both stay unpaired rather than one stealing a neighbour's. Where the call is served by ONE process, those two legs were previously paired correctly by the FIFO tier, so a collector that showed one complete call with a duration and a result now shows a dangling start beside an orphan end. Where it is served by MORE than one, the rounds arrive under different fallback `session_id`s and were never pairable under any tier, before or after. The single-process case could be fixed by carrying the id across rounds on the MRTR continuation state; that is tracked, not shipped. If your server exposes tools that return `InputRequiredResult`, this is the paragraph that affects you.
-
-- **`user_id` now carries the authenticated end-user principal on both MCP adapters.** The field has been on the envelope since 0.3.0 and nothing ever filled it — `identity.py` shipped as a parity mirror of baton-proxy and no adapter called it, so every SDK-sourced event has carried a null actor while the proxy and the gateway adapter carried a real one. Both adapters now read the principal from the verified access token and attach it to every event of a call, including the annotation event.
-
-  **Where the value comes from.** The OIDC subject (`claims["sub"]`) of the token the vendor's own `TokenVerifier` already validated, keyed together with its issuer (`claims["iss"]`). **Never `client_id`** — that names the OAuth *application*, and was measured identical for two different users on every version tested, so keying on it would merge every user of one app into a single actor. `subject` is not read either: it is `None` for every user across the whole fastmcp 2.x/3.x band, and fastmcp 3.4.2's own token rebuild drops it, so the shortcut is the buggier path.
-
-  **The issuer is folded into the hash, and this diverges from baton-proxy deliberately.** A `sub` is unique only within the provider that minted it, so a vendor running two identity providers can hand the same `sub` to two different people — who would otherwise hash to one `user_id`, a silent merge invisible in every total. `hash_user_id(..., issuer=None)` produces the identical value it always has, so nothing baton-proxy or baton-extmcp has emitted since 0.5.0 changes; adopting the same signature there is a tracked follow-up.
-
-  **This is the attested half of identity, and the only one.** `agent_runtime` is what a client says it is; `user_id` comes from a token something checked. Keep the two claims apart — they are trustworthy to different degrees.
-
-- **`VendorConfig(user_id_mode=...)` — `"hashed"` (default) or `"raw"`.** Hashed emits `h1:<hex>`, an HMAC computed in the vendor's own process, so the collector only ever sees the pseudonym. Raw emits the subject verbatim.
-
-  ⚠ **`"raw"` puts real end-user identity in the collector's database**, with whatever retention and residency obligations that implies. It is the right choice for a vendor instrumenting a server whose users are themselves, and the wrong one by default — on a multi-tenant vendor server the principals are that vendor's own customers. The two modes are distinguishable on the wire without a second field: a hashed value always carries the `h1:` scheme prefix, and a value without one is a raw principal.
-
-- **`VendorConfig(user_id_hmac_key=...)`, resolved explicit → `BATON_USER_ID_HMAC_KEY` → unset.** The env var is the contract baton-proxy and baton-extmcp have honoured since 0.5.0, so it keeps working unchanged; the field is additive, for a vendor whose secrets come from a manager rather than the environment.
-
-  **The vendor generates and holds this secret — Baton never receives it.** That is what makes the pseudonym real: a collector holding the key could hash candidate identities and reverse the column. ⚠ **Use a high-entropy value** (`openssl rand -hex 32`). The input space is emails and user ids, which is small and guessable, so a memorable key is not a weaker pseudonym — it is none.
-
-  With no key set, hashed mode is **fail-open-skipped**: `user_id` is dropped, every event still emits, and it is logged once (never with the principal in the message). `user_id` is additive analytics and never a consent or authorization gate.
-
-### Changed
-
-- **A `test` extra now holds the test tooling, and `dev` is `all` + `test`.** `pip install baton-sdk[dev]` is unchanged in content. The split exists so an environment can be built for ONE adapter: `[dev]` pulls `fastmcp`, whose 4.x requires `mcp>=2`, which makes `pip install -e ".[dev]" "mcp==1.20.0"` unsatisfiable rather than merely slow — so the CI leg that pins an old `mcp` had been installing in two steps, and a second `pip install` only replaces the package you name. It left mcp 2.x-era companions (`mcp-types`, `fastmcp-slim`) sitting beside the pinned `mcp`. That leg now resolves once, as a customer on that pin would.
-
-### Known limits, all measured rather than assumed
-
-- **HTTP only.** MCP auth is ASGI middleware on every supported version, so a stdio deployment has no token to read and `user_id` is always absent there. That is the transport, not a gap in this change.
-- **`mcp < 1.27` cannot carry it.** `AccessToken` gained `claims` and `subject` somewhere in (1.25, 1.27] — on 1.20 and 1.25, two of the four legs the `mcp` matrix runs, the model has neither, and pydantic's default `extra="ignore"` means a verifier passing `claims=` there has them silently discarded. The read is a `getattr`, so those versions resolve to "no identity" rather than crashing, and a vendor whose verifier returns an `AccessToken` **subclass** declaring `claims` is read correctly even on 1.20 — pinned by a test that runs on every matrix leg. The `[mcp]` floor was deliberately not raised: 1.20 and 1.25 are green, and they lack only an optional field on a feature that needs HTTP plus OAuth to do anything at all.
-- **It says WHO, never which call.** That is `call_id`, a different field on a different condition.
-- `surface_snapshot` never carries it — it describes the server, and is captured outside any call.
-
-### Removed
-
-- **An orphaned `default_agent_runtime` docstring in `VendorConfig`.** The field was removed in the entry below; its documentation was left behind as a bare string literal, still describing a parameter that now raises `TypeError`.
-
----
-
-## Unreleased — the SDK reads the client's declared identity, so `agent_runtime` stops being `unknown` for everyone but Claude Code
-
-### Added
-
-- **`agent_runtime` is now resolved from `clientInfo` — the name the client declares for itself — with the key-prefix heuristic kept below it.** Detection previously read a caller's identity off the NAMESPACE PREFIX of `_meta["claudecode/toolUseId"]`, a per-call tool-use id that exists for another purpose entirely. It worked for one vendor by accident of naming and yielded nothing for anyone else, which is why Claude Desktop (sends no `_meta` at all), Cursor (sends only a progress token) and every other client reported `"unknown"` on both adapters.
-
-  Both carriers are read, because the protocol is mid-move: `_meta["io.modelcontextprotocol/clientInfo"]` on the request (reserved by MCP 2026-07-28; empty from every *agent* client measured — a current Claude Code, 2.1.267, still negotiates `2025-11-25` — though **not empty in general**: fastmcp 4's own `Client` negotiates `2026-07-28` and writes the key on every request), and the `initialize` handshake's `clientInfo` for everything shipping now. **No `initialize` hook is involved** — the handshake params are cached on the session and read at tool-call time through the public `ctx.session.client_params`, verified end to end from mcp 1.20.0 and fastmcp 2.14.7 up through fastmcp 4.0.2. Priority is `io.modelcontextprotocol/clientInfo` → the handshake → the `claudecode/*` heuristic → `"unknown"`. **Declared outranks inferred:** a key prefix says where the METADATA came from, not who is calling — a proxy forwards `_meta` verbatim, and `baton-proxy` forwards `initialize` unchanged too, so a server behind it sees the agent's own `clientInfo`. The heuristic survives as a backstop for a client that declares nothing at all, which in practice is nobody.
-
-  **Consumer consequence, and it is broad:** `"unknown"` becomes rare. Events that reported `"unknown"` will now report whatever the client calls itself — `claude-ai` for Claude Desktop, `cursor`, or a LIBRARY name like `mcp` for a client that sets no `clientInfo` of its own. Any downstream rule that treated `"unknown"` as a population (an "unattributed" bucket, a filter, a funnel stage) will see it shrink toward empty. Values are reported **verbatim**, not normalised: `claude-ai` and `claude-code` are two different strings for two Anthropic products, and folding them together is a downstream decision so it can be revised without a producer release.
-
-### Removed
-
-- **`VendorConfig(default_agent_runtime=...)`.** A vendor set it once at install, for every connection, so it could only be right in a single-client deployment — and with the declared tiers in place it would assert a runtime over a client that had just named itself. Nothing set it: no example, no fixture, no other repo. Same disposition and the same reasoning as the `io.baton/agent_runtime` override removed alongside it, of which this was the server-side twin. Passing it now raises `TypeError` — which is simply what removing a dataclass field does, and is harmless here because nothing constructs `VendorConfig` with it. When no tier answers, events report `"unknown"`; `surface_snapshot` always does, since it describes the server and is captured outside any call.
-
-  ⚠ **The declared name is self-asserted and one hop deep.** A client chooses its own `clientInfo`, and behind a gateway the value names the gateway rather than the agent. It is not attested identity — that is `user_id`, a different field on a different condition. Both declared tiers are scrubbed through `VendorConfig(scrubber=...)` and capped at 128 characters, since they carry client-supplied text onto every event of the call.
-
-  Internally, the read goes through both attribute spellings: mcp 1.x names it `clientInfo` and mcp 2.x renamed it to `client_info` (wire aliases unchanged). Reading one would report the correct name on one major version and `"unknown"` across the other — the same silent-`unknown` shape as the bug fixed below, and pinned by a parity test that drives both adapters with a client that names itself.
-
----
-
-## Unreleased — the `io.baton/*` `_meta` keys are gone, and `session_id` stops keying on identifiers we did not mint
-
-### Removed
-
-- **All four `io.baton/*` keys in SPEC §5.2.** `io.baton/mcp_transport` and `io.baton/vendor_app_version` were specified and read by nothing. `io.baton/agent_runtime` (a caller-supplied override of the detected runtime) and `io.baton/session_id` (§3.4 rung 2) were read and are no longer. **Nothing ever sent any of the four** — checked across all eight repos — and the server-instructions text never told a client they existed, so the only discovery path was reading the spec.
-
-  The `agent_runtime` override is removed on evidence rather than disuse: that key was documented in two contradictory spellings at once, the code followed the wrong one, and with no users there was nobody to notice — which is the whole of the bug fixed in the entry below. `agent_runtime` is now derived only from signals the SDK controls, so a caller can neither assert one nor suppress one, and every value the detector can return is an SDK constant rather than client text.
-
-- **SPEC §3.4 rungs 1 and 2** — the trace-id out of `_meta.traceparent`, and a client-supplied `_meta["io.baton/session_id"]`. Both keyed the session on an identifier the SDK did not mint. Rung 1 was independently wrong on OpenTelemetry's terms: a trace spans one *turn*, not one conversation, so using its id as a session id over-fragments by construction. Rung numbering is preserved (3, 4, 4b, 5 keep their names) because those names are referenced across the code, the tests and the design notes.
-
-  ⚠ **Retired means "not keyed on", not "not captured".** `runtime_meta` forwards the whole `_meta` dict unchanged, so `traceparent` and any vendor-supplied handle still arrive at the Console and can be grouped on downstream — where the decision can be revised and re-run against stored events, which is precisely why it moved there. **Consumer-visible effect:** on a producer that sends either key, `session_id` now resolves one rung lower (the `mcp-session-id` header, rung 4b, or the install-time fallback), so events that used to group by trace-id group differently. Nothing observable was lost; a consumer wanting the old grouping can reproduce it from data it already receives.
-
----
-
-## Unreleased — `agent_runtime` was `unknown` on every official-adapter event ever sent
-
-### Fixed
 
 - **The official `mcp` SDK adapter reported `agent_runtime: "unknown"` unconditionally, on every event, since the adapter packages were split.** `detect_agent_runtime` lived inside `baton/integrations/standalone/`, the official adapter never called it, and the `"unknown"` default was passed straight through to all five emit sites. The input was there the whole time — both adapters already forwarded the same `_meta` into `runtime_meta`; only the derivation was missing. The heuristic is now shared at `baton.integrations.runtime_adapter` and both adapters call it. ~~**This closes PARITY, not coverage:** the heuristic knows `claudecode/*` and nothing else, and Claude Desktop sends no `_meta` at all, so Desktop still reports `unknown` on both adapters — that gap needs `clientInfo`, which is tracked separately.~~ **SUPERSEDED in this same unreleased cycle: `clientInfo` IS read now — see the entry above — so Desktop reports `claude-ai`.** No release ever shipped the parity-without-coverage state.
 
@@ -235,13 +202,14 @@ Both fixes land on `Trace` and `AsyncTrace`, and the async half is verified by d
 
   Original entry: `_meta["io.baton/agent_runtime"]` is arbitrary untrusted input copied onto `agent_runtime` for every event of the call, and it previously went out verbatim and unbounded — so a client could put an email or a user id there and have it ship raw on a server whose vendor scrubber was supposed to cover it, or send a multi-megabyte string that was then copied into every `HttpSink` payload. The value is passed through `VendorConfig(scrubber=...)` and truncated at 128 characters, the same posture `error_body` already had. **Only the override value** — never the detection input (a scrubber that touches meta keys must not be able to switch detection off, which is the whole reason detection reads the raw meta) and never a value the heuristic derived itself (scrubbing our own `"claude-code"` constant would be the opposite mistake). An override scrubbed to empty falls through to the heuristic rather than becoming an empty runtime. Newly reachable on the official adapter and on the key vendors will actually send, so the exposure is wider than before this release even though the code path is older.
 
-### Changed
+### Known limits, all measured rather than assumed
 
-- ~~**The runtime override key is `_meta["io.baton/agent_runtime"]`; the nested `_meta["baton"]["agent_runtime"]` form is gone.**~~ **SUPERSEDED in this same unreleased cycle — both spellings are gone, because the override itself is.** Neither form ever shipped as the documented-and-implemented pair, so no release ever behaved this way. Kept for the sender audit it records.
+- **HTTP only.** MCP auth is ASGI middleware on every supported version, so a stdio deployment has no token to read and `user_id` is always absent there. That is the transport, not a gap in this change.
+- **`mcp < 1.27` cannot carry it.** `AccessToken` gained `claims` and `subject` somewhere in (1.25, 1.27] — on 1.20 and 1.25, two of the four legs the `mcp` matrix runs, the model has neither, and pydantic's default `extra="ignore"` means a verifier passing `claims=` there has them silently discarded. The read is a `getattr`, so those versions resolve to "no identity" rather than crashing, and a vendor whose verifier returns an `AccessToken` **subclass** declaring `claims` is read correctly even on 1.20 — pinned by a test that runs on every matrix leg. The `[mcp]` floor was deliberately not raised: 1.20 and 1.25 are green, and they lack only an optional field on a feature that needs HTTP plus OAuth to do anything at all.
+- **It says WHO, never which call.** That is `call_id`, a different field on a different condition.
+- `surface_snapshot` never carries it — it describes the server, and is captured outside any call.
 
-  Original entry: SPEC §5.2's key table has always specified the reverse-DNS form, while a prose line at the end of the same section specified the nested one — and the code followed the prose, so a vendor asserting its runtime the way the spec's table documents was silently ignored. The SPEC paragraph is corrected rather than the table. Taken as a clean break rather than an accept-both: a check across all eight repos found nothing that SENDS the nested form (the only senders were this repo's middleware test and baton-proxy's, which reads its own copy of the heuristic), there are no customers, and `instructions.py` never told a client to set it — so supporting both would have enshrined two wire shapes for one assertion as compatibility for an audience of zero. Pinned in the negative direction too, so re-adding the nested read as a "harmless" compatibility branch fails. **baton-proxy and baton-ts still read the nested form.** Neither is broken by this change — each reads its own `_meta` independently — but they are separate sensors that can observe the same client, so until they follow, a client setting `io.baton/agent_runtime` is recorded with its asserted value here and with a detected or default value there, splitting one client across any query that groups on `agent_runtime`. A deployment running more than one sensor should update them together. Recorded, with the two stale docstrings that point at this module's old path, in `project_sdk_sensor_parity_gap`.
-
-- **`runtime_adapter.py` moved from `baton/integrations/standalone/` to `baton/integrations/`,** beside the other modules both adapters share. Checked before moving rather than after: no repo imports it at the old path — the only references anywhere are docstrings and design notes. Note the compat shims discover submodules rather than listing them, so this drops `baton.integrations.fastmcp.runtime_adapter` from the old dotted path *and* from the alias test's coverage set with nothing going red; the grep is what makes that safe, not the suite.
+---
 
 ## 0.7.2 — adapter folders named for the adapter, not the class that fooled people
 

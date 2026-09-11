@@ -14,10 +14,20 @@ For any normal patch / minor release.
 2. **Add a CHANGELOG entry** under `## X.Y.Z — <one-line summary>`, above the previous release block. Wire-format changes also go in `docs/SPEC.md §13`.
 3. **Commit + push to `main`:**
    ```sh
-   git add pyproject.toml CHANGELOG.md
+   git add pyproject.toml uv.lock CHANGELOG.md
    git commit -m "release: X.Y.Z"
    git push
    ```
+
+   ⚠ **`uv.lock` is not optional here.** It records this package's OWN version,
+   and the release workflow's `ci` job installs with `uv sync --locked`, which
+   FAILS when the lock and `pyproject.toml` disagree rather than re-resolving.
+   Bumping one without the other reds the release chain at the install step,
+   after the tag is already pushed. Run plain `uv lock` (never `--upgrade` —
+   that floats every dependency and turns a version bump into a resolve) and
+   confirm the diff touches only this package's version line. This line said
+   `git add pyproject.toml CHANGELOG.md` until 0.8.0; it predates the lock
+   landing on 2026-09-10.
 4. **Tag the release commit + push the tag:**
    ```sh
    git tag vX.Y.Z
