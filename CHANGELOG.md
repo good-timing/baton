@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## Unreleased — lands as 0.9.0
 
 ### Removed
 
@@ -20,7 +20,9 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 - **`handle.escalate()` is REMOVED (breaking), and withdrawn rather than deferred.** The method POSTed to the Console's `/v0/escalate` and returned a ticket id for a vendor tool to surface in-turn.
 
-  **It could not succeed from a wrapped server.** The key an installed SDK holds is a `write_events` publishable key, which that endpoint refuses — so every call from a real install would have 403'd, in a release that shipped the method as working. Dead by evidence rather than assumption: no caller in `src/`, in `examples/`, or in `baton-proxy` outside its own tests, and `baton-ts` never implemented it at all. SPEC §8.3 listed it as *planned* while 0.8.0 shipped it, so broken and unbuilt looked alike from both directions.
+  **Nothing ever called it.** No caller in `src/`, in `examples/`, or in `baton-proxy` / `baton-extmcp` outside their own tests, and `baton-ts` never implemented it at all — while SPEC §8.3 listed it as *planned* and 0.8.0 shipped it, so broken and unbuilt looked alike from both directions.
+
+  **And it had no future**: since the publishable-key split, the key an installed SDK holds is scoped `write_events`, and `/v0/escalate` is specified to refuse that scope. ⚠ **It does not refuse it today** — an earlier draft of this entry claimed every call would have 403'd, which is wrong: key scope is unread at auth, so the call currently authenticates and the refusal is the Console's unshipped task C7. That draft was checked against a design note instead of the running service, which is the mistake this project keeps a memory about. The honest version is narrower and still decisive — a method nothing calls, whose only credential is one its endpoint is on its way to rejecting.
 
   **What went with it:** the Console URL and API key the handle extracted off an `HttpSink`, the lazily-created shared `httpx` client, and the `disabled_switch` the handle carried to suppress that URL under `BATON_DISABLED`. **A `BatonHandle` now makes no network calls of any kind** — its whole surface is `session_id`, `flush()` and `aclose()` — so the suppression it needed has nothing left to suppress. A vendor tool that wants to file a ticket calls the Console endpoint directly, with a key scoped to do it; the endpoint is unchanged and the Console keeps it.
 

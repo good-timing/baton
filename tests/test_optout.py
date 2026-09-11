@@ -540,9 +540,17 @@ class TestADisabledHandleDialsNothing:
     reason and a quieter one, which is exactly why it keeps a test.
     """
 
-    async def test_a_disabled_handle_holding_a_real_HttpSink_makes_no_call(
+    async def test_a_disabled_handle_holds_the_caller_s_sink_and_survives_shutdown(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """⚠ Named for what it checks. Its first version was called
+        ``..._makes_no_call`` and could not fail for that: nothing is ever
+        written under the switch, so ``HttpSink.flush()`` has an empty buffer
+        and cannot POST whatever any guard does, ``aclose()`` only closes the
+        transport, and the sink is fail-open besides — a real dial to
+        ``console.invalid`` would be swallowed. The no-network property is
+        pinned by ``TestTheHandleHasNoNetworkSurface`` below, structurally.
+        """
         from fastmcp import FastMCP
 
         from baton.install import install_baton
@@ -578,8 +586,10 @@ class TestTheHandleHasNoNetworkSurface:
     code and the coverage gap were the same fact. The property it leaves
     behind is the one SPEC §8.3 now states — a ``BatonHandle`` makes NO
     network calls — and that is what re-adding a Console helper would break,
-    silently, in a release that would again ship a method a wrapped server's
-    ``write_events`` key gets 403'd on.
+    silently, in a release that would again ship a method whose only
+    credential is the ``write_events`` key ``/v0/escalate`` is specified to
+    refuse (task C7 — specified, and not shipped: scope is unread at auth
+    today, so such a call would authenticate rather than 403).
     """
 
     def test_a_handle_exposes_no_console_client_under_any_sink(

@@ -111,8 +111,9 @@ class VendorConfig:
     **Keyword-only, since 0.9.0.** ``VendorConfig("acme", "Acme", ...)`` now
     raises ``TypeError`` at construction instead of binding by position.
 
-    Positional construction shipped a silent mis-bind TWICE. At 0.7.1 a
-    ``Sink`` object landed in ``consent_token`` and rode onto the wire; at
+    Positional construction shipped a silent mis-bind TWICE. At 0.7.0 a
+    ``Sink`` object landed in ``consent_token`` and rode onto the wire (0.7.1
+    is the release that FIXED it); at
     0.8.0 ``default_agent_runtime`` was removed from slot 6 and two fields were
     inserted before ``resolve_session_id``, so a 0.7.2-shaped call put the
     string ``"unknown"`` in ``scrubber`` — a non-callable, constructed without
