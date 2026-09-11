@@ -6,7 +6,7 @@
 
 ![Baton in action — events streaming to stderr](docs/demo.gif)
 
-*30 seconds, zero config — `python examples/01_stdout/demo.py` emits structured signals you can pipe through `jq`. See [`examples/`](examples/) for the four-rung sink ladder.*
+*`python examples/01_stdout/demo.py` emits structured signals you can pipe through `jq`. See [`examples/`](examples/) for the four-rung sink ladder.*
 
 ---
 
@@ -43,7 +43,7 @@ install_baton(mcp, dsn="https://baton_pk_...@ingest.goodtiming.ai/ten_<32 hex>/e
 async def your_tool(...): ...
 ```
 
-That is the whole configuration. Copy the string from **/account**, where it is labelled DSN. It packs four values — the collector to send to, your workspace, this server, and the key that binds them — and the SDK unpacks them and builds the sink itself. No `VendorConfig`, no `HttpSink`, no consent token.
+That is the whole configuration. Copy the string from **/account**, where it is labelled DSN. It packs four values — the collector to send to, your workspace, this server, and the key that binds them — and the SDK unpacks them and builds the sink itself.
 
 | Resolved from the one string | From |
 |---|---|
@@ -63,7 +63,7 @@ For a hosted server, where the process starts from your own environment, set `BA
 install_baton(mcp)   # reads BATON_DSN
 ```
 
-An explicit `dsn=` wins over `BATON_DSN`, and both win over every other `BATON_*` variable. That last rule matters when you re-onboard a server: the new DSN beats the old install's leftover environment, rather than the stale value quietly filing your events under the previous server's name.
+An explicit `dsn=` wins over `BATON_DSN`, and both win over every other `BATON_*` variable — so the DSN you pass in decides where events are filed, whatever an earlier install left in the environment.
 
 ## Without a DSN
 
@@ -85,7 +85,7 @@ install_baton(mcp, VendorConfig(
 
 ## Turning capture off
 
-`BATON_DISABLED=1` in the environment of the process running the server, and the SDK **installs nothing at all** — not capture-and-discard: no wrapped tools, no annotation tool, no instructions rewrite, no collector connection, no background thread. It is read once at startup, it never writes to stdout (the JSON-RPC stream under stdio transport), and it cannot make your server fail to boot — a config the SDK would otherwise refuse is accepted and ignored while the switch is on.
+`BATON_DISABLED=1` in the environment of the process running the server, and the SDK **installs nothing at all**: no wrapped tools, no annotation tool, no instructions rewrite, no collector connection, no background thread. It is read once at startup, it never writes to stdout (the JSON-RPC stream under stdio transport), and it cannot make your server fail to boot — a config the SDK would otherwise refuse is accepted and ignored while the switch is on.
 
 The switch belongs to whoever RUNS the server. For a server you distribute, that is your user. For one you host, it is you.
 
@@ -95,7 +95,7 @@ The switch belongs to whoever RUNS the server. For a server you distribute, that
 
 **On by default** (`src/baton/scrub.py`). `baton.scrub.Scrubber` walks every event payload and redacts email / `Bearer …` / `sk-*` / `AKIA*` / JWT / Luhn-validated card / NA-format phone, plus the field names `email`, `phone`, `ssn`, `api_key`, `token`, `secret`, `password`, `user_name`. Same ruleset as `baton-proxy`. Opt out with `VendorConfig(scrubber=baton.scrub.identity_scrub)`.
 
-**It is pattern matching, not a guarantee, and the difference is measurable.** `{"name": "Jane Doe", "address": "12 Elm St"}` passes through untouched. A card number is redacted when its digits are contiguous (`4111111111111111`) and **not** when they are spaced or hyphenated (`4111 1111 1111 1111`). `Bearer` values need 16+ characters to match. Decide what your server puts in tool params and results on that basis — do not tell your users "PII is scrubbed" on the strength of it.
+**It is pattern matching, not a guarantee.** `{"name": "Jane Doe", "address": "12 Elm St"}` passes through untouched. A card number is redacted when its digits are contiguous (`4111111111111111`) and **not** when they are spaced or hyphenated (`4111 1111 1111 1111`). `Bearer` values need 16+ characters to match. Decide what your server puts in tool params and results on that basis — do not tell your users "PII is scrubbed" on the strength of it.
 
 ## Library API
 
