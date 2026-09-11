@@ -231,17 +231,18 @@ def test_re_entering_one_trace_mints_a_fresh_id() -> None:
         trace = client.trace(tool_name=TOOL_NAME, params={"tag": "reused"})
         with trace:
             trace.observed({"i": 0})
-        # ⚠ The second entry warns, and the warning is a SEPARATE pre-existing
-        # defect this test happens to stand next to — see workplan §N12.
-        # ``__enter__`` resets ``_call_id``, ``_start_seq`` and
-        # ``_call_started_at``, but NOT ``_observed_result`` / ``_observed_error``
-        # / ``_observed_warned``, so a re-entered Trace carries the previous
-        # call's outcome. Asserted rather than filtered so it cannot become
-        # background noise, and so this test reds if the reset is ever added
-        # without updating the note. Reproduced on `main` too — not the mint's.
-        with pytest.warns(UserWarning, match="called multiple times"):
-            with trace:
-                trace.observed({"i": 1})
+        # ⚠ This block used to be wrapped in ``pytest.warns("called multiple
+        # times")``, asserting a SEPARATE defect that stood next to the mint:
+        # ``__enter__`` reset ``_call_id``, ``_start_seq`` and
+        # ``_call_started_at`` but not the observation state, so a re-entered
+        # Trace carried the previous call's outcome and its first
+        # ``observed()`` warned about a duplicate that had not happened. Fixed
+        # 2026-09-10 (workplan §N12); the contract is now that entry resets
+        # what the SDK derives and preserves what the vendor configured. The
+        # silence here is load-bearing — ``TestTraceReEntry`` in
+        # ``tests/test_client.py`` owns the positive assertions.
+        with trace:
+            trace.observed({"i": 1})
     starts, _ = legs(sink.events)
     ids = [call_id_of(e) for e in starts]
     assert len(ids) == 2, f"expected two starts from two entries, got {len(ids)}"

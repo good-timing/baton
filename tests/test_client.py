@@ -443,6 +443,393 @@ class TestSyncWarnings:
 
 
 # =============================================================================
+# Trace re-entry — workplan §N12
+# =============================================================================
+
+
+class TestTraceReEntry:
+    """Entering a Trace starts a CLEAN call; reusing one object is legal.
+
+    The contract, decided 2026-09-10: ``__enter__`` resets everything the SDK
+    DERIVES for one execution (``call_id``, the start sequence number, the
+    observation state) and preserves everything the vendor CONFIGURED
+    (``tool_name``, params, intent, ``session_id``). "Configure once, enter N
+    times" therefore keeps working — a retry loop re-running one call with the
+    same inputs is the case that makes params-carryover the right answer rather
+    than a sibling of the bug below.
+
+    What it fixes: a Trace reused for a second call, with no ``observed()`` on
+    that call, used to emit the FIRST call's result body as the second call's
+    outcome. Silently — the "exited without observed()" warning tests
+    ``is _UNSET`` and the field still held the old value, so the defect
+    suppressed its own alarm. Nothing downstream could catch it either: every
+    console surface groups on tool name and params, never on the result body,
+    so the ids and the totals stayed right while the content was another
+    call's — and that content is read back as EVIDENCE by the Insights and
+    LLM-explain paths, where a wrong body becomes a wrong sentence shown to a
+    customer about their own traffic.
+    """
+
+    def test_second_entry_does_not_inherit_the_first_result(
+        self,
+        sync_client: Client,
+        captured_events: list[dict[str, Any]],
+    ) -> None:
+        """The defect itself: the stale body, and the warning it silenced."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            trace = sync_client.trace(tool_name="t")
+            with trace:
+                trace.observed({"call": "FIRST"})
+            with trace:
+                pass  # no observed() on the second call
+            sync_client.flush()
+
+        ends = [e for e in captured_events if e["event_type"] == "tool_call_end"]
+        assert len(ends) == 2, f"expected two end events, got {len(ends)}"
+        assert ends[0]["payload"]["result"] == {"call": "FIRST"}
+        assert ends[1]["payload"]["result"] is None, (
+            "a re-entered Trace reported the PREVIOUS call's result as this "
+            f"call's outcome: {ends[1]['payload']['result']}"
+        )
+        # The other half of the fix, and the one that matters more: the alarm
+        # works again. Before the reset this warning could not fire, because
+        # the field it tests was holding the stale value.
+        assert any("exited without observed()" in str(w.message) for w in caught), (
+            "the second entry emitted result=None and said nothing about it: "
+            f"{[str(w.message) for w in caught]}"
+        )
+
+    def test_observed_once_per_entry_does_not_warn(
+        self,
+        sync_client: Client,
+        captured_events: list[dict[str, Any]],
+    ) -> None:
+        """One ``observed()`` per entry must not read as a duplicate.
+
+        ⚠ This pins the ``_observed_result`` reset's tail, NOT
+        ``_observed_warned`` — the duplicate check tests the result slot
+        first, so with that slot cleared the warned-flag is never consulted
+        on this path. Mutating ``_observed_warned`` leaves this test green;
+        ``test_duplicate_observed_warns_again_on_the_second_entry`` below is
+        what actually covers it. Recorded because the first version of this
+        docstring claimed the wrong field, and a mutation run said so.
+        """
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            trace = sync_client.trace(tool_name="t")
+            with trace:
+                trace.observed({"i": 0})
+            with trace:
+                trace.observed({"i": 1})
+            sync_client.flush()
+
+        assert not any("multiple times" in str(w.message) for w in caught), (
+            f"one observed() per entry must not warn: {[str(w.message) for w in caught]}"
+        )
+        ends = [
+            e["payload"]["result"] for e in captured_events if e["event_type"] == "tool_call_end"
+        ]
+        assert ends == [{"i": 0}, {"i": 1}], f"each entry must report its OWN result, got {ends}"
+
+    def test_second_entry_does_not_inherit_the_first_error(
+        self,
+        sync_client: Client,
+        captured_events: list[dict[str, Any]],
+    ) -> None:
+        """The error slot is the worse half: it changes the EVENT TYPE.
+
+        A stale result body files a wrong outcome under the right event. A
+        stale ``_observed_error`` makes the second call emit
+        ``tool_call_error`` — the first call's failure reported as a second
+        failure that never happened, inflating exactly the counts the console
+        exists to surface. Found by mutating the reset line and watching
+        nothing red.
+        """
+        trace = sync_client.trace(tool_name="t")
+        with trace:
+            trace.observed(error=ValueError("first call blew up"))
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            with trace:
+                pass  # no observed() on the second call
+        sync_client.flush()
+
+        types = [
+            e["event_type"] for e in captured_events if e["event_type"].startswith("tool_call_")
+        ]
+        assert types == [
+            "tool_call_start",
+            "tool_call_error",
+            "tool_call_start",
+            "tool_call_end",
+        ], f"the second entry re-reported the first call's failure: {types}"
+        end = next(e for e in captured_events if e["event_type"] == "tool_call_end")
+        assert end["payload"]["result"] is None
+
+    def test_duplicate_observed_warns_again_on_the_second_entry(
+        self,
+        sync_client: Client,
+    ) -> None:
+        """``_observed_warned`` is per-execution, and this is the only path there.
+
+        The flag exists so one duplicate does not warn twice. Left unreset it
+        also swallowed the SECOND call's duplicate — the warning fires once
+        per Trace OBJECT rather than once per call, so a vendor with a real
+        double-``observed()`` bug in a reused trace hears about it once and
+        never again.
+        """
+        trace = sync_client.trace(tool_name="t")
+        with warnings.catch_warnings(record=True) as first:
+            warnings.simplefilter("always")
+            with trace:
+                trace.observed("a")
+                trace.observed("b")
+        assert any("multiple times" in str(w.message) for w in first)
+
+        with warnings.catch_warnings(record=True) as second:
+            warnings.simplefilter("always")
+            with trace:
+                trace.observed("c")
+                trace.observed("d")
+        sync_client.flush()
+        assert any("multiple times" in str(w.message) for w in second), (
+            "the second entry's duplicate observed() was silent — the warned "
+            f"flag survived the call it belonged to: {[str(w.message) for w in second]}"
+        )
+
+    def test_with_params_between_entries_warns_the_TRUE_thing(
+        self,
+        sync_client: Client,
+        captured_events: list[dict[str, Any]],
+    ) -> None:
+        """Late params get a sentence that is true, in both ways of being late.
+
+        This guard was wrong in each direction on the same day, which is why
+        both halves are pinned here. It first said "params will not reach the
+        emitted event" BETWEEN two entries — false, the next start carries
+        them. Clearing the start sequence number on exit made that statement
+        impossible and silently removed the OTHER one with it: a vendor who
+        set params after a finished call and never re-entered got no warning
+        while the params went nowhere (see the test below). So the branch that
+        fires here is a different message, true for both readings — the params
+        did not reach the completed call, and apply only on a re-entry.
+        """
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            trace = sync_client.trace(tool_name="t", params={"call": "FIRST"})
+            with trace:
+                trace.observed("a")
+            trace.with_params({"call": "SECOND"})
+            with trace:
+                trace.observed("b")
+            sync_client.flush()
+
+        messages = [str(w.message) for w in caught]
+        assert not any("will not reach the emitted event" in m for m in messages), (
+            f"the FALSE sentence is back — these params did ship: {messages}"
+        )
+        assert any("called after the call finished" in m for m in messages), (
+            f"late params must still say so, accurately: {messages}"
+        )
+        starts = [
+            e["payload"]["params"] for e in captured_events if e["event_type"] == "tool_call_start"
+        ]
+        assert starts == [{"call": "FIRST"}, {"call": "SECOND"}], (
+            f"each entry must ship the params it was given, got {starts}"
+        )
+
+    def test_with_params_after_a_finished_trace_still_warns(
+        self,
+        sync_client: Client,
+        captured_events: list[dict[str, Any]],
+    ) -> None:
+        """The true warning that the first cut of this fix deleted.
+
+        Found by ``/code-review`` and reproduced both ways before it was
+        accepted: on the tree before the fix this case warned truthfully, and
+        after the first cut it was silent while the params still shipped
+        nowhere. The two cases — params bound for a next entry, params bound
+        for nothing — are indistinguishable at CALL time, so the message has
+        to be true of both rather than the branch guessing which one it is.
+        """
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            trace = sync_client.trace(tool_name="t")
+            with trace:
+                trace.observed("a")
+            trace.with_params({"q": "never ships"})  # and never re-entered
+            sync_client.flush()
+
+        assert any("called after the call finished" in str(w.message) for w in caught), (
+            f"params that reach no event at all must say so: {[str(w.message) for w in caught]}"
+        )
+        starts = [
+            e["payload"]["params"] for e in captured_events if e["event_type"] == "tool_call_start"
+        ]
+        assert starts == [{}], f"nothing should have shipped these params, got {starts}"
+
+    def test_with_params_before_the_first_entry_is_silent(
+        self,
+        sync_client: Client,
+        captured_events: list[dict[str, Any]],
+    ) -> None:
+        """The documented path must stay quiet — the flag is what protects it.
+
+        ``with_params()`` before entering is the ordinary usage every example
+        in this package shows. It is "late" by neither measure, and a guard
+        keyed only on "is there a start sequence number" would have been right
+        here by accident; ``_entered_before`` is what makes it right on
+        purpose.
+        """
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            trace = sync_client.trace(tool_name="t")
+            trace.with_params({"call": "FIRST"})
+            with trace:
+                trace.observed("a")
+            sync_client.flush()
+
+        assert not any("with_params()" in str(w.message) for w in caught), (
+            f"the documented usage must not warn: {[str(w.message) for w in caught]}"
+        )
+        starts = [
+            e["payload"]["params"] for e in captured_events if e["event_type"] == "tool_call_start"
+        ]
+        assert starts == [{"call": "FIRST"}]
+
+    def test_vendor_configured_state_survives_re_entry(
+        self,
+        sync_client: Client,
+        captured_events: list[dict[str, Any]],
+    ) -> None:
+        """The deliberate other half: what entry must NOT reset.
+
+        Params are INPUT the vendor configured, not output the SDK derived, so
+        re-entering without re-supplying them repeats the call as configured —
+        a retry loop is exactly this shape. Recorded as a decision so the
+        carryover is not read later as a sibling of §N12 and "fixed".
+        """
+        trace = sync_client.trace(tool_name="cfg.tool", params={"shared": True})
+        with trace:
+            trace.observed("a")
+        with trace:
+            trace.observed("b")
+        sync_client.flush()
+
+        starts = [e for e in captured_events if e["event_type"] == "tool_call_start"]
+        assert [e["payload"]["params"] for e in starts] == [{"shared": True}, {"shared": True}]
+        assert [e["payload"]["tool_name"] for e in starts] == ["cfg.tool", "cfg.tool"]
+        assert len({e["session_id"] for e in starts}) == 1, "session_id is configured, not derived"
+
+    async def test_async_twin_does_not_inherit_the_first_result(
+        self,
+        async_client: AsyncClient,
+        captured_events: list[dict[str, Any]],
+    ) -> None:
+        """Driven, not asserted by symmetry with the sync edit.
+
+        B1 is this repo's standing lesson: one adapter was fixed and the other
+        assumed, and the assumption shipped ``agent_runtime: "unknown"`` for
+        two releases. ``AsyncTrace`` is a separate class with its own copy of
+        every field patched above.
+        """
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                trace = async_client.trace(tool_name="t")
+                async with trace:
+                    trace.observed({"call": "FIRST"})
+                async with trace:
+                    pass
+                await async_client.flush()
+        finally:
+            await async_client.aclose()
+
+        ends = [e for e in captured_events if e["event_type"] == "tool_call_end"]
+        assert len(ends) == 2, f"expected two end events, got {len(ends)}"
+        assert ends[1]["payload"]["result"] is None, (
+            "AsyncTrace re-entry reported the previous call's result: "
+            f"{ends[1]['payload']['result']}"
+        )
+        assert any("exited without observed()" in str(w.message) for w in caught)
+
+    async def test_async_twin_error_slot_and_warned_flag_and_start_seq(
+        self,
+        async_client: AsyncClient,
+        captured_events: list[dict[str, Any]],
+    ) -> None:
+        """The three async sites the sync tests structurally cannot reach.
+
+        ``AsyncTrace`` holds its own copy of every field, so each of these
+        needs driving here or the mutation run says "green" about a line no
+        test executes. One test rather than three: they share a client and an
+        event stream, and splitting them would triple the fixture cost for no
+        extra discrimination — each assertion below fails alone.
+        """
+        try:
+            trace = async_client.trace(tool_name="t", params={"call": "FIRST"})
+
+            # (a) the error slot — a stale one changes the second call's EVENT TYPE
+            async with trace:
+                trace.observed(error=ValueError("first call blew up"))
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                async with trace:
+                    pass
+
+            # (b) the warned flag — the second call's duplicate must still warn
+            with warnings.catch_warnings(record=True) as dup:
+                warnings.simplefilter("always")
+                async with trace:
+                    trace.observed("a")
+                    trace.observed("b")
+                async with trace:
+                    trace.observed("c")
+                    trace.observed("d")
+            assert len([w for w in dup if "multiple times" in str(w.message)]) == 2, (
+                "each entry's duplicate observed() must warn on its own: "
+                f"{[str(w.message) for w in dup]}"
+            )
+
+            # (c) the start sequence number — cleared on exit, so with_params
+            #     between entries stops claiming the params were dropped and
+            #     says the true thing instead
+            with warnings.catch_warnings(record=True) as params_warn:
+                warnings.simplefilter("always")
+                trace.with_params({"call": "SECOND"})
+                async with trace:
+                    trace.observed("e")
+            messages = [str(w.message) for w in params_warn]
+            assert not any("will not reach the emitted event" in m for m in messages), (
+                f"the FALSE sentence is back — these params did ship: {messages}"
+            )
+            assert any("called after the call finished" in m for m in messages), (
+                f"late params must still say so, accurately: {messages}"
+            )
+
+            await async_client.flush()
+        finally:
+            await async_client.aclose()
+
+        types = [
+            e["event_type"] for e in captured_events if e["event_type"].startswith("tool_call_")
+        ]
+        assert types[:4] == [
+            "tool_call_start",
+            "tool_call_error",
+            "tool_call_start",
+            "tool_call_end",
+        ], f"the second entry re-reported the first call's failure: {types[:4]}"
+        starts = [
+            e["payload"]["params"] for e in captured_events if e["event_type"] == "tool_call_start"
+        ]
+        assert starts[-1] == {"call": "SECOND"}, (
+            f"last start did not carry the new params: {starts}"
+        )
+
+
+# =============================================================================
 # Sync Client — annotate
 # =============================================================================
 

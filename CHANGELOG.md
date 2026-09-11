@@ -8,6 +8,39 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased — a reused trace reported the previous call's result
+
+### Fixed
+
+- **Re-entering a `Trace` now starts a clean call.** A vendor who kept one trace object and used it for a second call, without calling `observed()` on that call, emitted the **first** call's result body as the second call's outcome:
+
+  ```python
+  tr = client.trace(tool_name="work")
+  with tr: tr.observed({"result": "FIRST CALL"})
+  with tr: pass          # -> tool_call_end.result was {"result": "FIRST CALL"}
+  ```
+
+  ⚠ **And it was silent.** The "exited without `observed()`" warning is the one signal that should have named it, and the defect suppressed its own alarm: that warning tests whether the result slot is empty, and the slot was still holding the previous value. Nothing downstream could catch it either — every Console surface groups on tool name and params, never on the result body — so the ids stayed right, the totals stayed right, and the content belonged to another call. That content is read back as **evidence** by the Insights and session-explain paths, where a wrong body becomes a wrong sentence shown to a customer about their own traffic.
+
+  ⚠ **The one behaviour this removes**, stated because it is the only thing anyone could have depended on: an `observed()` called BEFORE the `with` block is now discarded by the entry rather than reported by the exit. No documented usage does that — the result of a call cannot exist before the call starts, and every example in this package records the outcome inside the block — but it is a change, not a no-op.
+
+  **The contract, stated once so it is not re-derived:** `__enter__` resets everything the SDK **derives** for one execution — the `call_id`, the start sequence number, the call clock, and now the observation state — and preserves everything the vendor **configured**: `tool_name`, `params`, `intent`, `session_id`. So "configure once, enter N times" keeps working, and a retry loop re-running one call with the same inputs still ships those inputs. Params carrying across entries is that decision, not an oversight.
+
+  Two siblings fixed with it, both found by mutating each reset line and watching which ones changed nothing:
+
+  - A stale error slot made the second call emit **`tool_call_error`** rather than `tool_call_end` — the first call's failure re-reported as a second failure that never happened, inflating exactly the counts the Console exists to surface. Worse than the stale body, because it changes the event type and not just a field.
+  - The duplicate-`observed()` warning fired once per trace **object** instead of once per call, so a vendor with a real double-`observed()` bug in a reused trace heard about it once and never again.
+
+- **`with_params()` now says something true about late params, in both ways of being late.** It warns when params cannot reach a start event already on the wire, and it guarded on a field that outlived the entry — so calling it *between* two entries warned "params will not reach the emitted event" while the next start event carried them.
+
+  ⚠ **The first cut of this fix traded that false warning for a silence, which was worse.** Clearing the field on exit made the false statement impossible and removed a TRUE one with it: a vendor who calls `with_params()` after a finished call and never re-enters the trace got no warning at all, while the params reached nothing — caught by `/code-review` and reproduced against both trees before it was accepted. The two situations are indistinguishable at call time, so the branch does not try to guess between them; it says the thing that is true of both — *these params did not reach the call that just completed, and apply only if this trace is entered again*. The in-block case keeps its own separate, still-accurate message, and `with_params()` before a first entry — the documented usage — stays silent.
+
+  ⚠ **The price, stated because it is a real one:** that message now fires on *correct* code — reusing a trace and giving the next call new params is legal, and it warns. Under a vendor's `-W error` suite that is a hard failure on legitimate usage, which is a shape this package has paid for before. It was chosen over silence because silence is what hid the mistake case, and because reusing a trace *with changed params* is rare — a fresh `client.trace(...)` costs nothing. If it proves noisy in practice the branch is one `elif` to remove.
+
+Both fixes land on `Trace` and `AsyncTrace`, and the async half is verified by driving it rather than by symmetry with the sync edit.
+
+---
+
 ## Unreleased — an off switch, and it has to be unable to break anything
 
 ### Added

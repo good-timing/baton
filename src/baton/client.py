@@ -487,6 +487,11 @@ class Trace:
         # strictly worse than the FIFO floor tier 1 outranks.
         self._call_id: str | None = None
         self._observed_warned = False
+        # "This object has completed at least one entry" — set on entry, never
+        # cleared. It is what tells a LATE with_params() apart from an early
+        # one on a Trace nobody has entered yet, where params are simply on
+        # time. See ``with_params``.
+        self._entered_before = False
 
     @property
     def session_id(self) -> str:
@@ -501,17 +506,32 @@ class Trace:
     def with_params(self, params: dict[str, Any]) -> Self:
         """Attach params to the start event before it ships."""
         self._params = self._client._scrubber(params)
-        # If start has already shipped (called inside the with block after
-        # __enter__), this is a UserWarning — the params don't reach the
-        # already-emitted event. Documented limitation.
-        if self._start_seq is not None:
-            import warnings
+        # Two ways this lands too late, and they need DIFFERENT sentences —
+        # ``_start_seq`` is set only while an entry is in progress, so it
+        # separates them. Saying one of these things in both places is how this
+        # guard was wrong in each direction on the same day: it first warned
+        # "will not reach the emitted event" between two entries, where the
+        # params DO reach the next start; clearing the field on exit made that
+        # true statement possible and silently took the other one with it, so a
+        # vendor who set params after a finished call — and never re-entered —
+        # got no warning while the params went nowhere. Both are true now.
+        import warnings
 
+        if self._start_seq is not None:
             warnings.warn(
                 "Trace.with_params() called after the start event already shipped; "
                 "params will not reach the emitted event. Call with_params() before "
                 "the first awaited operation inside the with block, OR pass params "
                 "via client.trace(..., params=...) in a future API version.",
+                UserWarning,
+                stacklevel=2,
+            )
+        elif self._entered_before:
+            warnings.warn(
+                "Trace.with_params() called after the call finished; these params "
+                "did NOT reach the call that just completed. They apply only if "
+                "this Trace is entered again — if you meant them for the call that "
+                "just ran, they are lost.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -597,8 +617,24 @@ class Trace:
 
     def __enter__(self) -> Self:
         self._call_started_at = monotonic()
+        self._entered_before = True
         self._call_id = str(uuid7())
         self._start_seq = self._client._next_seq(self._session_id)
+        # Entry resets everything the SDK DERIVES for one execution and
+        # preserves everything the vendor CONFIGURED (tool_name, params,
+        # intent, session_id), so "configure once, enter N times" keeps
+        # working. Without these three lines a re-entered Trace emitted the
+        # PREVIOUS call's result body as this call's outcome, and did it in
+        # SILENCE: the "exited without observed()" warning tests
+        # ``is _UNSET``, and the field was still holding the old value — so
+        # the one signal that could have named the defect was suppressed by
+        # the defect itself. Nothing downstream can catch it either; the
+        # console groups on tool name and params, never on the result body,
+        # so the ids and totals stay right while the content is another
+        # call's. See workplan §N12.
+        self._observed_result = _UNSET
+        self._observed_error = None
+        self._observed_warned = False
         start_event = ToolCallStartEvent(
             tenant_id=self._client._tenant_id,
             vendor_id=self._client._vendor_id,
@@ -640,6 +676,14 @@ class Trace:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        # The entry is over, so the field meaning "this entry's start event has
+        # already shipped" must stop being true. ``with_params()`` guards on it
+        # to warn that params cannot reach an event already on the wire; left
+        # set, that guard fires BETWEEN two entries and states a falsehood —
+        # the params it just took do reach the next start. Cleared first thing,
+        # ahead of the exception path's early return, which is the path that
+        # would otherwise keep the stale value.
+        self._start_seq = None
         duration_ms = self._compute_duration_ms()
         end_seq = self._client._next_seq(self._session_id)
 
@@ -960,6 +1004,11 @@ class AsyncTrace:
         # strictly worse than the FIFO floor tier 1 outranks.
         self._call_id: str | None = None
         self._observed_warned = False
+        # "This object has completed at least one entry" — set on entry, never
+        # cleared. It is what tells a LATE with_params() apart from an early
+        # one on a Trace nobody has entered yet, where params are simply on
+        # time. See ``with_params``.
+        self._entered_before = False
 
     @property
     def session_id(self) -> str:
@@ -968,12 +1017,30 @@ class AsyncTrace:
 
     def with_params(self, params: dict[str, Any]) -> Self:
         self._params = self._client._scrubber(params)
-        if self._start_seq is not None:
-            import warnings
+        # Two ways this lands too late, and they need DIFFERENT sentences —
+        # ``_start_seq`` is set only while an entry is in progress, so it
+        # separates them. Saying one of these things in both places is how this
+        # guard was wrong in each direction on the same day: it first warned
+        # "will not reach the emitted event" between two entries, where the
+        # params DO reach the next start; clearing the field on exit made that
+        # true statement possible and silently took the other one with it, so a
+        # vendor who set params after a finished call — and never re-entered —
+        # got no warning while the params went nowhere. Both are true now.
+        import warnings
 
+        if self._start_seq is not None:
             warnings.warn(
                 "AsyncTrace.with_params() called after the start event already shipped; "
                 "params will not reach the emitted event.",
+                UserWarning,
+                stacklevel=2,
+            )
+        elif self._entered_before:
+            warnings.warn(
+                "AsyncTrace.with_params() called after the call finished; these params "
+                "did NOT reach the call that just completed. They apply only if this "
+                "AsyncTrace is entered again — if you meant them for the call that "
+                "just ran, they are lost.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -1038,8 +1105,24 @@ class AsyncTrace:
 
     async def __aenter__(self) -> Self:
         self._call_started_at = monotonic()
+        self._entered_before = True
         self._call_id = str(uuid7())
         self._start_seq = self._client._next_seq(self._session_id)
+        # Entry resets everything the SDK DERIVES for one execution and
+        # preserves everything the vendor CONFIGURED (tool_name, params,
+        # intent, session_id), so "configure once, enter N times" keeps
+        # working. Without these three lines a re-entered Trace emitted the
+        # PREVIOUS call's result body as this call's outcome, and did it in
+        # SILENCE: the "exited without observed()" warning tests
+        # ``is _UNSET``, and the field was still holding the old value — so
+        # the one signal that could have named the defect was suppressed by
+        # the defect itself. Nothing downstream can catch it either; the
+        # console groups on tool name and params, never on the result body,
+        # so the ids and totals stay right while the content is another
+        # call's. See workplan §N12.
+        self._observed_result = _UNSET
+        self._observed_error = None
+        self._observed_warned = False
         start_event = ToolCallStartEvent(
             tenant_id=self._client._tenant_id,
             vendor_id=self._client._vendor_id,
@@ -1080,6 +1163,14 @@ class AsyncTrace:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        # The entry is over, so the field meaning "this entry's start event has
+        # already shipped" must stop being true. ``with_params()`` guards on it
+        # to warn that params cannot reach an event already on the wire; left
+        # set, that guard fires BETWEEN two entries and states a falsehood —
+        # the params it just took do reach the next start. Cleared first thing,
+        # ahead of the exception path's early return, which is the path that
+        # would otherwise keep the stale value.
+        self._start_seq = None
         duration_ms = (
             int((monotonic() - self._call_started_at) * 1000)
             if self._call_started_at is not None
