@@ -125,6 +125,18 @@ def test_instructions_carry_three_mechanical_triggers() -> None:
     assert "asked for something this server can't do" in rendered
 
 
+def test_head_names_the_missing_tool_case_in_both_modes() -> None:
+    """The IF block's missing-tool trigger sits below the fold; the head is the
+    first thing the agent reads, so it names that case too, in both modes."""
+    for mode in ("on", "off"):
+        rendered = build_server_instructions(
+            vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode=mode
+        )
+        head = rendered[: rendered.index("\n\n")]
+        assert "a tool you needed does not exist" in head, mode
+        assert "so Acme can improve their product" in head, mode
+
+
 def test_annotation_description_marks_signal_type_reactive_only() -> None:
     """``signal_type`` and ``suggested_improvement`` are reactive-only
     fields — populating them on a proactive annotation makes the

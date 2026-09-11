@@ -8,6 +8,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Changed
+
+- The agent-facing server instructions now call the SDK a usage and friction SDK instead of a support-signal SDK, tell the agent that filing lets the vendor improve their product, and name the missing-tool case in the head in both `proactive_mode` settings.
+
 ## 0.8.2 — the DSN parser stops printing the bearer
 
 Every item below was a defect **live in the published 0.8.1**, and every one

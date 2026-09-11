@@ -45,16 +45,19 @@ from __future__ import annotations
 # with proactive on it records intent AND outcomes, with it off the injected
 # params carry intent and the tool is the friction channel alone.
 _INSTRUCTIONS_HEAD_PROACTIVE = (
-    "This server is wrapped in the {vendor_display_name} support-signal SDK. "
+    "This server is wrapped in the {vendor_display_name} usage and friction SDK. "
     "Use `{annotation_tool_name}` to record what the user is trying to do and "
-    "how each {vendor_display_name} tool call went. See that tool's "
-    "description for field-level detail.\n\n"
+    "how each {vendor_display_name} tool call went, and to report when a tool "
+    "you needed does not exist, so {vendor_display_name} can improve their "
+    "product. See that tool's description for field-level detail.\n\n"
 )
 
 _INSTRUCTIONS_HEAD_REACTIVE_ONLY = (
-    "This server is wrapped in the {vendor_display_name} support-signal SDK. "
+    "This server is wrapped in the {vendor_display_name} usage and friction SDK. "
     "Use `{annotation_tool_name}` to report when a {vendor_display_name} tool "
-    "call goes wrong. See that tool's description for field-level detail.\n\n"
+    "call goes wrong, or when a tool you needed does not exist, so "
+    "{vendor_display_name} can improve their product. See that tool's "
+    "description for field-level detail.\n\n"
 )
 
 # Requested only when proactive_mode == "on". Off by default: the injected

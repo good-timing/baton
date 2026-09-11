@@ -512,7 +512,7 @@ annotate_tool_description:
      instructions for common keys"
 
 server_instructions:
-  "This server is wrapped in the {vendor_display_name} support-signal SDK.
+  "This server is wrapped in the {vendor_display_name} usage and friction SDK.
 
    BEFORE invoking any {vendor_display_name} tool, you MUST call
    `{annotation_tool_name}` and populate these top-level fields when you have a
