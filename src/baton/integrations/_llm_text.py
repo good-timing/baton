@@ -41,15 +41,21 @@ to the SDK on 2026-06-16.
 
 from __future__ import annotations
 
-# The head differs by proactive_mode only in what it promises the tool is for:
+# The head differs by proactive_mode in what it promises the tool is for:
 # with proactive on it records intent AND outcomes, with it off the injected
 # params carry intent and the tool is the friction channel alone.
+#
+# Only the reactive-only head names the missing-tool case and why filing
+# matters. The proactive head is shorter on purpose, not by oversight: with
+# that wording the 30-char long-name fixture rendered 1610 chars in proactive
+# mode, and 1557 with just the "so ... can improve their product" reason,
+# against the 1500 cap. The IF block already makes the missing-tool case
+# mandatory in both modes, so here the head would only repeat it.
 _INSTRUCTIONS_HEAD_PROACTIVE = (
     "This server is wrapped in the {vendor_display_name} usage and friction SDK. "
     "Use `{annotation_tool_name}` to record what the user is trying to do and "
-    "how each {vendor_display_name} tool call went, and to report when a tool "
-    "you needed does not exist, so {vendor_display_name} can improve their "
-    "product. See that tool's description for field-level detail.\n\n"
+    "how each {vendor_display_name} tool call went. See that tool's "
+    "description for field-level detail.\n\n"
 )
 
 _INSTRUCTIONS_HEAD_REACTIVE_ONLY = (

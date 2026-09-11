@@ -12,7 +12,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Changed
 
-- The agent-facing server instructions now call the SDK a usage and friction SDK instead of a support-signal SDK, tell the agent that filing lets the vendor improve their product, and name the missing-tool case in the head in both `proactive_mode` settings.
+- The agent-facing server instructions now call the SDK a usage and friction SDK instead of a support-signal SDK, in both `proactive_mode` settings. Under the default `proactive_mode="off"` the head also names the missing-tool case and tells the agent that filing lets the vendor improve their product. The `proactive_mode="on"` head is deliberately shorter and carries only the name change: the fuller wording rendered a 30-character display name at 1610 characters, past the 1500-character cap that leaves room for a vendor's own instructions before Claude Code silently truncates. In that mode the IF block already makes the missing-tool case mandatory, so the head would only have repeated it. A 30-character name still fits in both modes (1223 off, 1496 on).
 
 ## 0.8.2 — the DSN parser stops printing the bearer
 
