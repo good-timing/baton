@@ -148,6 +148,35 @@ That's the integration. `install_baton` registers a vendor-namespaced annotation
 
 Under the hood the two adapters use different hook mechanisms — the official `mcp` SDK's FastMCP has no middleware system, so its adapter wraps each registered tool handler in place; the standalone `fastmcp` library uses its native middleware chain. The choice doesn't surface to vendors; both emit identical events through the same sink layer.
 
+## Turning capture off
+
+`BATON_DISABLED=1` in the environment of the process running the server, and the
+SDK installs nothing at all: no wrapped tools, no annotation tool, no
+instructions rewrite, no collector connection, no background thread. (A handle
+or client still exposes a sink attribute — a no-op stand-in holding no key and
+opening no socket — so finding one there is not a sign the switch failed.) Your server starts and
+behaves exactly as it would if `install_baton` were not in the file. It is read
+once at startup, it never writes to stdout (which is the JSON-RPC stream under
+stdio transport), and it cannot make your server fail to boot — a config the
+SDK would otherwise refuse is accepted and ignored while the switch is on.
+
+The switch belongs to whoever RUNS the server. For a server you distribute,
+that is your user. For one you host, it is you — your users cannot set an
+environment variable on your machine, and there is no per-user opt-out today.
+
+**If you pass this on to your users, say where the variable goes.** For a
+server started by an MCP client, it belongs in the `env` block for your server
+in that client's config file — **not in their shell**. MCP clients spawn
+servers with a fixed, short allowlist of environment variables
+(`mcp.client.stdio.DEFAULT_INHERITED_ENV_VARS` — six names on macOS and Linux,
+a different dozen on Windows), and `BATON_DISABLED` is on neither list, so an
+exported one never reaches your process.
+Someone who follows "set the environment variable" gets a server that is still
+capturing and believes it is not.
+
+What you tell your users about what is captured is yours to write, on your own
+surface. The SDK does not put words in your README beyond the switch.
+
 ## Sinks — where events go
 
 The SDK is sink-agnostic. The capture surface is the same regardless of destination:
