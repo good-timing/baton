@@ -8,12 +8,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased — the DSN parser stops printing the bearer
+## 0.8.2 — the DSN parser stops printing the bearer
 
-⚠ **Not released, and the version number is not this session's to pick.** Every
-item below is a defect live in the published **0.8.1**. Written here at fix
-time so whoever cuts the release inherits the entry rather than reconstructing
-it.
+Every item below was a defect **live in the published 0.8.1**, and every one
+was reproduced before being fixed. Fixes only: no wire-format change, so
+`docs/SPEC.md §13` has no entry for this release, and nothing downstream of a
+sink needs redeploying.
+
+⚠ **Some inputs that used to parse now raise at install**, which is the point
+of the release rather than a side effect: each one parsed into a configuration
+that could not deliver, so the failure moved from silent to loud. A patch
+number carries it, per the pre-1.0 deviation recorded for 0.8.1.
 
 ### Fixed
 
