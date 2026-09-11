@@ -14,10 +14,17 @@ For any normal patch / minor release.
 2. **Add a CHANGELOG entry** under `## X.Y.Z — <one-line summary>`, above the previous release block. Wire-format changes also go in `docs/SPEC.md §13`.
 3. **Commit + push to `main`:**
    ```sh
-   git add pyproject.toml uv.lock CHANGELOG.md
+   git add pyproject.toml uv.lock CHANGELOG.md docs/SPEC.md   # SPEC only if step 2 touched it
    git commit -m "release: X.Y.Z"
    git push
    ```
+
+   ⚠ **`docs/SPEC.md` belongs in that list.** Step 2 above and the pre-release
+   checklist below both require a §13 entry for a wire-format change, and this
+   line omitted the file until 2026-09-11 — so a maintainer following the
+   runbook literally tags a commit whose SPEC edit is still sitting unstaged.
+   `git add` is happy to leave it there. Sibling of the `uv.lock` omission
+   below, found the same way and fixed in the same release.
 
    ⚠ **`uv.lock` is not optional here.** It records this package's OWN version,
    and the release workflow's `ci` job installs with `uv sync --locked`, which
