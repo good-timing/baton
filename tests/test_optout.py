@@ -534,7 +534,7 @@ class TestADisabledHandleDialsNothing:
 
     ⚠ What used to make this safe was a check in the handle — the switch
     suppressed the Console URL so ``escalate()`` could not read a url and
-    api_key off that sink and dial them. ``escalate()`` was deleted in 0.9.0
+    api_key off that sink and dial them. ``escalate()`` was deleted in 0.8.1
     and the suppression went with it, so the property now rests on a handle
     having no network path AT ALL rather than on a guard. That is a stronger
     reason and a quieter one, which is exactly why it keeps a test.
@@ -577,14 +577,14 @@ class TestADisabledHandleDialsNothing:
 
 
 class TestTheHandleHasNoNetworkSurface:
-    """``handle.escalate()`` was removed in 0.9.0, and an absence nothing
+    """``handle.escalate()`` was removed in 0.8.1, and an absence nothing
     asserts is one edit from coming back.
 
     It is worth a test rather than a note because the deletion reddened
     nothing and could not have: no caller existed in ``src/``, ``examples/``,
     ``baton-proxy`` outside its own tests, or ``baton-ts`` at all, so the dead
     code and the coverage gap were the same fact. The property it leaves
-    behind is the one SPEC §13's 0.9.0 entry states — a ``BatonHandle`` makes
+    behind is the one SPEC §13's 0.8.1 entry states — a ``BatonHandle`` makes
     NO network calls — and that is what re-adding a Console helper would break,
     silently, in a release that would again ship a method whose only
     credential is the ``write_events`` key ``/v0/escalate`` is specified to

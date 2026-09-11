@@ -169,7 +169,7 @@ async def test_library_api_env_and_fallback(
 
 
 def test_positional_construction_is_refused_rather_than_silently_rebound() -> None:
-    """``VendorConfig`` is keyword-only as of 0.9.0, and this is why.
+    """``VendorConfig`` is keyword-only as of 0.8.1, and this is why.
 
     Positional construction mis-bound silently TWICE. 0.7.0 inserted
     ``tenant_id`` third, so ``VendorConfig("acme", "Acme", "ct", my_sink)`` —

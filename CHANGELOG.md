@@ -8,7 +8,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased — lands as 0.9.0
+## 0.8.1 — `VendorConfig` cannot mis-bind, and a handle cannot dial
+
+⚠ **A PATCH number carrying two breaking removals** — Ujwal's call, recorded
+here because this document's own versioning line (§13) says pre-1.0 breakage
+rides a minor bump. The practical consequence, stated so nobody has to
+discover it: a consumer pinned `~=0.8.0` or `>=0.8.0` picks this up
+automatically, where `0.9.0` would have needed them to move. Nobody is pinned
+— there are no customers, and our own console pin is `>=0.8.0` and is
+unaffected by either removal (every in-repo `VendorConfig(...)` is already
+keyword-only and nothing calls `escalate()`).
 
 ### Removed
 
@@ -122,7 +131,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 - **`install_baton(server, config)`'s second argument is now optional**, and `VendorConfig.sink` defaults to `None` rather than a `StdoutSink` instance. Behaviour is unchanged where nothing else is configured — no sink and no DSN still means `StdoutSink`, the zero-config dev mode — but `None` is what lets the SDK tell "the vendor chose stdout" apart from "the vendor chose nothing", which is what makes building a sink from a DSN safe.
 
-  ⚠ ~~**`dsn` is appended as the LAST dataclass field, and must stay there.** `VendorConfig` is a plain dataclass, so field ORDER is public API: adding it at the top bound `VendorConfig("acme", "Acme Corp", ...)`'s first argument to the DSN and shifted every other value one slot along. That is the same silent break 0.7.0 shipped when it inserted `tenant_id` third, and the same test caught it both times.~~ **FALSE AS SHIPPED, corrected in 0.9.0.** Appending `dsn` did keep it out of an existing slot, but this release moved others: `default_agent_runtime` was removed from slot 6 and `user_id_mode` / `user_id_hmac_key` were inserted ahead of `resolve_session_id` and `tenant_id`, so every positional slot from the sixth on shifted, and a 0.7.2-shaped positional call binds the string `"unknown"` to `scrubber` without complaint. The test cited caught nothing here — it fills four slots and the shift starts at the sixth. 0.9.0 makes the class keyword-only and retires the promise rather than re-making it.
+  ⚠ ~~**`dsn` is appended as the LAST dataclass field, and must stay there.** `VendorConfig` is a plain dataclass, so field ORDER is public API: adding it at the top bound `VendorConfig("acme", "Acme Corp", ...)`'s first argument to the DSN and shifted every other value one slot along. That is the same silent break 0.7.0 shipped when it inserted `tenant_id` third, and the same test caught it both times.~~ **FALSE AS SHIPPED, corrected in 0.8.1.** Appending `dsn` did keep it out of an existing slot, but this release moved others: `default_agent_runtime` was removed from slot 6 and `user_id_mode` / `user_id_hmac_key` were inserted ahead of `resolve_session_id` and `tenant_id`, so every positional slot from the sixth on shifted, and a 0.7.2-shaped positional call binds the string `"unknown"` to `scrubber` without complaint. The test cited caught nothing here — it fills four slots and the shift starts at the sixth. 0.8.1 makes the class keyword-only and retires the promise rather than re-making it.
 
 
 

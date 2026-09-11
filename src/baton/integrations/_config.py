@@ -108,7 +108,7 @@ def _resolve_user_id_hmac_key(explicit: bytes | str | None) -> bytes | None:
 class VendorConfig:
     """Vendor-side configuration for ``install_baton``.
 
-    **Keyword-only, since 0.9.0.** ``VendorConfig("acme", "Acme", ...)`` now
+    **Keyword-only, since 0.8.1.** ``VendorConfig("acme", "Acme", ...)`` now
     raises ``TypeError`` at construction instead of binding by position.
 
     Positional construction shipped a silent mis-bind TWICE. At 0.7.0 a
@@ -281,7 +281,7 @@ class VendorConfig:
     """
 
     # Appended because it was added last, and nothing rides on that any more:
-    # the class is ``kw_only`` as of 0.9.0, so there are no positional slots to
+    # the class is ``kw_only`` as of 0.8.1, so there are no positional slots to
     # shift and field order is no longer public API. This comment used to say
     # the opposite, and cited a test that could not see the break 0.8.0 then
     # shipped — see the class docstring for what replaced the promise.
