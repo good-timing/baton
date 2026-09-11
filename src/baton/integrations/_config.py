@@ -104,9 +104,28 @@ def _resolve_user_id_hmac_key(explicit: bytes | str | None) -> bytes | None:
     return from_env.encode("utf-8") if from_env else None
 
 
-@dataclass
+@dataclass(kw_only=True)
 class VendorConfig:
-    """Vendor-side configuration for ``install_baton``."""
+    """Vendor-side configuration for ``install_baton``.
+
+    **Keyword-only, since 0.9.0.** ``VendorConfig("acme", "Acme", ...)`` now
+    raises ``TypeError`` at construction instead of binding by position.
+
+    Positional construction shipped a silent mis-bind TWICE. At 0.7.1 a
+    ``Sink`` object landed in ``consent_token`` and rode onto the wire; at
+    0.8.0 ``default_agent_runtime`` was removed from slot 6 and two fields were
+    inserted before ``resolve_session_id``, so a 0.7.2-shaped call put the
+    string ``"unknown"`` in ``scrubber`` — a non-callable, constructed without
+    complaint, failing far from the call site if at all. Both releases promised
+    the opposite in their notes, and the guard written after the first one
+    (``tests/test_tenant_vendor_split.py``) asserted the first four slots only,
+    so it was green against the second.
+
+    The promise is therefore retired rather than re-made: field ORDER is no
+    longer public API, and there are now no positional slots to shift. That
+    trade is deliberate — it costs the ability to construct this tersely and
+    buys the ability to add, remove and reorder fields without a silent
+    mis-bind, which a 13-field config will want more than once more."""
 
     vendor_id: str = ""
     """Short stable identifier for the vendor (e.g., ``"acme"``,
@@ -260,12 +279,11 @@ class VendorConfig:
     the diff a customer reviews in their pull request.
     """
 
-    # ⚠ APPENDED, and it must stay last. ``VendorConfig`` is a plain dataclass,
-    # so field ORDER is public API — inserting this at the top bound
-    # ``VendorConfig("acme", "Acme Corp", ...)``'s first argument to the dsn and
-    # shifted every value one slot along. That is the same silent break 0.7.0
-    # shipped when it inserted ``tenant_id`` third, and the test that caught it
-    # both times is ``test_tenant_id_is_appended_so_positional_construction_still_binds``.
+    # Appended because it was added last, and nothing rides on that any more:
+    # the class is ``kw_only`` as of 0.9.0, so there are no positional slots to
+    # shift and field order is no longer public API. This comment used to say
+    # the opposite, and cited a test that could not see the break 0.8.0 then
+    # shipped — see the class docstring for what replaced the promise.
 
     dsn: str | None = None
     """The packed connection string from ``/account`` — one value carrying the

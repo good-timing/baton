@@ -273,15 +273,11 @@ class TestItCannotBreakABoot:
 
         import asyncio
 
-        async def _drive() -> dict[str, str | None]:
+        async def _drive() -> None:
             await handle.flush()
-            ticket = await handle.escalate()
             await handle.aclose()
-            return ticket
 
-        # escalate() takes the existing no-Console-URL path rather than needing
-        # a branch of its own.
-        assert asyncio.run(_drive())["ticket_id"] == "queued"
+        asyncio.run(_drive())
 
 
 class TestNothingReachesStdout:
@@ -531,38 +527,22 @@ class TestASinkYouPassedIsNotDroppedOnTheFloor:
         assert handle.sink is sink
 
 
-class TestEscalateNamesTheRightCause:
-    """``escalate()`` reused the dev-mode message under the off switch, which
-    said "sink has no Console URL … switch to HttpSink" — a confident,
-    actionable, WRONG diagnosis, at WARNING where it is the only line a vendor
-    sees, while the true cause sat at INFO where nothing shows it. A vendor
-    with a perfectly good dsn would swap sinks, redeploy, and change nothing.
+class TestADisabledHandleDialsNothing:
+    """The sharp edge of keeping the caller's sink: a disabled handle can be
+    holding a working ``HttpSink``, because ``aclose()`` must still release the
+    object the vendor handed us.
+
+    ⚠ What used to make this safe was a check in the handle — the switch
+    suppressed the Console URL so ``escalate()`` could not read a url and
+    api_key off that sink and dial them. ``escalate()`` was deleted in 0.9.0
+    and the suppression went with it, so the property now rests on a handle
+    having no network path AT ALL rather than on a guard. That is a stronger
+    reason and a quieter one, which is exactly why it keeps a test.
     """
-
-    async def test_it_names_the_switch_not_the_sink(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        from fastmcp import FastMCP
-
-        from baton.install import install_baton
-
-        monkeypatch.setenv(SWITCH, "1")
-        handle = install_baton(FastMCP("x"), dsn="https://baton_pk_x@h/ten_" + "0" * 32 + "/s")
-
-        with caplog.at_level(logging.WARNING, logger="baton"):
-            ticket = await handle.escalate()
-
-        assert ticket["ticket_id"] == "queued"
-        assert SWITCH in caplog.text
-        assert "Switch to HttpSink" not in caplog.text
 
     async def test_a_disabled_handle_holding_a_real_HttpSink_makes_no_call(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The sharp edge of keeping the caller's sink: a disabled handle can
-        now be holding a working ``HttpSink``. ``escalate()`` reads its url and
-        api_key, so without the switch check it would make a REAL network call
-        from a Baton that is supposed to be doing nothing."""
         from fastmcp import FastMCP
 
         from baton.install import install_baton
@@ -570,14 +550,65 @@ class TestEscalateNamesTheRightCause:
         from baton.sinks import HttpSink
 
         monkeypatch.setenv(SWITCH, "1")
+        sink = HttpSink("https://console.invalid", api_key="k")
         handle = install_baton(
             FastMCP("x"),
             VendorConfig(
                 vendor_id="v",
                 vendor_display_name="V",
                 # A host that would fail loudly if anything dialled it.
+                sink=sink,
+            ),
+        )
+
+        # The vendor's own object, held so their ``finally`` can release it —
+        # and driven through the full shutdown path without a dial.
+        assert handle.sink is sink
+        await handle.flush()
+        await handle.aclose()
+
+
+class TestTheHandleHasNoNetworkSurface:
+    """``handle.escalate()`` was removed in 0.9.0, and an absence nothing
+    asserts is one edit from coming back.
+
+    It is worth a test rather than a note because the deletion reddened
+    nothing and could not have: no caller existed in ``src/``, ``examples/``,
+    ``baton-proxy`` outside its own tests, or ``baton-ts`` at all, so the dead
+    code and the coverage gap were the same fact. The property it leaves
+    behind is the one SPEC §8.3 now states — a ``BatonHandle`` makes NO
+    network calls — and that is what re-adding a Console helper would break,
+    silently, in a release that would again ship a method a wrapped server's
+    ``write_events`` key gets 403'd on.
+    """
+
+    def test_a_handle_exposes_no_console_client_under_any_sink(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fastmcp import FastMCP
+
+        from baton.install import install_baton
+        from baton.integrations._config import VendorConfig
+        from baton.sinks import HttpSink
+
+        # The sink that USED to hand the handle a url and an api key is the
+        # sharp case, so it is the one asserted — not a StdoutSink, which
+        # could never have supplied either.
+        handle = install_baton(
+            FastMCP("x"),
+            VendorConfig(
+                vendor_id="v",
+                vendor_display_name="V",
                 sink=HttpSink("https://console.invalid", api_key="k"),
             ),
         )
-        assert handle._console_url is None
-        assert (await handle.escalate())["ticket_id"] == "queued"
+
+        assert not hasattr(handle, "escalate")
+        for attr in ("_console_url", "_console_api_key", "_http_client"):
+            assert not hasattr(handle, attr), f"{attr} is back on the handle"
+
+        # And the same is true of the disabled handle, which reached the
+        # network state by a different constructor.
+        monkeypatch.setenv(SWITCH, "1")
+        disabled = install_baton(FastMCP("y"), dsn="https://baton_pk_x@h/ten_" + "0" * 32 + "/s")
+        assert not hasattr(disabled, "escalate")

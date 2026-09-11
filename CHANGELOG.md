@@ -8,6 +8,26 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Removed
+
+- **`VendorConfig` is KEYWORD-ONLY, and field order is no longer public API (breaking).** `VendorConfig("acme", "Acme", "ct", sink)` now raises `TypeError` at construction instead of binding by position.
+
+  **This shipped a silent mis-bind twice.** 0.7.0 inserted `tenant_id` third, so a 0.6.1-shaped call bound `tenant_id="ct"` and `consent_token=my_sink` — and a `Sink` instance is truthy, so the only guard (`if not config.consent_token`) passed and a sink object rode onto the wire in the consent field. 0.8.0 then removed `default_agent_runtime` from slot 6 and inserted two fields before `resolve_session_id`, so a 0.7.2-shaped call binds `scrubber="unknown"`, a non-callable, constructed without error and failing far from the call site if at all. **Both releases promised the opposite in these notes**, and the guard written after the first break asserts the first four slots only, so it sat green through the second. A promise that cannot be tested for the case that breaks it is not a promise, so it is withdrawn rather than repeated: there are no positional slots left to shift, and the class is free to gain, lose and reorder fields.
+
+  **Cost, stated plainly:** any caller constructing positionally breaks, loudly, at the line that constructs. Every in-repo call site — SDK, tests, examples — already uses keywords, and no published integration guide shows the positional form. Free today; not free once a vendor's server depends on it.
+
+- **`handle.escalate()` is REMOVED (breaking), and withdrawn rather than deferred.** The method POSTed to the Console's `/v0/escalate` and returned a ticket id for a vendor tool to surface in-turn.
+
+  **It could not succeed from a wrapped server.** The key an installed SDK holds is a `write_events` publishable key, which that endpoint refuses — so every call from a real install would have 403'd, in a release that shipped the method as working. Dead by evidence rather than assumption: no caller in `src/`, in `examples/`, or in `baton-proxy` outside its own tests, and `baton-ts` never implemented it at all. SPEC §8.3 listed it as *planned* while 0.8.0 shipped it, so broken and unbuilt looked alike from both directions.
+
+  **What went with it:** the Console URL and API key the handle extracted off an `HttpSink`, the lazily-created shared `httpx` client, and the `disabled_switch` the handle carried to suppress that URL under `BATON_DISABLED`. **A `BatonHandle` now makes no network calls of any kind** — its whole surface is `session_id`, `flush()` and `aclose()` — so the suppression it needed has nothing left to suppress. A vendor tool that wants to file a ticket calls the Console endpoint directly, with a key scoped to do it; the endpoint is unchanged and the Console keeps it.
+
+  ⚠ **Also corrected in SPEC §8.3**: that block documented a `{session_id, title, body}` request returning `200`. The endpoint has never accepted that shape — its request model is `extra="forbid"` and takes `{session_id, annotation_seq}`, returning `201` — so the spec described a request the Console rejects. Corrected against the running implementation.
+
+---
+
 ## 0.8.0 — one packed `dsn`; an off switch; `call_id` and `user_id` on the wire; `agent_runtime` stops being `unknown`; the `io.baton/*` keys are gone (breaking)
 
 ### Added
@@ -100,7 +120,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 - **`install_baton(server, config)`'s second argument is now optional**, and `VendorConfig.sink` defaults to `None` rather than a `StdoutSink` instance. Behaviour is unchanged where nothing else is configured — no sink and no DSN still means `StdoutSink`, the zero-config dev mode — but `None` is what lets the SDK tell "the vendor chose stdout" apart from "the vendor chose nothing", which is what makes building a sink from a DSN safe.
 
-  ⚠ **`dsn` is appended as the LAST dataclass field, and must stay there.** `VendorConfig` is a plain dataclass, so field ORDER is public API: adding it at the top bound `VendorConfig("acme", "Acme Corp", ...)`'s first argument to the DSN and shifted every other value one slot along. That is the same silent break 0.7.0 shipped when it inserted `tenant_id` third, and the same test caught it both times.
+  ⚠ ~~**`dsn` is appended as the LAST dataclass field, and must stay there.** `VendorConfig` is a plain dataclass, so field ORDER is public API: adding it at the top bound `VendorConfig("acme", "Acme Corp", ...)`'s first argument to the DSN and shifted every other value one slot along. That is the same silent break 0.7.0 shipped when it inserted `tenant_id` third, and the same test caught it both times.~~ **FALSE AS SHIPPED, corrected in 0.9.0.** Appending `dsn` did keep it out of an existing slot, but this release moved others: `default_agent_runtime` was removed from slot 6 and `user_id_mode` / `user_id_hmac_key` were inserted ahead of `resolve_session_id` and `tenant_id`, so every positional slot from the sixth on shifted, and a 0.7.2-shaped positional call binds the string `"unknown"` to `scrubber` without complaint. The test cited caught nothing here — it fills four slots and the shift starts at the sixth. 0.9.0 makes the class keyword-only and retires the promise rather than re-making it.
 
 
 

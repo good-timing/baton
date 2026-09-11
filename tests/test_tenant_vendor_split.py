@@ -168,30 +168,50 @@ async def test_library_api_env_and_fallback(
     await c2.aclose()
 
 
-def test_tenant_id_is_appended_so_positional_construction_still_binds() -> None:
-    """``VendorConfig`` is a plain dataclass, so field ORDER is public API.
+def test_positional_construction_is_refused_rather_than_silently_rebound() -> None:
+    """``VendorConfig`` is keyword-only as of 0.9.0, and this is why.
 
-    0.7.0 inserted ``tenant_id`` third, ahead of ``consent_token`` and ``sink``.
-    A caller writing ``VendorConfig("acme", "Acme", "ct", my_sink)`` — valid on
-    0.6.1 — then bound ``tenant_id="ct"`` and ``consent_token=my_sink``, and
-    nothing caught it: ``_validate_vendor_config`` only tests
+    Positional construction mis-bound silently TWICE. 0.7.0 inserted
+    ``tenant_id`` third, so ``VendorConfig("acme", "Acme", "ct", my_sink)`` —
+    valid on 0.6.1 — bound ``tenant_id="ct"`` and ``consent_token=my_sink``,
+    and nothing caught it: ``_validate_vendor_config`` only tests
     ``if not config.consent_token``, and a Sink instance is truthy, so a Sink
-    object rode into the envelope's ``consent_token`` field. Silent, and
-    described in the changelog as purely additive.
+    object rode into the envelope's ``consent_token`` field. Then 0.8.0
+    removed ``default_agent_runtime`` from slot 6 and inserted two fields
+    before ``resolve_session_id``, so a 0.7.2-shaped positional call bound the
+    string ``"unknown"`` to ``scrubber``.
 
-    Every in-repo call site uses keywords, which is exactly why the suite could
-    not see it. This test is the missing one: it constructs positionally, the
-    way a vendor's code does.
+    **This test used to assert the opposite** — that appending keeps positional
+    callers binding correctly — and it passed straight through the 0.8.0 break,
+    because it only ever filled the first four slots and the shift starts at
+    the sixth. A guard that cannot fail for the property it names is the shape
+    this file exists to catch, so the property changed rather than the
+    assertion count: there are no positional slots left to shift.
     """
+    import pytest
+
     from baton.integrations._config import VendorConfig
     from baton.sinks import StdoutSink
 
     sink = StdoutSink()
-    config = VendorConfig("acme", "Acme Corp", "ct-positional", sink)
 
+    with pytest.raises(TypeError):
+        VendorConfig("acme", "Acme Corp", "ct-positional", sink)  # type: ignore[misc]
+
+    # One positional argument is already too many — the failure does not wait
+    # for a slot whose meaning changed.
+    with pytest.raises(TypeError):
+        VendorConfig("acme")  # type: ignore[misc]
+
+    # The keyword spelling every in-repo call site already uses is untouched.
+    config = VendorConfig(
+        vendor_id="acme",
+        vendor_display_name="Acme Corp",
+        consent_token="ct-positional",
+        sink=sink,
+    )
     assert config.vendor_id == "acme"
     assert config.vendor_display_name == "Acme Corp"
     assert config.consent_token == "ct-positional"
     assert config.sink is sink
-    # The new field takes no positional slot from anything that existed.
     assert config.tenant_id is None
