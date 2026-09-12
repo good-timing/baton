@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import logging
 import os
 from collections.abc import Awaitable, Callable, Mapping
@@ -12,6 +11,7 @@ from typing import Any
 from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
 from baton._dsn import parse_dsn, resolve_dsn, select_dsn
 from baton.events import DEFAULT_CONSENT_TOKEN
+from baton.integrations._hooks import run_vendor_hook
 from baton.integrations.identity_adapter import USER_ID_MODES, ResolveUserHook
 from baton.sinks import HttpSink, Sink, StdoutSink
 
@@ -54,16 +54,27 @@ async def resolve_via_hook(
 
     Never raises — an exception is logged and treated as a miss so the
     caller falls through to the SPEC §3.4 ladder unchanged. Accepts sync or
-    async hooks (mirrors ``VendorConfig.scrubber``'s calling convention).
+    async hooks; the containment in ``_hooks`` carries the caller's
+    contextvars across, so a hook may still read ``get_http_headers()``.
+
+    ⚠ **A whitespace-only return is a MISS, not an id.** The value is passed
+    through RAW — nothing downstream normalizes it — and ``session_id`` is the
+    primary grouping key, so a hook returning ``" "`` (a blank header, a padded
+    ``CHAR(n)`` column, a failed lookup that formats as spaces) would file every
+    such call under one session and merge STRANGERS' conversations. That is
+    worse than the same bug on ``user_id``, which only misattributes an actor.
+    Falling through to §3.4's ladder yields a real id instead.
     """
     try:
-        result = hook(context)
-        if inspect.isawaitable(result):
-            result = await result
+        result = await run_vendor_hook(hook, context, hook_name="resolve_session_id", logger=logger)
     except Exception:
         logger.warning("baton: resolve_session_id hook raised; falling through", exc_info=True)
         return None
-    return result if isinstance(result, str) and result else None
+    if not isinstance(result, str) or not result.strip():
+        return None
+    # Returned STRIPPED, so two hooks that differ only in padding do not become
+    # two sessions. The vendor's intent is the id, not its whitespace.
+    return result.strip()
 
 
 def _resolve_tenant_id(explicit: str | None, vendor_id: str) -> str:

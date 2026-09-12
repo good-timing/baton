@@ -263,6 +263,24 @@ def test_hashed_mode_without_a_key_drops_the_field_and_warns_once(
     assert "acme.com" not in hits[0].message
 
 
+@pytest.mark.parametrize(
+    "blank_sub",
+    [pytest.param(" ", id="space"), pytest.param("\t\n", id="tab-newline")],
+)
+def test_a_whitespace_only_subject_is_a_miss(blank_sub: str) -> None:
+    """``hash_user_id`` canonicalizes NFC → strip → lower, so every
+    whitespace-only subject collapses to the SAME digest — measured,
+    ``" "`` and ``"\t\n"`` both give ``h1:14fa5f91…``.
+
+    A truthiness guard passes them, and the result is a real, stable
+    pseudonym naming nobody that every such caller merges into. Far less
+    reachable than on the hook path (a verifier would have to mint one), but
+    both paths feed one hash and a guard that differs between them is a guard
+    waiting to be copied wrong.
+    """
+    assert principal_from_access_token(_Token(claims={"sub": blank_sub})) is None
+
+
 def test_an_empty_or_non_string_subject_is_a_miss() -> None:
     assert principal_from_access_token(_Token(claims={"sub": ""})) is None
     assert principal_from_access_token(_Token(claims={"sub": 12345})) is None

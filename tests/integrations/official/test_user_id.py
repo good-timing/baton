@@ -339,3 +339,39 @@ async def test_a_hook_that_raises_leaves_the_call_and_the_events_intact(
     events = await _drive(tmp_path / "e.jsonl", None, resolve_user=boom, monkeypatch=monkeypatch)
     assert events, "the hook's exception cost the capture"
     assert {ev.get("user_id") for ev in events} == {None}
+
+
+async def test_headers_are_extracted_once_per_call_when_a_hook_is_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The identity hook and the session ladder both want the request headers.
+
+    The comment gating the hook context says header extraction is not free and
+    must not be paid by servers that never configure the field — so paying for
+    it TWICE on the servers that do would make that comment a lie. The value is
+    hoisted once and threaded into both.
+    """
+    from baton.integrations.official import _tool_wrap
+
+    calls = 0
+    real = _tool_wrap._extract_headers_from_context
+
+    def counting(ctx: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return real(ctx)
+
+    monkeypatch.setattr(_tool_wrap, "_extract_headers_from_context", counting)
+    await _drive(
+        tmp_path / "e.jsonl", None, resolve_user=_fixed_hook("employee-1"), monkeypatch=monkeypatch
+    )
+    # EXACTLY one, for the tool call. The annotation path imported the helper
+    # by name and holds its own bound reference, so this patch point does not
+    # observe it — that is the tool-call path alone, which is the one where the
+    # identity hook and the session ladder both want the value.
+    #
+    # An exact count, not a ceiling: the first attempt at this fix gave the
+    # ladder a ``None`` default it re-extracted from, so on stdio — where
+    # ``None`` is also the correct ANSWER — nothing changed while the diff
+    # looked right. A ``<=`` assertion passed that version too.
+    assert calls == 1, f"headers extracted {calls} times for one tool call, expected 1"

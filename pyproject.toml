@@ -76,6 +76,17 @@ Issues = "https://github.com/good-timing/baton/issues"
 # future major (2.0 already renamed the server class + instructions backing).
 mcp = [
     "mcp>=1.20,<3",
+    # ``anyio`` is DECLARED, not inherited. ``baton.integrations._hooks`` runs
+    # a vendor hook on an anyio worker thread, and relying on a library that
+    # merely happens to be installed is a dependency taken by accident. It is
+    # free in the same sense ``pydantic`` is, and measured rather than assumed:
+    # ``mcp`` requires it at every point in this band — 1.20.0 ``anyio>=4.5``,
+    # 2.2.0 ``anyio>=4.10`` — so a wrapped vendor inherits nothing new. The
+    # floor is ``>=4.5`` to match the oldest ``mcp`` in band; nothing here uses
+    # anything newer than ``to_thread.run_sync(abandon_on_cancel=...)``, which
+    # predates it.
+    "anyio>=4.5",
+
 ]
 # Adapts the standalone ``fastmcp`` library's ``fastmcp.FastMCP`` (different
 # project; advanced features like middleware not in the official SDK).
@@ -98,6 +109,17 @@ mcp = [
 # nothing that worked.
 fastmcp = [
     "fastmcp>=2.14,<5",
+    # ``anyio`` is DECLARED, not inherited. ``baton.integrations._hooks`` runs
+    # a vendor hook on an anyio worker thread, and relying on a library that
+    # merely happens to be installed is a dependency taken by accident. It is
+    # free in the same sense ``pydantic`` is, and measured rather than assumed:
+    # ``mcp`` requires it at every point in this band — 1.20.0 ``anyio>=4.5``,
+    # 2.2.0 ``anyio>=4.10`` — so a wrapped vendor inherits nothing new. The
+    # floor is ``>=4.5`` to match the oldest ``mcp`` in band; nothing here uses
+    # anything newer than ``to_thread.run_sync(abandon_on_cancel=...)``, which
+    # predates it.
+    "anyio>=4.5",
+
 ]
 # ``HttpSink`` (the production path — POST events to a Baton Console) needs an
 # async HTTP client. httpx is required (not urllib): the SDK emits from inside

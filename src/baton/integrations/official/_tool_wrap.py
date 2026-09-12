@@ -550,12 +550,16 @@ def _wrap_tool_run(
         # get ``None``". That stopped being true when ``resolve_user`` landed:
         # the hook is the only identity mechanism stdio has, and carrying a
         # stdio principal is the reason it was built.
-        # Built only when a hook exists: ``_extract_headers_from_context``
-        # reaches through the request on every call, and a server that will
-        # never set this field must not pay for it.
+        # ONE extraction per tool call, shared by the identity hook below and
+        # the session ladder further down (rung 4 reads ``mcp-session-id``).
+        # Unconditional, because the ladder reads headers on EVERY call
+        # already — an earlier version of this gated the read on "only if a
+        # hook is configured, it is not free", which was guarding a cost that
+        # had always been paid one line later.
+        call_headers = _extract_headers_from_context(context)
         identity_hook_context = (
             SessionResolutionContext(
-                headers=_extract_headers_from_context(context),
+                headers=call_headers,
                 meta=meta_dict,
                 tool_name=name,
                 arguments=params,
@@ -581,6 +585,7 @@ def _wrap_tool_run(
             resolve_hook=resolve_session_id_hook,
             tool_name=name,
             arguments=params,
+            headers=call_headers,
         )
 
         # The session's FIRST injected intent also becomes a proactive
@@ -705,6 +710,7 @@ async def _resolve_call_session_id(
     resolve_hook: ResolveSessionIdHook | None,
     tool_name: str,
     arguments: dict[str, Any],
+    headers: Mapping[str, str] | None,
 ) -> str:
     """Real per-call session id. Rung 0 (a configured
     ``VendorConfig.resolve_session_id`` hook) is checked first and, on a
@@ -746,7 +752,12 @@ async def _resolve_call_session_id(
     a live request (``request_context`` raises ``ValueError`` there on both
     SDK versions).
     """
-    headers = _extract_headers_from_context(context)
+    # Extracted ONCE by the caller and passed in, never re-read here. It is a
+    # required parameter rather than an optional one precisely so this cannot
+    # drift back: a ``None`` default reads as "not extracted yet" and would
+    # re-extract on every stdio call, where ``None`` is also the correct
+    # ANSWER — which is how the first attempt at this fix looked correct and
+    # changed nothing on the common path.
     if resolve_hook is not None:
         hook_result = await resolve_via_hook(
             resolve_hook,

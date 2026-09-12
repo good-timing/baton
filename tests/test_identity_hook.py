@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
@@ -51,6 +52,21 @@ def _attested() -> str:
     return hash_user_id(
         "attested@acme.example", tenant_id=TENANT, key=KEY, issuer="https://idp.example"
     )
+
+
+async def _resolve_with_timeout(
+    hook: Any, timeout: float, token: Any = None, **kw: Any
+) -> str | None:
+    """``_resolve`` with the hook budget shortened, so the test does not have
+    to wait out the real five-second default."""
+    import baton.integrations._hooks as hooks_mod
+
+    original = hooks_mod.HOOK_TIMEOUT_SECONDS
+    hooks_mod.HOOK_TIMEOUT_SECONDS = timeout
+    try:
+        return await _resolve(hook, token=token, **kw)
+    finally:
+        hooks_mod.HOOK_TIMEOUT_SECONDS = original
 
 
 async def _resolve(hook: Any, token: Any = None, **kw: Any) -> str | None:
@@ -149,12 +165,27 @@ async def test_a_wrong_return_type_is_a_miss_not_a_value(returned: Any) -> None:
 
 @pytest.mark.parametrize(
     "bad_user_id",
-    [pytest.param("", id="empty"), pytest.param(None, id="none"), pytest.param(7, id="int")],
+    [
+        pytest.param("", id="empty"),
+        pytest.param(None, id="none"),
+        pytest.param(7, id="int"),
+        pytest.param(" ", id="single-space"),
+        pytest.param("\t\n", id="tab-newline"),
+        pytest.param("   ", id="padded-CHAR-column"),
+    ],
 )
 async def test_a_principal_with_no_usable_user_id_is_a_miss(bad_user_id: Any) -> None:
     """An empty subject hashes to a real, stable digest that names nobody —
     every such caller merged into one actor, which is the exact collapse
-    ``user_id`` exists to undo. It must not reach the HMAC."""
+    ``user_id`` exists to undo. It must not reach the HMAC.
+
+    ⚠ The whitespace cases are NOT padding on the empty one. ``hash_user_id``
+    canonicalizes NFC → strip → lower, so `" "` and `"\t\n"` hash to the SAME
+    digest — measured ``h1:14fa5f91…`` for both — and a truthiness guard waves
+    them through. A blank header value and a padded ``CHAR(n)`` column are the
+    reachable shapes, and they are what makes the phantom actor a real merge
+    rather than a theoretical one.
+    """
     got = await _resolve(lambda _c: Principal(user_id=bad_user_id), token=_Token())
     assert got == _attested()
 
@@ -187,21 +218,88 @@ async def test_the_except_is_broad_rather_than_an_enumerated_tuple(exc: Exceptio
     assert await _resolve(boom, token=_Token()) == _attested()
 
 
-async def test_cancellation_is_NOT_swallowed() -> None:
-    """``except Exception`` deliberately does not catch ``BaseException``.
+async def test_a_genuine_task_cancellation_propagates() -> None:
+    """A capture hook may not swallow a cancellation.
 
-    ``asyncio.CancelledError`` is ``BaseException``-derived precisely so a
-    fail-open guard cannot eat it, and eating it here would leave a cancelled
-    request running on the vendor's hot path. Pinned because ``except
-    Exception`` looks like an oversight next to this module's other broad
-    guards, and the obvious "hardening" edit is to widen it.
+    If it did, a cancelled request would keep running on the vendor's server.
+    This is the case that MUST get through: the enclosing task is being
+    cancelled from outside, and containment has to let that pass while still
+    containing everything the hook does to itself.
+    """
+    started = asyncio.Event()
+
+    def blocks(_c: Any) -> Principal:
+        started.set()
+        time.sleep(5)
+        return Principal(user_id="employee-1")
+
+    task = asyncio.create_task(_resolve(blocks, token=_Token()))
+    await started.wait()
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_a_hook_cancelling_ITSELF_is_contained() -> None:
+    """The other side of the same coin, and the reason the thread hands its
+    outcome back as a VALUE rather than letting it propagate.
+
+    A hook raising ``CancelledError`` for its own private reasons is a hook
+    failing, not the request being cancelled. Propagating it would let a
+    vendor's control flow kill the tool call the hook was only meant to
+    annotate — the fail-open contract broken by the one exception class that
+    is not an ``Exception``.
     """
 
-    async def cancelled(_c: Any) -> Principal:
+    async def self_cancel(_c: Any) -> Principal:
         raise asyncio.CancelledError
 
-    with pytest.raises(asyncio.CancelledError):
-        await _resolve(cancelled, token=_Token())
+    assert await _resolve(self_cancel, token=_Token()) == _attested()
+
+
+async def test_a_slow_hook_loses_its_result_rather_than_the_loop() -> None:
+    """The timeout is only meaningful because the call is off the loop.
+
+    Measured before containment existed: an enclosing
+    ``asyncio.wait_for(timeout=2)`` could NOT interrupt a 30-second sync hook,
+    because the blocking call held the loop the timer needed. Here the hook
+    outlives its budget, the call falls through to the token, and the event
+    still ships.
+    """
+
+    def slow(_c: Any) -> Principal:
+        time.sleep(2.0)
+        return Principal(user_id="employee-1")
+
+    t0 = time.monotonic()
+    got = await _resolve_with_timeout(slow, 0.2, token=_Token())
+    assert got == _attested()
+    assert time.monotonic() - t0 < 1.5, "the hook was not abandoned at its deadline"
+
+
+async def test_a_blocking_hook_does_not_stall_concurrent_calls() -> None:
+    """The headline: a vendor's plain ``def`` doing I/O must suspend its OWN
+    request and nothing else. Measured pre-fix at 1 tick where ~25 were due."""
+    ticks = 0
+    stop = asyncio.Event()
+
+    async def heartbeat() -> None:
+        nonlocal ticks
+        while not stop.is_set():
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    def blocks(_c: Any) -> Principal:
+        time.sleep(0.3)
+        return Principal(user_id="employee-1")
+
+    beat = asyncio.create_task(heartbeat())
+    await asyncio.sleep(0.02)
+    await _resolve(blocks, token=_Token())
+    stop.set()
+    await beat
+    assert ticks > 10, f"the event loop was blocked during the hook: {ticks} ticks"
 
 
 # --- the normalizer's issuer rules (found by /code-review, 2026-09-11) -------

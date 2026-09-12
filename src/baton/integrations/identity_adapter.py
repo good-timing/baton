@@ -48,13 +48,13 @@ reads where the shortcut is the buggier path.
 
 from __future__ import annotations
 
-import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from baton.identity import HASH_SCHEME, VENDOR_HASH_SCHEME, Principal, hash_user_id
+from baton.integrations._hooks import run_vendor_hook
 
 if TYPE_CHECKING:
     # Type-only, and it has to be: ``_config`` imports ``ResolveUserHook`` and
@@ -118,9 +118,7 @@ async def resolve_principal_via_hook(
     a miss, logged, never a partially-built ``Principal``.
     """
     try:
-        result = hook(context)
-        if inspect.isawaitable(result):
-            result = await result
+        result = await run_vendor_hook(hook, context, hook_name="resolve_user", logger=logger)
     except Exception:
         logger.warning("baton: resolve_user hook raised; falling through", exc_info=True)
         return None
@@ -134,10 +132,16 @@ async def resolve_principal_via_hook(
             type(result).__name__,
         )
         return None
-    if not isinstance(result.user_id, str) or not result.user_id:
+    if not isinstance(result.user_id, str) or not result.user_id.strip():
         # An empty user_id would hash to a real, stable digest naming nobody,
         # merging every such caller into one actor — the exact collapse this
         # field exists to undo. A miss, not a value.
+        #
+        # ⚠ ``.strip()``, not truthiness. ``hash_user_id`` canonicalizes with
+        # NFC → strip → lower, so " " and "\t\n" hash IDENTICALLY — measured
+        # ``h1:14fa5f91…`` for both. A blank header value or a padded CHAR(n)
+        # column is the reachable shape, and truthiness waves it straight
+        # through into exactly the merge the sentence above claims to stop.
         logger.warning(
             "baton: resolve_user hook returned a Principal with an empty or "
             "non-string user_id — ignoring it and falling through."
@@ -185,7 +189,13 @@ def principal_from_access_token(token: Any) -> Principal | None:
         if not isinstance(claims, dict):
             return None
         sub = claims.get("sub")
-        if not isinstance(sub, str) or not sub:
+        # ``.strip()`` for the same reason as the hook path's guard: the
+        # canonicalizer strips, so a whitespace-only subject is a phantom
+        # actor every such caller merges into. Far less reachable here — a
+        # verifier would have to mint one — but the two paths feed one hash
+        # and a guard that differs between them is a guard waiting to be
+        # copied wrong.
+        if not isinstance(sub, str) or not sub.strip():
             return None
         issuer = claims.get("iss")
         if not isinstance(issuer, str) or not issuer:

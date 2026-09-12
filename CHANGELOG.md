@@ -56,6 +56,88 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Changed
 
+- ⚠ **Vendor hooks now run OFF the event loop, under a 5-second budget — a
+  behaviour change to `resolve_session_id`, which is already shipped.** A
+  vendor's hook is somebody else's code on the vendor's hot path, per tool
+  call, and a plain `def` that does I/O to answer (a directory lookup, a
+  database read) was suspending not just its own request but every concurrent
+  tool call on the server.
+
+  **Measured before the fix, not inferred:** a hook doing `time.sleep(0.5)`
+  let ONE heartbeat tick through where ~25 were due, and a 30-second hook
+  **could not be interrupted by an enclosing `asyncio.wait_for(timeout=2)`** —
+  it returned after the full 30 seconds, because the blocking call held the
+  loop the timer needed. That is why the thread and the timeout are one fix:
+  neither works without the other.
+
+  The worker comes from **`anyio`**, which both integration extras now declare
+  explicitly. It is free in the same sense `pydantic` is, and measured rather
+  than assumed: `mcp` requires `anyio` at every point in the supported band
+  (1.20.0 `anyio>=4.5`, 2.2.0 `anyio>=4.10`) and `fastmcp` gets it through
+  `mcp`, so a wrapped vendor inherits nothing new.
+
+  ⚠ **Known limitation, accepted deliberately: a hook wedged forever delays
+  process shutdown.** anyio's worker threads are not daemon threads, so Python
+  joins them at interpreter exit. A hook that is merely slow finishes and
+  releases; only one wedged with no driver-side timeout holds exit, and then
+  only until your orchestrator's grace period expires. **No events are lost** —
+  the sink's `aclose` runs before interpreter exit. The alternative was ~38
+  lines of hand-rolled threading, which had already shipped two bugs of its
+  own; a test pins this so we find out if anyio ever changes it.
+
+  **The caller's `contextvars` ARE carried across**, so a hook can still read
+  `get_access_token()`, `get_http_headers()`, and anything your own ASGI
+  middleware sets — all of which are contextvar-backed. This is not incidental:
+  the natural sync hook is
+  `def resolve_user(ctx): return Principal(user_id=get_access_token().claims["sub"])`,
+  and without the copy it would read `None`, raise, be contained, and produce
+  no identity at all — silently, forever, in the one deployment shape the hook
+  exists for. The copy is one-way: a hook setting a contextvar cannot rewrite
+  the request's own context.
+
+  **Hooks in flight are capped at 64.** The timeout abandons the future, never
+  the thread, so a vendor dependency that stops answering without a reset (a
+  connection blackhole, no driver-side timeout) strands one worker per tool
+  call. Unbounded, that turns the containment layer into the thing that takes
+  the server down. Past the cap a hook fails fast and the caller falls through,
+  which is the same degrade as a timeout.
+
+  **Two things to know if you already ship a `resolve_session_id` hook:**
+  1. **A sync hook now runs on a worker thread**, which has no running event
+     loop — so a sync hook that calls asyncio APIs must become `async def`.
+     An `async def` hook is awaited directly and never sees a thread.
+     Contextvars are unaffected either way, per above.
+  2. **A hook slower than 5 seconds now loses its result** and degrades
+     exactly like one that raised: the caller falls through and the event
+     still ships. Previously it simply blocked for as long as it took. A
+     `TimeoutError` the hook raises *itself* is reported as the hook raising,
+     not as the budget expiring, so the real cause survives in your logs.
+
+  Cost is ~45µs per call, and only where a hook is configured — both hook
+  fields default to `None`, so the default path never reaches this code. An
+  `async def` hook skips the thread entirely (measured 1.6µs against 48µs).
+
+  Cancellation is now unambiguous: the worker hands its outcome back as a
+  value, so a `CancelledError` a hook raises for its own reasons is contained
+  (a hook's private control flow may not cancel the vendor's tool call), while
+  a genuine cancellation of the enclosing task still propagates — a capture
+  hook must never swallow one, or a cancelled request keeps running.
+
+  **`resolve_session_id` also stops accepting a whitespace-only return.** It
+  was truthiness-checked and passed through raw, so a hook returning `" "` — a
+  blank header, a padded `CHAR(n)` column, a failed lookup formatting as
+  spaces — became the `session_id` itself, filing every such call under one
+  session and merging strangers' conversations. That is worse than the same
+  bug on `user_id`, which only misattributes an actor. Blank now falls through
+  to SPEC §3.4's ladder, and a padded value is stripped rather than becoming a
+  second session.
+
+  **`VendorConfig.scrubber` is deliberately NOT included.** It is typed
+  `Callable[[Any], Any]` — sync by contract — and runs regex across 36 call
+  sites' worth of payload per event. That is CPU work under the GIL, where a
+  thread buys nothing and costs a context switch on every event rather than on
+  every configured hook. Different shape, different fix.
+
 - ⚠ **`docs/SPEC.md §11.4`'s pseudonym discriminator is rewritten, and a
   consumer that implemented the old rule literally is now wrong.** The rule was
   "the `h1:` prefix is the discriminator; treat its absence as personal data",
