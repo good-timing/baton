@@ -56,6 +56,25 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Changed
 
+- **A blank or padded `mcp-session-id` header no longer becomes the session
+  id.** SPEC §3.4 rung 4 read the header with no strip and no blank check, so
+  `"  "` became a real `session_id` — filing every such call under one session
+  and merging strangers' conversations — and `" abc "` vs `"abc"` split one
+  client into two. Rung 0 (the `resolve_session_id` hook) got exactly this rule
+  earlier on this branch; the next rung down the same ladder, feeding the same
+  grouping key, did not. Also the correct reading of a header: RFC 9110 §5.5
+  makes surrounding whitespace no part of a field value.
+
+- **`anyio` is now a core dependency** (`anyio>=4.5`), not an extra. It runs
+  vendor hooks off the event loop, and `import baton` loads that module on
+  every import — so while anyio sat in the `[mcp]` / `[fastmcp]` extras, a
+  plain `pip install baton-sdk` could not `import baton` at all. It is the one
+  dependency here that is not free by the usual rule: a library-API user
+  (`Client` / `Trace`, no MCP server) now installs anyio for a code path they
+  cannot reach. Taken deliberately; anyio is small and pure Python, and MCP
+  vendors already have it through `mcp`. Nothing to do on upgrade.
+
+
 - ⚠ **Vendor hooks now run OFF the event loop, under a 5-second budget — a
   behaviour change to `resolve_session_id`, which is already shipped.** A
   vendor's hook is somebody else's code on the vendor's hot path, per tool
@@ -95,12 +114,36 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   exists for. The copy is one-way: a hook setting a contextvar cannot rewrite
   the request's own context.
 
-  **Hooks in flight are capped at 64.** The timeout abandons the future, never
-  the thread, so a vendor dependency that stops answering without a reset (a
-  connection blackhole, no driver-side timeout) strands one worker per tool
+  **Wedged hooks are capped at 64 threads, on a thread pool of Baton's own.** The timeout abandons the future,
+  never the thread, so a vendor dependency that stops answering without a reset
+  (a connection blackhole, no driver-side timeout) strands one worker per tool
   call. Unbounded, that turns the containment layer into the thing that takes
   the server down. Past the cap a hook fails fast and the caller falls through,
-  which is the same degrade as a timeout.
+  which is the same degrade as a timeout — reported as a refusal, not as the
+  budget expiring, because "your dependency is down" and "this hook is slow"
+  send an operator to different places.
+
+  ⚠ **anyio's own thread limiter does not provide that cap, and this entry
+  claimed a cap that did not exist until it was measured.** Abandoning on
+  cancel returns the limiter token the instant the deadline fires, while the
+  worker stays parked in the vendor's blocking call — so the next tool call
+  finds a free token and starts another thread. Measured: 65 SEQUENTIAL wedged
+  hooks, the ordinary one-call-at-a-time traffic shape, grew 65 threads against
+  a limiter of 40. The cap is now counted by the workers themselves.
+
+  **Hooks no longer share the thread pool your own sync handlers run on.**
+  fastmcp dispatches every sync tool handler, resource, prompt and dependency
+  through anyio's default 40-thread pool. Sharing it meant a hook queued behind
+  your handlers *inside* its own deadline — measured, with 40 slow sync
+  handlers in flight a hook that returns instantly failed as "exceeded 5.0s"
+  having never run, after adding the whole budget as latency to the tool call
+  it was meant to be cheap for. Hook dispatch now has its own limiter, so
+  neither pool can starve the other. The 64 cap sits deliberately above that
+  limiter's 40: at most 40 hooks can be running and awaited, so reaching 64
+  takes threads that outlived their deadline, which is the condition being
+  capped. An equal cap fired on health instead — 40 concurrent 200ms lookups,
+  nothing wedged, got the next call refused and the vendor told their working
+  hook was stuck.
 
   **Two things to know if you already ship a `resolve_session_id` hook:**
   1. **A sync hook now runs on a worker thread**, which has no running event

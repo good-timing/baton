@@ -142,6 +142,7 @@ name = "baton-sdk"
 version = "0.8.2"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "pydantic" },
 ]
 
@@ -182,6 +183,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.5" },
     { name = "baton-sdk", extras = ["all"], marker = "extra == 'dev'" },
     { name = "baton-sdk", extras = ["fastmcp"], marker = "extra == 'all'" },
     { name = "baton-sdk", extras = ["http"], marker = "extra == 'all'" },

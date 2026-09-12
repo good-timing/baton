@@ -40,6 +40,18 @@ def session_id_from_headers(headers: Any) -> str | None:
     ``mcp-session-id`` HTTP header. ``None`` on stdio (no HTTP request), on
     stateless HTTP, and on new-spec (SEP-2567) streamable HTTP, where the
     header is absent by protocol design rather than by accident. Never raises.
+
+    ⚠ **Stripped, and blank is a MISS** — the same rule rung 0 got in
+    ``9ab5030``, for the same reason and on the same field. ``session_id`` is
+    the primary grouping key, so a whitespace-only value would file every such
+    call under one session and merge STRANGERS' conversations, while
+    ``" abc "`` and ``"abc"`` would become two sessions for one client.
+    Falling through to the next rung yields a real id instead. This is also
+    the correct reading of a header rather than a house rule: RFC 9110 §5.5
+    makes surrounding whitespace no part of a field value. h11 already strips
+    it on the way in, but the header mapping here is whatever the transport
+    hands us — the official adapter takes it from ``request.headers`` — so the
+    guard belongs where the value is read, not where we hope it was cleaned.
     """
     if not headers:
         return None
@@ -47,4 +59,6 @@ def session_id_from_headers(headers: Any) -> str | None:
         value = headers.get(MCP_SESSION_ID_HEADER)
     except (AttributeError, TypeError):
         return None
-    return value if isinstance(value, str) and value else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()

@@ -37,6 +37,25 @@ dependencies = [
     # ``[http]`` extra (see below): only ``HttpSink`` needs it, and it too is free
     # on any mcp/fastmcp server.
     "pydantic>=2.0",
+    # ``anyio`` runs vendor hooks off the event loop (``integrations/_hooks``).
+    # CORE rather than an extra, decided 2026-09-11, and it is the one
+    # dependency here that is NOT free by the rule above: a LIBRARY-API user
+    # (``Client`` / ``Trace``, no MCP server) installs it for a code path they
+    # cannot reach. Taken deliberately — anyio is small and pure Python, and
+    # the alternative was importing it inside the function, because
+    # ``baton/__init__.py`` loads ``VendorConfig`` on every ``import baton``
+    # and a module-scope import there broke ``import baton`` outright on a
+    # core-only install. A lazy import that exists only to keep a dependency
+    # list tidy is its own trap: it moves the failure from install time to
+    # whichever tool call first runs a hook, and the next module-scope
+    # ``import anyio`` anywhere under ``baton/`` re-breaks it silently.
+    # For MCP vendors — everyone else — it stays free: ``mcp`` requires anyio
+    # at every point in the supported band (1.20.0 ``anyio>=4.5``, 2.2.0
+    # ``anyio>=4.10``) and ``fastmcp`` gets it through ``mcp``. The ``>=4.5``
+    # floor matches the oldest ``mcp`` in band; nothing here uses anything
+    # newer than ``to_thread.run_sync(abandon_on_cancel=...)``, which predates
+    # it.
+    "anyio>=4.5",
 ]
 
 [project.urls]
@@ -76,17 +95,6 @@ Issues = "https://github.com/good-timing/baton/issues"
 # future major (2.0 already renamed the server class + instructions backing).
 mcp = [
     "mcp>=1.20,<3",
-    # ``anyio`` is DECLARED, not inherited. ``baton.integrations._hooks`` runs
-    # a vendor hook on an anyio worker thread, and relying on a library that
-    # merely happens to be installed is a dependency taken by accident. It is
-    # free in the same sense ``pydantic`` is, and measured rather than assumed:
-    # ``mcp`` requires it at every point in this band — 1.20.0 ``anyio>=4.5``,
-    # 2.2.0 ``anyio>=4.10`` — so a wrapped vendor inherits nothing new. The
-    # floor is ``>=4.5`` to match the oldest ``mcp`` in band; nothing here uses
-    # anything newer than ``to_thread.run_sync(abandon_on_cancel=...)``, which
-    # predates it.
-    "anyio>=4.5",
-
 ]
 # Adapts the standalone ``fastmcp`` library's ``fastmcp.FastMCP`` (different
 # project; advanced features like middleware not in the official SDK).
@@ -109,17 +117,6 @@ mcp = [
 # nothing that worked.
 fastmcp = [
     "fastmcp>=2.14,<5",
-    # ``anyio`` is DECLARED, not inherited. ``baton.integrations._hooks`` runs
-    # a vendor hook on an anyio worker thread, and relying on a library that
-    # merely happens to be installed is a dependency taken by accident. It is
-    # free in the same sense ``pydantic`` is, and measured rather than assumed:
-    # ``mcp`` requires it at every point in this band — 1.20.0 ``anyio>=4.5``,
-    # 2.2.0 ``anyio>=4.10`` — so a wrapped vendor inherits nothing new. The
-    # floor is ``>=4.5`` to match the oldest ``mcp`` in band; nothing here uses
-    # anything newer than ``to_thread.run_sync(abandon_on_cancel=...)``, which
-    # predates it.
-    "anyio>=4.5",
-
 ]
 # ``HttpSink`` (the production path — POST events to a Baton Console) needs an
 # async HTTP client. httpx is required (not urllib): the SDK emits from inside

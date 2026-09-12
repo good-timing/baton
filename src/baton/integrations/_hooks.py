@@ -22,7 +22,9 @@ loop, so the two halves are one fix and neither works alone.
 worker needs WRONG on the first pass: it dropped the caller's ``contextvars``
 (so a hook calling ``get_access_token()`` — the whole point of ``resolve_user``
 — read ``None``), and it had no ceiling (so a wedged dependency stranded one
-thread per tool call). Both are free here. Concurrency primitives are exactly
+thread per tool call). The contextvar copy is free here; **the ceiling is
+NOT**, and this module claimed it was until it was measured — see
+``HOOK_THREAD_CEILING``. Concurrency primitives are exactly
 the kind of code where reimplementing to avoid a dependency costs more than
 the dependency, and ``anyio`` is not a real dependency anyway: ``mcp`` requires
 it at every point in the supported band (1.20.0 ``anyio>=4.5``, 2.2.0
@@ -31,7 +33,9 @@ the integration extras is as free as ``pydantic`` already is.
 
 ``abandon_on_cancel=True`` is what lets the deadline fire while the hook is
 still blocked: anyio's own wording is that the thread "will still run its
-course but its return value ... will be ignored".
+course but its return value ... will be ignored". ⚠ **It also releases anyio's
+limiter token at that moment**, which is why anyio's thread limiter is not a
+ceiling on wedged hooks and ``HOOK_THREAD_CEILING`` below exists.
 
 ⚠ **KNOWN LIMITATION, accepted deliberately: a truly wedged hook delays
 process shutdown.** anyio's ``WorkerThread`` is created without
@@ -41,7 +45,9 @@ abandoned a 120-second hook at a 0.3-second deadline was still parked in
 ``threading._shutdown`` six seconds later, under both ``asyncio.run`` and
 ``anyio.run``. A hook that is merely SLOW finishes and releases; only one
 wedged forever (a connection blackhole with no driver timeout) holds exit, and
-then only until the orchestrator's grace period expires. No events are lost —
+then only until the orchestrator's grace period expires — for at most
+``HOOK_THREAD_CEILING`` of them, which is the second reason that ceiling is
+not merely about memory. No events are lost —
 the sink's ``aclose`` runs before interpreter exit. ``test_hook_containment``
 pins this so we find out if anyio ever makes those threads daemon; the trade
 was taken knowingly, against ~38 lines of threading we would otherwise own
@@ -65,8 +71,19 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import threading
 from typing import Any
 
+# ⚠ ``anyio`` is a CORE dependency, and this import is why. ``baton/__init__``
+# imports ``VendorConfig``, which imports this module, on EVERY ``import
+# baton`` — so while anyio sat in the ``[mcp]`` / ``[fastmcp]`` extras this
+# line broke ``import baton`` outright on a core-only install: the library-API
+# path (``Client`` / ``AsyncClient`` / ``Trace``), which never runs a vendor
+# hook at all. Measured 2026-09-11 with anyio blocked by a meta-path finder.
+# It was briefly fixed by importing anyio inside ``run_vendor_hook`` instead;
+# 2026-09-11 (Ujwal) moved the dependency to core, so the import comes back to
+# where it belongs. ⚠ **If anyio ever leaves core, this line is the break** —
+# ``pyproject.toml`` carries the reasoning.
 import anyio.to_thread
 
 #: A hook gets this long, total, including any awaitable it returns. Five
@@ -74,6 +91,109 @@ import anyio.to_thread
 #: that a real directory or database lookup finishes, short enough that a
 #: wedged one does not hold a tool call open past a human's patience.
 HOOK_TIMEOUT_SECONDS = 5.0
+
+#: Hook dispatches allowed to run at once, on a limiter of OUR OWN.
+#:
+#: ⚠ **Not anyio's default pool, and sharing it was measured harmful.** fastmcp
+#: runs every sync tool handler, sync resource, sync prompt and sync dependency
+#: through ``anyio.to_thread.run_sync`` with no limiter — the default 40-token
+#: pool. A hook dispatched into that pool queues behind the vendor's own
+#: handlers, INSIDE our deadline: measured 2026-09-11, with 40 slow sync tool
+#: handlers in flight, a hook that returns instantly failed with "exceeded
+#: 2.0s" having never run, after adding the entire budget as pure latency to
+#: the vendor's tool call. A separate limiter makes the two pools independent
+#: in both directions — the vendor's handlers no longer queue behind hooks
+#: either.
+HOOK_THREAD_CONCURRENCY = 40
+
+#: Live vendor-hook threads past which a call is refused rather than started.
+#:
+#: ⚠ **anyio's thread limiter does not bound this, and believing it did was a
+#: measured error.** Under ``abandon_on_cancel=True`` the limiter token is
+#: returned the instant the deadline fires, while the worker stays parked in
+#: the vendor's blocking call — so the NEXT tool call finds a free token and
+#: starts thread N+1. Measured 2026-09-11: 65 SEQUENTIAL wedged hooks (a
+#: dependency blackhole with no driver timeout — one tool call at a time, the
+#: ordinary traffic shape) grew 65 threads against a limiter of 40. The
+#: limiter holds only under CONCURRENT arrival, where the calls past it block
+#: waiting for a token and expire before dispatching, which is the shape the
+#: original test happened to use and the reason it could not fail.
+#:
+#: Every one of those threads is non-daemon (see the module note), so the leak
+#: compounds the shutdown delay rather than merely wasting memory.
+#:
+#: ⚠ **Deliberately ABOVE ``HOOK_THREAD_CONCURRENCY``, and it was 40 — equal to
+#: it — for one commit, which made it fire on health.** At most
+#: ``HOOK_THREAD_CONCURRENCY`` hooks can be running-and-awaited, so an equal
+#: ceiling is reached at full legitimate utilization: measured 2026-09-11, 40
+#: concurrent 200ms lookups — nothing wedged, every one of them about to
+#: succeed — got the 41st refused, and told the vendor their working hook was
+#: wedged. With headroom, the only way to reach this number is abandoned
+#: threads piling up, which is the condition the ceiling is named for. The gap
+#: is what "wedged" means here: 64 live means at least 24 are abandoned.
+HOOK_THREAD_CEILING = 64
+
+# Counted by the WORKER, not reserved by the caller. A reservation taken
+# before ``run_sync`` leaks whenever the dispatch is cancelled before the
+# vendor's function actually runs — waiting for an anyio token is exactly such
+# a window — and a leaked slot is permanent, which would brick every hook
+# after enough of them. Incrementing inside the thread cannot leak: the same
+# frame that increments always decrements. The cost is that the check is a
+# check and not a reservation, so a BURST can overshoot by however many calls
+# pass it at once; anyio's limiter bounds that overshoot to its own token
+# count, and the unbounded SEQUENTIAL case — the one that was real — is
+# single-in-flight and so exact.
+_live_lock = threading.Lock()
+_live_hook_threads = 0
+
+# Built lazily and once, and the reason is narrower than "it needs a loop".
+# Measured on anyio 4.15.1: ``CapacityLimiter(n)`` constructed with NO running
+# loop returns a ``CapacityLimiterAdapter`` that defers creating the real
+# backend limiter until first use, while the same call INSIDE a running loop
+# returns a backend limiter bound to that loop there and then. This module is
+# imported whenever ``baton`` is, so which of those two a module-level constant
+# got would depend on the vendor's import site. Building it at first use is
+# always the second case, deliberately, rather than by accident of where the
+# import happened.
+#
+# ⚠ It is process-global, unlike anyio's DEFAULT limiter, which is per-event-
+# loop (a ``RunVar``). One server, one loop, so the distinction does not arise
+# in the shape this ships into; a process that ran hooks under two loops would
+# share one ceiling across both. Measured to work across sequential loops
+# — the suite runs a fresh loop per test — but that is an observation, not a
+# property being relied on.
+_limiter: Any = None
+
+
+def _hook_limiter() -> Any:
+    global _limiter
+    if _limiter is None:
+        import anyio
+
+        _limiter = anyio.CapacityLimiter(HOOK_THREAD_CONCURRENCY)
+    return _limiter
+
+
+def live_hook_threads() -> int:
+    """Vendor-hook worker threads currently inside a vendor's callable."""
+    with _live_lock:
+        return _live_hook_threads
+
+
+def _counted(fn: Any, args: tuple[Any, ...]) -> Any:
+    """Wrap ``fn`` so the thread it runs on is counted for as long as it runs."""
+
+    def call() -> Any:
+        global _live_hook_threads
+        with _live_lock:
+            _live_hook_threads += 1
+        try:
+            return fn(*args)
+        finally:
+            with _live_lock:
+                _live_hook_threads -= 1
+
+    return call
 
 
 class HookFailed(Exception):
@@ -140,12 +260,31 @@ async def run_vendor_hook(
         async with deadline:
             if inspect.iscoroutinefunction(fn):
                 return await fn(*args)
+            # Refused rather than queued: a caller waiting for a slot would
+            # spend its whole budget waiting and then report the deadline,
+            # which reads as "this hook is slow" when the truth is "this
+            # vendor's dependency is down and the threads are already parked".
+            #
+            # ⚠ The count is process-wide and shared by BOTH hook kinds, so a
+            # wedged ``resolve_user`` will also refuse ``resolve_session_id``.
+            # That is the intent — the exhausted resource is threads, not a
+            # particular hook — but it means this message names the caller,
+            # not necessarily the culprit.
+            live = live_hook_threads()
+            if live >= HOOK_THREAD_CEILING:
+                raise HookFailed(
+                    f"{hook_name} hook refused: {live} vendor-hook threads are "
+                    f"still running past their deadline (ceiling "
+                    f"{HOOK_THREAD_CEILING}); a hook's dependency is wedged"
+                )
             # ``abandon_on_cancel=True`` so the deadline can fire while the
             # hook is still blocked; the thread runs its course and its result
             # is discarded. anyio copies the caller's context into the worker,
             # so a hook may read ``get_access_token()`` / ``get_http_headers()``
             # — both contextvar-backed, and the reason this call exists.
-            result = await anyio.to_thread.run_sync(lambda: fn(*args), abandon_on_cancel=True)
+            result = await anyio.to_thread.run_sync(
+                _counted(fn, args), abandon_on_cancel=True, limiter=_hook_limiter()
+            )
             # A plain ``def`` can still return a coroutine — a lambda wrapping
             # an async call is the shape. Awaited under the SAME deadline, so
             # the budget is for the hook, not per stage of it.
