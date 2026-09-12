@@ -54,7 +54,7 @@ was taken knowingly, against ~38 lines of threading we would otherwise own
 forever and have already shipped bugs in.
 
 **Cost, measured, and who pays it.** ~64µs per call. It is paid only where a
-hook is CONFIGURED — both hook fields default to ``None`` and the default path
+hook is CONFIGURED — the hook field defaults to ``None`` and the default path
 never reaches this module — and an ``async def`` hook skips the thread
 entirely (measured 1.6µs), because a coroutine cannot block the loop by being
 called.
@@ -265,11 +265,16 @@ async def run_vendor_hook(
             # which reads as "this hook is slow" when the truth is "this
             # vendor's dependency is down and the threads are already parked".
             #
-            # ⚠ The count is process-wide and shared by BOTH hook kinds, so a
-            # wedged ``resolve_user`` will also refuse ``resolve_session_id``.
-            # That is the intent — the exhausted resource is threads, not a
-            # particular hook — but it means this message names the caller,
-            # not necessarily the culprit.
+            # ⚠ The count is process-wide, so a wedged hook in one place
+            # refuses hooks everywhere. That is the intent — the exhausted
+            # resource is threads, not a particular hook — but it means this
+            # message names the caller, not necessarily the culprit. It was
+            # written when there were TWO hook kinds; ``resolve_session_id``
+            # was removed 2026-09-12 and ``resolve_user`` is now the only
+            # caller, so today the caller and the culprit coincide. Kept
+            # process-wide rather than narrowed: the next hook re-creates the
+            # case, and a ceiling that has to be re-widened is worse than one
+            # that never assumed a count.
             live = live_hook_threads()
             if live >= HOOK_THREAD_CEILING:
                 raise HookFailed(

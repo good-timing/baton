@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-import logging
 import os
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
 from baton._dsn import parse_dsn, resolve_dsn, select_dsn
 from baton.events import DEFAULT_CONSENT_TOKEN
-from baton.integrations._hooks import run_vendor_hook
 from baton.integrations.identity_adapter import USER_ID_MODES, ResolveUserHook
 from baton.sinks import HttpSink, Sink, StdoutSink
-
-logger = logging.getLogger(__name__)
 
 # ``_VENDOR_ID_PATTERN`` is imported, not defined here, because a DSN's server
 # segment IS a vendor_id and both rules have to be one object. Restating the
@@ -29,52 +25,26 @@ _PROACTIVE_MODES: frozenset[str] = frozenset({"on", "off"})
 
 @dataclass(frozen=True)
 class SessionResolutionContext:
-    """Normalized input to ``VendorConfig.resolve_session_id``.
+    """Normalized input to ``VendorConfig.resolve_user``.
 
     Deliberately does not carry the raw SDK ``Context`` object — the
     official ``mcp`` and standalone ``fastmcp`` libraries expose different,
     adapter-specific ``Context`` types. This shape is what's already
     extracted for both adapters (headers, meta), so one hook works
     unmodified regardless of which adapter a vendor is on.
+
+    ⚠ **The name is a fossil.** This was built for
+    ``VendorConfig.resolve_session_id``, which was REMOVED 2026-09-12 (SPEC
+    §3.4 rung 0). ``resolve_user`` had already adopted the same four fields,
+    so the shape outlived the hook it was named for. Kept under its released
+    name rather than renamed: it has been public since 0.7.x and a rename is
+    a second breaking change for a cosmetic gain.
     """
 
     headers: Mapping[str, str] | None
     meta: dict[str, Any] | None
     tool_name: str
     arguments: dict[str, Any]
-
-
-ResolveSessionIdHook = Callable[[SessionResolutionContext], "Awaitable[str | None] | str | None"]
-
-
-async def resolve_via_hook(
-    hook: ResolveSessionIdHook, context: SessionResolutionContext
-) -> str | None:
-    """Call a vendor's ``resolve_session_id`` hook and normalize its result.
-
-    Never raises — an exception is logged and treated as a miss so the
-    caller falls through to the SPEC §3.4 ladder unchanged. Accepts sync or
-    async hooks; the containment in ``_hooks`` carries the caller's
-    contextvars across, so a hook may still read ``get_http_headers()``.
-
-    ⚠ **A whitespace-only return is a MISS, not an id.** The value is passed
-    through RAW — nothing downstream normalizes it — and ``session_id`` is the
-    primary grouping key, so a hook returning ``" "`` (a blank header, a padded
-    ``CHAR(n)`` column, a failed lookup that formats as spaces) would file every
-    such call under one session and merge STRANGERS' conversations. That is
-    worse than the same bug on ``user_id``, which only misattributes an actor.
-    Falling through to §3.4's ladder yields a real id instead.
-    """
-    try:
-        result = await run_vendor_hook(hook, context, hook_name="resolve_session_id", logger=logger)
-    except Exception:
-        logger.warning("baton: resolve_session_id hook raised; falling through", exc_info=True)
-        return None
-    if not isinstance(result, str) or not result.strip():
-        return None
-    # Returned STRIPPED, so two hooks that differ only in padding do not become
-    # two sessions. The vendor's intent is the id, not its whitespace.
-    return result.strip()
 
 
 def _resolve_tenant_id(explicit: str | None, vendor_id: str) -> str:
@@ -126,7 +96,7 @@ class VendorConfig:
     ``Sink`` object landed in ``consent_token`` and rode onto the wire (0.7.1
     is the release that FIXED it); at
     0.8.0 ``default_agent_runtime`` was removed from slot 6 and two fields were
-    inserted before ``resolve_session_id``, so a 0.7.2-shaped call put the
+    inserted before the then-existing ``resolve_session_id``, so a 0.7.2-shaped call put the
     string ``"unknown"`` in ``scrubber`` — a non-callable, constructed without
     complaint, failing far from the call site if at all. Both releases promised
     the opposite in their notes, and the guard written after the first one
@@ -267,18 +237,6 @@ class VendorConfig:
     while historical ones keep ``h1:``. The discontinuity is accepted and
     documented — the raw value was never stored, so nothing can be re-hashed."""
 
-    resolve_session_id: ResolveSessionIdHook | None = None
-    """Optional vendor-supplied session-id resolver, checked BEFORE the SPEC
-    §3.4 ladder (rung 0) — a vendor who already has their own session/auth
-    concept can hand Baton a real correlation key directly, bypassing MCP
-    transport/meta entirely. The only mechanism that works on new-spec
-    (SEP-2567) and true-stateless HTTP, where nothing MCP-native is
-    observable by protocol design. A non-empty string return wins outright;
-    ``None``/empty or a raised exception (logged, never propagated) falls
-    through to the ladder unchanged. Return an opaque, non-PII id —
-    passed through raw, not hashed; hashing/derivation is the vendor's
-    responsibility if the raw value is sensitive. Sync or async."""
-
     resolve_user: ResolveUserHook | None = None
     """Optional vendor-supplied identity resolver, checked BEFORE the verified
     access token and winning outright when both resolve (SPEC §11.4).
@@ -289,8 +247,8 @@ class VendorConfig:
     supported version. A vendor already authenticating stdio users out of band
     knows exactly who the user is and previously had no way to say so.
 
-    Takes the same ``SessionResolutionContext`` as ``resolve_session_id`` and
-    returns ``Principal | None``; ``None``, a wrong type, or a raised exception
+    Takes a ``SessionResolutionContext`` — headers, meta, tool name and
+    arguments — and returns ``Principal | None``; ``None``, a wrong type, or a raised exception
     (logged, never propagated) falls through to the token path unchanged.
     Sync or async. Import the return type as ``from baton import Principal``.
 
@@ -311,8 +269,8 @@ class VendorConfig:
     ⚠ **It is not ``default_agent_runtime`` returning.** That was a static
     value set once at install, asserting over whatever a client declared per
     connection, and could only be right in a single-client deployment. This is
-    a callable invoked per request with that request's own context — the same
-    mechanism as ``resolve_session_id`` rung 0, and a different failure mode."""
+    a callable invoked per request with that request's own context, and a
+    different failure mode."""
 
     tenant_id: str | None = None
     """Account identifier for the envelope's ``tenant_id`` (SPEC §11.4).

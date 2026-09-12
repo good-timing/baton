@@ -10,6 +10,47 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+### Removed
+
+- ⚠ **`VendorConfig.resolve_session_id` — SPEC §3.4 rung 0 — is REMOVED, on
+  both SDKs.** A breaking removal from the vendor-facing config surface, and
+  the second pre-1.0 config removal in as many cycles (see `defaultAgentRuntime`
+  below); recorded here rather than taken quietly. Nothing on the wire changes
+  and `session_id` is still populated on every event by the rungs below.
+
+  **Why:** it keyed the session on an identifier the SDK did not mint, which is
+  exactly what retired rungs 1-2 on 2026-09-09. The rung differed from those
+  two only in WHO supplied the value — a vendor rather than a client — and the
+  join rule does not draw that line. The SDK mints `call_id` and keys on that;
+  everything else is emitted as data and grouped downstream, where the choice
+  can be revised and re-run against stored events.
+
+  **What replaces it:** `VendorConfig.resolve_user`, added in this same cycle
+  above. A vendor who knows who is calling says so through `user_id`, which a
+  consumer can partition on — instead of pre-baking that knowledge into a
+  grouping key at capture time.
+
+  **Nothing to do on upgrade unless you passed `resolve_session_id=`,** in
+  which case the keyword now raises `TypeError` at construction (the class has
+  been keyword-only since 0.8.1, so this fails loudly at the call site rather
+  than silently shifting a slot). No `session_id` value changes for any
+  deployment: the hook shipped with zero callers, verified across all eight
+  repos and the website at removal.
+
+  ⚠ **One known regression, stated because it is real even though nobody is
+  hit by it today.** This rung was the only mechanism that worked on new-spec
+  (SEP-2567) and true-stateless streamable HTTP, where nothing below it is
+  observable by protocol design, and SPEC rung 5 (per-event UUID) is still
+  unbuilt. Those shapes now terminate on the install-time process-wide id,
+  which is stable but merges every client of a multi-user server. A vendor who
+  was about to write this hook for that shape has lost the mechanism; the
+  answer there is the consumer-side per-identity partition, not a new rung.
+
+  Python KEEPS the `SessionResolutionContext` type — `resolve_user` takes it,
+  and it is public under that name. TypeScript drops it along with
+  `ResolveSessionIdHook`, since it has no identity hook yet and nothing else
+  consumed either type.
+
 ### Added
 
 - **`VendorConfig.resolve_user` — a vendor-supplied identity resolver, and the
@@ -18,7 +59,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   contextvar that MCP's bearer-auth ASGI middleware sets and stdio has no ASGI.
   A vendor already authenticating stdio users out of band knew exactly who the
   user was and had no way to say so. The hook is a callable invoked per request
-  with the same `SessionResolutionContext` that `resolve_session_id` takes,
+  with a `SessionResolutionContext` — headers, meta, tool name and arguments —
   returning `baton.Principal | None`; sync or async. It is checked **before**
   the verified access token and wins when both resolve — a gateway's token
   frequently names a service account rather than the person, while a hook
@@ -50,9 +91,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   fail-open guard for the life of the process.
 
 - **`baton.Principal` is now exported from the top-level package.** It is the
-  hook's return type, so unlike `resolve_session_id` — which returns a plain
-  `str` — the hook cannot be written without importing it. Additive; nothing
-  moved.
+  hook's return type, so the hook cannot be written without importing it.
+  Additive; nothing moved.
 
 ### Changed
 
@@ -60,10 +100,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   id.** SPEC §3.4 rung 4 read the header with no strip and no blank check, so
   `"  "` became a real `session_id` — filing every such call under one session
   and merging strangers' conversations — and `" abc "` vs `"abc"` split one
-  client into two. Rung 0 (the `resolve_session_id` hook) got exactly this rule
-  earlier on this branch; the next rung down the same ladder, feeding the same
-  grouping key, did not. Also the correct reading of a header: RFC 9110 §5.5
-  makes surrounding whitespace no part of a field value.
+  client into two. Rung 0 (the `resolve_session_id` hook) got exactly this
+  rule earlier on this branch; the next rung down the same ladder, feeding the
+  same grouping key, did not. Also the correct reading of a header: RFC 9110
+  §5.5 makes surrounding whitespace no part of a field value. (Rung 0 is
+  removed later in this cycle — see Removed. This fix outlives it: rung 4 is
+  now the top live rung, and the rule is its own.)
 
 - **`anyio` is now a core dependency** (`anyio>=4.5`), not an extra. It runs
   vendor hooks off the event loop, and `import baton` loads that module on
@@ -75,8 +117,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   vendors already have it through `mcp`. Nothing to do on upgrade.
 
 
-- ⚠ **Vendor hooks now run OFF the event loop, under a 5-second budget — a
-  behaviour change to `resolve_session_id`, which is already shipped.** A
+- ⚠ **Vendor hooks now run OFF the event loop, under a 5-second budget.** ⚠
+  **This entry was written about `resolve_session_id`, which is REMOVED later
+  in this same unreleased cycle (see Removed, above); the containment is
+  unchanged and now applies to `resolve_user` alone.** A
   vendor's hook is somebody else's code on the vendor's hot path, per tool
   call, and a plain `def` that does I/O to answer (a directory lookup, a
   database read) was suspending not just its own request but every concurrent
@@ -145,7 +189,9 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   nothing wedged, got the next call refused and the vendor told their working
   hook was stuck.
 
-  **Two things to know if you already ship a `resolve_session_id` hook:**
+  **Two things to know if you ship a hook** (written for
+  `resolve_session_id`, removed later in this cycle; both points apply
+  verbatim to `resolve_user`):
   1. **A sync hook now runs on a worker thread**, which has no running event
      loop — so a sync hook that calls asyncio APIs must become `async def`.
      An `async def` hook is awaited directly and never sees a thread.
@@ -156,8 +202,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
      `TimeoutError` the hook raises *itself* is reported as the hook raising,
      not as the budget expiring, so the real cause survives in your logs.
 
-  Cost is ~45µs per call, and only where a hook is configured — both hook
-  fields default to `None`, so the default path never reaches this code. An
+  Cost is ~45µs per call, and only where a hook is configured — the hook field
+  defaults to `None`, so the default path never reaches this code. An
   `async def` hook skips the thread entirely (measured 1.6µs against 48µs).
 
   Cancellation is now unambiguous: the worker hands its outcome back as a
@@ -166,14 +212,18 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   a genuine cancellation of the enclosing task still propagates — a capture
   hook must never swallow one, or a cancelled request keeps running.
 
-  **`resolve_session_id` also stops accepting a whitespace-only return.** It
-  was truthiness-checked and passed through raw, so a hook returning `" "` — a
-  blank header, a padded `CHAR(n)` column, a failed lookup formatting as
-  spaces — became the `session_id` itself, filing every such call under one
-  session and merging strangers' conversations. That is worse than the same
-  bug on `user_id`, which only misattributes an actor. Blank now falls through
-  to SPEC §3.4's ladder, and a padded value is stripped rather than becoming a
-  second session.
+  ~~**`resolve_session_id` also stops accepting a whitespace-only return.**~~
+  **MOOT — the hook is removed later in this same cycle**, so this fix never
+  reaches a release. Recorded because the REASON outlived it: a whitespace-only
+  return was truthiness-checked and passed through raw, so `" "` — a blank
+  header, a padded `CHAR(n)` column, a failed lookup formatting as spaces —
+  became the grouping key itself and merged strangers' conversations. ⚠ **The
+  identical hole is open on `resolve_user`, which guards emptiness with
+  `.strip()` but returns the value UNSTRIPPED.** It is contained today: hashed
+  mode canonicalizes (NFC → strip → lower), so only `user_id_mode="raw"` is
+  exposed, and there it duplicates an actor rather than merging two. That was
+  an accepted trade while `user_id` was a label. It stops being one if
+  `user_id` becomes a partition key.
 
   **`VendorConfig.scrubber` is deliberately NOT included.** It is typed
   `Callable[[Any], Any]` — sync by contract — and runs regex across 36 call

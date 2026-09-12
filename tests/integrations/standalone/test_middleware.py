@@ -546,137 +546,19 @@ class TestEnvelopeFields:
 
 
 # =============================================================================
-# resolve_session_id hook — rung 0
+# extract_headers — the shared header read
 # =============================================================================
 
 
-class TestResolveSessionIdHook:
-    """Item 3 (sdk-hardening thread): ``VendorConfig.resolve_session_id`` —
-    rung 0, checked before this adapter's own FastMCP-native session
-    resolution. See ``docs/design-notes/session_resolver_hook.md``. Unlike
-    the mcp-adapter path, this adapter has no ``_meta``/header ladder below
-    rung 0 (design note D3) — the fallback is FastMCP's own
-    ``Context.session_id``."""
-
-    async def test_sync_hook_wins_over_native_resolution(
-        self, sink: Sink, captured: list[dict[str, Any]]
-    ) -> None:
-        mcp = _build_mcp(sink, resolve_session_id_hook=lambda ctx: "vendor-resolved")
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            await client.call_tool("echo", {"text": "x"})
-
-        await sink.flush()
-        tool_events = without_surface_snapshots(captured)
-        assert tool_events, "no events captured"
-        for ev in tool_events:
-            assert ev["session_id"] == "vendor-resolved"
-
-    async def test_async_hook_wins_over_native_resolution(
-        self, sink: Sink, captured: list[dict[str, Any]]
-    ) -> None:
-        async def resolver(ctx: Any) -> str:
-            return "vendor-resolved-async"
-
-        mcp = _build_mcp(sink, resolve_session_id_hook=resolver)
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            await client.call_tool("echo", {"text": "x"})
-
-        await sink.flush()
-        for ev in without_surface_snapshots(captured):
-            assert ev["session_id"] == "vendor-resolved-async"
-
-    async def test_none_return_falls_through_to_native_resolution(
-        self, sink: Sink, captured: list[dict[str, Any]]
-    ) -> None:
-        mcp = _build_mcp(sink, resolve_session_id_hook=lambda ctx: None)
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            await client.call_tool("echo", {"text": "x"})
-
-        await sink.flush()
-        session_ids = {ev["session_id"] for ev in without_surface_snapshots(captured)}
-        assert len(session_ids) == 1
-        assert next(iter(session_ids)) != "vendor-resolved"
-
-    async def test_empty_string_falls_through_to_native_resolution(
-        self, sink: Sink, captured: list[dict[str, Any]]
-    ) -> None:
-        mcp = _build_mcp(sink, resolve_session_id_hook=lambda ctx: "")
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            await client.call_tool("echo", {"text": "x"})
-
-        await sink.flush()
-        session_ids = {ev["session_id"] for ev in without_surface_snapshots(captured)}
-        assert len(session_ids) == 1
-
-    async def test_raising_hook_falls_through_and_does_not_propagate(
-        self, sink: Sink, captured: list[dict[str, Any]]
-    ) -> None:
-        def broken(ctx: Any) -> str:
-            raise RuntimeError("vendor lookup failed")
-
-        mcp = _build_mcp(sink, resolve_session_id_hook=broken)
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            result = await client.call_tool("echo", {"text": "x"})
-
-        assert result is not None
-        await sink.flush()
-        assert captured, "no events captured despite hook raising"
-
-    async def test_context_shape_meta_tool_name_arguments(
-        self, sink: Sink, captured: list[dict[str, Any]]
-    ) -> None:
-        seen: dict[str, Any] = {}
-
-        def capture(ctx: Any) -> str:
-            seen["headers"] = ctx.headers
-            seen["meta"] = ctx.meta
-            seen["tool_name"] = ctx.tool_name
-            seen["arguments"] = ctx.arguments
-            return "captured"
-
-        mcp = _build_mcp(sink, resolve_session_id_hook=capture)
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            await client.call_tool("echo", {"text": "hello"})
-
-        await sink.flush()
-        assert seen["tool_name"] == "echo"
-        assert seen["arguments"] == {"text": "hello"}
-        # No live HTTP request behind the in-process Client — headers is
-        # None, consistent with the mcp-adapter's stdio case.
-        assert seen["headers"] is None
+class TestExtractHeaders:
+    """``extract_headers`` feeds SPEC §3.4 rung 4 and the ``resolve_user``
+    hook's context. It used to feed rung 0 as well; that rung
+    (``VendorConfig.resolve_session_id``) was REMOVED 2026-09-12 and its six
+    tests went with it. These two stay because the header read is a separate
+    thing that outlived the hook."""
 
     async def test_extract_headers_reads_a_real_http_request(self) -> None:
-        """``extract_headers`` (called by rungs 0 and 4) wraps FastMCP's
+        """``extract_headers`` (called by rung 4) wraps FastMCP's
         ``get_http_headers()`` — exercised here against a real Starlette
         ``Request`` via ``set_http_request``, not mocked. (The full
         middleware dispatch can't be driven through this path in-process:

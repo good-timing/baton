@@ -68,15 +68,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
 
 from fastmcp.server.dependencies import get_context, get_http_headers
 
-from baton.integrations._config import (
-    ResolveSessionIdHook,
-    SessionResolutionContext,
-    resolve_via_hook,
-)
 from baton.integrations._session import session_id_from_headers
 
 logger = logging.getLogger(__name__)
@@ -158,22 +152,22 @@ def extract_headers() -> Mapping[str, str] | None:
     return headers if headers else None
 
 
-async def resolve_call_session_id(
-    *,
-    meta: dict[str, Any] | None,
-    fallback: str,
-    resolve_hook: ResolveSessionIdHook | None,
-    tool_name: str,
-    arguments: dict[str, Any],
-) -> str:
+async def resolve_call_session_id(*, fallback: str) -> str:
     """Real per-call session id, SPEC §3.4's layered fallback in priority
-    order: (0) a configured ``VendorConfig.resolve_session_id`` hook, which on
-    a non-empty return wins outright — see ``docs/design-notes/
-    session_resolver_hook.md``; (4) the ``mcp-session-id`` header;
-    (4b) fastmcp's ``Context.session_id``, where its cache survives and the
-    header was absent; else ``fallback``, the install-time process-wide id.
-    Rung 3 (a future runtime-specific ``_meta`` key) isn't defined for any
-    runtime yet, so it's skipped.
+    order: (4) the ``mcp-session-id`` header; (4b) fastmcp's
+    ``Context.session_id``, where its cache survives and the header was
+    absent; else ``fallback``, the install-time process-wide id. Rung 3 (a
+    future runtime-specific ``_meta`` key) isn't defined for any runtime yet,
+    so it's skipped.
+
+    **Rung 0 — ``VendorConfig.resolve_session_id`` — was REMOVED 2026-09-12**,
+    for the reason that retired rungs 1-2: it keyed the session on an
+    identifier the SDK did not mint. It differed from those two only in who
+    supplied the value, and the join rule does not distinguish a client's
+    handle from a vendor's. What the vendor knows about a caller now reaches
+    Baton through ``VendorConfig.resolve_user``, which lands in ``user_id`` —
+    a field the console can partition on downstream, where the decision can
+    be changed and re-run.
 
     ``fallback`` is **not** SPEC rung 5. Rung 5 is a per-event UUID carrying
     ``correlation_mode=per-event``; neither adapter implements it, so both
@@ -191,15 +185,6 @@ async def resolve_call_session_id(
     end.
     """
     headers = extract_headers()
-    if resolve_hook is not None:
-        hook_result = await resolve_via_hook(
-            resolve_hook,
-            SessionResolutionContext(
-                headers=headers, meta=meta, tool_name=tool_name, arguments=arguments
-            ),
-        )
-        if hook_result is not None:
-            return hook_result
     from_header = session_id_from_headers(headers)
     if from_header is not None:
         return from_header

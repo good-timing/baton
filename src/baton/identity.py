@@ -106,8 +106,8 @@ class IdentityResolver(Protocol):
 
     ⚠ **This is NOT the shape a vendor implements.** The vendor-facing seam is
     ``VendorConfig.resolve_user`` — a plain callable taking the adapter-neutral
-    ``SessionResolutionContext``, matching ``resolve_session_id``, which is the
-    hook vendors already write. A method-on-an-object Protocol taking an
+    ``SessionResolutionContext``, which is the hook vendors write. A
+    method-on-an-object Protocol taking an
     untyped ``carrier`` would be a second convention for the same job, and the
     ``carrier`` would have to be one of the two libraries' incompatible
     ``Context`` types — the precise coupling ``SessionResolutionContext`` was

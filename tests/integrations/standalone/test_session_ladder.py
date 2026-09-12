@@ -73,17 +73,15 @@ async def _resolve(
     *,
     meta: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
-    hook: Any = None,
     fallback: str = "sdk-fallback",
 ) -> str:
+    """``meta`` is accepted and deliberately IGNORED. The retired-rung tests
+    below pass it to prove the ladder does not read it; it stopped being a
+    parameter of ``resolve_call_session_id`` when rung 0 — the last consumer
+    of the wire ``_meta`` in this function — was removed 2026-09-12."""
+
     async def call() -> str:
-        return await resolve_call_session_id(
-            meta=meta,
-            fallback=fallback,
-            resolve_hook=hook,
-            tool_name="echo",
-            arguments={"text": "x"},
-        )
+        return await resolve_call_session_id(fallback=fallback)
 
     if headers is None:
         return await call()
@@ -140,42 +138,6 @@ class TestHeaderAndFallbackRungs:
     @requires_http_injection
     async def test_unrelated_headers_do_not_resolve(self) -> None:
         assert await _resolve(headers={"x-request-id": "nope"}) == "sdk-fallback"
-
-
-class TestHookRungZero:
-    @requires_http_injection
-    async def test_hook_wins_over_every_lower_rung(self) -> None:
-        got = await _resolve(
-            meta={"traceparent": TRACEPARENT},
-            headers={"mcp-session-id": "from-header"},
-            hook=lambda ctx: "vendor-resolved",
-        )
-        assert got == "vendor-resolved"
-
-    async def test_hook_returning_none_falls_through(self) -> None:
-        got = await _resolve(meta={"traceparent": TRACEPARENT}, hook=lambda ctx: None)
-        assert got == "sdk-fallback"
-
-    async def test_raising_hook_falls_through_and_does_not_propagate(self) -> None:
-        def broken(ctx: Any) -> str:
-            raise RuntimeError("vendor bug")
-
-        assert await _resolve(meta={"traceparent": TRACEPARENT}, hook=broken) == "sdk-fallback"
-
-    @requires_http_injection
-    async def test_hook_sees_headers_and_meta(self) -> None:
-        seen: dict[str, Any] = {}
-
-        def capture(ctx: Any) -> None:
-            seen["headers"] = dict(ctx.headers or {})
-            seen["meta"] = ctx.meta
-            seen["tool_name"] = ctx.tool_name
-            return None
-
-        await _resolve(meta={"k": "v"}, headers={"mcp-session-id": "hdr"}, hook=capture)
-        assert seen["headers"].get("mcp-session-id") == "hdr"
-        assert seen["meta"] == {"k": "v"}
-        assert seen["tool_name"] == "echo"
 
 
 class TestRung4bFastmcpContext:

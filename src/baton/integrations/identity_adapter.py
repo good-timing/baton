@@ -84,10 +84,11 @@ USER_ID_MODES = frozenset({USER_ID_MODE_HASHED, USER_ID_MODE_RAW})
 RAW_USER_ID_MAX_LEN = 128
 
 
-#: A vendor's per-request identity resolver. Takes the SAME adapter-neutral
-#: context ``resolve_session_id`` takes — one shape for both hooks, so a vendor
-#: who has written one can write the other without learning a second
-#: convention, and neither is coupled to an adapter's ``Context`` type.
+#: A vendor's per-request identity resolver. Takes the adapter-neutral
+#: ``SessionResolutionContext`` — headers, meta, tool name and arguments — so
+#: it is not coupled to either library's ``Context`` type. The shape and its
+#: name are inherited from ``resolve_session_id``, which shared it until that
+#: hook was removed 2026-09-12; this is now its only caller.
 ResolveUserHook = Callable[
     ["SessionResolutionContext"], "Awaitable[Principal | None] | Principal | None"
 ]
@@ -106,8 +107,7 @@ async def resolve_principal_via_hook(
     configured — ``user_id`` is additive analytics and a vendor's own bug in
     their resolver may not fail their tool call (SPEC §11.2 fail-open).
 
-    Accepts sync or async hooks, mirroring ``resolve_via_hook`` and
-    ``VendorConfig.scrubber``.
+    Accepts sync or async hooks, mirroring ``VendorConfig.scrubber``.
 
     ⚠ **The ``isinstance`` is load-bearing, not defensive typing.** A hook
     returning a dict, a bare string, or a namedtuple with the right field names

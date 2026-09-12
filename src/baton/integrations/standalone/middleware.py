@@ -40,7 +40,7 @@ from baton.events import (
     ToolCallStartEvent,
     ToolCallStartPayload,
 )
-from baton.integrations._config import ResolveSessionIdHook, SessionResolutionContext
+from baton.integrations._config import SessionResolutionContext
 from baton.integrations._llm_text import (
     EXPECTED_RESULT_PARAM_NAME,
     INTENT_SOURCE_PARAM,
@@ -85,7 +85,6 @@ class BatonMiddleware(Middleware):
         annotation_tool_name: str | None = None,
         intent_param_mode: str = "optional",
         proactive_tracker: ProactiveTracker | None = None,
-        resolve_session_id_hook: ResolveSessionIdHook | None = None,
         server_meta: dict[str, Any] | None = None,
         user_id_mode: str = USER_ID_MODE_HASHED,
         user_id_hmac_key: bytes | None = None,
@@ -102,7 +101,6 @@ class BatonMiddleware(Middleware):
         self._annotation_tool_name = annotation_tool_name
         self._intent_param_mode = intent_param_mode
         self._proactive = proactive_tracker or ProactiveTracker()
-        self._resolve_session_id_hook = resolve_session_id_hook
         self._server_meta = server_meta or {}
         self._user_id_mode = user_id_mode
         self._user_id_hmac_key = user_id_hmac_key
@@ -633,13 +631,7 @@ class BatonMiddleware(Middleware):
         the rungs, including why fastmcp's own ``Context.session_id`` sits
         BELOW the header and is gated to the versions where its cache survives.
         """
-        return await resolve_call_session_id(
-            meta=meta,
-            fallback=self._fallback_session_id,
-            resolve_hook=self._resolve_session_id_hook,
-            tool_name=tool_name,
-            arguments=arguments,
-        )
+        return await resolve_call_session_id(fallback=self._fallback_session_id)
 
     @staticmethod
     def _extract_request_meta(context: MiddlewareContext[CallToolRequestParams]) -> Any:

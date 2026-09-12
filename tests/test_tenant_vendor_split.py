@@ -178,7 +178,8 @@ def test_positional_construction_is_refused_rather_than_silently_rebound() -> No
     ``if not config.consent_token``, and a Sink instance is truthy, so a Sink
     object rode into the envelope's ``consent_token`` field. Then 0.8.0
     removed ``default_agent_runtime`` from slot 6 and inserted two fields
-    before ``resolve_session_id``, so a 0.7.2-shaped positional call bound the
+    before the then-existing ``resolve_session_id``, so a 0.7.2-shaped
+    positional call bound the
     string ``"unknown"`` to ``scrubber``.
 
     **This test used to assert the opposite** — that appending keeps positional

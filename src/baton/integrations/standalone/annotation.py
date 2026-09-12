@@ -24,7 +24,7 @@ from fastmcp import Context, FastMCP
 
 from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
-from baton.integrations._config import ResolveSessionIdHook, SessionResolutionContext
+from baton.integrations._config import SessionResolutionContext
 from baton.integrations._llm_text import build_annotation_tool_description
 from baton.integrations.identity_adapter import (
     USER_ID_MODE_HASHED,
@@ -77,7 +77,6 @@ def register_annotation_tool(
     proactive_mode: str = "off",
     scrubber: Callable[[Any], Any] = identity_scrub,
     proactive_tracker: ProactiveTracker | None = None,
-    resolve_session_id_hook: ResolveSessionIdHook | None = None,
     user_id_mode: str = USER_ID_MODE_HASHED,
     user_id_hmac_key: bytes | None = None,
     resolve_user_hook: ResolveUserHook | None = None,
@@ -135,20 +134,7 @@ def register_annotation_tool(
         # tool-call path uses — an annotation that resolved differently from
         # the call it describes could never be joined to it downstream, which
         # is the one correlation this tool exists to produce.
-        session_id = await resolve_call_session_id(
-            meta=meta_dict,
-            fallback=fallback_session_id,
-            resolve_hook=resolve_session_id_hook,
-            tool_name=name,
-            arguments={
-                "intent": user_goal,
-                "expected_outcome": expected_result,
-                "signal_type": signal_type,
-                "workflow": overall_task,
-                "suggested_improvement": suggested_improvement,
-                "context": context,
-            },
-        )
+        session_id = await resolve_call_session_id(fallback=fallback_session_id)
         # A proactive annotation (no signal_type) claims the session's proactive
         # slot so the middleware won't also synthesise one from an injected param.
         if signal_type is None:

@@ -10,8 +10,7 @@ Core (always installed):
 - ``Client``, ``AsyncClient``, ``SignalType`` — library API for Skill-instrumented
   agent code (see the "Library API" section in ``README.md``)
 - ``Principal`` — the return type of a ``VendorConfig.resolve_user`` hook.
-  Exported because that hook cannot be written without constructing one, unlike
-  ``resolve_session_id``, which returns a plain ``str``.
+  Exported because that hook cannot be written without constructing one.
 
 Integrations (optional, opt-in via pip extras):
 

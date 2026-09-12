@@ -172,7 +172,6 @@ def install_baton(
         annotation_tool_name=annotation_tool_name,
         intent_param_mode=config.intent_param_mode,
         proactive_tracker=proactive_tracker,
-        resolve_session_id_hook=config.resolve_session_id,
         user_id_mode=config.user_id_mode,
         user_id_hmac_key=user_id_hmac_key,
         resolve_user_hook=config.resolve_user,

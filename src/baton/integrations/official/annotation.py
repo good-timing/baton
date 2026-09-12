@@ -142,13 +142,19 @@ def register_annotation_tool(
         # ``context`` is already this tool's own payload field.
         #
         # Still a known gap, and now the ONLY one: session id. This tool does
-        # not climb SPEC §3.4's ladder or check VendorConfig.resolve_session_id
-        # the way _tool_wrap.py's rung 0 does — it still falls back. So a
-        # vendor's explicit (reactive) annotation calls on this adapter won't
-        # stitch to the hook-resolved session id their tool calls get;
-        # synthesised proactives are unaffected (those emit from inside the
-        # wrap layer, which does have the hook). The standalone adapter
-        # resolves both; closing the difference is tracked on sdk-hardening.
+        # not climb SPEC §3.4's ladder the way ``_tool_wrap.py`` does — it goes
+        # straight to ``fallback_session_id``. So on stateful HTTP, where the
+        # wrap layer answers on rung 4 (``mcp-session-id``), a vendor's
+        # explicit (reactive) annotation calls won't stitch to the session id
+        # their tool calls get; synthesised proactives are unaffected (those
+        # emit from inside the wrap layer). The standalone adapter resolves
+        # both; closing the difference is tracked on sdk-hardening.
+        #
+        # ⚠ This gap NARROWED on 2026-09-12 rather than closing: rung 0
+        # (``VendorConfig.resolve_session_id``) was removed, so the hook half
+        # of the divergence is gone — a hook-resolved id no longer exists for
+        # this tool to miss. The rung-4 half is unchanged and is the whole of
+        # what remains.
         # Reuses the wrap layer's extractor rather than re-deriving the meta
         # here. Two extraction paths on one adapter is how this repo has been
         # bitten before, and this one has a specific guard worth inheriting:

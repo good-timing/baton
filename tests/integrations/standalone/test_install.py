@@ -475,55 +475,11 @@ class TestAnnotationToolEndToEnd:
         assert "tool_call_end" not in types
 
 
-class TestResolveSessionIdHookOnAnnotationTool:
-    """The fastmcp adapter's annotation tool also checks rung 0 (item 3,
-    sdk-hardening thread), so an explicit reactive/proactive annotation call
-    stitches to the same hook-resolved session id as the tool calls around
-    it. (The mcp adapter's annotation tool has a pre-existing, documented
-    limitation here — see ``mcp/annotation.py``.)"""
-
-    async def test_hook_wins_for_explicit_annotation_call(
-        self, httpserver: HTTPServer, captured: list[dict[str, Any]]
-    ) -> None:
-        def ingest_handler(request: Any) -> Response:
-            captured.append(request.get_json())
-            return Response("", status=201)
-
-        httpserver.expect_request("/v0/events", method="POST").respond_with_handler(ingest_handler)
-
-        mcp = FastMCP("test-vendor-mcp")
-        handle = install_baton(
-            mcp,
-            VendorConfig(
-                vendor_id="test-vendor",
-                vendor_display_name="Test Vendor",
-                consent_token="ct_test",
-                sink=HttpSink(url=httpserver.url_for(""), api_key="test-api-key"),
-                resolve_session_id=lambda ctx: "vendor-resolved",
-            ),
-        )
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            await client.call_tool("echo", {"text": "x"})
-            await client.call_tool(
-                "test-vendor_annotate",
-                {"user_goal": "explain this", "signal_type": "dead_end"},
-            )
-
-        await handle.flush()
-        await handle.aclose()
-
-        # surface_snapshot is a process-level event (proxy parity — see
-        # integrations._surface) and intentionally does NOT go through the
-        # per-call resolve_session_id hook; every other event type must.
-        non_surface = [ev for ev in captured if ev["event_type"] != "surface_snapshot"]
-        assert non_surface
-        session_ids = {ev["session_id"] for ev in non_surface}
-        assert session_ids == {"vendor-resolved"}
+class TestAnnotationToolRuntimeDetection:
+    """The fastmcp adapter's annotation tool resolves the agent runtime the
+    same way the middleware path does. This class also held the rung-0
+    stitching test until ``VendorConfig.resolve_session_id`` was REMOVED
+    2026-09-12; the surviving test never concerned the hook."""
 
     async def test_annotation_detects_claude_code_from_meta(
         self,

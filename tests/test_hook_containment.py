@@ -22,7 +22,6 @@ import anyio.to_thread
 import pytest
 
 import baton.integrations._hooks as hooks_mod
-from baton.integrations._config import SessionResolutionContext, resolve_via_hook
 from baton.integrations._hooks import HookFailed, live_hook_threads, run_vendor_hook
 
 LOG = logging.getLogger("test-hooks")
@@ -336,113 +335,12 @@ def test_a_wedged_hook_DELAYS_shutdown_a_known_anyio_limitation() -> None:
     )
 
 
-# --- the session hook's own validation --------------------------------------
-
-
-@pytest.mark.parametrize(
-    "blank",
-    [
-        pytest.param("", id="empty"),
-        pytest.param(" ", id="space"),
-        pytest.param("\t\n", id="tab-newline"),
-        pytest.param("   ", id="padded-CHAR-column"),
-    ],
-)
-async def test_a_blank_session_id_from_a_hook_is_a_miss(blank: str) -> None:
-    """``session_id`` is the PRIMARY grouping key and the hook's value is
-    passed through raw — nothing downstream normalizes it.
-
-    A hook returning whitespace would file every such call under one session
-    and merge strangers' conversations, which is strictly worse than the same
-    bug on ``user_id``: that one misattributes an actor, this one invents a
-    shared conversation. Falling through to SPEC §3.4's ladder yields a real
-    id. AgentCat's equivalent already strips; ours did not until 2026-09-11.
-    """
-    from baton.integrations._config import SessionResolutionContext, resolve_via_hook
-
-    ctx = SessionResolutionContext(headers=None, meta=None, tool_name="l", arguments={})
-    assert await resolve_via_hook(lambda _c: blank, ctx) is None
-
-
-async def test_a_padded_session_id_is_stripped_not_split() -> None:
-    """Two hooks differing only in padding must not become two sessions — the
-    vendor's intent is the id, not the whitespace around it."""
-    from baton.integrations._config import SessionResolutionContext, resolve_via_hook
-
-    ctx = SessionResolutionContext(headers=None, meta=None, tool_name="l", arguments={})
-    assert await resolve_via_hook(lambda _c: "  sess-42  ", ctx) == "sess-42"
-    assert await resolve_via_hook(lambda _c: "sess-42", ctx) == "sess-42"
-
-
-# --- the session hook gets the SAME containment -----------------------------
+# --- rung 4's own blank/padding rule -----------------------------------------
 #
-# ⚠ Every test above drives ``run_vendor_hook`` or the identity path. Both
-# hooks route through the same function, but "both are wired" was only ever
-# checked by reading the source — and a mutation that called
-# ``resolve_session_id`` inline, untimed and context-less passed the ENTIRE
-# suite. These are what make the second hook's containment a tested property
-# rather than an observed one.
-
-_SESSION_CTX = SessionResolutionContext(headers=None, meta=None, tool_name="l", arguments={})
-
-
-async def test_a_blocking_session_hook_does_not_stall_concurrent_calls() -> None:
-    """The session hook is likelier than the identity one to do I/O — it
-    exists for vendors who already have their own session concept to look up."""
-    ticks = 0
-    stop = asyncio.Event()
-
-    async def heartbeat() -> None:
-        nonlocal ticks
-        while not stop.is_set():
-            await asyncio.sleep(0.01)
-            ticks += 1
-
-    def blocks(_c: Any) -> str:
-        time.sleep(0.3)
-        return "sess-1"
-
-    beat = asyncio.create_task(heartbeat())
-    await asyncio.sleep(0.02)
-    got = await resolve_via_hook(blocks, _SESSION_CTX)
-    stop.set()
-    await beat
-    assert got == "sess-1"
-    assert ticks > 10, f"the event loop was blocked during the session hook: {ticks} ticks"
-
-
-async def test_a_wedged_session_hook_falls_through_to_the_ladder() -> None:
-    """Without a deadline the vendor's tool call waits forever on their own
-    lookup. Falling through costs a real session id from SPEC §3.4 instead."""
-    import baton.integrations._hooks as hooks_mod
-
-    def wedged(_c: Any) -> str:
-        time.sleep(5.0)
-        return "sess-1"
-
-    original = hooks_mod.HOOK_TIMEOUT_SECONDS
-    hooks_mod.HOOK_TIMEOUT_SECONDS = 0.2
-    try:
-        started = time.monotonic()
-        assert await resolve_via_hook(wedged, _SESSION_CTX) is None
-        assert time.monotonic() - started < 1.5
-    finally:
-        hooks_mod.HOOK_TIMEOUT_SECONDS = original
-
-
-async def test_a_sync_session_hook_can_read_the_callers_contextvars() -> None:
-    """``extract_headers`` is contextvar-backed on the standalone adapter, and
-    a session hook reading request state is the documented use — the same
-    reason this mattered for identity."""
-    _TOKEN.set("VERIFIED")
-
-    def sync_hook(_c: Any) -> str | None:
-        return _TOKEN.get()
-
-    assert await resolve_via_hook(sync_hook, _SESSION_CTX) == "VERIFIED"
-
-
-# --- rung 4 gets rung 0's rule -----------------------------------------------
+# These two arrived as "rung 4 gets rung 0's rule". Rung 0
+# (``VendorConfig.resolve_session_id``) was REMOVED 2026-09-12 along with the
+# five tests above them, so the rule no longer has a rung to be borrowed FROM
+# — it is now rung 4's own, and RFC 9110 §5.5 is the whole of its authority.
 
 
 @pytest.mark.parametrize(
@@ -454,12 +352,10 @@ async def test_a_sync_session_hook_can_read_the_callers_contextvars() -> None:
     ],
 )
 def test_a_blank_mcp_session_id_HEADER_is_a_miss(blank: str) -> None:
-    """Rung 4 feeds the same grouping key as rung 0 and had neither guard.
-
-    A blank value here merges strangers exactly as a blank hook return did,
-    and the ladder has a real id one rung down. h11 strips inbound headers, so
-    this is reachable only through whatever mapping the transport supplies —
-    which is precisely why the check belongs at the read.
+    """A blank value merges strangers, and the ladder has a real id one rung
+    down. h11 strips inbound headers, so this is reachable only through
+    whatever mapping the transport supplies — which is precisely why the
+    check belongs at the read.
     """
     from baton.integrations._session import session_id_from_headers
 

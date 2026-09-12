@@ -84,9 +84,7 @@ from baton.events import (
     ToolCallStartPayload,
 )
 from baton.integrations._config import (
-    ResolveSessionIdHook,
     SessionResolutionContext,
-    resolve_via_hook,
 )
 from baton.integrations._llm_text import (
     EXPECTED_RESULT_PARAM_NAME,
@@ -174,7 +172,6 @@ def install_wraps(
     annotation_tool_name: str | None = None,
     intent_param_mode: str = "optional",
     proactive_tracker: ProactiveTracker | None = None,
-    resolve_session_id_hook: ResolveSessionIdHook | None = None,
     server_meta: dict[str, Any] | None = None,
     user_id_mode: str = USER_ID_MODE_HASHED,
     user_id_hmac_key: bytes | None = None,
@@ -260,7 +257,6 @@ def install_wraps(
                 user_id_hmac_key=user_id_hmac_key,
                 resolve_user_hook=resolve_user_hook,
                 identity_warned=warned,
-                resolve_session_id_hook=resolve_session_id_hook,
                 surface_state=surface_state,
                 emit_surface=emit_surface,
                 annotation_tool_name=annotation_tool_name,
@@ -449,7 +445,6 @@ def _wrap_tool_run(
     user_id_hmac_key: bytes | None,
     resolve_user_hook: ResolveUserHook | None,
     identity_warned: set[str],
-    resolve_session_id_hook: ResolveSessionIdHook | None,
     surface_state: _SurfaceState,
     emit_surface: Callable[[str, str, dict[str, Any]], Awaitable[None]],
     annotation_tool_name: str | None,
@@ -582,13 +577,7 @@ def _wrap_tool_run(
         )
         scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
         call_session_id = await _resolve_call_session_id(
-            context,
-            meta_dict,
-            fallback_session_id,
-            resolve_hook=resolve_session_id_hook,
-            tool_name=name,
-            arguments=params,
-            headers=call_headers,
+            headers=call_headers, fallback=fallback_session_id
         )
 
         # The session's FIRST injected intent also becomes a proactive
@@ -706,23 +695,22 @@ def _extract_headers_from_context(context: Any) -> Mapping[str, str] | None:
 
 
 async def _resolve_call_session_id(
-    context: Any,
-    meta: dict[str, Any] | None,
-    fallback: str,
     *,
-    resolve_hook: ResolveSessionIdHook | None,
-    tool_name: str,
-    arguments: dict[str, Any],
     headers: Mapping[str, str] | None,
+    fallback: str,
 ) -> str:
-    """Real per-call session id. Rung 0 (a configured
-    ``VendorConfig.resolve_session_id`` hook) is checked first and, on a
-    non-empty return, wins outright — see ``docs/design-notes/
-    session_resolver_hook.md``. Below that, SPEC §3.4's layered fallback in
-    priority order: (4) the ``mcp-session-id`` HTTP header,
-    else (5) ``fallback`` (the install-time process-wide id). Rung 3 (a
-    future runtime-specific ``_meta`` key) isn't defined for any runtime yet,
-    so it's skipped.
+    """Real per-call session id — SPEC §3.4's layered fallback in priority
+    order: (4) the ``mcp-session-id`` HTTP header, else (5) ``fallback`` (the
+    install-time process-wide id). Rung 3 (a future runtime-specific ``_meta``
+    key) isn't defined for any runtime yet, so it's skipped.
+
+    **Rung 0 — ``VendorConfig.resolve_session_id`` — was REMOVED 2026-09-12**,
+    for the reason that retired rungs 1-2: it keyed the session on an
+    identifier the SDK did not mint. A vendor's handle differed from a
+    client's only in who supplied it, which the join rule does not
+    distinguish. What a vendor knows about a caller now reaches Baton through
+    ``VendorConfig.resolve_user`` and lands in ``user_id``, where the console
+    can group on it downstream and change its mind later.
 
     **Rungs 1-2 were retired 2026-09-09** — they keyed the session on
     identifiers the SDK did not mint (``_meta.traceparent``'s trace-id and a
@@ -744,8 +732,12 @@ async def _resolve_call_session_id(
     always misses and ``fallback`` is correct there (one process = one
     user). On stateless HTTP (``stateless_http=True``, opt-in, no current
     vendor) there's no header by protocol design either — that miss isn't a
-    bug this function can fix; see ``project_sdk_sensor_parity_gap`` memory
-    for why that needs a vendor-configurable resolver instead.
+    bug this function can fix. ⚠ **It also no longer has a workaround.** The
+    vendor-configurable resolver that covered this shape was rung 0, removed
+    2026-09-12, and SPEC rung 5 (a per-event UUID) is still unbuilt — so
+    new-spec and stateless HTTP terminate on the process-wide ``fallback``,
+    which is stable but merges every client of a multi-user server. That is
+    D2/B4, and the answer is the console-side partition (N3), not a rung.
 
     mcp 2.0's ``Context`` exposes ``.headers`` directly; mcp 1.x has no such
     accessor, so ``_extract_headers_from_context`` also tries reaching
@@ -761,15 +753,6 @@ async def _resolve_call_session_id(
     # re-extract on every stdio call, where ``None`` is also the correct
     # ANSWER — which is how the first attempt at this fix looked correct and
     # changed nothing on the common path.
-    if resolve_hook is not None:
-        hook_result = await resolve_via_hook(
-            resolve_hook,
-            SessionResolutionContext(
-                headers=headers, meta=meta, tool_name=tool_name, arguments=arguments
-            ),
-        )
-        if hook_result is not None:
-            return hook_result
     from_header = session_id_from_headers(headers)
     return from_header if from_header is not None else fallback
 

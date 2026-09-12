@@ -339,7 +339,7 @@ async def test_a_hook_that_raises_falls_back_to_the_token_and_events_still_emit(
 async def test_an_async_hook_works_on_both_adapters(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Sync or async, matching ``resolve_session_id`` and ``scrubber``. A
+    """Sync or async, matching ``scrubber``. A
     vendor resolving identity will usually be doing I/O to do it."""
     from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_user_id
 
