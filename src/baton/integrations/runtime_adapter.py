@@ -37,10 +37,16 @@ asserting the true agent behind a ``clientInfo`` that names the gateway — brin
 it back deliberately, with something that tells clients it exists.
 
 ⚠ **Call this on the RAW ``_meta``, before the vendor's scrubber runs.** The
-default scrubber is an identity no-op, so detecting from the scrubbed dict
-passes every test in this repo and fails only at a vendor whose scrubber
-touches meta keys — which is the shape of bug this module was moved here to
-stop, not one to reintroduce one layer down.
+reason given here used to be that the default scrubber is an identity no-op.
+It is not, and never has been — ``VendorConfig(scrubber=None)`` resolves to
+``Scrubber()``, the shipped ruleset. **The conclusion survives the correction
+and the true reason is narrower:** measured 2026-09-11, that default leaves a
+realistic ``_meta`` (``claudecode/toolUseId``, ``clientInfo``, ``traceparent``)
+byte-identical, because none of those values matches a pattern or a redacted
+field name. So detecting from the scrubbed dict passes every test in this repo
+and fails at the first vendor whose scrubber touches meta keys — the shape of
+bug this module was moved here to stop, not one to reintroduce one layer down.
+**No override, but not therefore trusted.**
 """
 
 from __future__ import annotations

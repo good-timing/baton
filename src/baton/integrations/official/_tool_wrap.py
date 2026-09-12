@@ -529,12 +529,15 @@ def _wrap_tool_run(
 
         params = dict(arguments or {})
         meta_dict = _extract_meta_from_context(context)
-        # Detect from the RAW meta, BEFORE the scrub on the next line. The
-        # default scrubber is an identity no-op, so detecting from
-        # ``scrubbed_meta`` — which is what the emitters receive — passes every
-        # test here and silently reports "unknown" for any vendor whose
-        # scrubber touches meta keys. The standalone adapter detects pre-scrub
-        # for the same reason (middleware.py, just above its own scrub call).
+        # Detect from the RAW meta, BEFORE the scrub on the next line. NOT
+        # because the default scrubber is a no-op — it is ``Scrubber()``, the
+        # shipped ruleset — but because that ruleset happens to leave a
+        # realistic ``_meta`` untouched (nothing in it matches a pattern or a
+        # redacted field name). So detecting from ``scrubbed_meta`` — what the
+        # emitters receive — passes every test here and silently reports
+        # "unknown" for any vendor whose scrubber touches meta keys. The
+        # standalone adapter detects pre-scrub for the same reason
+        # (middleware.py, just above its own scrub call).
         call_agent_runtime = (
             detect_agent_runtime(meta_dict, context=context, scrubber=scrubber)
             or UNKNOWN_AGENT_RUNTIME
