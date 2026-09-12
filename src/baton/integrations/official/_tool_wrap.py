@@ -101,7 +101,11 @@ from baton.integrations._session import (
     session_id_from_headers,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
-from baton.integrations.identity_adapter import USER_ID_MODE_HASHED, resolve_user_id
+from baton.integrations.identity_adapter import (
+    USER_ID_MODE_HASHED,
+    ResolveUserHook,
+    resolve_call_user_id,
+)
 from baton.integrations.official import _auth
 from baton.integrations.official._registry import get_tool_manager, get_tool_registry
 from baton.integrations.runtime_adapter import UNKNOWN_AGENT_RUNTIME, detect_agent_runtime
@@ -174,6 +178,7 @@ def install_wraps(
     server_meta: dict[str, Any] | None = None,
     user_id_mode: str = USER_ID_MODE_HASHED,
     user_id_hmac_key: bytes | None = None,
+    resolve_user_hook: ResolveUserHook | None = None,
     identity_warned: set[str] | None = None,
 ) -> None:
     """Inject + wrap all currently-registered tools AND future registrations."""
@@ -253,6 +258,7 @@ def install_wraps(
                 tenant_id=tenant_id,
                 user_id_mode=user_id_mode,
                 user_id_hmac_key=user_id_hmac_key,
+                resolve_user_hook=resolve_user_hook,
                 identity_warned=warned,
                 resolve_session_id_hook=resolve_session_id_hook,
                 surface_state=surface_state,
@@ -441,6 +447,7 @@ def _wrap_tool_run(
     tenant_id: str,
     user_id_mode: str,
     user_id_hmac_key: bytes | None,
+    resolve_user_hook: ResolveUserHook | None,
     identity_warned: set[str],
     resolve_session_id_hook: ResolveSessionIdHook | None,
     surface_state: _SurfaceState,
@@ -534,12 +541,32 @@ def _wrap_tool_run(
         )
         # Identity resolves HERE, beside the runtime detect and for the same
         # structural reason: one place per call, before anything is emitted.
-        # ``resolve_user_id`` returns the FINISHED wire value — a hash or a
-        # deliberate raw principal — so the raw identity never travels past
+        # ``resolve_call_user_id`` returns the FINISHED wire value — a hash or
+        # a deliberate raw principal — so the raw identity never travels past
         # this line into the emitters, mirroring baton-proxy's edge-hash
-        # chokepoint. Unauthenticated calls (every stdio one) get ``None``.
-        call_user_id = resolve_user_id(
+        # chokepoint. ``None`` when neither provenance resolves.
+        #
+        # ⚠ This comment used to read "Unauthenticated calls (every stdio one)
+        # get ``None``". That stopped being true when ``resolve_user`` landed:
+        # the hook is the only identity mechanism stdio has, and carrying a
+        # stdio principal is the reason it was built.
+        # Built only when a hook exists: ``_extract_headers_from_context``
+        # reaches through the request on every call, and a server that will
+        # never set this field must not pay for it.
+        identity_hook_context = (
+            SessionResolutionContext(
+                headers=_extract_headers_from_context(context),
+                meta=meta_dict,
+                tool_name=name,
+                arguments=params,
+            )
+            if resolve_user_hook is not None
+            else None
+        )
+        call_user_id = await resolve_call_user_id(
             _auth.current_access_token(),
+            hook=resolve_user_hook,
+            hook_context=identity_hook_context,
             mode=user_id_mode,
             tenant_id=tenant_id,
             hmac_key=user_id_hmac_key,

@@ -240,6 +240,7 @@ def install_baton(
             resolve_session_id_hook=config.resolve_session_id,
             user_id_mode=config.user_id_mode,
             user_id_hmac_key=user_id_hmac_key,
+            resolve_user_hook=config.resolve_user,
             identity_warned=identity_warned,
             server_meta=server_meta,
         )
@@ -261,6 +262,7 @@ def install_baton(
         resolve_session_id_hook=config.resolve_session_id,
         user_id_mode=config.user_id_mode,
         user_id_hmac_key=user_id_hmac_key,
+        resolve_user_hook=config.resolve_user,
         identity_warned=identity_warned,
     )
 

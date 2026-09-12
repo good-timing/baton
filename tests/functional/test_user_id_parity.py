@@ -60,7 +60,11 @@ def _standalone_token() -> Any:
 
 
 async def _run_official_path(
-    events_path: Path, token: Any, mode: str, monkeypatch: pytest.MonkeyPatch
+    events_path: Path,
+    token: Any,
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+    resolve_user: Any = None,
 ) -> None:
     from baton.integrations.official import VendorConfig, _auth, install_baton
     from baton.integrations.official._compat import MCPServerClass as FastMCP
@@ -84,6 +88,7 @@ async def _run_official_path(
             tenant_id=TENANT,
             user_id_mode=mode,
             user_id_hmac_key=HMAC_KEY,
+            resolve_user=resolve_user,
         ),
     )
     try:
@@ -97,7 +102,11 @@ async def _run_official_path(
 
 
 async def _run_standalone_path(
-    events_path: Path, token: Any, mode: str, monkeypatch: pytest.MonkeyPatch
+    events_path: Path,
+    token: Any,
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+    resolve_user: Any = None,
 ) -> None:
     from fastmcp import Client, FastMCP
 
@@ -121,6 +130,7 @@ async def _run_standalone_path(
             tenant_id=TENANT,
             user_id_mode=mode,
             user_id_hmac_key=HMAC_KEY,
+            resolve_user=resolve_user,
         ),
     )
     try:
@@ -208,3 +218,195 @@ async def test_both_adapters_drop_the_field_when_unauthenticated(
 
     assert _user_ids(official_path) == {None}
     assert _user_ids(standalone_path) == {None}
+
+
+# ---------------------------------------------------------------------------
+# The vendor identity hook (N11) — the ASSERTED provenance.
+#
+# These run through the same two drivers as everything above, which is the
+# point: each driver calls a tool AND the annotation tool, and ``_user_ids``
+# collapses every emitted event to a SET. A hook wired into the tool-call path
+# but not the annotation path yields two values on one run and fails here,
+# without a test that names the annotation path at all.
+
+HOOK_SUB = "employee-4417"
+HOOK_ISS = "https://sso.acme.internal"
+
+
+def _hook(principal: Any) -> Any:
+    """A vendor resolver returning a fixed principal, ignoring the context."""
+
+    def resolve(_ctx: Any) -> Any:
+        return principal
+
+    return resolve
+
+
+async def test_the_hook_supplies_identity_where_no_token_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**The headline case: stdio, no token, identity anyway.**
+
+    ``token=None`` is what ``get_access_token()`` returns on every stdio call
+    on every supported version — MCP auth is ASGI middleware and stdio has no
+    ASGI. Before the hook this run emitted no ``user_id`` at all, on either
+    adapter. The expected value is computed here rather than compared between
+    runs, for the reason at the top of this file.
+    """
+    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_user_id
+
+    expected = hash_user_id(
+        HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=HOOK_ISS, scheme=VENDOR_HASH_SCHEME
+    )
+    assert expected.startswith("v1:")
+
+    hook = _hook(Principal(user_id=HOOK_SUB, issuer=HOOK_ISS))
+    official_path = tmp_path / "official.jsonl"
+    standalone_path = tmp_path / "standalone.jsonl"
+    await _run_official_path(official_path, None, "hashed", monkeypatch, resolve_user=hook)
+    await _run_standalone_path(standalone_path, None, "hashed", monkeypatch, resolve_user=hook)
+
+    official = _user_ids(official_path)
+    standalone = _user_ids(standalone_path)
+    assert official == {expected}, f"official adapter: {official}"
+    assert standalone == {expected}, f"standalone adapter: {standalone}"
+
+
+async def test_the_hook_wins_over_a_verified_token_and_says_so_in_the_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Precedence, and the tag that keeps it honest.
+
+    The token here is the SAME one every other test in this file uses, so the
+    attested value is known: if precedence were the other way round, these runs
+    would emit the ``h1:`` hash of ``CLAIMS["sub"]``. Asserting the tag as well
+    as the value is what distinguishes "the hook won" from "the hook happened
+    to produce the same string".
+    """
+    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_user_id
+
+    asserted = hash_user_id(
+        HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=HOOK_ISS, scheme=VENDOR_HASH_SCHEME
+    )
+    attested = hash_user_id(CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"])
+    assert asserted != attested
+
+    hook = _hook(Principal(user_id=HOOK_SUB, issuer=HOOK_ISS))
+    official_path = tmp_path / "official.jsonl"
+    standalone_path = tmp_path / "standalone.jsonl"
+    await _run_official_path(
+        official_path, _official_token(), "hashed", monkeypatch, resolve_user=hook
+    )
+    await _run_standalone_path(
+        standalone_path, _standalone_token(), "hashed", monkeypatch, resolve_user=hook
+    )
+
+    for path in (official_path, standalone_path):
+        got = _user_ids(path)
+        assert got == {asserted}, f"{path.name}: {got}"
+        assert attested not in got, f"{path.name} used the token despite a hook"
+
+
+async def test_a_hook_that_raises_falls_back_to_the_token_and_events_still_emit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A vendor's bug in their own resolver may not cost them their capture.
+
+    Asserting the ATTESTED value, not merely "not None": a fallback that
+    produced nothing would also survive a looser check, and "the hook broke so
+    identity vanished" is the failure this guard exists to prevent.
+    """
+    from baton.identity import hash_user_id
+
+    attested = hash_user_id(CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"])
+
+    def boom(_ctx: Any) -> Any:
+        raise RuntimeError("the vendor's directory service is down")
+
+    official_path = tmp_path / "official.jsonl"
+    standalone_path = tmp_path / "standalone.jsonl"
+    await _run_official_path(
+        official_path, _official_token(), "hashed", monkeypatch, resolve_user=boom
+    )
+    await _run_standalone_path(
+        standalone_path, _standalone_token(), "hashed", monkeypatch, resolve_user=boom
+    )
+
+    assert _user_ids(official_path) == {attested}
+    assert _user_ids(standalone_path) == {attested}
+
+
+async def test_an_async_hook_works_on_both_adapters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sync or async, matching ``resolve_session_id`` and ``scrubber``. A
+    vendor resolving identity will usually be doing I/O to do it."""
+    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_user_id
+
+    expected = hash_user_id(
+        HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=None, scheme=VENDOR_HASH_SCHEME
+    )
+
+    async def resolve(_ctx: Any) -> Any:
+        return Principal(user_id=HOOK_SUB)
+
+    official_path = tmp_path / "official.jsonl"
+    standalone_path = tmp_path / "standalone.jsonl"
+    await _run_official_path(official_path, None, "hashed", monkeypatch, resolve_user=resolve)
+    await _run_standalone_path(standalone_path, None, "hashed", monkeypatch, resolve_user=resolve)
+
+    assert _user_ids(official_path) == {expected}
+    assert _user_ids(standalone_path) == {expected}
+
+
+async def test_the_hook_sees_the_calls_own_context_not_an_install_time_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The difference from the removed ``default_agent_runtime``.
+
+    That was one value fixed at install. This is a callable invoked per
+    request, so it can answer differently per call — asserted by returning a
+    principal derived from the context the hook was handed, and then finding
+    BOTH resulting hashes on the wire.
+    """
+    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_user_id
+
+    def per_call(ctx: Any) -> Any:
+        # ``tool_name`` differs between the lookup call and the annotation
+        # call, so one hook yields two principals on one run.
+        return Principal(user_id=f"user-of-{ctx.tool_name}")
+
+    official_path = tmp_path / "official.jsonl"
+    await _run_official_path(official_path, None, "hashed", monkeypatch, resolve_user=per_call)
+    got = _user_ids(official_path)
+
+    def h(sub: str) -> str:
+        return hash_user_id(
+            sub, tenant_id=TENANT, key=HMAC_KEY, issuer=None, scheme=VENDOR_HASH_SCHEME
+        )
+
+    assert h("user-of-lookup") in got
+    assert h("user-of-parity_annotate") in got, (
+        "the annotation path did not consult the hook — a session would carry "
+        "two provenances for one person"
+    )
+    assert len(got) == 2, got
+
+
+async def test_raw_mode_does_not_tag_a_hook_principal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Documented, not incidental: raw mode forfeits provenance the same way
+    it forfeits pseudonymity, so a consumer cannot tell asserted from attested
+    there. SPEC §11.4 says so; this pins it rather than letting a future reader
+    assume a ``v1:`` prefix survives into raw mode."""
+    from baton.identity import Principal
+
+    hook = _hook(Principal(user_id=HOOK_SUB, issuer=HOOK_ISS))
+    official_path = tmp_path / "official.jsonl"
+    standalone_path = tmp_path / "standalone.jsonl"
+    await _run_official_path(official_path, None, "raw", monkeypatch, resolve_user=hook)
+    await _run_standalone_path(standalone_path, None, "raw", monkeypatch, resolve_user=hook)
+
+    assert _user_ids(official_path) == {HOOK_SUB}
+    assert _user_ids(standalone_path) == {HOOK_SUB}

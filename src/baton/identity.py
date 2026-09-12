@@ -28,6 +28,15 @@ today — are unique to this copy. Adopting the same signature in
 ``baton_proxy.identity`` is a tracked follow-up; until it lands, do not change
 the message layout again, because a second divergence would not have a
 compatible default to hide behind.
+
+⚠ **A SECOND signature divergence landed 2026-09-11: ``scheme``.** Same
+discipline and the same reason it is safe — ``scheme`` defaults to
+``HASH_SCHEME``, so the proxy's issuer-less, scheme-less calls and this
+copy's produce the identical string. It does NOT touch the HMAC message, so
+it cannot move a digest the way a layout change would; only the tag in front
+of it differs. Both divergences are additive keyword-only parameters with
+pre-existing behaviour as their default, and that is the only form a
+divergence here may take.
 """
 
 from __future__ import annotations
@@ -44,6 +53,21 @@ from typing import Any, Protocol
 # boundary — an accepted, documented discontinuity (the raw value was never
 # stored, so it can't be re-hashed).
 HASH_SCHEME = "h1"
+
+#: Scheme tag for a principal a VENDOR ASSERTED rather than one an identity
+#: provider attested — the ``VendorConfig.resolve_user`` hook's output. It sits
+#: OUTSIDE the ``h*`` family on purpose: ``h2:`` is spoken for by the rotation
+#: seam above, and rotation must keep every letter it may later want. Sharing
+#: ``h1:`` was the alternative and it is the one thing this tag exists to
+#: prevent — an assertion and an attestation rendering identically downstream,
+#: so a console cannot say which one it is showing (SPEC §11.4).
+#:
+#: ⚠ Both tags are in SPEC §11.4's REGISTERED SET, and that set — not the mere
+#: presence of a prefix — is what tells a consumer a value is a pseudonym. A
+#: raw principal can legitimately look tagged (``mailto:``, ``acct:``, ``urn:``,
+#: ``https:`` are all real OIDC subject forms), so a structural test reads a
+#: live email address as safe. Adding a scheme here is a SPEC change.
+VENDOR_HASH_SCHEME = "v1"
 
 
 @dataclass(frozen=True)
@@ -78,7 +102,21 @@ class Principal:
 class IdentityResolver(Protocol):
     """Turns a modality-native carrier into a ``Principal``. Returns ``None``
     when no identity is available — the core then skips ``user_id``
-    (fail-open)."""
+    (fail-open).
+
+    ⚠ **This is NOT the shape a vendor implements.** The vendor-facing seam is
+    ``VendorConfig.resolve_user`` — a plain callable taking the adapter-neutral
+    ``SessionResolutionContext``, matching ``resolve_session_id``, which is the
+    hook vendors already write. A method-on-an-object Protocol taking an
+    untyped ``carrier`` would be a second convention for the same job, and the
+    ``carrier`` would have to be one of the two libraries' incompatible
+    ``Context`` types — the precise coupling ``SessionResolutionContext`` was
+    introduced to avoid.
+
+    It stays because ``baton_proxy.identity`` carries this Protocol verbatim
+    and the two copies are kept in lockstep; deleting it here diverges them for
+    no gain. The return contract — ``Principal | None``, never raising — is
+    what ``resolve_user`` honours."""
 
     def resolve(self, carrier: Any) -> Principal | None: ...
 
@@ -90,7 +128,12 @@ def _canonicalize(raw_principal: str) -> str:
 
 
 def hash_user_id(
-    raw_principal: str, *, tenant_id: str, key: bytes, issuer: str | None = None
+    raw_principal: str,
+    *,
+    tenant_id: str,
+    key: bytes,
+    issuer: str | None = None,
+    scheme: str = HASH_SCHEME,
 ) -> str:
     """HMAC-SHA256 a raw principal into a console-safe, per-tenant ``user_id``.
 
@@ -106,6 +149,15 @@ def hash_user_id(
     people hash to one ``user_id`` — a silent merge of exactly the kind this
     project keeps finding.
 
+    ``scheme`` tags the DERIVATION, and only the tag changes — the digest for a
+    given ``(tenant_id, principal, issuer)`` is identical under every scheme,
+    because the tag is not part of the HMAC message. That is deliberate: the
+    same person reached by two provenances is meant to be recognisably the same
+    hex under two tags, not two unrelated values, so a consumer that decides to
+    unify them downstream can, and one that must keep them apart still can.
+    ``VENDOR_HASH_SCHEME`` is the asserted-principal tag; the default is the
+    attested one and is what every pre-existing caller gets.
+
     ⚠ **``issuer=None`` MUST hash byte-identically to the pre-issuer form**, and
     the append-only message layout below is what guarantees it. Every hash
     baton-proxy and baton-extmcp have produced since 0.5.0 was issuer-less, and
@@ -119,4 +171,4 @@ def hash_user_id(
     if issuer is not None:
         message += f"\x00{_canonicalize(issuer)}"
     digest = hmac.new(key, message.encode(), sha256).hexdigest()
-    return f"{HASH_SCHEME}:{digest}"
+    return f"{scheme}:{digest}"

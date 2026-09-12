@@ -40,7 +40,7 @@ from baton.events import (
     ToolCallStartEvent,
     ToolCallStartPayload,
 )
-from baton.integrations._config import ResolveSessionIdHook
+from baton.integrations._config import ResolveSessionIdHook, SessionResolutionContext
 from baton.integrations._llm_text import (
     EXPECTED_RESULT_PARAM_NAME,
     INTENT_SOURCE_PARAM,
@@ -51,14 +51,18 @@ from baton.integrations._llm_text import (
     build_user_goal_param_description,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
-from baton.integrations.identity_adapter import USER_ID_MODE_HASHED, resolve_user_id
+from baton.integrations.identity_adapter import (
+    USER_ID_MODE_HASHED,
+    ResolveUserHook,
+    resolve_call_user_id,
+)
 from baton.integrations.runtime_adapter import (
     UNKNOWN_AGENT_RUNTIME,
     detect_agent_runtime,
     meta_to_dict,
 )
 from baton.integrations.standalone import _auth
-from baton.integrations.standalone._session import resolve_call_session_id
+from baton.integrations.standalone._session import extract_headers, resolve_call_session_id
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
 
@@ -85,6 +89,7 @@ class BatonMiddleware(Middleware):
         server_meta: dict[str, Any] | None = None,
         user_id_mode: str = USER_ID_MODE_HASHED,
         user_id_hmac_key: bytes | None = None,
+        resolve_user_hook: ResolveUserHook | None = None,
         identity_warned: set[str] | None = None,
     ) -> None:
         self._tenant_id = tenant_id
@@ -101,6 +106,7 @@ class BatonMiddleware(Middleware):
         self._server_meta = server_meta or {}
         self._user_id_mode = user_id_mode
         self._user_id_hmac_key = user_id_hmac_key
+        self._resolve_user_hook = resolve_user_hook
         # Warn-once state for the missing-HMAC-key line. SHARED with the
         # annotation path via install.py so the line is logged once per
         # install, not once per emit path.
@@ -411,10 +417,30 @@ class BatonMiddleware(Middleware):
         )
         # Identity resolves here, beside the runtime detect: one place per
         # call, producing the FINISHED wire value so the raw principal never
-        # reaches the event constructions below. ``None`` on stdio and on any
-        # unauthenticated call, which is most of them.
-        call_user_id = resolve_user_id(
+        # reaches the event constructions below. ``None`` on any call where
+        # neither provenance resolves, which is most of them.
+        #
+        # ⚠ This comment used to read "``None`` on stdio and on any
+        # unauthenticated call". The stdio half stopped being true when
+        # ``resolve_user`` landed — a hook is the one identity mechanism that
+        # works there, and it is the reason the hook exists.
+        #
+        # The context is built only when a hook exists: ``extract_headers`` is
+        # not free on every call of every server that will never set the field.
+        identity_hook_context = (
+            SessionResolutionContext(
+                headers=extract_headers(),
+                meta=meta_dict,
+                tool_name=tool_name,
+                arguments=params,
+            )
+            if self._resolve_user_hook is not None
+            else None
+        )
+        call_user_id = await resolve_call_user_id(
             _auth.current_access_token(),
+            hook=self._resolve_user_hook,
+            hook_context=identity_hook_context,
             mode=self._user_id_mode,
             tenant_id=self._tenant_id,
             hmac_key=self._user_id_hmac_key,

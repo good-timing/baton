@@ -10,7 +10,68 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+### Added
+
+- **`VendorConfig.resolve_user` — a vendor-supplied identity resolver, and the
+  only way a stdio deployment's principal can reach Baton.** `user_id` has been
+  HTTP-only on every version the SDK supports, because it is read from a
+  contextvar that MCP's bearer-auth ASGI middleware sets and stdio has no ASGI.
+  A vendor already authenticating stdio users out of band knew exactly who the
+  user was and had no way to say so. The hook is a callable invoked per request
+  with the same `SessionResolutionContext` that `resolve_session_id` takes,
+  returning `baton.Principal | None`; sync or async. It is checked **before**
+  the verified access token and wins when both resolve — a gateway's token
+  frequently names a service account rather than the person, while a hook
+  exists only where a vendor deliberately wrote one.
+
+  ⚠ **A hook principal is ASSERTED, not attested, and the wire says which.**
+  It hashes under a new scheme tag, **`v1:`**, kept outside the `h*` family
+  because `h2:` is reserved for the HMAC key-rotation seam. Only the tag
+  differs from the attested derivation — the scheme is not part of the HMAC
+  message, so one person reached by both provenances is the same hex under two
+  tags, and a consumer may unify them or keep them apart as it chooses.
+  In `user_id_mode="raw"` the distinction is **not** on the wire: raw mode
+  emits the principal verbatim and untagged from both paths.
+
+  Fail-open throughout, like everything on the identity path — a hook that
+  raises, returns the wrong type, or returns `None` falls through to the token
+  exactly as if it were not configured. **One case deliberately does not:** a
+  hook that returned a usable principal the SDK then could not hash emits no
+  `user_id` rather than the token's. A hook returning `None` has no opinion
+  about the request, so the token is the best available answer; a hook that
+  named a person and failed to render them has told us the token names
+  somebody else, and substituting the gateway's service account there files
+  the call under a plausible, wrong, heavily-merged actor. Losing the join
+  beats inventing one. A wrong return type is a miss rather
+  than a value, deliberately: a dict or a namedtuple with the right field names
+  is the shape a vendor reaches for first, and duck-typing it would put an
+  unvalidated value one line from an HMAC. A non-callable is refused at
+  install, where the vendor is watching, rather than silently inside the
+  fail-open guard for the life of the process.
+
+- **`baton.Principal` is now exported from the top-level package.** It is the
+  hook's return type, so unlike `resolve_session_id` — which returns a plain
+  `str` — the hook cannot be written without importing it. Additive; nothing
+  moved.
+
 ### Changed
+
+- ⚠ **`docs/SPEC.md §11.4`'s pseudonym discriminator is rewritten, and a
+  consumer that implemented the old rule literally is now wrong.** The rule was
+  "the `h1:` prefix is the discriminator; treat its absence as personal data",
+  which classifies a `v1:` pseudonym as personal data. That direction is
+  fail-safe and nothing leaks, but the classification is wrong and the value
+  renders raw in any UI that strips a known prefix. §11.4 now states the
+  discriminator as a **registered set** — `h1:`, `h2:`, `v1:` — with
+  "unrecognized prefix ⇒ personal data" as the required default. A structural
+  rule ("letters then a colon") was considered and **rejected as unsafe in the
+  opposite direction**: `mailto:`, `acct:`, `urn:` and `https:` are all
+  legitimate OIDC subject forms that reach the wire verbatim in raw mode, so a
+  structural test would classify a live email address as a safe pseudonym.
+  **Nothing emits `v1:` until a vendor configures the hook**, so no existing
+  deployment's data changes and there is no ordering constraint on updating
+  consumers.
+
 
 - The agent-facing server instructions now call the SDK a usage and friction SDK instead of a support-signal SDK, in both `proactive_mode` settings. Under the default `proactive_mode="off"` the head also names the missing-tool case and tells the agent that filing lets the vendor improve their product. The `proactive_mode="on"` head is deliberately shorter and carries only the name change: the fuller wording rendered a 30-character display name at 1610 characters, past the 1500-character cap that leaves room for a vendor's own instructions before Claude Code silently truncates. In that mode the IF block already makes the missing-tool case mandatory, so the head would only have repeated it. A 30-character name still fits in both modes (1223 off, 1496 on).
 

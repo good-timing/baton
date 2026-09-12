@@ -152,7 +152,8 @@ def extract_headers() -> Mapping[str, str] | None:
     request, so it's populated by the time either capture path runs). Never
     raises — empty outside a live HTTP request (e.g. stdio).
     ``include_all=True`` so a vendor's hook can read headers the default view
-    strips (e.g. ``authorization``, which a session-lookup hook may need)."""
+    strips (e.g. ``authorization``, which both the session-lookup hook and the
+    ``resolve_user`` identity hook may need)."""
     headers = get_http_headers(include_all=True)
     return headers if headers else None
 

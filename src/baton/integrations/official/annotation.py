@@ -22,12 +22,20 @@ from typing import Any
 
 from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
+from baton.integrations._config import SessionResolutionContext
 from baton.integrations._llm_text import build_annotation_tool_description
-from baton.integrations.identity_adapter import USER_ID_MODE_HASHED, resolve_user_id
+from baton.integrations.identity_adapter import (
+    USER_ID_MODE_HASHED,
+    ResolveUserHook,
+    resolve_call_user_id,
+)
 from baton.integrations.official import _auth
 from baton.integrations.official._compat import ContextClass as Context
 from baton.integrations.official._compat import MCPServerClass as FastMCP
-from baton.integrations.official._tool_wrap import _extract_meta_from_context
+from baton.integrations.official._tool_wrap import (
+    _extract_headers_from_context,
+    _extract_meta_from_context,
+)
 from baton.integrations.runtime_adapter import UNKNOWN_AGENT_RUNTIME, detect_agent_runtime
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
@@ -69,6 +77,7 @@ def register_annotation_tool(
     proactive_tracker: ProactiveTracker | None = None,
     user_id_mode: str = USER_ID_MODE_HASHED,
     user_id_hmac_key: bytes | None = None,
+    resolve_user_hook: ResolveUserHook | None = None,
     identity_warned: set[str] | None = None,
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
@@ -179,8 +188,25 @@ def register_annotation_tool(
         # against emitting this one — ``user_id`` carries no session identity,
         # so it cannot disagree with the envelope's ``session_id`` the way a
         # forwarded meta key can.
-        annotation_user_id = resolve_user_id(
+        # Identity here takes the SAME ladder the tool-call path takes, hook
+        # included. Wiring only the tool-call path would give one session two
+        # actor ids — its calls under ``v1:`` and its annotations under
+        # ``h1:`` — for one person, which is the split this field exists to
+        # prevent, arriving through the door built to fix it.
+        identity_hook_context = (
+            SessionResolutionContext(
+                headers=_extract_headers_from_context(ctx),
+                meta=meta_dict,
+                tool_name=name,
+                arguments={},
+            )
+            if resolve_user_hook is not None
+            else None
+        )
+        annotation_user_id = await resolve_call_user_id(
             _auth.current_access_token(),
+            hook=resolve_user_hook,
+            hook_context=identity_hook_context,
             mode=user_id_mode,
             tenant_id=tenant_id,
             hmac_key=user_id_hmac_key,

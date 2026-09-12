@@ -64,6 +64,7 @@ async def _drive(
     *,
     mode: str = "hashed",
     hmac_key: bytes | None = HMAC_KEY,
+    resolve_user: Any = None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> list[dict[str, Any]]:
     """One tool call + one annotation call, with ``token`` as the caller."""
@@ -87,6 +88,7 @@ async def _drive(
             tenant_id="tenant-official",
             user_id_mode=mode,
             user_id_hmac_key=hmac_key,
+            resolve_user=resolve_user,
         ),
     )
     try:
@@ -235,3 +237,105 @@ def test_an_invalid_mode_is_refused_at_install() -> None:
                 user_id_mode="plaintext",
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# The ``resolve_user`` hook (N11) on this matrix.
+#
+# The rest of the hook's coverage lives in ``tests/functional/`` and
+# ``tests/test_identity_hook.py``. It is duplicated HERE, thinly, for the
+# reason at the top of this file: ``mcp-matrix`` runs
+# ``tests/integrations/official/`` and nothing else, so nothing else in the
+# suite exercises the official adapter against mcp 1.20 / 1.25 / 1.27 / 2.0.
+#
+# The version-sensitive part is not the hashing — it is that a hook makes
+# ``_extract_headers_from_context`` run on the ANNOTATION path for the first
+# time, and header access differs across the mcp majors (1.x has no
+# ``Context.headers``; the extractor reaches through ``request_context.request``
+# and must swallow the ``ValueError`` that raises outside a live request).
+# ``connected_session`` is in-process with no HTTP request, which is exactly
+# the shape that raises, so these tests fail loudly if the guard stops holding
+# on any leg.
+#
+# Unlike everything above, these do NOT depend on ``claims`` and therefore run
+# identically on all four legs — a hook is the one identity path that works
+# where the token path cannot.
+
+
+def _fixed_hook(user_id: str) -> Any:
+    from baton.identity import Principal
+
+    def resolve(_ctx: Any) -> Any:
+        return Principal(user_id=user_id)
+
+    return resolve
+
+
+def _per_call_hook() -> Any:
+    """A principal derived from the context the hook was handed, so the two
+    emit paths produce two different values on one run."""
+    from baton.identity import Principal
+
+    def resolve(ctx: Any) -> Any:
+        return Principal(user_id=f"user-of-{ctx.tool_name}")
+
+    return resolve
+
+
+async def test_a_hook_carries_identity_on_every_leg_including_the_claimless_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``token=None`` is stdio, and it is also 1.20/1.25 with nothing readable.
+
+    The expected value is computed here rather than pattern-matched, so a hash
+    that is merely *present* cannot pass for the right one.
+    """
+    from baton.identity import VENDOR_HASH_SCHEME, hash_user_id
+
+    expected = hash_user_id(
+        "employee-4417", tenant_id="tenant-official", key=HMAC_KEY, scheme=VENDOR_HASH_SCHEME
+    )
+    events = await _drive(
+        tmp_path / "e.jsonl",
+        None,
+        resolve_user=_fixed_hook("employee-4417"),
+        monkeypatch=monkeypatch,
+    )
+    got = {ev.get("user_id") for ev in events}
+    assert got == {expected}, got
+    assert expected.startswith("v1:")
+
+
+async def test_the_annotation_path_consults_the_hook_on_every_leg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The header extractor runs here for the first time on the annotation
+    path. If it raised instead of degrading on some mcp version, the annotation
+    event would carry no ``user_id`` while the tool call carried one — one
+    session, two actors, and green everywhere else."""
+    events = await _drive(
+        tmp_path / "e.jsonl",
+        None,
+        resolve_user=_per_call_hook(),
+        monkeypatch=monkeypatch,
+    )
+    by_type = {ev["event_type"]: ev.get("user_id") for ev in events}
+    assert "annotation" in by_type, f"no annotation event captured: {list(by_type)}"
+    assert by_type["annotation"] is not None, "the annotation path skipped the hook"
+    assert all(v is not None for v in by_type.values()), by_type
+    # Two distinct tool names ⇒ two distinct principals ⇒ the hook really did
+    # run per call rather than once at install.
+    assert len({v for v in by_type.values()}) > 1, by_type
+
+
+async def test_a_hook_that_raises_leaves_the_call_and_the_events_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail-open against the REAL server on every leg, not a stub of one."""
+
+    def boom(_ctx: Any) -> Any:
+        raise RuntimeError("the vendor's directory service is down")
+
+    events = await _drive(tmp_path / "e.jsonl", None, resolve_user=boom, monkeypatch=monkeypatch)
+    assert events, "the hook's exception cost the capture"
+    assert {ev.get("user_id") for ev in events} == {None}

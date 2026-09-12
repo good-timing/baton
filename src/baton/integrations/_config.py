@@ -12,7 +12,7 @@ from typing import Any
 from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
 from baton._dsn import parse_dsn, resolve_dsn, select_dsn
 from baton.events import DEFAULT_CONSENT_TOKEN
-from baton.integrations.identity_adapter import USER_ID_MODES
+from baton.integrations.identity_adapter import USER_ID_MODES, ResolveUserHook
 from baton.sinks import HttpSink, Sink, StdoutSink
 
 logger = logging.getLogger(__name__)
@@ -268,6 +268,41 @@ class VendorConfig:
     passed through raw, not hashed; hashing/derivation is the vendor's
     responsibility if the raw value is sensitive. Sync or async."""
 
+    resolve_user: ResolveUserHook | None = None
+    """Optional vendor-supplied identity resolver, checked BEFORE the verified
+    access token and winning outright when both resolve (SPEC §11.4).
+
+    **This is the only way a stdio vendor's principal can reach Baton.** The
+    token path reads a contextvar set by MCP's bearer-auth ASGI middleware, and
+    stdio has no ASGI — so ``user_id`` is HTTP-only without this hook, on every
+    supported version. A vendor already authenticating stdio users out of band
+    knows exactly who the user is and previously had no way to say so.
+
+    Takes the same ``SessionResolutionContext`` as ``resolve_session_id`` and
+    returns ``Principal | None``; ``None``, a wrong type, or a raised exception
+    (logged, never propagated) falls through to the token path unchanged.
+    Sync or async. Import the return type as ``from baton import Principal``.
+
+    ⚠ **A hook principal is ASSERTED, not attested.** The token path carries an
+    identity an IdP verified; this one carries whatever the vendor says, and the
+    SDK cannot check it. So it hashes under its own scheme tag — ``v1:`` rather
+    than ``h1:`` — and a consumer can tell the two apart on the wire. It is
+    checked ABOVE the token deliberately: a gateway's token frequently names a
+    service account rather than the end user, and this hook exists only where a
+    vendor opted in, which makes it the more specific claim even though it is
+    the less verified one.
+
+    ⚠ **In ``user_id_mode="raw"`` the distinction is not on the wire**, because
+    raw mode emits the principal verbatim and untagged from both paths. Raw
+    mode forfeits provenance the same way it forfeits pseudonymity; if you need
+    to tell asserted from attested downstream, use hashed mode.
+
+    ⚠ **It is not ``default_agent_runtime`` returning.** That was a static
+    value set once at install, asserting over whatever a client declared per
+    connection, and could only be right in a single-client deployment. This is
+    a callable invoked per request with that request's own context — the same
+    mechanism as ``resolve_session_id`` rung 0, and a different failure mode."""
+
     tenant_id: str | None = None
     """Account identifier for the envelope's ``tenant_id`` (SPEC §11.4).
 
@@ -460,6 +495,15 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             f"a wrong type fails at the FIRST AUTHENTICATED CALL rather than "
             f"here, which is a deployment a vendor cannot reach in local "
             f"testing."
+        )
+    if config.resolve_user is not None and not callable(config.resolve_user):
+        raise ValueError(
+            f"VendorConfig.resolve_user must be callable, got "
+            f"{type(config.resolve_user).__name__}. Unvalidated it would fail "
+            f"inside the hook's own fail-open guard — logged, identity "
+            f"silently absent for the life of the process — and that guard is "
+            f"there for a vendor's resolver raising, not for the field holding "
+            f"the wrong thing."
         )
     if config.user_id_mode not in USER_ID_MODES:
         raise ValueError(
