@@ -453,7 +453,7 @@ class BatonMiddleware(Middleware):
         # configured hook sees vendor-visible ``params`` and unscrubbed
         # ``meta_dict`` — the same shape ``SessionResolutionContext`` carries
         # on the mcp-adapter path.
-        session_id = await self._extract_session_id(meta_dict, tool_name, params)
+        session_id = await self._extract_session_id()
 
         # The session's FIRST injected-param intent also becomes a proactive
         # annotation, sequenced BEFORE the tool_call_start it explains (so
@@ -619,12 +619,7 @@ class BatonMiddleware(Middleware):
         """Atomically increment + return the per-session sequence counter."""
         return await self._counter.next(session_id)
 
-    async def _extract_session_id(
-        self,
-        meta: dict[str, Any] | None,
-        tool_name: str,
-        arguments: dict[str, Any],
-    ) -> str:
+    async def _extract_session_id(self) -> str:
         """Real per-call session id — SPEC §3.4's ladder, shared with the
         annotation tool so an annotation and the call it describes always
         resolve identically. See ``baton.integrations.standalone._session`` for
