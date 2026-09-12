@@ -449,10 +449,15 @@ class BatonMiddleware(Middleware):
         # carry runtime-supplied identifiers that vendors want filtered.
         scrubbed_meta = self._scrubber(meta_dict) if meta_dict is not None else None
 
-        # Resolved AFTER the goal-param strip + meta extraction above so a
-        # configured hook sees vendor-visible ``params`` and unscrubbed
-        # ``meta_dict`` — the same shape ``SessionResolutionContext`` carries
-        # on the mcp-adapter path.
+        # ⚠ The ordering constraint that used to live here DIED with rung 0
+        # (removed 2026-09-12). It read "resolved AFTER the goal-param strip +
+        # meta extraction so a configured hook sees vendor-visible ``params``
+        # and unscrubbed ``meta_dict``" — true while a hook took those, and
+        # meaningless now that this reads headers alone and takes no
+        # arguments. Placement here is incidental, not load-bearing: nothing
+        # above it feeds it. Said explicitly so the next reader neither
+        # preserves a constraint that no longer exists nor thinks they broke
+        # one by moving the call.
         session_id = await self._extract_session_id()
 
         # The session's FIRST injected-param intent also becomes a proactive

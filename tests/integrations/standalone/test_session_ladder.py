@@ -12,12 +12,66 @@ from importlib.metadata import version
 from typing import Any
 
 import pytest
+from fastmcp import Client, FastMCP
 from fastmcp.server.dependencies import get_http_headers
 from fastmcp.server.http import set_http_request
+from pytest_httpserver import HTTPServer
 from starlette.requests import Request
+from werkzeug.wrappers import Response
 
 from baton.integrations.standalone import _session
 from baton.integrations.standalone._session import resolve_call_session_id
+from baton.integrations.standalone.middleware import BatonMiddleware
+from baton.sinks import HttpSink, Sink
+
+
+@pytest.fixture
+async def captured() -> list[dict[str, Any]]:
+    """Per-test list collecting ingested event JSON bodies."""
+    return []
+
+
+@pytest.fixture
+async def sink(httpserver: HTTPServer, captured: list[dict[str, Any]]):  # type: ignore[no-untyped-def]
+    def handler(request: Any) -> Response:
+        captured.append(request.get_json())
+        return Response("", status=201)
+
+    httpserver.expect_request("/v0/events", method="POST").respond_with_handler(handler)
+    s = HttpSink(url=httpserver.url_for(""), api_key="k")
+    yield s
+    await s.aclose()
+
+
+def _build_ladder_mcp(sink: Sink) -> FastMCP:
+    mcp = FastMCP("test-vendor")
+    mcp.add_middleware(
+        BatonMiddleware(
+            tenant_id="ten_test",
+            vendor_id="ten_test",
+            consent_token="ct_test",
+            sink=sink,
+        )
+    )
+    return mcp
+
+
+async def _session_id_from_a_call(
+    sink: Sink, captured: list[dict[str, Any]], *, meta: dict[str, Any]
+) -> str:
+    """Drive one real tool call carrying ``meta`` on the wire; return the
+    ``session_id`` the middleware resolved for it."""
+    mcp = _build_ladder_mcp(sink)
+
+    @mcp.tool()
+    def echo(text: str) -> str:
+        return text
+
+    async with Client(mcp) as client:
+        await client.call_tool("echo", {"text": "x"}, meta=meta)
+    await sink.flush()
+    start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
+    return str(start["session_id"])
 
 
 class _FakeContext:
@@ -71,14 +125,15 @@ def _fake_http_request(headers: dict[str, str]) -> Request:
 
 async def _resolve(
     *,
-    meta: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
     fallback: str = "sdk-fallback",
 ) -> str:
-    """``meta`` is accepted and deliberately IGNORED. The retired-rung tests
-    below pass it to prove the ladder does not read it; it stopped being a
-    parameter of ``resolve_call_session_id`` when rung 0 — the last consumer
-    of the wire ``_meta`` in this function — was removed 2026-09-12."""
+    """⚠ Takes no ``meta``. It used to, and the retired-rung tests passed one
+    to prove the ladder ignored it — which became VACUOUS on 2026-09-12 when
+    rung 0's removal made ``meta`` stop being a parameter of
+    ``resolve_call_session_id`` at all. A test that hands a value to a
+    function that cannot accept it proves nothing about the function. The
+    retired rungs are now asserted through the real middleware, below."""
 
     async def call() -> str:
         return await resolve_call_session_id(fallback=fallback)
@@ -97,34 +152,76 @@ class TestTheRetiredMetaRungs:
     join rule forbids. These tests are the inverse of the ones they replace: a
     silent restoration of either rung would change what a session groups on for
     every event, so absence is asserted rather than assumed.
+
+    ⚠ **Driven through the real middleware, on purpose.** Until 2026-09-12
+    these called ``resolve_call_session_id`` with a ``meta=`` argument. Rung 0
+    was that function's last reader of the wire ``_meta``, so its removal took
+    the parameter — and the tests kept passing a value the function no longer
+    had, which is the definition of assumed rather than asserted. The
+    restoration path they exist to catch is still open: ``_session`` already
+    imports ``get_context()`` and uses it at rung 4b, so a new meta rung needs
+    no signature change to reach ``_meta``. Only a test that puts meta on the
+    WIRE can see that, so these send it through an in-process client and
+    assert on the emitted envelope.
     """
 
-    @requires_http_injection
-    async def test_traceparent_no_longer_outranks_the_header(self) -> None:
-        got = await _resolve(
-            meta={"traceparent": TRACEPARENT}, headers={"mcp-session-id": "from-header"}
+    async def test_traceparent_alone_leaves_the_fallback(
+        self, sink: Sink, captured: list[dict[str, Any]]
+    ) -> None:
+        assert (
+            await _session_id_from_a_call(sink, captured, meta={"traceparent": TRACEPARENT})
+            != TRACEPARENT.split("-")[1]
         )
-        assert got == "from-header"
 
-    async def test_traceparent_alone_leaves_the_fallback(self) -> None:
-        assert await _resolve(meta={"traceparent": TRACEPARENT}) == "sdk-fallback"
+    async def test_io_baton_session_id_alone_leaves_the_fallback(
+        self, sink: Sink, captured: list[dict[str, Any]]
+    ) -> None:
+        assert (
+            await _session_id_from_a_call(
+                sink, captured, meta={"io.baton/session_id": "vendor-app-handle"}
+            )
+            != "vendor-app-handle"
+        )
 
-    async def test_io_baton_session_id_alone_leaves_the_fallback(self) -> None:
-        assert await _resolve(meta={"io.baton/session_id": "vendor-app-handle"}) == "sdk-fallback"
-
-    @requires_http_injection
-    async def test_neither_key_outranks_the_header_even_together(self) -> None:
-        got = await _resolve(
+    async def test_neither_key_resolves_the_session_even_together(
+        self, sink: Sink, captured: list[dict[str, Any]]
+    ) -> None:
+        got = await _session_id_from_a_call(
+            sink,
+            captured,
             meta={"traceparent": TRACEPARENT, "io.baton/session_id": "vendor-app-handle"},
-            headers={"mcp-session-id": "from-header"},
         )
-        assert got == "from-header"
+        assert got != "vendor-app-handle"
+        assert got != TRACEPARENT.split("-")[1]
+
+    async def test_the_keys_still_REACH_us_as_data(
+        self, sink: Sink, captured: list[dict[str, Any]]
+    ) -> None:
+        """Retired means not keyed on, not uncaptured — the negative control
+        for the three above. Without this, a middleware that dropped ``_meta``
+        entirely would satisfy every one of them."""
+        mcp = _build_ladder_mcp(sink)
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.call_tool(
+                "echo",
+                {"text": "x"},
+                meta={"traceparent": TRACEPARENT, "io.baton/session_id": "vendor-app-handle"},
+            )
+        await sink.flush()
+        start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
+        assert start["runtime_meta"]["traceparent"] == TRACEPARENT
+        assert start["runtime_meta"]["io.baton/session_id"] == "vendor-app-handle"
 
 
 class TestHeaderAndFallbackRungs:
     @requires_http_injection
-    async def test_header_used_when_meta_is_empty(self) -> None:
-        assert await _resolve(meta=None, headers={"mcp-session-id": "hdr"}) == "hdr"
+    async def test_header_used_when_nothing_above_it_answers(self) -> None:
+        assert await _resolve(headers={"mcp-session-id": "hdr"}) == "hdr"
 
     async def test_fallback_when_nothing_is_observable(self) -> None:
         """The stdio shape: no HTTP request, no meta. One process is one
@@ -179,14 +276,22 @@ class TestRung4bFastmcpContext:
         assert await _resolve(headers={"mcp-session-id": "from-header"}) == "from-header"
 
     @requires_http_injection
-    async def test_meta_no_longer_outranks_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_answers_the_sse_shape_that_meta_used_to_take(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Before the rung-1/2 retirement a ``traceparent`` beat this rung. It
         no longer does, so 4b now answers the SSE shape even when the client
-        propagates a trace context — which is the intended widening, not a
-        regression: 4b is an id the server library owns."""
+        propagates a trace context — the intended widening, not a regression:
+        4b is an id the server library owns.
+
+        ⚠ Renamed 2026-09-12 from ``test_meta_no_longer_outranks_it``, which
+        stopped being what it did: the meta argument it made that claim with
+        went away with rung 0, leaving the old name asserting something the
+        body no longer touches. The meta claim now lives in
+        ``TestTheRetiredMetaRungs``, on the wire, where it can fail."""
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
         monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("per-connection-id"))
-        got = await _resolve(meta={"traceparent": TRACEPARENT}, headers={"host": "x"})
+        got = await _resolve(headers={"host": "x"})
         assert got == "per-connection-id"
 
     @requires_http_injection
