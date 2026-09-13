@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.8.3 — the annotation tool name comes from the server; a short workspace id parses
 
 ### Changed
 
