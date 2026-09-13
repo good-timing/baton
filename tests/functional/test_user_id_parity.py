@@ -65,7 +65,7 @@ async def _run_official_path(
     mode: str,
     monkeypatch: pytest.MonkeyPatch,
     resolve_user: Any = None,
-) -> None:
+) -> str:
     from baton.integrations.official import VendorConfig, _auth, install_baton
     from baton.integrations.official._compat import MCPServerClass as FastMCP
     from baton.sinks import FileSink
@@ -95,8 +95,9 @@ async def _run_official_path(
         async with connected_session(mcp) as client:
             await client.call_tool("lookup", {"name": "alice"})
             await client.call_tool(
-                "parity_annotate", {"user_goal": "look up", "signal_type": "failure"}
+                handle.annotation_tool_name, {"user_goal": "look up", "signal_type": "failure"}
             )
+        return handle.annotation_tool_name
     finally:
         await handle.aclose()
 
@@ -137,7 +138,7 @@ async def _run_standalone_path(
         async with Client(mcp) as client:
             await client.call_tool("lookup", {"name": "alice"})
             await client.call_tool(
-                "parity_annotate", {"user_goal": "look up", "signal_type": "failure"}
+                handle.annotation_tool_name, {"user_goal": "look up", "signal_type": "failure"}
             )
     finally:
         await handle.aclose()
@@ -377,7 +378,9 @@ async def test_the_hook_sees_the_calls_own_context_not_an_install_time_value(
         return Principal(user_id=f"user-of-{ctx.tool_name}")
 
     official_path = tmp_path / "official.jsonl"
-    await _run_official_path(official_path, None, "hashed", monkeypatch, resolve_user=per_call)
+    annotate = await _run_official_path(
+        official_path, None, "hashed", monkeypatch, resolve_user=per_call
+    )
     got = _user_ids(official_path)
 
     def h(sub: str) -> str:
@@ -386,7 +389,7 @@ async def test_the_hook_sees_the_calls_own_context_not_an_install_time_value(
         )
 
     assert h("user-of-lookup") in got
-    assert h("user-of-parity_annotate") in got, (
+    assert h(f"user-of-{annotate}") in got, (
         "the annotation path did not consult the hook — a session would carry "
         "two provenances for one person"
     )

@@ -117,7 +117,7 @@ class TestInstallation:
             assert mcp.instructions is not None
             assert "ACME Corp" in mcp.instructions
             # And reference the annotation tool name (default: vendor_id + _annotate)
-            assert "acme_annotate" in mcp.instructions
+            assert handle.annotation_tool_name in mcp.instructions
         finally:
             await handle.aclose()
 
@@ -134,7 +134,7 @@ class TestInstallation:
         )
         try:
             tools = {t.name for t in await _server_tools(mcp)}
-            assert "v_annotate" in tools
+            assert handle.annotation_tool_name in tools
         finally:
             await handle.aclose()
 
@@ -159,7 +159,7 @@ class TestInstallation:
             tools = await _server_tools(mcp)
             # FastMCP exposes a FunctionTool wrapper; convert to the
             # MCP-native shape so the schema check matches the mcp adapter.
-            annotate = next(t for t in tools if t.name == "v_annotate").to_mcp_tool()
+            annotate = next(t for t in tools if t.name == handle.annotation_tool_name).to_mcp_tool()
             required = annotate.inputSchema.get("required", [])
             assert "user_goal" in required, (
                 f"user_goal must be required on annotation tool schema; required={required}"
@@ -187,7 +187,70 @@ class TestInstallation:
         try:
             tools = {t.name for t in await _server_tools(mcp)}
             assert "custom-annotate-name" in tools
+            # Both defaults the override suppresses: the vendor_id one and the
+            # one the server object would now supply.
             assert "v_annotate" not in tools
+            assert "x_annotate" not in tools
+        finally:
+            await handle.aclose()
+
+    async def test_the_tool_name_comes_from_the_server_when_vendor_id_is_opaque(
+        self, httpserver: HTTPServer
+    ) -> None:
+        """The defect this feature exists for: the console mints ``vendor_id``
+        as ``srv-<8 hex>``, so the old default composed
+        ``srv-…_annotate`` — what every agent listing this server's tools reads.
+        The server object already knows its own name."""
+        # Answer the ingest POST: without a handler pytest-httpserver 500s,
+        # HttpSink retries with backoff, and the test takes 1.46s to assert
+        # something that never touched the sink.
+        httpserver.expect_request("/v0/events").respond_with_response(Response(status=202))
+        mcp = FastMCP("Acme Knowledge Base")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="srv-9f2a7c31",
+                vendor_display_name="Acme",
+                consent_token="ct_test",
+                sink=HttpSink(url=httpserver.url_for(""), api_key="k"),
+            ),
+        )
+        try:
+            tools = {t.name for t in await _server_tools(mcp)}
+            assert "acme-knowledge-base_annotate" in tools
+            assert "srv-9f2a7c31_annotate" not in tools
+            assert handle.annotation_tool_name == "acme-knowledge-base_annotate"
+            # The instructions must name the tool that actually registered.
+            assert mcp.instructions is not None
+            assert "acme-knowledge-base_annotate" in mcp.instructions
+        finally:
+            await handle.aclose()
+
+    async def test_an_unnamed_server_keeps_the_vendor_id_default(
+        self, httpserver: HTTPServer
+    ) -> None:
+        """fastmcp names an unnamed server ``FastMCP-<4 random hex>``, minted
+        per construction — deriving from it would rename the tool on every
+        restart. Falling back is the point; raising would stop the boot."""
+        # Answer the ingest POST: without a handler pytest-httpserver 500s,
+        # HttpSink retries with backoff, and the test takes 1.46s to assert
+        # something that never touched the sink.
+        httpserver.expect_request("/v0/events").respond_with_response(Response(status=202))
+        mcp = FastMCP()  # no name: fastmcp invents one
+        assert mcp.name.startswith("FastMCP-")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="v",
+                vendor_display_name="V",
+                consent_token="ct_test",
+                sink=HttpSink(url=httpserver.url_for(""), api_key="k"),
+            ),
+        )
+        try:
+            tools = {t.name for t in await _server_tools(mcp)}
+            assert "v_annotate" in tools
+            assert handle.annotation_tool_name == "v_annotate"
         finally:
             await handle.aclose()
 
@@ -241,7 +304,7 @@ class TestInstallation:
         still expose the annotation tool and still accept a reactive call."""
         httpserver.expect_request("/v0/events").respond_with_response(Response(status=202))
         mcp = FastMCP("x")
-        install_baton(
+        handle = install_baton(
             mcp,
             VendorConfig(
                 vendor_id="v",
@@ -252,9 +315,9 @@ class TestInstallation:
         )
         async with Client(mcp) as client:
             names = [t.name for t in await client.list_tools()]
-            assert "v_annotate" in names
+            assert handle.annotation_tool_name in names
             await client.call_tool(
-                "v_annotate",
+                handle.annotation_tool_name,
                 {
                     "user_goal": "find the thing",
                     "signal_type": "failure",
@@ -288,7 +351,9 @@ class TestInstallation:
         )
         try:
             async with Client(mcp) as client:
-                result = await client.call_tool("v_annotate", {"user_goal": "about to look"})
+                result = await client.call_tool(
+                    handle.annotation_tool_name, {"user_goal": "about to look"}
+                )
             await handle.flush()
         finally:
             await handle.aclose()
@@ -325,7 +390,7 @@ class TestInstallation:
         try:
             async with Client(mcp) as client:
                 await client.call_tool(
-                    "v_annotate",
+                    handle.annotation_tool_name,
                     {
                         "user_goal": "find the thing",
                         "signal_type": "feature_gap",
@@ -407,7 +472,7 @@ class TestAnnotationToolEndToEnd:
 
         async with Client(mcp) as client:
             await client.call_tool(
-                "test-vendor_annotate",
+                handle.annotation_tool_name,
                 {
                     "user_goal": "summarize PR comments",
                     "expected_result": "2-3 sentence paragraph",
@@ -436,7 +501,7 @@ class TestAnnotationToolEndToEnd:
 
         async with Client(mcp) as client:
             await client.call_tool(
-                "test-vendor_annotate",
+                handle.annotation_tool_name,
                 {
                     "user_goal": "fetch the search results",
                     "signal_type": "dead_end",
@@ -465,7 +530,19 @@ class TestAnnotationToolEndToEnd:
         mcp, handle = configured_mcp
 
         async with Client(mcp) as client:
-            await client.call_tool("test-vendor_annotate", {"user_goal": "x"})
+            # The handle's name IS the registered name — one resolution at
+            # install, threaded to the capture layer, the instructions, the
+            # handle and the registration. They agreed for free while every
+            # site derived from ``(vendor_id, override)``; the server object is
+            # a third input, so a divergence would register one name while the
+            # middleware skipped another and double-capture the annotation.
+            # This fixture exercises the DERIVED name: the server is
+            # ``FastMCP("test-vendor-mcp")`` while ``vendor_id`` is
+            # ``"test-vendor"``, so the two differ.
+            names = [t.name for t in await client.list_tools()]
+            assert handle.annotation_tool_name in names
+            assert handle.annotation_tool_name == "test-vendor-mcp_annotate"
+            await client.call_tool(handle.annotation_tool_name, {"user_goal": "x"})
 
         await handle.flush()
         types = [ev["event_type"] for ev in captured]
@@ -493,7 +570,7 @@ class TestAnnotationToolRuntimeDetection:
 
         async with Client(mcp) as client:
             await client.call_tool(
-                "test-vendor_annotate",
+                handle.annotation_tool_name,
                 {"user_goal": "x"},
                 meta={"claudecode/toolUseId": "tool-use-xyz"},
             )
@@ -560,7 +637,7 @@ class TestRuntimeMetaCapture:
 
         async with Client(mcp) as client:
             await client.call_tool(
-                "test-vendor_annotate",
+                handle.annotation_tool_name,
                 {"user_goal": "find user"},
                 meta={"claudecode/toolUseId": "tool-use-1"},
             )
@@ -620,7 +697,7 @@ class TestAllFourEventTypesInOneFlow:
         async with Client(mcp) as client:
             # 1. Proactive annotate
             await client.call_tool(
-                "test-vendor_annotate",
+                handle.annotation_tool_name,
                 {"user_goal": "find user", "expected_result": "user record"},
             )
             # 2. Real tool call
@@ -628,7 +705,7 @@ class TestAllFourEventTypesInOneFlow:
             # 3. Reactive annotate — intent restated so the reactive
             # carries the same task framing the proactive opened.
             await client.call_tool(
-                "test-vendor_annotate",
+                handle.annotation_tool_name,
                 {
                     "user_goal": "find user",
                     "signal_type": "dead_end",
@@ -667,7 +744,7 @@ class TestAllFourEventTypesInOneFlow:
             return text
 
         async with Client(mcp) as client:
-            await client.call_tool("test-vendor_annotate", {"user_goal": "x"})
+            await client.call_tool(handle.annotation_tool_name, {"user_goal": "x"})
             await client.call_tool("echo", {"text": "y"})
 
         await handle.flush()
@@ -706,7 +783,7 @@ class TestSurfaceSnapshot:
         assert len(snapshots) == 1
         payload = snapshots[0]["payload"]
         assert [t["name"] for t in payload["tools"]] == ["echo"]
-        assert payload["seam_augmentations"]["injected_tools"] == ["test-vendor_annotate"]
+        assert payload["seam_augmentations"]["injected_tools"] == [handle.annotation_tool_name]
         assert payload["surface_hash"].startswith("sha256:")
 
     async def test_dedupes_across_repeated_tools_list(
@@ -811,7 +888,7 @@ class TestIntentInjectionInstalled:
         # proves nothing; what proves injection skipped the tool is that its
         # schema does not carry the INJECTED description, which only the
         # injector writes.
-        annotate_tool = next(t for t in tools if t.name == "test-vendor_annotate")
+        annotate_tool = next(t for t in tools if t.name == handle.annotation_tool_name)
         annotate_props = annotate_tool.inputSchema.get("properties", {})
         assert "user_goal" in annotate_props, "the tool declares it natively"
         assert build_user_goal_param_description() not in str(annotate_props)
@@ -820,7 +897,7 @@ class TestIntentInjectionInstalled:
             annotate_props
         )
         assert "user_goal" in echo_tool.inputSchema["properties"]
-        assert "test-vendor_annotate" in names
+        assert handle.annotation_tool_name in names
 
         start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
         assert start["payload"]["call_intent"] == "the why"
@@ -842,7 +919,9 @@ class TestIntentInjectionInstalled:
 
         async with Client(mcp) as client:
             # Agent's real proactive annotation (no signal_type) fires first.
-            await client.call_tool("test-vendor_annotate", {"user_goal": "real proactive intent"})
+            await client.call_tool(
+                handle.annotation_tool_name, {"user_goal": "real proactive intent"}
+            )
             # Then the wrapped tool call carrying an injected intent.
             await client.call_tool("echo", {"text": "x", "user_goal": "param intent"})
 

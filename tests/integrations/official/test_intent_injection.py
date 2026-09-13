@@ -213,7 +213,7 @@ class TestListInjection:
         mcp, handle = _install(events_path)
         try:
             tools = await mcp.list_tools()
-            annotate = next(t for t in tools if t.name == "test-vendor_annotate")
+            annotate = next(t for t in tools if t.name == handle.annotation_tool_name)
             props = _input_schema(annotate).get("properties", {})
             assert USER_GOAL_PARAM_NAME in props, "the tool declares it natively"
             assert build_user_goal_param_description() not in str(props), (
@@ -466,7 +466,7 @@ class TestProactiveSynthesis:
             ),
         )
         try:
-            await mcp.call_tool("test-vendor_annotate", {"user_goal": "real proactive"})
+            await mcp.call_tool(handle.annotation_tool_name, {"user_goal": "real proactive"})
             await mcp.call_tool("echo", {"text": "x", USER_GOAL_PARAM_NAME: "injected why"})
             await handle.flush()
         finally:

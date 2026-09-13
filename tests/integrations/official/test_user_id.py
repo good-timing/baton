@@ -95,7 +95,7 @@ async def _drive(
         async with connected_session(mcp) as client:
             await client.call_tool("lookup", {"name": "alice"})
             await client.call_tool(
-                "uid_annotate",
+                handle.annotation_tool_name,
                 {"user_goal": "look something up", "signal_type": "failure"},
             )
     finally:

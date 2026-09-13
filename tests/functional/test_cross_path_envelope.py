@@ -68,7 +68,7 @@ async def _run_mcp_path(events_path: str) -> None:
     )
     try:
         await mcp.call_tool(
-            "cross-path_annotate",
+            handle.annotation_tool_name,
             {
                 "user_goal": "look something up",
                 "signal_type": "failure",
@@ -114,7 +114,7 @@ async def _run_fastmcp_path(events_path: str) -> None:
             # Reactive, not proactive: proactive_mode defaults to "off", and
             # this test deliberately runs the default config a real vendor gets.
             await client.call_tool(
-                "cross-path_annotate",
+                handle.annotation_tool_name,
                 {
                     "user_goal": "look something up",
                     "signal_type": "failure",

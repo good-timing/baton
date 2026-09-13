@@ -74,7 +74,7 @@ async def test_mcp_adapter_surfaces_are_whitelabeled(tmp_path: Path) -> None:
         _assert_no_baton_leak("mcp.instructions", mcp.instructions)
 
         tools = await mcp.list_tools()
-        annotate = next(t for t in tools if t.name == f"{VENDOR_ID}_annotate")
+        annotate = next(t for t in tools if t.name == handle.annotation_tool_name)
         _assert_no_baton_leak("annotate tool description", annotate.description)
 
         echo_tool = next(t for t in tools if t.name == "echo")
@@ -117,7 +117,7 @@ async def test_fastmcp_adapter_surfaces_are_whitelabeled(tmp_path: Path) -> None
 
         async with Client(mcp) as client:
             tools = await client.list_tools()
-            annotate = next(t for t in tools if t.name == f"{VENDOR_ID}_annotate")
+            annotate = next(t for t in tools if t.name == handle.annotation_tool_name)
             _assert_no_baton_leak("annotate tool description", annotate.description)
 
             echo_tool = next(t for t in tools if t.name == "echo")

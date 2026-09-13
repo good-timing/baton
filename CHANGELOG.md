@@ -10,6 +10,69 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+### Changed
+
+- ⚠ **The annotation tool's default name now comes from your MCP server's own
+  name, not from `vendor_id`.** A server named `"Acme Knowledge Base"` registers
+  `acme-knowledge-base_annotate` where it previously registered
+  `{vendor_id}_annotate`. This is the label agents read in your tool list.
+
+  ⚠ **One existing wire value changes with it:**
+  `surface_snapshot.seam_augmentations.injected_tools` reports the tool the SDK
+  added to your surface, so it now carries the new name. No new field, no new
+  data (`server_info.name` already carried your server's name), and no join
+  breaks — annotation events do not carry a tool name. But a consumer matching
+  that list against an expected exact name will stop matching; match the
+  `_annotate` suffix instead.
+
+  **Why:** `vendor_id` is an opaque `srv-<8 hex>` the Console mints, so the old
+  default composed `srv-9f2a7c31_annotate` — legal, and unreadable to every
+  agent listing your tools. The server
+  object you already hand `install_baton()` knows its own name, so nothing has
+  to be asked of you and no wire, DSN or Console change is involved.
+
+  **You keep full control.** An explicit `VendorConfig(annotation_tool_name=...)`
+  still wins over everything, and is the way to pin a name you have written into
+  documentation, a prompt or a script.
+
+  **Where the old name is kept:** when the server carries a name the *library*
+  invented rather than one you chose — fastmcp's `FastMCP-<4 hex>`, the official
+  SDK's `FastMCP` (mcp 1.x) or `mcp-server` (2.x) — the default falls back to
+  `{vendor_id}_annotate`. fastmcp's is minted per construction, so deriving from
+  it would rename your tool on every restart.
+
+  ⚠ **On upgrade the tool renames once** if you never set
+  `annotation_tool_name=` and your `vendor_id` was already readable. MCP clients
+  re-list tools on every connect, so agents follow the change by themselves; it
+  only matters where the old name is written down somewhere. Set
+  `annotation_tool_name=` to keep it.
+
+  Also fixed here, though it was never reachable before this change: the name
+  was derived independently at two call sites, which agreed only while both were
+  pure functions of `(vendor_id, override)`. `install_baton()` now resolves it
+  once and threads that value to the capture layer, the server instructions, the
+  handle and the tool registration.
+
+- **An over-long server name can no longer stop your server booting.** The
+  derived name is checked against the real limit before it is used: the SDK
+  renders your server instructions with the candidate name and, if they would
+  exceed the 1500-character cap, keeps `{vendor_id}_annotate` instead. So
+  deriving can never turn a server that starts today into one that fails at
+  import.
+
+  The limit binds because the tool name is interpolated into the instructions
+  four times under `proactive_mode="on"`, so it shares a budget with
+  `vendor_display_name` — a longer tool name buys a shorter legal display name.
+  There is also a 30-character cap on the derived slug, but that only keeps the
+  common case clear of the limit; the render check is what guarantees it.
+
+  ⚠ **Deriving SPENDS budget rather than freeing it**, which is why the check
+  above exists. Measured at `proactive_mode="on"`: the `srv-<8 hex>_annotate`
+  default is 21 characters and leaves room for a 44-character
+  `vendor_display_name`, while a derived name at the 30-character slug cap is 39
+  and leaves 30. Where that trade would break the render, the default is kept.
+  An `annotation_tool_name=` you set yourself is still yours to keep short.
+
 ### Removed
 
 - ⚠ **`VendorConfig.resolve_session_id` — SPEC §3.4 rung 0 — is REMOVED, on

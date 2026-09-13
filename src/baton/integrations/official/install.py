@@ -49,6 +49,7 @@ import logging
 from baton._optout import capture_disabled
 from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
+from baton.integrations._annotation_name import resolve_annotation_tool_name
 from baton.integrations._config import (
     VendorConfig,
     _resolve_tenant_id,
@@ -69,10 +70,7 @@ from baton.integrations.official._compat import (
     set_server_instructions,
 )
 from baton.integrations.official._tool_wrap import install_wraps
-from baton.integrations.official.annotation import (
-    derive_annotation_tool_name,
-    register_annotation_tool,
-)
+from baton.integrations.official.annotation import register_annotation_tool
 from baton.scrub import Scrubber
 
 logger = logging.getLogger(__name__)
@@ -130,9 +128,7 @@ def install_baton(
     proactive_tracker = ProactiveTracker()
     sink = resolve_sink(config)
 
-    annotation_tool_name = derive_annotation_tool_name(
-        config.vendor_id, config.annotation_tool_name
-    )
+    annotation_tool_name = resolve_annotation_tool_name(mcp, config)
 
     # Captured BEFORE any Baton mutation below — the vendor-true baseline the
     # surface-snapshot hash is authored against. See integrations._surface.
@@ -190,7 +186,14 @@ def install_baton(
         sink=sink,
         counter=counter,
         fallback_session_id=fallback_session_id,
-        annotation_tool_name=config.annotation_tool_name,
+        # The RESOLVED name, not ``config.annotation_tool_name``. This used to
+        # pass the raw override and let ``register_annotation_tool`` re-derive,
+        # which agreed only while both sites were pure functions of
+        # ``(vendor_id, override)``. With the server object as a third input
+        # they diverge: the tool would register under ``srv-…_annotate`` while
+        # the capture layer skips a name nothing registered and the server
+        # instructions name a tool that does not exist.
+        annotation_tool_name=annotation_tool_name,
         proactive_mode=config.proactive_mode,
         user_id_mode=config.user_id_mode,
         user_id_hmac_key=user_id_hmac_key,

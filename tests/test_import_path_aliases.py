@@ -111,3 +111,30 @@ def test_the_import_that_broke_is_covered() -> None:
     from baton.integrations.official._compat import MCPServerClass as Renamed
 
     assert MCPServerClass is Renamed
+
+
+def test_the_console_imports_it_from_the_adapter_path() -> None:
+    """``derive_annotation_tool_name`` is live API at FOUR paths, and the
+    callers that pin it are in another repo.
+
+    ``baton-console``'s ``test_vendor_slug.py`` and ``test_onboarding_mcp.py``
+    both do ``from baton.integrations.standalone.annotation import
+    derive_annotation_tool_name``; the shim docstrings name the ``fastmcp``
+    spelling of the same path.
+
+    ⚠ Written because the body moved to ``_annotation_name`` during a cleanup
+    and ruff's F401 autofix then deleted the re-export as "unused". Every test
+    in this repo stayed green — the break was only reachable from the other
+    repo. A re-export nothing here calls needs a test that calls it.
+    """
+    from baton.integrations.fastmcp.annotation import derive_annotation_tool_name as via_fastmcp
+    from baton.integrations.mcp.annotation import derive_annotation_tool_name as via_mcp
+
+    from baton.integrations.official.annotation import derive_annotation_tool_name as via_official
+    from baton.integrations.standalone.annotation import (
+        derive_annotation_tool_name as via_standalone,
+    )
+
+    assert via_standalone is via_fastmcp is via_official is via_mcp
+    # Called, not merely imported: a re-export of the wrong object still imports.
+    assert via_standalone("toybox") == "toybox_annotate"

@@ -100,7 +100,7 @@ class TestInstallation:
         try:
             assert mcp.instructions is not None
             assert "ACME Corp" in mcp.instructions
-            assert "acme_annotate" in mcp.instructions
+            assert handle.annotation_tool_name in mcp.instructions
         finally:
             await handle.aclose()
 
@@ -117,7 +117,7 @@ class TestInstallation:
         )
         try:
             tools = {t.name for t in await mcp.list_tools()}
-            assert "v_annotate" in tools
+            assert handle.annotation_tool_name in tools
         finally:
             await handle.aclose()
 
@@ -140,7 +140,7 @@ class TestInstallation:
         )
         try:
             tools = await mcp.list_tools()
-            annotate = next(t for t in tools if t.name == "v_annotate")
+            annotate = next(t for t in tools if t.name == handle.annotation_tool_name)
             required = _input_schema(annotate).get("required", [])
             assert "user_goal" in required, (
                 f"user_goal must be required on annotation tool schema; required={required}"
@@ -168,9 +168,102 @@ class TestInstallation:
         try:
             tools = {t.name for t in await mcp.list_tools()}
             assert "custom-annotate-name" in tools
+            # Both defaults the override suppresses: the vendor_id one and the
+            # one the server object would now supply.
             assert "v_annotate" not in tools
+            assert "x_annotate" not in tools
         finally:
             await handle.aclose()
+
+    async def test_the_tool_name_comes_from_the_server_when_vendor_id_is_opaque(
+        self, events_path: str
+    ) -> None:
+        """The defect this feature exists for: the console mints ``vendor_id``
+        as ``srv-<8 hex>``, so the old default composed ``srv-…_annotate`` —
+        what every agent listing this server's tools reads."""
+        mcp = FastMCP("Acme Knowledge Base")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="srv-9f2a7c31",
+                vendor_display_name="Acme",
+                consent_token="ct_test",
+                sink=FileSink(events_path),
+            ),
+        )
+        try:
+            tools = {t.name for t in await mcp.list_tools()}
+            assert "acme-knowledge-base_annotate" in tools
+            assert "srv-9f2a7c31_annotate" not in tools
+            assert handle.annotation_tool_name == "acme-knowledge-base_annotate"
+            assert mcp.instructions is not None
+            assert "acme-knowledge-base_annotate" in mcp.instructions
+        finally:
+            await handle.aclose()
+
+    async def test_an_unnamed_server_keeps_the_vendor_id_default(self, events_path: str) -> None:
+        """The official SDK names an unnamed server ``FastMCP`` (mcp 1.x) or
+        ``mcp-server`` (2.x) — library placeholders, identical for every
+        vendor, so they fall back rather than becoming the label."""
+        mcp = FastMCP()  # no name: the library invents one
+        assert mcp.name in {"FastMCP", "mcp-server"}
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="v",
+                vendor_display_name="V",
+                consent_token="ct_test",
+                sink=FileSink(events_path),
+            ),
+        )
+        try:
+            tools = {t.name for t in await mcp.list_tools()}
+            assert "v_annotate" in tools
+            assert handle.annotation_tool_name == "v_annotate"
+        finally:
+            await handle.aclose()
+
+    async def test_the_registered_name_is_the_name_the_capture_layer_skips(
+        self, events_path: str
+    ) -> None:
+        """The name is resolved at install and used in FOUR places — the wrap
+        layer's skip-name, the server instructions, the handle, and the tool
+        registration itself. They agreed for free while every site was a pure
+        function of ``(vendor_id, override)``; with the server object as a
+        third input they only agree because install threads the RESOLVED value.
+
+        Asserted through the real wrap layer: a divergence registers the tool
+        under one name while the wrap skips another, so the annotation would be
+        double-captured as a tool call.
+        """
+        mcp = FastMCP("Skip Name Probe")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="srv-9f2a7c31",
+                vendor_display_name="Probe",
+                consent_token="ct_test",
+                sink=FileSink(events_path),
+            ),
+        )
+        try:
+            names = {t.name for t in await mcp.list_tools()}
+            assert handle.annotation_tool_name in names, (
+                "the handle names a tool that was never registered"
+            )
+            await mcp.call_tool(
+                handle.annotation_tool_name,
+                {"user_goal": "g", "signal_type": "failure"},
+            )
+            await handle.flush()
+        finally:
+            await handle.aclose()
+        types = [ev["event_type"] for ev in without_surface_snapshots(_read_events(events_path))]
+        assert types.count("annotation") == 1
+        assert "tool_call_start" not in types, (
+            "the wrap layer did not recognise the annotation tool by name"
+        )
+        assert "tool_call_end" not in types
 
     async def test_vendor_id_must_be_valid(self, events_path: str) -> None:
         mcp = FastMCP("x")
@@ -320,7 +413,7 @@ class TestAnnotationToolEndToEnd:
     ) -> None:
         mcp, handle, path = configured_mcp
         await mcp.call_tool(
-            "test-vendor_annotate",
+            handle.annotation_tool_name,
             {
                 "user_goal": "summarize PR comments",
                 "expected_result": "2-3 sentence paragraph",
@@ -344,7 +437,7 @@ class TestAnnotationToolEndToEnd:
     ) -> None:
         mcp, handle, path = configured_mcp
         await mcp.call_tool(
-            "test-vendor_annotate",
+            handle.annotation_tool_name,
             {
                 "user_goal": "fetch the search results",
                 "signal_type": "dead_end",
@@ -369,7 +462,7 @@ class TestAnnotationToolEndToEnd:
         """The wrap layer MUST skip wrapping the annotation tool — its handler
         emits an annotation event, not a tool_call_start/end pair."""
         mcp, handle, path = configured_mcp
-        await mcp.call_tool("test-vendor_annotate", {"user_goal": "x"})
+        await mcp.call_tool(handle.annotation_tool_name, {"user_goal": "x"})
         await handle.flush()
 
         events = _read_events(path)
@@ -395,12 +488,12 @@ class TestAllFourEventTypesInOneFlow:
             return f"found: {name}"
 
         await mcp.call_tool(
-            "test-vendor_annotate",
+            handle.annotation_tool_name,
             {"user_goal": "find user", "expected_result": "user record"},
         )
         await mcp.call_tool("lookup", {"name": "alice"})
         await mcp.call_tool(
-            "test-vendor_annotate",
+            handle.annotation_tool_name,
             {
                 "user_goal": "find user",
                 "signal_type": "dead_end",
@@ -506,7 +599,7 @@ class TestSurfaceSnapshot:
         assert len(snapshots) == 1
         payload = snapshots[0]["payload"]
         assert [t["name"] for t in payload["tools"]] == ["echo"]
-        assert payload["seam_augmentations"]["injected_tools"] == ["test-vendor_annotate"]
+        assert payload["seam_augmentations"]["injected_tools"] == [handle.annotation_tool_name]
         assert payload["surface_hash"].startswith("sha256:")
 
     async def test_dedupes_across_repeated_tool_calls(
@@ -1132,7 +1225,7 @@ class TestSequenceNumbers:
         def echo(text: str) -> str:
             return text
 
-        await mcp.call_tool("test-vendor_annotate", {"user_goal": "x"})
+        await mcp.call_tool(handle.annotation_tool_name, {"user_goal": "x"})
         await mcp.call_tool("echo", {"text": "y"})
 
         await handle.flush()
