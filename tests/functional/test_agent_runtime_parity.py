@@ -184,7 +184,7 @@ async def _run_official_path(
         async with connected_session(mcp, declared_name=declared) as client:
             await client.call_tool("lookup", {"name": "alice"}, meta=meta)
             await client.call_tool(
-                "parity_annotate",
+                handle.annotation_tool_name,
                 {"user_goal": "look something up", "signal_type": "failure"},
                 meta=meta,
             )
@@ -226,7 +226,7 @@ async def _run_standalone_path(
         async with Client(mcp, client_info=client_info) as client:
             await client.call_tool("lookup", {"name": "alice"}, meta=meta)
             await client.call_tool(
-                "parity_annotate",
+                handle.annotation_tool_name,
                 {"user_goal": "look something up", "signal_type": "failure"},
                 meta=meta,
             )

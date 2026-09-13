@@ -111,8 +111,10 @@ class VendorConfig:
 
     vendor_id: str = ""
     """Short stable identifier for the vendor (e.g., ``"acme"``,
-    ``"example-vendor"``). Becomes the default annotation tool name prefix
-    (``{vendor_id}_annotate``); must match the cross-runtime tool-name pattern.
+    ``"example-vendor"``). Used for the annotation tool name only as a
+    FALLBACK — the default is derived from your MCP server's own name, and this
+    is what it falls back to (``{vendor_id}_annotate``) when the server carries
+    no name of its own; must match the cross-runtime tool-name pattern.
 
     Required unless a ``dsn`` supplies it — the DSN's last path segment is
     this value, and it is what the key is BOUND to."""
@@ -147,8 +149,14 @@ class VendorConfig:
     Explicit and ``dsn`` together raise, rather than one quietly winning."""
 
     annotation_tool_name: str | None = None
-    """Optional override for the annotation tool name. Default is
-    ``{vendor_id}_annotate``."""
+    """Optional override for the annotation tool name, and the only thing that
+    pins it.
+
+    The default is derived from your MCP server's own name — a server called
+    ``"Acme Knowledge Base"`` registers ``acme-knowledge-base_annotate`` — and
+    falls back to ``{vendor_id}_annotate`` when the server carries a name the
+    LIBRARY invented rather than one you chose. Set this to keep a name you
+    have written into documentation, a prompt or a script: it wins over both."""
 
     scrubber: Callable[[Any], Any] | None = None
     """PII scrubber per SPEC §7. Default (None) uses ``baton.scrub.Scrubber``

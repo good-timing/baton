@@ -15,13 +15,13 @@ CHANGELOG 0.2.0 + CI matrix.
 """
 
 import logging
-import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
+from baton.integrations._annotation_name import derive_annotation_tool_name
 from baton.integrations._config import SessionResolutionContext
 from baton.integrations._llm_text import build_annotation_tool_description
 from baton.integrations.identity_adapter import (
@@ -42,23 +42,18 @@ from baton.sinks import Sink, safe_write
 
 logger = logging.getLogger(__name__)
 
-_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-
-
-def derive_annotation_tool_name(vendor_id: str, override: str | None = None) -> str:
-    """Resolve the annotation tool name. Default is ``{vendor_id}_annotate``.
-
-    Raises ``ValueError`` if the resulting name violates the strict
-    cross-runtime client pattern.
-    """
-    name = override or f"{vendor_id}_annotate"
-    if not _TOOL_NAME_PATTERN.match(name):
-        raise ValueError(
-            f"Annotation tool name {name!r} violates the cross-runtime "
-            f"pattern {_TOOL_NAME_PATTERN.pattern!r} (Claude Desktop and others "
-            f"reject names with dots or other separators)."
-        )
-    return name
+#: ``derive_annotation_tool_name`` is RE-EXPORTED here, not merely imported.
+#: Its body moved to ``_annotation_name`` (it was byte-identical in both
+#: adapters), but this path stays live API: ``baton-console``'s tests import it
+#: as ``from baton.integrations.standalone.annotation import
+#: derive_annotation_tool_name``, and the pre-rename shims cite it in their
+#: docstrings.
+#:
+#: ⚠ Declared in ``__all__`` because ruff's F401 autofix DELETED the bare
+#: import during this refactor, the whole suite stayed green, and the break
+#: would only have surfaced in the other repo. ``test_the_console_imports_it_
+#: from_the_adapter_path`` now pins it.
+__all__ = ["derive_annotation_tool_name", "register_annotation_tool"]
 
 
 def register_annotation_tool(
@@ -71,7 +66,7 @@ def register_annotation_tool(
     sink: Sink,
     counter: SessionCounter,
     fallback_session_id: str,
-    annotation_tool_name: str | None = None,
+    annotation_tool_name: str,
     proactive_mode: str = "off",
     scrubber: Callable[[Any], Any] = identity_scrub,
     proactive_tracker: ProactiveTracker | None = None,
@@ -83,7 +78,7 @@ def register_annotation_tool(
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
     tracker = proactive_tracker or ProactiveTracker()
     warned = identity_warned if identity_warned is not None else set()
-    name = derive_annotation_tool_name(vendor_id, annotation_tool_name)
+    name = annotation_tool_name
     description = build_annotation_tool_description(
         vendor_display_name=vendor_display_name, proactive_mode=proactive_mode
     )

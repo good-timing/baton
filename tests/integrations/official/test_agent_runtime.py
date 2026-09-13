@@ -68,7 +68,7 @@ async def _drive(events_path: Path, meta: dict[str, Any] | None) -> list[dict[st
         async with connected_session(mcp) as client:
             await client.call_tool("lookup", {"name": "alice"}, meta=meta)
             await client.call_tool(
-                "rt_annotate",
+                handle.annotation_tool_name,
                 {"user_goal": "look something up", "signal_type": "failure"},
                 meta=meta,
             )
@@ -143,7 +143,7 @@ async def test_the_context_kwarg_stays_out_of_the_public_tool_schema(tmp_path: P
     )
     try:
         tools = await mcp.list_tools()
-        annotate = next(t for t in tools if t.name == "rt_annotate")
+        annotate = next(t for t in tools if t.name == handle.annotation_tool_name)
         # ``by_alias`` because mcp 2.0 renamed the field ``inputSchema`` ->
         # ``input_schema`` and kept the old name as the wire ALIAS. Reading the
         # attribute directly would pass on 1.x and AttributeError on 2.0 — the

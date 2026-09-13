@@ -156,7 +156,9 @@ async def test_the_missing_key_warning_fires_once_per_install(
         try:
             async with Client(mcp) as client:
                 await client.call_tool("lookup", {"name": "alice"})
-                await client.call_tool("fo_annotate", {"user_goal": "g", "signal_type": "failure"})
+                await client.call_tool(
+                    handle.annotation_tool_name, {"user_goal": "g", "signal_type": "failure"}
+                )
         finally:
             await handle.aclose()
     hits = [r for r in caplog.records if "HMAC key" in r.message]

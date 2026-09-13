@@ -144,7 +144,7 @@ install_baton(mcp, VendorConfig(
 async def your_tool(...): ...
 ```
 
-That's the integration. `install_baton` registers a vendor-namespaced annotation tool (`<vendor_id>_annotate`), sets the MCP server `instructions` motivating proactive + reactive annotation, captures events at the MCP transport boundary, and hands those events to your sink. The SDK is whitelabeled — no Baton-branded strings reach the calling agent or end user.
+That's the integration. `install_baton` registers a vendor-namespaced annotation tool (named after your MCP server — a server called `"Acme Knowledge Base"` gets `acme-knowledge-base_annotate`; override with `VendorConfig(annotation_tool_name=...)`), sets the MCP server `instructions` motivating proactive + reactive annotation, captures events at the MCP transport boundary, and hands those events to your sink. The SDK is whitelabeled — no Baton-branded strings reach the calling agent or end user.
 
 Under the hood the two adapters use different hook mechanisms — the official `mcp` SDK's FastMCP has no middleware system, so its adapter wraps each registered tool handler in place; the standalone `fastmcp` library uses its native middleware chain. The choice doesn't surface to vendors; both emit identical events through the same sink layer.
 
@@ -222,7 +222,7 @@ Worked end-to-end at [`examples/skill_demo/`](examples/skill_demo/); full surfac
 | Where instrumentation lives | Vendor side (in MCP server runtime) | Agent side (in agent-generated code) |
 | Setup | Vendor's MCP server adds 5 lines | Vendor publishes a Skill teaching agents the pattern |
 | Reliability | Deterministic — wrap/middleware runs on every tool call | Soft — depends on agent following the Skill |
-| Annotation surface | MCP tool (`<vendor>_annotate`) with MUST/REQUIRED framing | Python function calls (`trace.annotate(...)`) |
+| Annotation surface | MCP tool (`<your-server>_annotate`) with MUST/REQUIRED framing | Python function calls (`trace.annotate(...)`) |
 | Vendor API call captured? | Yes (vendor controls MCP server) | Yes (agent calls vendor API from inside trace context) |
 | Where partner invests | Wire SDK into their MCP server | Author + maintain a Baton-aware Skill |
 | Best fit | Vendors with MCP servers as their primary surface | Vendors using Skills as their primary distribution |
