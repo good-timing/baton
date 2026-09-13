@@ -36,6 +36,48 @@ WORKSPACE = "ten_655b084e118b43f88992ee6357fcc23c"
 KEY = "baton_pk_" + "a" * 43
 DSN = f"https://{KEY}@ingest.goodtiming.ai/{WORKSPACE}/echo-server"
 
+# Every shape this parser refuses, in ONE list. Two file-wide properties are
+# stated over it — no refusal repeats the credential, and no refusal that is
+# not ABOUT the workspace pattern names a hex length. Keeping them on one list
+# is the point: a shape added here gets both guarantees at once, where two
+# hand-picked tables drift and the newer property silently misses a row.
+EVERY_REFUSAL = [
+    f"ftp://{KEY}@h.example.com/{WORKSPACE}/srv",
+    f"https://{KEY}:secret@h.example.com/{WORKSPACE}/srv",
+    f"https://{KEY}@h.example.com/{WORKSPACE}",
+    f"https://{KEY}@h.example.com/{WORKSPACE}/srv/extra",
+    f"https://{KEY}@h.example.com/srv/{WORKSPACE}",
+    f"https://{KEY}@h.example.com/{WORKSPACE}/my.server",
+    f"https://{KEY}",
+    f"https://{KEY}/",
+    f"https://{KEY}@h.example.com/{WORKSPACE}/srv-{KEY}",
+    f"https://{KEY}@h.example.com/tenant-{KEY}/srv",
+    f"https://{KEY}@h.example.com\\evil.com/{WORKSPACE}/srv",
+    f"https://{KEY}@h.example.com\nevil.com/{WORKSPACE}/srv",
+    f"https://{KEY}@h.example.com:notaport/{WORKSPACE}/srv",
+    f"https://x@{KEY}/{WORKSPACE}/srv",
+    f"https://h.example.com@{KEY}/{WORKSPACE}/srv",
+    f"https://{KEY}@h.example.com/{KEY}/srv",
+]
+EVERY_REFUSAL_ID = [
+    "wrong-scheme",
+    "password-slot",
+    "no-server-segment",
+    "three-segments",
+    "swapped-segments",
+    "bad-server-name",
+    "key-in-the-authority",
+    "key-in-the-authority-trailing-slash",
+    "key-glued-to-the-server",
+    "key-glued-to-the-workspace",
+    "backslash-in-the-host",
+    "line-break-in-the-host",
+    "port-that-is-not-a-number",
+    "key-in-the-host-slot-behind-userinfo",
+    "key-and-host-the-wrong-way-round",
+    "a-bare-key-as-the-whole-workspace-segment",
+]
+
 
 class TestTheHappyPath:
     def test_it_unpacks_all_four_values(self) -> None:
@@ -111,6 +153,76 @@ class TestDeliberatePermissiveness:
             parse_dsn(f"https://{KEY}@h.example.com/{WORKSPACE}/{'s' * 49}")
 
 
+class TestTheWorkspaceIsEightOrThirtyTwoHex:
+    """The two minted lengths, and the ones either side of each.
+
+    ⚠ **The lengths are TYPED IN, not read off ``_WORKSPACE_PATTERN``.**
+    Deriving them would make this pass under any pattern — including the
+    ``^ten_[0-9a-fA-F]+$`` that provoked it, which parsed ``ten_a`` and reddened
+    nothing in the whole suite. Pinning a boundary means naming it somewhere the
+    implementation cannot move.
+
+    The adjacent lengths are the discriminating half: 7/9 and 31/33 are what a
+    ``+``, a ``{8,}`` or a ``{8,32}`` would wave through.
+    """
+
+    @pytest.mark.parametrize(
+        "workspace",
+        [
+            pytest.param("ten_" + "a" * 8, id="8-hex-what-the-mint-writes-today"),
+            pytest.param("ten_" + "a" * 32, id="32-hex-the-shape-it-replaced"),
+            pytest.param("ten_" + "A" * 8, id="8-hex-uppercase"),
+            pytest.param("ten_" + "A" * 32, id="32-hex-uppercase"),
+            pytest.param("ten_7cd4c8cf", id="8-hex-a-real-minted-value"),
+        ],
+    )
+    def test_an_accepted_length_parses_and_is_passed_through_verbatim(self, workspace: str) -> None:
+        assert parse_dsn(f"https://{KEY}@h.example.com/{workspace}/srv").tenant_id == workspace
+
+    @pytest.mark.parametrize(
+        "length",
+        [0, 1, 7, 9, 16, 31, 33, 64],
+    )
+    def test_every_other_length_is_refused(self, length: int) -> None:
+        workspace = "ten_" + "a" * length
+        with pytest.raises(ValueError, match="where the workspace belongs"):
+            parse_dsn(f"https://{KEY}@h.example.com/{workspace}/srv")
+
+    @pytest.mark.parametrize("workspace", ["ten_" + "g" * 8, "ten_" + "g" * 32])
+    def test_a_right_length_run_of_non_hex_is_still_refused(self, workspace: str) -> None:
+        """Length alone is not the rule; the alphabet is half of it."""
+        with pytest.raises(ValueError, match="where the workspace belongs"):
+            parse_dsn(f"https://{KEY}@h.example.com/{workspace}/srv")
+
+    @pytest.mark.parametrize("raw", EVERY_REFUSAL, ids=EVERY_REFUSAL_ID)
+    def test_only_the_workspace_refusal_names_a_LENGTH(self, raw: str) -> None:
+        """Stated as an implication over every refusal this parser has, rather
+        than over a hand-picked few — the sibling property above is on the same
+        list for the same reason, and a shape added there now gets both.
+
+        ⚠ **This regressed once, in the commit that widened the pattern.** The
+        illustrative DSN examples were rewritten 32 -> 8 along with everything
+        else, so a pre-2026-09-12 customer with a 32-hex workspace who made some
+        OTHER mistake was shown ``/ten_<8 hex>/<server>`` and could 'correct' a
+        perfectly good workspace by truncating it. That DSN parses, so the
+        install succeeds and every event then 401s at ingest — which ``HttpSink``
+        classifies as a permanent failure and drops without a log line. The
+        length belongs in the one sentence that is ABOUT the length; everywhere
+        else the segment is elided, exactly as the key already is.
+        """
+        with pytest.raises(ValueError) as excinfo:
+            parse_dsn(raw)
+        message = str(excinfo.value)
+        if "hex" in message:
+            assert "where the workspace belongs" in message, message
+
+    def test_the_refusal_names_both_lengths(self) -> None:
+        """A sentence naming only one of two accepted shapes sends the reader
+        looking for a typo that is not there."""
+        with pytest.raises(ValueError, match="8 or 32 hex characters"):
+            parse_dsn(f"https://{KEY}@h.example.com/ten_abc/srv")
+
+
 class TestWhatItRefuses:
     @pytest.mark.parametrize(
         ("raw", "expected"),
@@ -154,48 +266,7 @@ class TestWhatItRefuses:
         with pytest.raises(ValueError, match=expected):
             parse_dsn(raw)
 
-    @pytest.mark.parametrize(
-        "raw",
-        [
-            f"ftp://{KEY}@h.example.com/{WORKSPACE}/srv",
-            f"https://{KEY}:secret@h.example.com/{WORKSPACE}/srv",
-            f"https://{KEY}@h.example.com/{WORKSPACE}",
-            f"https://{KEY}@h.example.com/{WORKSPACE}/srv/extra",
-            f"https://{KEY}@h.example.com/srv/{WORKSPACE}",
-            f"https://{KEY}@h.example.com/{WORKSPACE}/my.server",
-            # Added after the TypeScript port found them. They belong in the
-            # PROPERTY test and not only in the class below: every earlier leak
-            # of this kind was a shape nobody had thought to parametrize, so
-            # the guarantee is worth stating over the widest input list there
-            # is rather than case by case.
-            f"https://{KEY}",
-            f"https://{KEY}/",
-            f"https://{KEY}@h.example.com/{WORKSPACE}/srv-{KEY}",
-            f"https://{KEY}@h.example.com/tenant-{KEY}/srv",
-            f"https://{KEY}@h.example.com\\evil.com/{WORKSPACE}/srv",
-            f"https://{KEY}@h.example.com\nevil.com/{WORKSPACE}/srv",
-            f"https://{KEY}@h.example.com:notaport/{WORKSPACE}/srv",
-            f"https://x@{KEY}/{WORKSPACE}/srv",
-            f"https://h.example.com@{KEY}/{WORKSPACE}/srv",
-        ],
-        ids=[
-            "wrong-scheme",
-            "password-slot",
-            "no-server-segment",
-            "three-segments",
-            "swapped-segments",
-            "bad-server-name",
-            "key-in-the-authority",
-            "key-in-the-authority-trailing-slash",
-            "key-glued-to-the-server",
-            "key-glued-to-the-workspace",
-            "backslash-in-the-host",
-            "line-break-in-the-host",
-            "port-that-is-not-a-number",
-            "key-in-the-host-slot-behind-userinfo",
-            "key-and-host-the-wrong-way-round",
-        ],
-    )
+    @pytest.mark.parametrize("raw", EVERY_REFUSAL, ids=EVERY_REFUSAL_ID)
     def test_no_refusal_ever_repeats_the_credential(self, raw: str) -> None:
         """The one thing a parse error must not do. Every message above passes
         through ``redact``; this is the test that keeps the next one doing so."""
