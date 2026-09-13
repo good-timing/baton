@@ -111,6 +111,54 @@ class TestDeliberatePermissiveness:
             parse_dsn(f"https://{KEY}@h.example.com/{WORKSPACE}/{'s' * 49}")
 
 
+class TestTheWorkspaceIsEightOrThirtyTwoHex:
+    """The two minted lengths, and the ones either side of each.
+
+    ⚠ **The lengths are TYPED IN, not read off ``_WORKSPACE_PATTERN``.**
+    Deriving them would make this pass under any pattern — including the
+    ``^ten_[0-9a-fA-F]+$`` that provoked it, which parsed ``ten_a`` and reddened
+    nothing in the whole suite. Pinning a boundary means naming it somewhere the
+    implementation cannot move.
+
+    The adjacent lengths are the discriminating half: 7/9 and 31/33 are what a
+    ``+``, a ``{8,}`` or a ``{8,32}`` would wave through.
+    """
+
+    @pytest.mark.parametrize(
+        "workspace",
+        [
+            pytest.param("ten_" + "a" * 8, id="8-hex-what-the-mint-writes-today"),
+            pytest.param("ten_" + "a" * 32, id="32-hex-the-shape-it-replaced"),
+            pytest.param("ten_" + "A" * 8, id="8-hex-uppercase"),
+            pytest.param("ten_" + "A" * 32, id="32-hex-uppercase"),
+            pytest.param("ten_7cd4c8cf", id="8-hex-a-real-minted-value"),
+        ],
+    )
+    def test_an_accepted_length_parses_and_is_passed_through_verbatim(self, workspace: str) -> None:
+        assert parse_dsn(f"https://{KEY}@h.example.com/{workspace}/srv").tenant_id == workspace
+
+    @pytest.mark.parametrize(
+        "length",
+        [0, 1, 7, 9, 16, 31, 33, 64],
+    )
+    def test_every_other_length_is_refused(self, length: int) -> None:
+        workspace = "ten_" + "a" * length
+        with pytest.raises(ValueError, match="where the workspace belongs"):
+            parse_dsn(f"https://{KEY}@h.example.com/{workspace}/srv")
+
+    @pytest.mark.parametrize("workspace", ["ten_" + "g" * 8, "ten_" + "g" * 32])
+    def test_a_right_length_run_of_non_hex_is_still_refused(self, workspace: str) -> None:
+        """Length alone is not the rule; the alphabet is half of it."""
+        with pytest.raises(ValueError, match="where the workspace belongs"):
+            parse_dsn(f"https://{KEY}@h.example.com/{workspace}/srv")
+
+    def test_the_refusal_names_both_lengths(self) -> None:
+        """A sentence naming only one of two accepted shapes sends the reader
+        looking for a typo that is not there."""
+        with pytest.raises(ValueError, match="8 or 32 hex characters"):
+            parse_dsn(f"https://{KEY}@h.example.com/ten_abc/srv")
+
+
 class TestWhatItRefuses:
     @pytest.mark.parametrize(
         ("raw", "expected"),

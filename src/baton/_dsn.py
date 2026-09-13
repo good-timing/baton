@@ -2,15 +2,15 @@
 
 A **DSN** carries the four values an install needs in one string::
 
-    https://baton_pk_<random>@ingest.goodtiming.ai/ten_<32 hex>/echo-server
-    │       │                 │                    │            │
-    scheme  key (the bearer)  authority            workspace    server
+    https://baton_pk_<random>@ingest.goodtiming.ai/ten_<8 hex>/echo-server
+    │       │                 │                    │           │
+    scheme  key (the bearer)  authority            workspace   server
 
     dsn        = scheme "://" key "@" authority "/" workspace "/" server
     scheme     = "https" | "http"
     key        = "baton_pk_" tail          ; "baton_sk_" warns and still works
     authority  = host [ ":" port ]
-    workspace  = "ten_" 32(hexdigit)
+    workspace  = "ten_" ( 8(hexdigit) | 32(hexdigit) )
     server     = the vendor_id pattern below
 
 It replaces five environment variables with one value that can sit inline in a
@@ -81,7 +81,14 @@ VENDOR_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 # uppercase digit would be a rule stricter than the mint. Matched loosely,
 # passed through VERBATIM — the value is compared as a string server-side, so
 # this parser must never normalise it.
-_WORKSPACE_PATTERN = re.compile(r"^ten_[0-9a-fA-F]{32}$")
+#
+# **Two lengths.** ``new_tenant_id`` moved 32 → 8 hex on 2026-09-12; 32 is the
+# shape it replaced, and every workspace minted before that date still carries
+# it. Both are accepted because a DSN ships inline in a distributable server's
+# source — refusing the old length breaks installs already out there, on an
+# upgrade meant to be safe. It collapses to ``{8}`` the day no ``ten_<32 hex>``
+# workspace exists, which is a console question, not one this parser can ask.
+_WORKSPACE_PATTERN = re.compile(r"^ten_(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{32})$")
 
 _PUBLISHABLE_PREFIX = "baton_pk_"
 _SECRET_PREFIX = "baton_sk_"
@@ -389,7 +396,7 @@ def _reject_a_non_host(authority: str, parts: SplitResult, safe: str) -> None:
         _fail(
             f"dsn {safe} has the KEY where the host belongs. The order is key, "
             f"@, host — check whether the two are the wrong way round: "
-            f"https://baton_pk_...@host/ten_<32 hex>/<server>"
+            f"https://baton_pk_...@host/ten_<8 hex>/<server>"
         )
     if _NOT_IN_A_HOST.search(authority):
         _fail(
@@ -538,7 +545,7 @@ def parse_dsn(raw: str) -> Dsn:
     if len(segments) != 2:
         _fail(
             f"dsn {safe} must carry exactly two path segments — the workspace "
-            f"and the server, as in /ten_<32 hex>/<server>. A missing server "
+            f"and the server, as in /ten_<8 hex>/<server>. A missing server "
             f"is never defaulted: it is what the key is bound to."
         )
     workspace, server = segments
@@ -551,14 +558,14 @@ def parse_dsn(raw: str) -> Dsn:
             _fail(
                 f"dsn {safe} has a KEY in the {slot} slot. The key goes before "
                 f"the @, and the path carries the workspace and the server: "
-                f"https://baton_pk_...@host/ten_<32 hex>/<server>"
+                f"https://baton_pk_...@host/ten_<8 hex>/<server>"
             )
 
     if not _WORKSPACE_PATTERN.match(workspace):
         _fail(
             f"dsn {safe} has {workspace!r} where the workspace belongs — "
-            f"expected ten_ followed by 32 hex characters. If the two path "
-            f"segments are the right way round, this is not a Baton DSN."
+            f"expected ten_ followed by 8 or 32 hex characters. If the two "
+            f"path segments are the right way round, this is not a Baton DSN."
         )
     if not VENDOR_ID_PATTERN.match(server):
         _fail(
