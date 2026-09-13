@@ -152,6 +152,31 @@ class TestTheWorkspaceIsEightOrThirtyTwoHex:
         with pytest.raises(ValueError, match="where the workspace belongs"):
             parse_dsn(f"https://{KEY}@h.example.com/{workspace}/srv")
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param(f"https://{KEY}@h.example.com/{WORKSPACE}", id="no-server-segment"),
+            pytest.param(f"https://{KEY}@h.example.com/{KEY}/srv", id="key-in-the-workspace-slot"),
+            pytest.param(f"https://x@{KEY}/{WORKSPACE}/srv", id="key-in-the-host-slot"),
+        ],
+    )
+    def test_no_other_refusal_shows_an_example_with_ONE_length_in_it(self, raw: str) -> None:
+        """An example DSN in an unrelated refusal must not name a length.
+
+        ⚠ **This regressed once, in the commit that widened the pattern.** The
+        three illustrative examples were rewritten 32 -> 8 along with everything
+        else, so a pre-2026-09-12 customer with a 32-hex workspace who made some
+        OTHER mistake was shown ``/ten_<8 hex>/<server>`` and could 'correct' a
+        perfectly good workspace by truncating it. That DSN parses, so the
+        install succeeds and every event then 401s at ingest — which
+        ``HttpSink`` classifies as a permanent failure and drops without a log
+        line. The length belongs in the one sentence that is ABOUT the length;
+        everywhere else the segment is elided, exactly as the key already is.
+        """
+        with pytest.raises(ValueError) as excinfo:
+            parse_dsn(raw)
+        assert "hex" not in str(excinfo.value), str(excinfo.value)
+
     def test_the_refusal_names_both_lengths(self) -> None:
         """A sentence naming only one of two accepted shapes sends the reader
         looking for a typo that is not there."""

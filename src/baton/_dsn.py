@@ -396,7 +396,7 @@ def _reject_a_non_host(authority: str, parts: SplitResult, safe: str) -> None:
         _fail(
             f"dsn {safe} has the KEY where the host belongs. The order is key, "
             f"@, host — check whether the two are the wrong way round: "
-            f"https://baton_pk_...@host/ten_<8 hex>/<server>"
+            f"https://baton_pk_...@host/ten_.../<server>"
         )
     if _NOT_IN_A_HOST.search(authority):
         _fail(
@@ -545,7 +545,7 @@ def parse_dsn(raw: str) -> Dsn:
     if len(segments) != 2:
         _fail(
             f"dsn {safe} must carry exactly two path segments — the workspace "
-            f"and the server, as in /ten_<8 hex>/<server>. A missing server "
+            f"and the server, as in /ten_.../<server>. A missing server "
             f"is never defaulted: it is what the key is bound to."
         )
     workspace, server = segments
@@ -558,7 +558,7 @@ def parse_dsn(raw: str) -> Dsn:
             _fail(
                 f"dsn {safe} has a KEY in the {slot} slot. The key goes before "
                 f"the @, and the path carries the workspace and the server: "
-                f"https://baton_pk_...@host/ten_<8 hex>/<server>"
+                f"https://baton_pk_...@host/ten_.../<server>"
             )
 
     if not _WORKSPACE_PATTERN.match(workspace):
