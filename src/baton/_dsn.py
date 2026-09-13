@@ -87,7 +87,12 @@ VENDOR_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 # it. Both are accepted because a DSN ships inline in a distributable server's
 # source — refusing the old length breaks installs already out there, on an
 # upgrade meant to be safe. It collapses to ``{8}`` the day no ``ten_<32 hex>``
-# workspace exists, which is a console question, not one this parser can ask.
+# workspace exists — a console question, and a CHECK rather than a note, because
+# a note drifts and nobody re-reads a comment to find out it expired::
+#
+#     SELECT count(*) FROM tenants WHERE vendor_id ~ '^ten_[0-9a-f]{32}$';
+#
+# Zero means the 32-branch and its tests can go in one commit.
 _WORKSPACE_PATTERN = re.compile(r"^ten_(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{32})$")
 
 _PUBLISHABLE_PREFIX = "baton_pk_"

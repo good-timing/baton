@@ -97,6 +97,9 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ### Changed
 
 - **A DSN's workspace segment may now carry 8 hex characters as well as 32.**
+  **Nothing to do on upgrade** — this widens what is accepted and narrows
+  nothing, so existing `ten_<32 hex>` DSNs keep working untouched.
+
   `parse_dsn` accepted `ten_` + exactly 32 hex; the Console's `new_tenant_id`
   moved to 8 hex on 2026-09-12, so a DSN the Console hands out today was
   refused at install by every shipped SDK — Python 0.8.2 and TypeScript 0.3.1
@@ -104,13 +107,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   inline in a distributable server's source, so refusing the old length would
   break installs already running on an upgrade that is supposed to be safe.
 
-  **Nothing to do on upgrade.** Existing `ten_<32 hex>` DSNs are unaffected —
-  this widens what is accepted and narrows nothing. Only the packed DSN path
-  was ever length-checked; an explicitly configured `tenant_id` was not, and
-  still is not.
-
-  The refusal sentence now names both lengths, since one that named only one
-  of two accepted shapes sent the reader hunting a typo that was not there.
+  Only the packed DSN path was ever length-checked; an explicitly configured
+  `tenant_id` was not, and still is not.
 
 - **A blank or padded `mcp-session-id` header no longer becomes the session
   id.** SPEC §3.4 rung 4 read the header with no strip and no blank check, so
