@@ -147,7 +147,15 @@ def extract_headers() -> Mapping[str, str] | None:
     raises — empty outside a live HTTP request (e.g. stdio).
     ``include_all=True`` so a vendor's hook can read headers the default view
     strips (e.g. ``authorization``, which both the session-lookup hook and the
-    ``resolve_user`` identity hook may need)."""
+    ``resolve_user`` identity hook may need).
+
+    ⚠ **The ``dict`` this returns is case-SENSITIVE and that is deliberate.**
+    ASGI has already lowercased its keys, so a vendor hook reading the canonical
+    ``"X-Forwarded-User"`` would miss — register A8. The fold happens once, in
+    ``SessionResolutionContext.__post_init__``, rather than here: this function
+    also feeds rung 4, which looks up an already-lowercase constant, and putting
+    the guarantee in the class means a future adapter inherits it instead of
+    having to remember. See ``CaseInsensitiveHeaders`` for the whole story."""
     headers = get_http_headers(include_all=True)
     return headers if headers else None
 

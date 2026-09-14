@@ -23,6 +23,80 @@ _INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required", "off"})
 _PROACTIVE_MODES: frozenset[str] = frozenset({"on", "off"})
 
 
+class CaseInsensitiveHeaders(dict[str, str]):
+    """The standalone adapter's header dict, with case-folded lookups.
+
+    Exists so ``SessionResolutionContext.headers`` resolves the same key on both
+    adapters. The official ``mcp`` adapter reads Starlette ``Headers``, which is
+    already case-insensitive; the standalone ``fastmcp`` adapter reads
+    ``get_http_headers()``, a plain ``dict`` whose keys ASGI has already
+    lowercased. Both satisfy the declared ``Mapping[str, str]``, so the
+    divergence is invisible to mypy — and a vendor writing the canonical
+    spelling (``ctx.headers["X-Forwarded-User"]``) hit **4/4 on official and
+    0/4 on standalone**, measured across all six supported resolves.
+
+    ⚠ **It subclasses ``dict`` rather than wrapping one, and that is the whole
+    point of the shape.** Standalone hooks have received a real ``dict`` since
+    the field existed, so a ``Mapping`` wrapper would take away
+    ``isinstance(ctx.headers, dict)``, ``.copy()``, ``json.dumps(ctx.headers)``
+    and ``|`` — and since ``resolve_principal_via_hook`` catches bare
+    ``Exception``, a hook that merely logged its headers before reading a key
+    would have started nulling ``user_id`` silently. That is the identical
+    fail-open this class exists to close, re-created pointing the other way. As
+    a ``dict`` subclass every behaviour a standalone hook had is preserved and
+    three read paths additionally fold case; methods not listed below
+    (``pop``, ``setdefault``) still take the stored lowercase key, exactly as
+    they did before.
+
+    ⚠ **The direction is one-way: standalone comes UP, official is never taken
+    DOWN.** Official vendors may already rely on case-insensitive lookup, so
+    converting them to a plain ``dict`` breaks hooks that work today. Wrapping
+    BOTH sides in this class was considered and rejected for the same reason in
+    miniature: it would keep case-insensitivity but remove Starlette's
+    ``getlist()`` and its ``__eq__``.
+
+    ⚠ **So what is normalized is LOOKUP, not type, and the residual divergence
+    is real** — ``getlist()`` exists only on official, and
+    ``ctx.headers == {"x-a": "1"}`` is ``True`` here and ``False`` against
+    Starlette ``Headers``. A hook doing either still needs to know its adapter.
+
+    ⚠ **Duplicate header lines are NOT reconciled and the two adapters
+    disagree** — measured, not assumed. Given ``x-forwarded-user: alice`` then
+    ``x-forwarded-user: bob`` (an ordinary proxy-chain append), Starlette
+    returns the FIRST (``alice``) and ``get_http_headers`` the LAST (``bob``),
+    because it builds its dict with ``headers[name] = value`` over every line.
+    That collapse happens upstream, before this class sees anything, so nothing
+    here can repair it — the first value is already gone. Recorded rather than
+    papered over; an earlier draft of this docstring claimed upstream joined
+    duplicates, which was written from assumption and is false.
+    """
+
+    def __init__(self, raw: Mapping[str, str]) -> None:
+        super().__init__({key.lower(): value for key, value in raw.items()})
+
+    @staticmethod
+    def _fold(key: Any) -> Any:
+        """Lowercase a string key, pass anything else through untouched.
+
+        The pass-through is the same rule as the class itself: a plain ``dict``
+        answers ``.get(None)`` with ``None`` and ``d[None]`` with ``KeyError``,
+        and calling ``.lower()`` unconditionally would turn both into
+        ``AttributeError`` — a new exception from a hook that used to work,
+        swallowed by the same fail-open guard, nulling ``user_id``. Preserving
+        dict behaviour means preserving it for the odd key too.
+        """
+        return key.lower() if isinstance(key, str) else key
+
+    def __getitem__(self, key: str) -> str:
+        return super().__getitem__(self._fold(key))
+
+    def __contains__(self, key: object) -> bool:
+        return super().__contains__(self._fold(key))
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return super().get(self._fold(key), default)
+
+
 @dataclass(frozen=True)
 class SessionResolutionContext:
     """Normalized input to ``VendorConfig.resolve_user``.
@@ -32,6 +106,37 @@ class SessionResolutionContext:
     adapter-specific ``Context`` types. This shape is what's already
     extracted for both adapters (headers, meta), so one hook works
     unmodified regardless of which adapter a vendor is on.
+
+    ⚠ **That sentence was FALSE for ``headers`` until 2026-09-13** (register
+    A8). Declaring ``Mapping[str, str]`` normalized the type and not the
+    behaviour: official delivered a case-insensitive Starlette ``Headers``,
+    standalone a plain lowercased ``dict``, and an exact-case lookup therefore
+    worked on one adapter and raised ``KeyError`` on the other — silently, since
+    this path is fail-open throughout.
+
+    **The guarantee is now enforced HERE, in ``__post_init__``, rather than in
+    each adapter's extractor.** Of the four fields, ``headers`` is the only one
+    declared abstractly, and it is the only one that diverged — the other three
+    are concrete types mypy forces every adapter to normalize before it can
+    construct this object. The abstract annotation WAS the hole, so a fix that
+    lived in one adapter's extractor would leave the class promising something
+    only a convention upheld: a fifth construction site, a third extractor or
+    the planned ``claude_code`` adapter would re-open A8 with no type error and
+    no failing test, which is exactly how it shipped the first time. It also
+    covers the case an adapter fix cannot reach — **a vendor unit-testing their
+    own hook constructs this object by hand**, and a hand-written
+    ``{"X-Forwarded-User": ...}`` would otherwise behave unlike production in
+    whichever direction they happened to spell it.
+
+    ⚠ **The symptom differs by deployment and the worse one is not the obvious
+    one.** Where no token exists (stdio, or HTTP with no OAuth) the miss yields
+    a null ``user_id`` on every event. But where a token DOES exist — HTTP +
+    OAuth, the shape ``X-Forwarded-User`` actually lives in — the hook is rung 0
+    and a raise falls through to rung 1, so events carried the token's ``h1:``
+    pseudonym instead of the hook's ``v1:`` one. Same person, two different
+    pseudonyms depending on which adapter the vendor shipped: an actor split,
+    not an absence. A plain dict is folded below, in ``__post_init__``; see
+    ``CaseInsensitiveHeaders`` for the direction rule.
 
     ⚠ **The name is a fossil.** This was built for
     ``VendorConfig.resolve_session_id``, which was REMOVED 2026-09-12 (SPEC
@@ -45,6 +150,21 @@ class SessionResolutionContext:
     meta: dict[str, Any] | None
     tool_name: str
     arguments: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        """Fold a plain ``dict`` of headers; pass anything else through.
+
+        ⚠ **The ``isinstance(dict)`` test is the direction constraint, written
+        as a type check rather than enforced by convention.** Starlette
+        ``Headers`` — what the official adapter delivers — is NOT a ``dict``
+        subclass (verified), so it takes the pass-through arm and keeps
+        ``getlist()`` and its own ``__eq__``; a plain ``dict`` is the standalone
+        adapter's shape, and a vendor's hand-built one, and both come up. That
+        is the one-way rule ``CaseInsensitiveHeaders`` documents, made
+        structural: there is no arm here that can take official down to a dict.
+        """
+        if isinstance(self.headers, dict) and not isinstance(self.headers, CaseInsensitiveHeaders):
+            object.__setattr__(self, "headers", CaseInsensitiveHeaders(self.headers))
 
 
 def _resolve_tenant_id(explicit: str | None, vendor_id: str) -> str:

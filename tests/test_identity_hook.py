@@ -24,7 +24,11 @@ from typing import Any, NamedTuple
 import pytest
 
 from baton.identity import HASH_SCHEME, VENDOR_HASH_SCHEME, Principal, hash_user_id
-from baton.integrations._config import SessionResolutionContext, _validate_vendor_config
+from baton.integrations._config import (
+    CaseInsensitiveHeaders,
+    SessionResolutionContext,
+    _validate_vendor_config,
+)
 from baton.integrations.identity_adapter import (
     USER_ID_MODE_HASHED,
     resolve_call_user_id,
@@ -401,3 +405,124 @@ def test_the_vendor_scheme_sits_outside_the_rotation_family() -> None:
     eat a letter rotation may later want (SPEC §11.4)."""
     assert not VENDOR_HASH_SCHEME.startswith("h")
     assert VENDOR_HASH_SCHEME != HASH_SCHEME
+
+
+# =============================================================================
+# ``CaseInsensitiveHeaders`` — register A8.
+#
+# The context's ``headers`` is the one field whose declared type normalized
+# less than it appeared to. ``Mapping[str, str]`` is true of a case-insensitive
+# Starlette ``Headers`` and of a lowercased plain ``dict`` alike, so the
+# divergence was invisible to mypy AND to every test in this file, whose only
+# context until now was ``headers=None``.
+# =============================================================================
+
+
+class TestCaseInsensitiveHeaders:
+    def test_lookup_ignores_case_in_both_directions(self) -> None:
+        headers = CaseInsensitiveHeaders({"x-forwarded-user": "employee-4417"})
+
+        assert headers["X-Forwarded-User"] == "employee-4417"
+        assert headers["x-forwarded-user"] == "employee-4417"
+        assert headers.get("X-FORWARDED-USER") == "employee-4417"
+        assert "X-Forwarded-User" in headers
+        # Construction folds too, so a vendor building one by hand from
+        # canonical-case keys gets the same object the adapter would deliver.
+        assert CaseInsensitiveHeaders({"X-Forwarded-User": "e"})["x-forwarded-user"] == "e"
+
+    def test_a_miss_is_still_a_miss(self) -> None:
+        """The wrap must not turn an absent header into a present one — that
+        would manufacture a principal out of nothing, the direction every tie
+        in this design breaks against."""
+        headers = CaseInsensitiveHeaders({"x-forwarded-user": "employee-4417"})
+
+        assert headers.get("x-api-key") is None
+        assert "x-api-key" not in headers
+        with pytest.raises(KeyError):
+            headers["X-Api-Key"]
+
+    def test_every_dict_behaviour_a_hook_had_is_preserved(self) -> None:
+        """The regression this class could have introduced in the OTHER
+        direction. Standalone hooks have been handed a real ``dict`` since the
+        field existed, so a plain ``Mapping`` wrapper would break
+        ``isinstance``, ``json.dumps``, ``.copy()`` and ``|`` — and because
+        ``resolve_principal_via_hook`` catches bare ``Exception``, a hook that
+        merely logged its headers before reading a key would have started
+        nulling ``user_id`` silently. Same fail-open, opposite direction.
+        """
+        import json
+
+        headers = CaseInsensitiveHeaders({"x-forwarded-user": "employee-4417"})
+
+        assert isinstance(headers, dict)
+        assert json.loads(json.dumps(headers)) == {"x-forwarded-user": "employee-4417"}
+        assert headers.copy() == {"x-forwarded-user": "employee-4417"}
+        assert headers | {"x-api-key": "k"} == {
+            "x-forwarded-user": "employee-4417",
+            "x-api-key": "k",
+        }
+        assert headers == {"x-forwarded-user": "employee-4417"}
+        # Iteration yields the WIRE form, one spelling per header — folding on
+        # read must not add a second key or change what enumeration reports.
+        assert set(headers) == {"x-forwarded-user"}
+        assert len(headers) == 1
+
+    def test_a_non_string_key_behaves_as_it_did_on_a_plain_dict(self) -> None:
+        """``.lower()`` on an unconditional path would raise ``AttributeError``
+        where a dict answered. The odd key is still a key."""
+        headers = CaseInsensitiveHeaders({"x-forwarded-user": "employee-4417"})
+
+        assert headers.get(None) is None  # type: ignore[arg-type]
+        assert None not in headers
+        with pytest.raises(KeyError):
+            headers[None]  # type: ignore[index]
+
+
+async def test_a_hand_built_context_folds_case_the_way_production_does() -> None:
+    """Register A8, at the seam a VENDOR touches when testing their own hook.
+
+    This is the case no adapter-side fix could reach. A vendor unit-testing
+    their hook constructs this object by hand, so if the class did not fold,
+    a hook written for production (``ctx.headers["X-Forwarded-User"]``) would
+    fail their own test while working when deployed — and one written to pass
+    their test would fail in production. The public type is the thing vendors
+    construct, so the public type is the thing that has to behave.
+
+    Replaces a test that asserted the opposite: it fed the raw wire dict in and
+    pinned the fall-through to ``None``, which documented the bug's shape rather
+    than the contract, and would have frozen the fix at the depth of one
+    adapter's extractor.
+    """
+
+    def vendor_hook(ctx: Any) -> Any:
+        assert ctx.headers is not None
+        return Principal(user_id=ctx.headers["X-Forwarded-User"])
+
+    resolved = await resolve_principal_via_hook(
+        vendor_hook,
+        SessionResolutionContext(
+            headers={"x-forwarded-user": "employee-4417"},
+            meta=None,
+            tool_name="lookup",
+            arguments={},
+        ),
+        logger=logging.getLogger("test"),
+    )
+    assert resolved == Principal(user_id="employee-4417")
+
+
+def test_a_starlette_headers_is_passed_through_untouched() -> None:
+    """The direction constraint, enforced structurally rather than by comment.
+
+    Starlette ``Headers`` is not a ``dict`` subclass, which is what lets
+    ``__post_init__`` tell "needs folding" from "already folded, and carries
+    more than a dict can". If it were ever converted, official vendors would
+    keep case-insensitive lookup and silently lose ``getlist()``.
+    """
+    from tests._asgi import starlette_headers
+
+    original = starlette_headers({"X-Forwarded-User": "employee-4417"})
+    ctx = SessionResolutionContext(headers=original, meta=None, tool_name="lookup", arguments={})
+
+    assert ctx.headers is original
+    assert ctx.headers.getlist("x-forwarded-user") == ["employee-4417"]  # type: ignore[union-attr]

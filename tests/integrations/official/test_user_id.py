@@ -32,8 +32,10 @@ from mcp.server.auth.provider import AccessToken
 from baton.integrations.official import VendorConfig, install_baton
 from baton.integrations.official._compat import MCPServerClass as FastMCP
 from baton.sinks import FileSink
+from tests._asgi import starlette_headers
 from tests._event_helpers import without_surface_snapshots
 from tests._mcp_session import connected_session
+from tests.integrations.official._fake_context import _FakeContextV1, _FakeContextV2
 
 #: Whether the installed ``mcp`` can carry claims at all. False on 1.20 / 1.25,
 #: where pydantic's default ``extra="ignore"`` SILENTLY DROPS a ``claims=``
@@ -375,3 +377,33 @@ async def test_headers_are_extracted_once_per_call_when_a_hook_is_configured(
     # ``None`` is also the correct ANSWER — nothing changed while the diff
     # looked right. A ``<=`` assertion passed that version too.
     assert calls == 1, f"headers extracted {calls} times for one tool call, expected 1"
+
+
+# ---------------------------------------------------------------------------
+# Register A8's other half: the direction constraint.
+#
+# The bug was on the STANDALONE adapter, and the fix brings it UP to the
+# behaviour this adapter already had. Nothing here was broken — which is
+# exactly why it needs a pin. Normalizing the other way (official DOWN to a
+# plain ``dict``, the shape a "just make them the same" change reaches for
+# first) would silently break every official vendor's hook that reads a header
+# by its canonical spelling, and no test in this repo would have said so.
+#
+# It lives in this directory because ``mcp-matrix`` runs only this directory,
+# and the extractor's two branches are the two mcp majors: 2.0 exposes
+# ``Context.headers``, 1.x is reached through ``request_context.request``.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("shape", [_FakeContextV2, _FakeContextV1])
+def test_the_official_extractor_stays_case_insensitive(shape: Any) -> None:
+    from baton.integrations.official._tool_wrap import _extract_headers_from_context
+
+    got = _extract_headers_from_context(shape(starlette_headers({"X-Forwarded-User": "e-4417"})))
+
+    assert got is not None
+    assert got["X-Forwarded-User"] == "e-4417", (
+        "a vendor hook reading the canonical spelling must keep resolving on "
+        "this adapter; converting to a plain dict here would break it silently"
+    )
+    assert got.get("x-forwarded-user") == "e-4417"

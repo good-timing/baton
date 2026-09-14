@@ -8,6 +8,50 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Fixed
+
+- ⚠ **`resolve_user`'s `ctx.headers` now ignores case on the standalone
+  `fastmcp` adapter, as it always has on the official `mcp` one.** A hook
+  reading a header by its canonical spelling —
+  `ctx.headers["X-Forwarded-User"]`, which is how the header is written
+  everywhere it is documented — resolved on the official adapter and raised
+  `KeyError` on the standalone one, because that adapter passed through
+  fastmcp's plain `dict` whose keys ASGI had already lowercased.
+
+  **What it cost, and it is not the same everywhere.** This path is fail-open by
+  design, so the `KeyError` was caught, logged at WARNING, and identity fell
+  through to the next rung.
+
+  - **No verified token** (stdio, or HTTP without OAuth): `user_id` was null on
+    **every event**, indistinguishable from having configured no hook at all.
+  - **With a verified token** (HTTP + OAuth — the shape `X-Forwarded-User`
+    actually lives in): the hook is rung 0, so the miss fell through to the
+    token and events carried its `h1:` pseudonym instead of your hook's `v1:`
+    one. **One person therefore has two different `user_id` values depending on
+    which adapter the server runs**, which splits an actor rather than dropping
+    one. If you correlate on `user_id` across both adapters, expect a
+    discontinuity at this release as the standalone side starts reporting `v1:`
+    where it reported `h1:`.
+
+  **No hook that worked before stops working.** Lowercased lookups keep
+  resolving, the official adapter is untouched, and the declared type is still
+  `Mapping[str, str]` — which is precisely why neither mypy nor any test could
+  see the divergence. If your hook already lowercases the key itself, you need
+  no change.
+
+  **Two smaller consequences, stated rather than left to be discovered.** The
+  folding happens in `SessionResolutionContext` itself, so (1) a hand-built
+  context in *your own* hook's unit tests now folds too — a test that passed
+  only because it spelled the key the way the wire does will keep passing, and
+  one written in canonical case starts passing rather than failing; and (2) on
+  the standalone adapter, iterating `ctx.headers` or comparing it with `==`
+  reports lowercase keys. It is still a real `dict`, so `isinstance`, `.copy()`,
+  `json.dumps()` and `|` behave exactly as before.
+
+---
+
 ## 0.8.3 — the annotation tool name comes from the server; a short workspace id parses
 
 ### Changed
