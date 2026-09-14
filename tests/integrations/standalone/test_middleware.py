@@ -13,13 +13,13 @@ import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.server.http import set_http_request
 from pytest_httpserver import HTTPServer
-from starlette.requests import Request
 from werkzeug.wrappers import Response
 
 from baton.events import Event
 from baton.integrations.standalone._session import extract_headers
 from baton.integrations.standalone.middleware import BatonMiddleware
 from baton.sinks import HttpSink, Sink
+from tests._asgi import fake_http_request
 from tests._event_helpers import without_surface_snapshots
 
 
@@ -44,17 +44,9 @@ async def sink(
     await s.aclose()
 
 
-def _fake_http_request(headers: dict[str, str]) -> Request:
-    """A minimal ASGI-scope-backed Starlette ``Request`` carrying only
-    headers — enough to drive ``get_http_headers()``'s real contextvar path
-    (via ``set_http_request``) without a real network socket."""
-    scope = {
-        "type": "http",
-        "method": "POST",
-        "path": "/mcp",
-        "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
-    }
-    return Request(scope)
+#: Shared with every other ASGI-scope site in the suite; see ``tests/_asgi``
+#: for why the lowercasing lives there and not at each call.
+_fake_http_request = fake_http_request
 
 
 def _build_mcp(sink: Sink, **mw_kwargs: Any) -> FastMCP:
@@ -576,3 +568,29 @@ class TestExtractHeaders:
 
     async def test_extract_headers_none_outside_a_live_request(self) -> None:
         assert extract_headers() is None
+
+    async def test_what_this_adapter_hands_a_hook_folds_case(self) -> None:
+        """Register A8, at the seam a vendor actually touches.
+
+        ``extract_headers`` itself returns the case-SENSITIVE dict ASGI built —
+        the fold happens once, in ``SessionResolutionContext``. So the assertion
+        is on the composition, because that is what reaches a hook: this
+        adapter's real extractor, in the real context object.
+
+        The canonical spelling is what a vendor writes, because it is what the
+        header is called in every document describing it — never the lowercased
+        form the wire happens to carry.
+        """
+        from baton.integrations._config import SessionResolutionContext
+
+        with set_http_request(_fake_http_request({"X-Forwarded-User": "employee-4417"})):
+            headers = extract_headers()
+
+        assert headers is not None
+        ctx = SessionResolutionContext(headers=headers, meta=None, tool_name="lookup", arguments={})
+        assert ctx.headers is not None
+        assert ctx.headers["X-Forwarded-User"] == "employee-4417"
+        assert ctx.headers.get("X-FORWARDED-USER") == "employee-4417"
+        assert "X-Forwarded-User" in ctx.headers
+        # The lowercased spelling keeps working — the change is additive.
+        assert ctx.headers["x-forwarded-user"] == "employee-4417"

@@ -16,13 +16,13 @@ from fastmcp import Client, FastMCP
 from fastmcp.server.dependencies import get_http_headers
 from fastmcp.server.http import set_http_request
 from pytest_httpserver import HTTPServer
-from starlette.requests import Request
 from werkzeug.wrappers import Response
 
 from baton.integrations.standalone import _session
 from baton.integrations.standalone._session import resolve_call_session_id
 from baton.integrations.standalone.middleware import BatonMiddleware
 from baton.sinks import HttpSink, Sink
+from tests._asgi import fake_http_request
 
 
 @pytest.fixture
@@ -97,13 +97,7 @@ def _http_injection_works() -> bool:
     Skipping beats asserting a false negative or silently dropping the coverage
     on the versions where it does work.
     """
-    scope = {
-        "type": "http",
-        "method": "POST",
-        "path": "/mcp",
-        "headers": [(b"mcp-session-id", b"probe")],
-    }
-    with set_http_request(Request(scope)):
+    with set_http_request(fake_http_request([(b"mcp-session-id", b"probe")])):
         return (get_http_headers(include_all=True) or {}).get("mcp-session-id") == "probe"
 
 
@@ -113,14 +107,8 @@ requires_http_injection = pytest.mark.skipif(
 )
 
 
-def _fake_http_request(headers: dict[str, str]) -> Request:
-    scope = {
-        "type": "http",
-        "method": "POST",
-        "path": "/mcp",
-        "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
-    }
-    return Request(scope)
+#: Shared with every other ASGI-scope site in the suite; see ``tests/_asgi``.
+_fake_http_request = fake_http_request
 
 
 async def _resolve(

@@ -25,6 +25,10 @@ from baton.integrations.official._compat import MCPServerClass as FastMCP
 from baton.integrations.official._registry import get_tool_registry
 from baton.sinks import FileSink, Sink
 from tests._event_helpers import without_surface_snapshots
+from tests.integrations.official._fake_context import (
+    _FakeContextV1,
+    _FakeContextV2,
+)
 
 
 def _input_schema(tool: Any) -> dict[str, Any]:
@@ -769,49 +773,6 @@ class TestSurfaceSnapshot:
             "payload"
         ]
         assert snapshot["instructions"] is None
-
-
-class _FakeRequest:
-    """Minimal stand-in for a transport request object — just headers."""
-
-    def __init__(self, headers: dict[str, str]) -> None:
-        self.headers = headers
-
-
-class _FakeRequestContext:
-    def __init__(self, request: Any = None, meta: dict[str, Any] | None = None) -> None:
-        self.request = request
-        self.meta = meta
-
-
-class _FakeContextV2:
-    """Mimics mcp 2.0's ``Context``: a first-class ``.headers`` property."""
-
-    def __init__(
-        self,
-        headers: dict[str, str] | None,
-        meta: dict[str, Any] | None = None,
-        *,
-        input_responses: dict[str, Any] | None = None,
-        request_state: str | None = None,
-    ) -> None:
-        self.headers = headers
-        self.request_context = _FakeRequestContext(meta=meta)
-        # mcp>=2.0's MRTR properties — present directly on Context, not nested.
-        # Both default None (a fresh, non-continuation call) so every existing
-        # caller of this fake is unaffected.
-        self.input_responses = input_responses
-        self.request_state = request_state
-
-
-class _FakeContextV1:
-    """Mimics mcp 1.x's ``Context``: no ``.headers`` at all — only reachable
-    through ``request_context.request.headers``."""
-
-    def __init__(self, headers: dict[str, str] | None, meta: dict[str, Any] | None = None) -> None:
-        self.request_context = _FakeRequestContext(
-            _FakeRequest(headers) if headers else None, meta=meta
-        )
 
 
 class TestStatefulHttpSessionResolution:
