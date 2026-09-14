@@ -96,6 +96,43 @@ class CaseInsensitiveHeaders(dict[str, str]):
     def get(self, key: str, default: Any = None) -> Any:
         return super().get(self._fold(key), default)
 
+    # ⚠ **The write path folds too, and leaving it out was a real defect.**
+    # Folding reads alone broke the class's own invariant — every stored key is
+    # lowercase — so ``h["X-B"] = "2"`` stored ``X-B`` verbatim and then
+    # ``h["X-B"]`` raised ``KeyError`` for a key ``list(h)`` plainly showed.
+    # That is strictly worse than the plain ``dict`` this replaced, where
+    # set-then-read simply worked, and it lands in the same silent place: a
+    # hook that normalizes before reading (``setdefault`` a fallback, then read
+    # it back) raises, ``resolve_principal_via_hook`` swallows it, and
+    # ``user_id`` goes null on every event. The same fail-open this class
+    # exists to close, re-created on the other half of the mapping protocol.
+
+    def __setitem__(self, key: str, value: str) -> None:
+        super().__setitem__(self._fold(key), value)
+
+    def __delitem__(self, key: str) -> None:
+        super().__delitem__(self._fold(key))
+
+    def pop(self, key: str, *default: Any) -> Any:
+        return super().pop(self._fold(key), *default)
+
+    def setdefault(self, key: str, default: Any = None) -> Any:
+        return super().setdefault(self._fold(key), default)
+
+    def update(self, *args: Any, **kwargs: str) -> None:
+        # Normalized through one path rather than per-overload: ``dict.update``
+        # accepts a mapping, an iterable of pairs, or keywords, and folding
+        # only the branch that came to mind is how the read path ended up
+        # half-done.
+        merged: dict[str, str] = {}
+        for source in args:
+            items = source.items() if hasattr(source, "keys") else source
+            for key, value in items:
+                merged[self._fold(key)] = value
+        for key, value in kwargs.items():
+            merged[self._fold(key)] = value
+        super().update(merged)
+
 
 @dataclass(frozen=True)
 class SessionResolutionContext:
@@ -154,17 +191,30 @@ class SessionResolutionContext:
     def __post_init__(self) -> None:
         """Fold a plain ``dict`` of headers; pass anything else through.
 
-        ⚠ **The ``isinstance(dict)`` test is the direction constraint, written
-        as a type check rather than enforced by convention.** Starlette
-        ``Headers`` — what the official adapter delivers — is NOT a ``dict``
-        subclass (verified), so it takes the pass-through arm and keeps
-        ``getlist()`` and its own ``__eq__``; a plain ``dict`` is the standalone
-        adapter's shape, and a vendor's hand-built one, and both come up. That
-        is the one-way rule ``CaseInsensitiveHeaders`` documents, made
-        structural: there is no arm here that can take official down to a dict.
+        ⚠ **Fold by DEFAULT; pass through only a multi-value container.** The
+        rule is stated this way round deliberately. An earlier version gated on
+        ``isinstance(headers, dict)``, which folded the two shapes the adapters
+        ship today and silently missed every other mapping — a
+        ``MappingProxyType``, a ``UserDict``, a future ``get_http_headers()``
+        return type. That is narrower than the guarantee the paragraph above
+        claims, and it holed the very case that argued for putting the fold
+        here: a vendor hand-building this object in their own unit tests.
+
+        ``getlist`` is the pass-through test because a mapping exposing it
+        holds MORE than a flat mapping can — repeated header lines kept apart
+        — so folding it would lose data rather than merely change lookups.
+        Every such container in practice (Starlette's ``Headers``, which is
+        what the official adapter delivers, and werkzeug's) is already
+        case-insensitive, so the exemption costs nothing and keeps
+        ``getlist()`` working for official vendors who use it. That is the
+        one-way rule ``CaseInsensitiveHeaders`` documents, made structural:
+        there is no arm here that can take official down to a flat dict.
         """
-        if isinstance(self.headers, dict) and not isinstance(self.headers, CaseInsensitiveHeaders):
-            object.__setattr__(self, "headers", CaseInsensitiveHeaders(self.headers))
+        if self.headers is None or isinstance(self.headers, CaseInsensitiveHeaders):
+            return
+        if hasattr(self.headers, "getlist"):
+            return
+        object.__setattr__(self, "headers", CaseInsensitiveHeaders(self.headers))
 
 
 def _resolve_tenant_id(explicit: str | None, vendor_id: str) -> str:

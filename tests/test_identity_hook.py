@@ -467,6 +467,42 @@ class TestCaseInsensitiveHeaders:
         assert set(headers) == {"x-forwarded-user"}
         assert len(headers) == 1
 
+    def test_writes_fold_too_so_a_key_you_just_set_is_readable(self) -> None:
+        """The half this class shipped without, and it was strictly worse than
+        the plain ``dict`` it replaced.
+
+        Folding reads alone broke the invariant that every stored key is
+        lowercase: ``h["X-B"] = "2"`` stored ``X-B`` verbatim, and ``h["X-B"]``
+        then raised ``KeyError`` for a key ``list(h)`` plainly showed. A hook
+        that normalizes before reading — ``setdefault`` a fallback, then read
+        it back — worked on the old dict and raised here, and the raise is
+        swallowed into a null ``user_id`` on every event.
+        """
+        headers = CaseInsensitiveHeaders({"x-a": "1"})
+
+        headers["X-B"] = "2"
+        assert headers["X-B"] == "2"
+        assert headers.get("x-b") == "2"
+        assert "X-B" in headers
+
+        assert headers.setdefault("X-C", "v") == "v"
+        assert headers["x-c"] == "v"
+        # An EXISTING key is found through the fold, so a default cannot
+        # overwrite a header the caller already has under another spelling.
+        assert headers.setdefault("X-A", "other") == "1"
+
+        headers.update({"X-D": "4"})
+        headers.update([("X-E", "5")])
+        assert (headers["x-d"], headers["x-e"]) == ("4", "5")
+
+        assert headers.pop("X-B") == "2"
+        assert "x-b" not in headers
+        del headers["X-A"]
+        assert "x-a" not in headers
+
+        # The invariant the whole class rests on.
+        assert all(key == key.lower() for key in headers)
+
     def test_a_non_string_key_behaves_as_it_did_on_a_plain_dict(self) -> None:
         """``.lower()`` on an unconditional path would raise ``AttributeError``
         where a dict answered. The odd key is still a key."""
@@ -509,6 +545,27 @@ async def test_a_hand_built_context_folds_case_the_way_production_does() -> None
         logger=logging.getLogger("test"),
     )
     assert resolved == Principal(user_id="employee-4417")
+
+
+def test_any_other_mapping_is_folded_not_just_a_dict() -> None:
+    """The gate is "fold by default", not "fold dicts".
+
+    It gated on ``isinstance(dict)`` first, which covered the two shapes the
+    adapters ship and missed every other mapping — and holed the exact case
+    that argued for folding in this class at all, a vendor hand-building the
+    context in their own unit tests.
+    """
+    from types import MappingProxyType
+
+    ctx = SessionResolutionContext(
+        headers=MappingProxyType({"x-forwarded-user": "employee-4417"}),
+        meta=None,
+        tool_name="lookup",
+        arguments={},
+    )
+
+    assert ctx.headers is not None
+    assert ctx.headers["X-Forwarded-User"] == "employee-4417"
 
 
 def test_a_starlette_headers_is_passed_through_untouched() -> None:
