@@ -59,8 +59,8 @@ from baton._uuid import uuid7
 from baton.integrations._annotation_name import resolve_annotation_names
 from baton.integrations._config import (
     VendorConfig,
+    _resolve_principal_id_hmac_key,
     _resolve_tenant_id,
-    _resolve_user_id_hmac_key,
     _validate_vendor_config,
     build_config,
     resolve_sink,
@@ -180,7 +180,9 @@ def install_baton(
     # tenant than its tool call is unjoinable — the one correlation the
     # sensor exists to produce.
     tenant_id = _resolve_tenant_id(config.tenant_id, config.vendor_id)
-    user_id_hmac_key = _resolve_user_id_hmac_key(config.user_id_hmac_key)
+    principal_id_hmac_key = _resolve_principal_id_hmac_key(
+        config.principal_id_hmac_key, mode=config.principal_id_mode
+    )
     # ONE set for the whole install. Two would make "logged once per install"
     # into twice — the tool path and the annotation path each warning — which
     # is precisely what a duplicated warn-once guard buys.
@@ -240,9 +242,9 @@ def install_baton(
             annotation_tool_name=annotation_tool_name,
             intent_param_mode=config.intent_param_mode,
             proactive_tracker=proactive_tracker,
-            user_id_mode=config.user_id_mode,
-            user_id_hmac_key=user_id_hmac_key,
-            resolve_user_hook=config.resolve_user,
+            principal_id_mode=config.principal_id_mode,
+            principal_id_hmac_key=principal_id_hmac_key,
+            resolve_principal_hook=config.resolve_principal,
             identity_warned=identity_warned,
             server_meta=server_meta,
         )
@@ -268,9 +270,9 @@ def install_baton(
         proactive_mode=config.proactive_mode,
         scrubber=scrubber,
         proactive_tracker=proactive_tracker,
-        user_id_mode=config.user_id_mode,
-        user_id_hmac_key=user_id_hmac_key,
-        resolve_user_hook=config.resolve_user,
+        principal_id_mode=config.principal_id_mode,
+        principal_id_hmac_key=principal_id_hmac_key,
+        resolve_principal_hook=config.resolve_principal,
         identity_warned=identity_warned,
     )
 

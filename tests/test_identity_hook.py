@@ -1,7 +1,7 @@
-"""``VendorConfig.resolve_user`` — the ASSERTED provenance (N11).
+"""``VendorConfig.resolve_principal`` — the ASSERTED provenance (N11).
 
 Unit-level. The end-to-end halves live in
-``tests/functional/test_user_id_parity.py``, which drives both adapters
+``tests/functional/test_principal_id_parity.py``, which drives both adapters
 through both emit paths and is where precedence and the ``v1:`` tag are
 pinned on real events.
 
@@ -9,7 +9,7 @@ What this file covers is the normalizer: every way a vendor's hook can hand
 back something that is not a usable ``Principal``. Each of those is a MISS
 that falls through to the verified token, never a raise and never a
 half-built principal — because the next thing that happens to a hook's return
-value is an HMAC over ``principal.user_id``, and ``user_id`` is additive
+value is an HMAC over ``principal.principal_id``, and ``principal_id`` is additive
 analytics that may not fail a vendor's tool call (SPEC §11.2).
 """
 
@@ -23,15 +23,15 @@ from typing import Any, NamedTuple
 
 import pytest
 
-from baton.identity import HASH_SCHEME, VENDOR_HASH_SCHEME, Principal, hash_user_id
+from baton.identity import HASH_SCHEME, VENDOR_HASH_SCHEME, Principal, hash_principal_id
 from baton.integrations._config import (
     CaseInsensitiveHeaders,
     SessionResolutionContext,
     _validate_vendor_config,
 )
 from baton.integrations.identity_adapter import (
-    USER_ID_MODE_HASHED,
-    resolve_call_user_id,
+    PRINCIPAL_ID_MODE_HASHED,
+    resolve_call_principal_id,
     resolve_principal_via_hook,
 )
 
@@ -53,7 +53,7 @@ class _Token:
 
 
 def _attested() -> str:
-    return hash_user_id(
+    return hash_principal_id(
         "attested@acme.example", tenant_id=TENANT, key=KEY, issuer="https://idp.example"
     )
 
@@ -77,19 +77,21 @@ async def _resolve(hook: Any, token: Any = None, **kw: Any) -> str | None:
     params: dict[str, Any] = {
         "hook": hook,
         "hook_context": CTX,
-        "mode": USER_ID_MODE_HASHED,
+        "mode": PRINCIPAL_ID_MODE_HASHED,
         "tenant_id": TENANT,
         "hmac_key": KEY,
         "logger": logging.getLogger("test"),
         "warned": set(),
     }
     params.update(kw)
-    return await resolve_call_user_id(token, **params)
+    return await resolve_call_principal_id(token, **params)
 
 
 async def test_a_principal_is_hashed_under_the_vendor_scheme() -> None:
-    got = await _resolve(lambda _c: Principal(user_id="employee-1"))
-    assert got == hash_user_id("employee-1", tenant_id=TENANT, key=KEY, scheme=VENDOR_HASH_SCHEME)
+    got = await _resolve(lambda _c: Principal(principal_id="employee-1"))
+    assert got == hash_principal_id(
+        "employee-1", tenant_id=TENANT, key=KEY, scheme=VENDOR_HASH_SCHEME
+    )
     assert got is not None and got.startswith("v1:")
 
 
@@ -101,8 +103,8 @@ async def test_the_tag_is_the_only_difference_from_the_attested_derivation() -> 
     that must keep them apart still can. Two unrelated digests would have
     foreclosed the first option silently.
     """
-    asserted = await _resolve(lambda _c: Principal(user_id="same-person"))
-    attested = hash_user_id("same-person", tenant_id=TENANT, key=KEY)
+    asserted = await _resolve(lambda _c: Principal(principal_id="same-person"))
+    attested = hash_principal_id("same-person", tenant_id=TENANT, key=KEY)
     assert asserted is not None
     assert asserted.split(":", 1)[1] == attested.split(":", 1)[1]
     assert asserted.startswith(f"{VENDOR_HASH_SCHEME}:")
@@ -110,7 +112,7 @@ async def test_the_tag_is_the_only_difference_from_the_attested_derivation() -> 
 
 
 async def test_the_hook_beats_a_usable_token() -> None:
-    got = await _resolve(lambda _c: Principal(user_id="employee-1"), token=_Token())
+    got = await _resolve(lambda _c: Principal(principal_id="employee-1"), token=_Token())
     assert got != _attested()
     assert got is not None and got.startswith("v1:")
 
@@ -133,7 +135,7 @@ async def test_a_configured_hook_with_no_context_degrades_rather_than_dropping_i
     def hook(_c: Any) -> Principal:
         nonlocal called
         called = True
-        return Principal(user_id="employee-1")
+        return Principal(principal_id="employee-1")
 
     got = await _resolve(hook, token=_Token(), hook_context=None)
     assert got == _attested()
@@ -144,16 +146,16 @@ class _DuckPrincipal(NamedTuple):
     """The shape a vendor reaches for first — AgentCat's ``identify()`` returns
     a dict, and a namedtuple with the right field names is the near miss."""
 
-    user_id: str
+    principal_id: str
     issuer: str | None = None
 
 
 @pytest.mark.parametrize(
     "returned",
     [
-        pytest.param({"user_id": "employee-1"}, id="dict"),
+        pytest.param({"principal_id": "employee-1"}, id="dict"),
         pytest.param("employee-1", id="bare-string"),
-        pytest.param(_DuckPrincipal(user_id="employee-1"), id="duck-typed-namedtuple"),
+        pytest.param(_DuckPrincipal(principal_id="employee-1"), id="duck-typed-namedtuple"),
         pytest.param(object(), id="arbitrary-object"),
         pytest.param(Principal, id="the-class-not-an-instance"),
     ],
@@ -161,14 +163,14 @@ class _DuckPrincipal(NamedTuple):
 async def test_a_wrong_return_type_is_a_miss_not_a_value(returned: Any) -> None:
     """Duck-typing these would put an unvalidated value one line from an HMAC.
 
-    The namedtuple case is the one that matters: it has ``.user_id`` and
+    The namedtuple case is the one that matters: it has ``.principal_id`` and
     ``.issuer``, so ``getattr``-based code would accept it and hash it happily.
     """
     assert await _resolve(lambda _c: returned, token=_Token()) == _attested()
 
 
 @pytest.mark.parametrize(
-    "bad_user_id",
+    "bad_principal_id",
     [
         pytest.param("", id="empty"),
         pytest.param(None, id="none"),
@@ -178,19 +180,19 @@ async def test_a_wrong_return_type_is_a_miss_not_a_value(returned: Any) -> None:
         pytest.param("   ", id="padded-CHAR-column"),
     ],
 )
-async def test_a_principal_with_no_usable_user_id_is_a_miss(bad_user_id: Any) -> None:
+async def test_a_principal_with_no_usable_principal_id_is_a_miss(bad_principal_id: Any) -> None:
     """An empty subject hashes to a real, stable digest that names nobody —
     every such caller merged into one actor, which is the exact collapse
-    ``user_id`` exists to undo. It must not reach the HMAC.
+    ``principal_id`` exists to undo. It must not reach the HMAC.
 
-    ⚠ The whitespace cases are NOT padding on the empty one. ``hash_user_id``
+    ⚠ The whitespace cases are NOT padding on the empty one. ``hash_principal_id``
     canonicalizes NFC → strip → lower, so `" "` and `"\t\n"` hash to the SAME
     digest — measured ``h1:14fa5f91…`` for both — and a truthiness guard waves
     them through. A blank header value and a padded ``CHAR(n)`` column are the
     reachable shapes, and they are what makes the phantom actor a real merge
     rather than a theoretical one.
     """
-    got = await _resolve(lambda _c: Principal(user_id=bad_user_id), token=_Token())
+    got = await _resolve(lambda _c: Principal(principal_id=bad_principal_id), token=_Token())
     assert got == _attested()
 
 
@@ -235,7 +237,7 @@ async def test_a_genuine_task_cancellation_propagates() -> None:
     def blocks(_c: Any) -> Principal:
         started.set()
         time.sleep(5)
-        return Principal(user_id="employee-1")
+        return Principal(principal_id="employee-1")
 
     task = asyncio.create_task(_resolve(blocks, token=_Token()))
     await started.wait()
@@ -274,7 +276,7 @@ async def test_a_slow_hook_loses_its_result_rather_than_the_loop() -> None:
 
     def slow(_c: Any) -> Principal:
         time.sleep(2.0)
-        return Principal(user_id="employee-1")
+        return Principal(principal_id="employee-1")
 
     t0 = time.monotonic()
     got = await _resolve_with_timeout(slow, 0.2, token=_Token())
@@ -296,7 +298,7 @@ async def test_a_blocking_hook_does_not_stall_concurrent_calls() -> None:
 
     def blocks(_c: Any) -> Principal:
         time.sleep(0.3)
-        return Principal(user_id="employee-1")
+        return Principal(principal_id="employee-1")
 
     beat = asyncio.create_task(heartbeat())
     await asyncio.sleep(0.02)
@@ -310,12 +312,12 @@ async def test_a_blocking_hook_does_not_stall_concurrent_calls() -> None:
 
 
 async def test_an_empty_issuer_hashes_as_no_issuer() -> None:
-    """``Principal(user_id=sub, issuer=claims.get("iss", ""))`` is the natural
+    """``Principal(principal_id=sub, issuer=claims.get("iss", ""))`` is the natural
     thing for a vendor to write. Without coercion it appends an extra
     separator to the HMAC message, so one person gets a stable-but-wrong
     pseudonym and a later switch to ``None`` silently renames every user."""
-    absent = await _resolve(lambda _c: Principal(user_id="same-person"))
-    empty = await _resolve(lambda _c: Principal(user_id="same-person", issuer=""))
+    absent = await _resolve(lambda _c: Principal(principal_id="same-person"))
+    empty = await _resolve(lambda _c: Principal(principal_id="same-person", issuer=""))
     assert absent == empty
 
 
@@ -329,13 +331,13 @@ async def test_an_empty_issuer_hashes_as_no_issuer() -> None:
 )
 async def test_a_junk_issuer_costs_the_issuer_not_the_identity(bad_issuer: Any) -> None:
     """A non-string issuer reaches ``unicodedata.normalize`` and raises. Caught
-    downstream — but the cost was the whole event's ``user_id``, including the
+    downstream — but the cost was the whole event's ``principal_id``, including the
     attested one the token could still have produced, so a configured-but-buggy
     hook was strictly worse than no hook. It is coerced before it gets there."""
     got = await _resolve(
-        lambda _c: Principal(user_id="employee-1", issuer=bad_issuer), token=_Token()
+        lambda _c: Principal(principal_id="employee-1", issuer=bad_issuer), token=_Token()
     )
-    assert got == await _resolve(lambda _c: Principal(user_id="employee-1"))
+    assert got == await _resolve(lambda _c: Principal(principal_id="employee-1"))
     assert got is not None and got.startswith("v1:")
 
 
@@ -351,7 +353,7 @@ async def test_a_principal_that_cannot_be_hashed_emits_nothing_rather_than_the_t
 
     An unpaired surrogate is the reachable shape once ``issuer`` is coerced.
     """
-    got = await _resolve(lambda _c: Principal(user_id="a\ud800b"), token=_Token())
+    got = await _resolve(lambda _c: Principal(principal_id="a\ud800b"), token=_Token())
     assert got is None, "a failed hash substituted a different actor"
     assert got != _attested()
 
@@ -361,7 +363,7 @@ async def test_the_hook_receives_the_context_it_was_given() -> None:
 
     def hook(c: SessionResolutionContext) -> Principal:
         seen.append(c)
-        return Principal(user_id="employee-1")
+        return Principal(principal_id="employee-1")
 
     await _resolve(hook)
     assert seen == [CTX]
@@ -370,32 +372,32 @@ async def test_the_hook_receives_the_context_it_was_given() -> None:
 
 async def test_an_async_hook_is_awaited() -> None:
     async def hook(_c: Any) -> Principal:
-        return Principal(user_id="employee-1")
+        return Principal(principal_id="employee-1")
 
     got = await resolve_principal_via_hook(hook, CTX, logger=logging.getLogger("test"))
-    assert got == Principal(user_id="employee-1")
+    assert got == Principal(principal_id="employee-1")
 
 
 async def test_hashed_mode_with_no_key_drops_the_field_rather_than_leaking_it() -> None:
     """The asserted path goes through the same chokepoint as the attested one,
     so it inherits the missing-key rule instead of restating it. The principal
     must not appear in the output on that branch."""
-    got = await _resolve(lambda _c: Principal(user_id="employee-1"), hmac_key=None)
+    got = await _resolve(lambda _c: Principal(principal_id="employee-1"), hmac_key=None)
     assert got is None
 
 
-def test_a_non_callable_resolve_user_is_refused_at_install() -> None:
+def test_a_non_callable_resolve_principal_is_refused_at_install() -> None:
     """Unvalidated it would fail inside the hook's own fail-open guard —
     logged, identity silently absent for the life of the process, in the one
     deployment shape (stdio + out-of-band auth) the field exists for."""
     from baton.integrations._config import VendorConfig
 
-    with pytest.raises(ValueError, match="resolve_user must be callable"):
+    with pytest.raises(ValueError, match="resolve_principal must be callable"):
         _validate_vendor_config(
             VendorConfig(
                 vendor_id="acme",
                 vendor_display_name="Acme",
-                resolve_user="baton.identity.resolve",  # type: ignore[arg-type]
+                resolve_principal="baton.identity.resolve",  # type: ignore[arg-type]
             )
         )
 
@@ -448,7 +450,7 @@ class TestCaseInsensitiveHeaders:
         ``isinstance``, ``json.dumps``, ``.copy()`` and ``|`` — and because
         ``resolve_principal_via_hook`` catches bare ``Exception``, a hook that
         merely logged its headers before reading a key would have started
-        nulling ``user_id`` silently. Same fail-open, opposite direction.
+        nulling ``principal_id`` silently. Same fail-open, opposite direction.
         """
         import json
 
@@ -476,7 +478,7 @@ class TestCaseInsensitiveHeaders:
         then raised ``KeyError`` for a key ``list(h)`` plainly showed. A hook
         that normalizes before reading — ``setdefault`` a fallback, then read
         it back — worked on the old dict and raised here, and the raise is
-        swallowed into a null ``user_id`` on every event.
+        swallowed into a null ``principal_id`` on every event.
         """
         headers = CaseInsensitiveHeaders({"x-a": "1"})
 
@@ -532,7 +534,7 @@ async def test_a_hand_built_context_folds_case_the_way_production_does() -> None
 
     def vendor_hook(ctx: Any) -> Any:
         assert ctx.headers is not None
-        return Principal(user_id=ctx.headers["X-Forwarded-User"])
+        return Principal(principal_id=ctx.headers["X-Forwarded-User"])
 
     resolved = await resolve_principal_via_hook(
         vendor_hook,
@@ -544,7 +546,7 @@ async def test_a_hand_built_context_folds_case_the_way_production_does() -> None
         ),
         logger=logging.getLogger("test"),
     )
-    assert resolved == Principal(user_id="employee-4417")
+    assert resolved == Principal(principal_id="employee-4417")
 
 
 def test_any_other_mapping_is_folded_not_just_a_dict() -> None:

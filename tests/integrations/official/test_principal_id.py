@@ -1,4 +1,4 @@
-"""``user_id`` on the OFFICIAL mcp SDK adapter, across the mcp matrix.
+"""``principal_id`` on the OFFICIAL mcp SDK adapter, across the mcp matrix.
 
 Here rather than in ``tests/functional/`` for the same reason
 ``test_agent_runtime.py`` is: ``mcp-matrix`` runs
@@ -8,7 +8,7 @@ the suite is — ``AccessToken`` gained ``claims`` and ``subject`` somewhere in
 (1.25, 1.27], so **two of those four legs cannot carry identity at all.**
 
 That is the point of putting it here. On 1.20 and 1.25 these tests assert the
-documented degrade (no ``claims`` ⇒ no ``user_id``, no crash) against the REAL
+documented degrade (no ``claims`` ⇒ no ``principal_id``, no crash) against the REAL
 ``AccessToken`` class rather than a stub of it, which is the only way to know
 the degrade still holds when the field genuinely does not exist. On 1.27+ they
 assert the value is produced. ``_CLAIMS_SUPPORTED`` selects which, and it is
@@ -66,7 +66,7 @@ async def _drive(
     *,
     mode: str = "hashed",
     hmac_key: bytes | None = HMAC_KEY,
-    resolve_user: Any = None,
+    resolve_principal: Any = None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> list[dict[str, Any]]:
     """One tool call + one annotation call, with ``token`` as the caller."""
@@ -88,9 +88,9 @@ async def _drive(
             consent_token="ct_uid",
             sink=FileSink(str(events_path)),
             tenant_id="tenant-official",
-            user_id_mode=mode,
-            user_id_hmac_key=hmac_key,
-            resolve_user=resolve_user,
+            principal_id_mode=mode,
+            principal_id_hmac_key=hmac_key,
+            resolve_principal=resolve_principal,
         ),
     )
     try:
@@ -107,7 +107,7 @@ async def _drive(
     return events
 
 
-async def test_every_event_of_a_call_carries_the_same_user_id(
+async def test_every_event_of_a_call_carries_the_same_principal_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Including the annotation event, which is its own regression class.
@@ -122,13 +122,13 @@ async def test_every_event_of_a_call_carries_the_same_user_id(
         _token(claims={"sub": "alice", "iss": "https://idp"}),
         monkeypatch=monkeypatch,
     )
-    by_type = {ev["event_type"]: ev.get("user_id") for ev in events}
+    by_type = {ev["event_type"]: ev.get("principal_id") for ev in events}
     assert "annotation" in by_type, f"no annotation event, got {sorted(by_type)}"
     assert "tool_call_start" in by_type, f"no tool_call_start, got {sorted(by_type)}"
 
     if _CLAIMS_SUPPORTED:
         assert all(v is not None and v.startswith("h1:") for v in by_type.values()), by_type
-        assert len(set(by_type.values())) == 1, f"one caller, two user_ids: {by_type}"
+        assert len(set(by_type.values())) == 1, f"one caller, two principal_ids: {by_type}"
     else:
         # mcp < 1.27: the field cannot be carried, so it is absent everywhere.
         # Absent, not wrong — and above all not an exception.
@@ -155,9 +155,9 @@ async def test_a_vendor_subclass_carries_identity_on_every_version(
         VendorToken(token="jwt", client_id="acme-app", scopes=[], claims={"sub": "carol"}),
         monkeypatch=monkeypatch,
     )
-    user_ids = {ev.get("user_id") for ev in events}
-    assert user_ids != {None}, "a vendor-declared claims field was not read"
-    assert all(v is not None and v.startswith("h1:") for v in user_ids), user_ids
+    principal_ids = {ev.get("principal_id") for ev in events}
+    assert principal_ids != {None}, "a vendor-declared claims field was not read"
+    assert all(v is not None and v.startswith("h1:") for v in principal_ids), principal_ids
 
 
 async def test_an_unauthenticated_call_emits_without_the_field(
@@ -165,7 +165,7 @@ async def test_an_unauthenticated_call_emits_without_the_field(
 ) -> None:
     """Every stdio call, and most HTTP ones. Events must still flow."""
     events = await _drive(tmp_path / "e.jsonl", None, monkeypatch=monkeypatch)
-    assert {ev.get("user_id") for ev in events} == {None}
+    assert {ev.get("principal_id") for ev in events} == {None}
     assert any(ev["event_type"] == "tool_call_end" for ev in events), (
         "the call itself must still complete and emit"
     )
@@ -177,9 +177,9 @@ async def test_the_raw_principal_never_reaches_the_wire_in_hashed_mode(
     """Asserted against the RAW FILE, not the parsed field.
 
     The residency contract is about bytes leaving the process, so checking
-    ``ev["user_id"]`` alone would miss the identity riding some other key —
+    ``ev["principal_id"]`` alone would miss the identity riding some other key —
     which is exactly the leak baton-extmcp 0.2.0 had to remove, where raw
-    identity travelled in ``runtime_meta`` while ``user_id`` looked correct.
+    identity travelled in ``runtime_meta`` while ``principal_id`` looked correct.
     """
     events_path = tmp_path / "e.jsonl"
     await _drive(
@@ -207,21 +207,21 @@ async def test_raw_mode_puts_the_principal_on_the_wire_deliberately(
         hmac_key=None,
         monkeypatch=monkeypatch,
     )
-    user_ids = {ev.get("user_id") for ev in events}
-    assert user_ids == {"alice@acme.example"}, user_ids
+    principal_ids = {ev.get("principal_id") for ev in events}
+    assert principal_ids == {"alice@acme.example"}, principal_ids
 
 
 async def test_hashed_mode_without_a_key_still_emits_events(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fail-open-skip: ``user_id`` is additive analytics, never a gate."""
+    """Fail-open-skip: ``principal_id`` is additive analytics, never a gate."""
     events = await _drive(
         tmp_path / "e.jsonl",
         _token(claims={"sub": "alice"}),
         hmac_key=None,
         monkeypatch=monkeypatch,
     )
-    assert {ev.get("user_id") for ev in events} == {None}
+    assert {ev.get("principal_id") for ev in events} == {None}
     assert any(ev["event_type"] == "tool_call_end" for ev in events)
 
 
@@ -229,20 +229,20 @@ def test_an_invalid_mode_is_refused_at_install() -> None:
     """D3's refusal posture: a misconfiguration that would silently emit the
     wrong thing fails loudly at install instead."""
     mcp = FastMCP("user-id-invalid")
-    with pytest.raises(ValueError, match="user_id_mode"):
+    with pytest.raises(ValueError, match="principal_id_mode"):
         install_baton(
             mcp,
             VendorConfig(
                 vendor_id="uid",
                 vendor_display_name="Identity Vendor",
                 consent_token="ct_uid",
-                user_id_mode="plaintext",
+                principal_id_mode="plaintext",
             ),
         )
 
 
 # ---------------------------------------------------------------------------
-# The ``resolve_user`` hook (N11) on this matrix.
+# The ``resolve_principal`` hook (N11) on this matrix.
 #
 # The rest of the hook's coverage lives in ``tests/functional/`` and
 # ``tests/test_identity_hook.py``. It is duplicated HERE, thinly, for the
@@ -264,11 +264,11 @@ def test_an_invalid_mode_is_refused_at_install() -> None:
 # where the token path cannot.
 
 
-def _fixed_hook(user_id: str) -> Any:
+def _fixed_hook(principal_id: str) -> Any:
     from baton.identity import Principal
 
     def resolve(_ctx: Any) -> Any:
-        return Principal(user_id=user_id)
+        return Principal(principal_id=principal_id)
 
     return resolve
 
@@ -279,7 +279,7 @@ def _per_call_hook() -> Any:
     from baton.identity import Principal
 
     def resolve(ctx: Any) -> Any:
-        return Principal(user_id=f"user-of-{ctx.tool_name}")
+        return Principal(principal_id=f"user-of-{ctx.tool_name}")
 
     return resolve
 
@@ -292,18 +292,18 @@ async def test_a_hook_carries_identity_on_every_leg_including_the_claimless_ones
     The expected value is computed here rather than pattern-matched, so a hash
     that is merely *present* cannot pass for the right one.
     """
-    from baton.identity import VENDOR_HASH_SCHEME, hash_user_id
+    from baton.identity import VENDOR_HASH_SCHEME, hash_principal_id
 
-    expected = hash_user_id(
+    expected = hash_principal_id(
         "employee-4417", tenant_id="tenant-official", key=HMAC_KEY, scheme=VENDOR_HASH_SCHEME
     )
     events = await _drive(
         tmp_path / "e.jsonl",
         None,
-        resolve_user=_fixed_hook("employee-4417"),
+        resolve_principal=_fixed_hook("employee-4417"),
         monkeypatch=monkeypatch,
     )
-    got = {ev.get("user_id") for ev in events}
+    got = {ev.get("principal_id") for ev in events}
     assert got == {expected}, got
     assert expected.startswith("v1:")
 
@@ -313,15 +313,15 @@ async def test_the_annotation_path_consults_the_hook_on_every_leg(
 ) -> None:
     """The header extractor runs here for the first time on the annotation
     path. If it raised instead of degrading on some mcp version, the annotation
-    event would carry no ``user_id`` while the tool call carried one — one
+    event would carry no ``principal_id`` while the tool call carried one — one
     session, two actors, and green everywhere else."""
     events = await _drive(
         tmp_path / "e.jsonl",
         None,
-        resolve_user=_per_call_hook(),
+        resolve_principal=_per_call_hook(),
         monkeypatch=monkeypatch,
     )
-    by_type = {ev["event_type"]: ev.get("user_id") for ev in events}
+    by_type = {ev["event_type"]: ev.get("principal_id") for ev in events}
     assert "annotation" in by_type, f"no annotation event captured: {list(by_type)}"
     assert by_type["annotation"] is not None, "the annotation path skipped the hook"
     assert all(v is not None for v in by_type.values()), by_type
@@ -338,9 +338,11 @@ async def test_a_hook_that_raises_leaves_the_call_and_the_events_intact(
     def boom(_ctx: Any) -> Any:
         raise RuntimeError("the vendor's directory service is down")
 
-    events = await _drive(tmp_path / "e.jsonl", None, resolve_user=boom, monkeypatch=monkeypatch)
+    events = await _drive(
+        tmp_path / "e.jsonl", None, resolve_principal=boom, monkeypatch=monkeypatch
+    )
     assert events, "the hook's exception cost the capture"
-    assert {ev.get("user_id") for ev in events} == {None}
+    assert {ev.get("principal_id") for ev in events} == {None}
 
 
 async def test_headers_are_extracted_once_per_call_when_a_hook_is_configured(
@@ -365,7 +367,10 @@ async def test_headers_are_extracted_once_per_call_when_a_hook_is_configured(
 
     monkeypatch.setattr(_tool_wrap, "_extract_headers_from_context", counting)
     await _drive(
-        tmp_path / "e.jsonl", None, resolve_user=_fixed_hook("employee-1"), monkeypatch=monkeypatch
+        tmp_path / "e.jsonl",
+        None,
+        resolve_principal=_fixed_hook("employee-1"),
+        monkeypatch=monkeypatch,
     )
     # EXACTLY one, for the tool call. The annotation path imported the helper
     # by name and holds its own bound reference, so this patch point does not

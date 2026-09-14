@@ -1,9 +1,9 @@
-"""``user_id`` resolution — the field, the fail-open matrix, and the traps.
+"""``principal_id`` resolution — the field, the fail-open matrix, and the traps.
 
 Unit-level. The end-to-end halves live in
-``tests/integrations/official/test_user_id.py`` (which ``mcp-matrix`` runs
+``tests/integrations/official/test_principal_id.py`` (which ``mcp-matrix`` runs
 against the versions where ``claims`` does not exist) and
-``tests/functional/test_user_id_parity.py`` (which drives both adapters).
+``tests/functional/test_principal_id_parity.py`` (which drives both adapters).
 
 The stub tokens here are deliberately shaped like the real thing rather than
 duck-typed dicts: ``_OldBandToken`` reproduces the mcp 1.20/1.25 ``AccessToken``
@@ -19,13 +19,13 @@ from typing import Any
 
 import pytest
 
-from baton.identity import hash_user_id
+from baton.identity import hash_principal_id
 from baton.integrations.identity_adapter import (
-    RAW_USER_ID_MAX_LEN,
-    USER_ID_MODE_HASHED,
-    USER_ID_MODE_RAW,
+    PRINCIPAL_ID_MODE_HASHED,
+    PRINCIPAL_ID_MODE_RAW,
+    RAW_PRINCIPAL_ID_MAX_LEN,
     principal_from_access_token,
-    resolve_user_id,
+    resolve_principal_id,
 )
 
 KEY = b"unit-test-key"
@@ -55,14 +55,14 @@ class _OldBandToken:
 
 def _resolve(token: Any, **kw: Any) -> str | None:
     params: dict[str, Any] = {
-        "mode": USER_ID_MODE_HASHED,
+        "mode": PRINCIPAL_ID_MODE_HASHED,
         "tenant_id": TENANT,
         "hmac_key": KEY,
         "logger": logging.getLogger("test"),
         "warned": set(),
     }
     params.update(kw)
-    return resolve_user_id(token, **params)
+    return resolve_principal_id(token, **params)
 
 
 # --------------------------------------------------------------------------
@@ -73,7 +73,7 @@ def _resolve(token: Any, **kw: Any) -> str | None:
 def test_the_subject_claim_is_what_is_read() -> None:
     principal = principal_from_access_token(_Token(claims={"sub": "alice", "iss": "https://idp"}))
     assert principal is not None
-    assert principal.user_id == "alice"
+    assert principal.principal_id == "alice"
     assert principal.issuer == "https://idp"
 
 
@@ -83,7 +83,7 @@ def test_client_id_is_never_the_identity() -> None:
     Measured 2026-09-07: identical (``acme-desktop-app``) for two different
     users on every version tested, because ``JWTVerifier`` falls back
     ``client_id ?? azp ?? sub``. Keying on it merges every user of one app —
-    the exact bug ``user_id`` exists to resolve — so it must not appear in the
+    the exact bug ``principal_id`` exists to resolve — so it must not appear in the
     output even when it is the only identity-shaped field present.
     """
     assert principal_from_access_token(_Token(client_id="acme-desktop-app")) is None
@@ -142,7 +142,7 @@ def test_a_vendor_subclass_declaring_claims_is_read_on_any_version() -> None:
 
     principal = principal_from_access_token(_VendorToken(claims={"sub": "carol"}))
     assert principal is not None
-    assert principal.user_id == "carol"
+    assert principal.principal_id == "carol"
 
 
 # --------------------------------------------------------------------------
@@ -156,7 +156,7 @@ def test_two_issuers_with_one_sub_are_two_different_users() -> None:
 
     A vendor running two identity providers can hand the same ``sub`` to two
     different people. Without the issuer folded in they hash to one
-    ``user_id`` — a silent merge, invisible in every total.
+    ``principal_id`` — a silent merge, invisible in every total.
     """
     a = _resolve(_Token(claims={"sub": "alice", "iss": "https://idp-one"}))
     b = _resolve(_Token(claims={"sub": "alice", "iss": "https://idp-two"}))
@@ -177,7 +177,7 @@ def test_issuerless_hashes_are_byte_identical_to_the_pre_issuer_form() -> None:
     is what covers that, and it was added on 2026-09-10 when ``baton-proxy``
     finally took the same ``issuer`` parameter.
     """
-    assert hash_user_id("alice", tenant_id=TENANT, key=KEY) == hash_user_id(
+    assert hash_principal_id("alice", tenant_id=TENANT, key=KEY) == hash_principal_id(
         "alice", tenant_id=TENANT, key=KEY, issuer=None
     )
 
@@ -210,20 +210,20 @@ def test_raw_mode_emits_the_subject_verbatim() -> None:
     """
     got = _resolve(
         _Token(claims={"sub": "Alice@Acme.COM", "iss": "https://idp"}),
-        mode=USER_ID_MODE_RAW,
+        mode=PRINCIPAL_ID_MODE_RAW,
     )
     assert got == "Alice@Acme.COM"
 
 
 def test_raw_mode_is_capped() -> None:
-    got = _resolve(_Token(claims={"sub": "x" * 500}), mode=USER_ID_MODE_RAW)
+    got = _resolve(_Token(claims={"sub": "x" * 500}), mode=PRINCIPAL_ID_MODE_RAW)
     assert got is not None
-    assert len(got) == RAW_USER_ID_MAX_LEN
+    assert len(got) == RAW_PRINCIPAL_ID_MAX_LEN
 
 
 def test_raw_mode_needs_no_hmac_key() -> None:
     """The key is a hashing concern; raw mode does not hash."""
-    got = _resolve(_Token(claims={"sub": "alice"}), mode=USER_ID_MODE_RAW, hmac_key=None)
+    got = _resolve(_Token(claims={"sub": "alice"}), mode=PRINCIPAL_ID_MODE_RAW, hmac_key=None)
     assert got == "alice"
 
 
@@ -232,11 +232,11 @@ def test_raw_mode_needs_no_hmac_key() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_no_auth_yields_no_user_id_in_either_mode() -> None:
+def test_no_auth_yields_no_principal_id_in_either_mode() -> None:
     """The common case, and every stdio call: MCP auth is ASGI middleware, so
     ``get_access_token()`` returns ``None`` when there is no bearer token."""
     assert _resolve(None) is None
-    assert _resolve(None, mode=USER_ID_MODE_RAW) is None
+    assert _resolve(None, mode=PRINCIPAL_ID_MODE_RAW) is None
 
 
 def test_hashed_mode_without_a_key_drops_the_field_and_warns_once(
@@ -246,9 +246,9 @@ def test_hashed_mode_without_a_key_drops_the_field_and_warns_once(
     logger = logging.getLogger("baton.test.identity")
     with caplog.at_level(logging.WARNING, logger=logger.name):
         for _ in range(5):
-            got = resolve_user_id(
+            got = resolve_principal_id(
                 _Token(claims={"sub": "alice@acme.com"}),
-                mode=USER_ID_MODE_HASHED,
+                mode=PRINCIPAL_ID_MODE_HASHED,
                 tenant_id=TENANT,
                 hmac_key=None,
                 logger=logger,
@@ -268,7 +268,7 @@ def test_hashed_mode_without_a_key_drops_the_field_and_warns_once(
     [pytest.param(" ", id="space"), pytest.param("\t\n", id="tab-newline")],
 )
 def test_a_whitespace_only_subject_is_a_miss(blank_sub: str) -> None:
-    """``hash_user_id`` canonicalizes NFC → strip → lower, so every
+    """``hash_principal_id`` canonicalizes NFC → strip → lower, so every
     whitespace-only subject collapses to the SAME digest — measured,
     ``" "`` and ``"\t\n"`` both give ``h1:14fa5f91…``.
 
@@ -306,7 +306,7 @@ def test_a_hostile_token_object_cannot_fail_a_tool_call() -> None:
 
 
 def test_a_str_hmac_key_is_encoded_rather_than_exploding_at_call_time() -> None:
-    """``VendorConfig(user_id_hmac_key="secret")`` must work.
+    """``VendorConfig(principal_id_hmac_key="secret")`` must work.
 
     ``hmac.new`` takes bytes and raises ``TypeError: key: expected bytes`` on a
     ``str`` — and it raises inside the tool call, not at install, so the vendor
@@ -314,26 +314,87 @@ def test_a_str_hmac_key_is_encoded_rather_than_exploding_at_call_time() -> None:
     deployment shape they cannot reach in local testing (identity needs HTTP
     plus OAuth), which makes it the worst possible place to fail. The env var
     has always accepted a string, so a vendor moving a working secret out of
-    ``BATON_USER_ID_HMAC_KEY`` and into the field hits exactly this.
+    ``BATON_PRINCIPAL_ID_HMAC_KEY`` and into the field hits exactly this.
     """
-    from baton.integrations._config import _resolve_user_id_hmac_key
+    from baton.integrations._config import _resolve_principal_id_hmac_key
 
-    assert _resolve_user_id_hmac_key("secret") == b"secret"
-    assert _resolve_user_id_hmac_key(b"secret") == b"secret"
+    assert _resolve_principal_id_hmac_key("secret") == b"secret"
+    assert _resolve_principal_id_hmac_key(b"secret") == b"secret"
     # And the two spellings must agree, or moving the secret between them
     # would silently re-pseudonymise every user.
-    from baton.identity import hash_user_id
+    from baton.identity import hash_principal_id
 
-    assert hash_user_id("alice", tenant_id=TENANT, key=b"secret") == hash_user_id(
-        "alice", tenant_id=TENANT, key=_resolve_user_id_hmac_key("secret") or b""
+    assert hash_principal_id("alice", tenant_id=TENANT, key=b"secret") == hash_principal_id(
+        "alice", tenant_id=TENANT, key=_resolve_principal_id_hmac_key("secret") or b""
     )
+
+
+def test_the_renamed_hmac_env_var_is_not_read_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """0.8.6 renamed ``BATON_USER_ID_HMAC_KEY`` with no fallback.
+
+    Hashed identity fails open, so an upgrade that stopped reading the key
+    would look exactly like a deployment that never configured identity. The
+    old name is detected only to say so — its value is never used, and never
+    echoed into a log line.
+    """
+    from baton.integrations import _config
+
+    monkeypatch.delenv("BATON_PRINCIPAL_ID_HMAC_KEY", raising=False)
+    monkeypatch.setenv("BATON_USER_ID_HMAC_KEY", "old-secret-value")
+    with caplog.at_level(logging.WARNING, logger=_config.logger.name):
+        assert _config._resolve_principal_id_hmac_key(None) is None
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("BATON_PRINCIPAL_ID_HMAC_KEY" in m for m in messages), messages
+    assert not any("old-secret-value" in m for m in messages), messages
+
+
+@pytest.mark.parametrize(
+    ("new_env", "explicit"),
+    [("new-secret", None), (None, "explicit-secret")],
+    ids=["new-env-var", "explicit-field"],
+)
+def test_no_rename_warning_when_the_key_arrives_the_new_way(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    new_env: str | None,
+    explicit: str | None,
+) -> None:
+    """A leftover old variable beside a working key is noise, not a problem."""
+    from baton.integrations import _config
+
+    monkeypatch.setenv("BATON_USER_ID_HMAC_KEY", "old-secret-value")
+    if new_env is None:
+        monkeypatch.delenv("BATON_PRINCIPAL_ID_HMAC_KEY", raising=False)
+    else:
+        monkeypatch.setenv("BATON_PRINCIPAL_ID_HMAC_KEY", new_env)
+    with caplog.at_level(logging.WARNING, logger=_config.logger.name):
+        got = _config._resolve_principal_id_hmac_key(explicit)
+    assert got == (new_env or explicit or "").encode()
+    assert not any("BATON_USER_ID_HMAC_KEY" in r.getMessage() for r in caplog.records)
+
+
+def test_no_rename_warning_in_raw_mode(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Raw mode needs no key, so a leftover old variable is not a broken setup
+    and must not be reported as identity being OFF."""
+    from baton.integrations import _config
+    from baton.integrations.identity_adapter import PRINCIPAL_ID_MODE_RAW
+
+    monkeypatch.delenv("BATON_PRINCIPAL_ID_HMAC_KEY", raising=False)
+    monkeypatch.setenv("BATON_USER_ID_HMAC_KEY", "old-secret-value")
+    with caplog.at_level(logging.WARNING, logger=_config.logger.name):
+        assert _config._resolve_principal_id_hmac_key(None, mode=PRINCIPAL_ID_MODE_RAW) is None
+    assert not any("BATON_USER_ID_HMAC_KEY" in r.getMessage() for r in caplog.records)
 
 
 def test_a_token_accessor_that_raises_cannot_reach_the_tool_call() -> None:
     """fastmcp's ``get_access_token()`` ends in an explicit ``raise TypeError``
     on its conversion path, reachable when a vendor's verifier returns a
     non-fastmcp ``AccessToken``. Called in an argument expression it sat
-    OUTSIDE ``resolve_user_id``'s never-raise boundary."""
+    OUTSIDE ``resolve_principal_id``'s never-raise boundary."""
     from baton.integrations.standalone import _auth
 
     def _boom() -> Any:
@@ -354,11 +415,11 @@ def test_a_token_accessor_that_raises_cannot_reach_the_tool_call() -> None:
 # One principal, one tenant, one key, and the two digests they must produce.
 # ⚠ These literals are DUPLICATED VERBATIM in the sibling sensor
 # (`baton/tests/test_identity_adapter.py` <-> `baton-proxy/tests/test_identity.py`)
-# and that duplication is the entire point: `hash_user_id` is a hand-maintained
+# and that duplication is the entire point: `hash_principal_id` is a hand-maintained
 # copy across two repos that cannot import each other, and every other test of
 # it compares the implementation to ITSELF. The pre-existing
 # "issuer=None matches the pre-issuer form" check asserts
-# `hash_user_id(x) == hash_user_id(x, issuer=None)` — both sides from the same
+# `hash_principal_id(x) == hash_principal_id(x, issuer=None)` — both sides from the same
 # module — so a layout change applied to BOTH repos on the same day stays green
 # in both while every `h1:` hash ever emitted becomes unreproducible. A frozen
 # literal is the only thing that reds for that, because it was computed before
@@ -370,7 +431,7 @@ def test_a_token_accessor_that_raises_cannot_reach_the_tool_call() -> None:
 #
 # If one of these ever fails, the answer is NOT to update the literal. It means
 # the two sensors have stopped agreeing about what `h1:` denotes, and every
-# stored `user_id` was written under the other definition.
+# stored `principal_id` was written under the other definition.
 _VECTOR_PRINCIPAL = "Alice@Example.COM "
 _VECTOR_TENANT = "ten_abc"
 _VECTOR_KEY = b"shared-key-bytes"
@@ -382,7 +443,7 @@ _VECTOR_WITH_ISSUER = "h1:9fc18f492b9dfe9092acf9d330d710b648d29b4aa131ecf702938d
 def test_the_shared_cross_repo_vector_issuerless() -> None:
     """Frozen 2026-09-10, when the two copies were verified byte-identical."""
     assert (
-        hash_user_id(_VECTOR_PRINCIPAL, tenant_id=_VECTOR_TENANT, key=_VECTOR_KEY)
+        hash_principal_id(_VECTOR_PRINCIPAL, tenant_id=_VECTOR_TENANT, key=_VECTOR_KEY)
         == _VECTOR_ISSUERLESS
     )
 
@@ -396,7 +457,7 @@ def test_the_shared_cross_repo_vector_with_an_issuer() -> None:
     time.
     """
     assert (
-        hash_user_id(
+        hash_principal_id(
             _VECTOR_PRINCIPAL,
             tenant_id=_VECTOR_TENANT,
             key=_VECTOR_KEY,

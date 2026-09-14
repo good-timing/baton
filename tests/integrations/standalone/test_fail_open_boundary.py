@@ -95,7 +95,7 @@ async def test_identity_failures_cannot_fail_the_call_either(
     ):
         events_path = tmp_path / f"e{id(getter)}.jsonl"
         monkeypatch.setattr(_auth, "get_access_token_or_none", getter)
-        mcp, handle = _install(events_path, user_id_hmac_key=b"k", tenant_id="t")
+        mcp, handle = _install(events_path, principal_id_hmac_key=b"k", tenant_id="t")
         try:
             async with Client(mcp) as client:
                 assert await client.call_tool("lookup", {"name": "alice"}) is not None
@@ -104,7 +104,7 @@ async def test_identity_failures_cannot_fail_the_call_either(
         events = [json.loads(x) for x in events_path.read_text().splitlines() if x.strip()]
         calls = [e for e in events if e["event_type"].startswith("tool_call")]
         assert calls, "the call must still have been captured"
-        assert {e.get("user_id") for e in calls} == {None}
+        assert {e.get("principal_id") for e in calls} == {None}
 
 
 async def test_a_str_hmac_key_does_not_break_the_call(
@@ -123,14 +123,14 @@ async def test_a_str_hmac_key_does_not_break_the_call(
 
     monkeypatch.setattr(_auth, "get_access_token_or_none", lambda: _Tok({"sub": "alice"}))
     events_path = tmp_path / "e.jsonl"
-    mcp, handle = _install(events_path, user_id_hmac_key="a-string-secret", tenant_id="t")
+    mcp, handle = _install(events_path, principal_id_hmac_key="a-string-secret", tenant_id="t")
     try:
         async with Client(mcp) as client:
             assert await client.call_tool("lookup", {"name": "alice"}) is not None
     finally:
         await handle.aclose()
     events = [json.loads(x) for x in events_path.read_text().splitlines() if x.strip()]
-    ids = {e.get("user_id") for e in events if e["event_type"].startswith("tool_call")}
+    ids = {e.get("principal_id") for e in events if e["event_type"].startswith("tool_call")}
     assert ids and all(v is not None and v.startswith("h1:") for v in ids), ids
 
 

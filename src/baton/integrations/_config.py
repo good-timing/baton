@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -10,13 +11,19 @@ from typing import Any
 from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
 from baton._dsn import parse_dsn, resolve_dsn, select_dsn
 from baton.events import DEFAULT_CONSENT_TOKEN
-from baton.integrations.identity_adapter import USER_ID_MODES, ResolveUserHook
+from baton.integrations.identity_adapter import (
+    PRINCIPAL_ID_MODE_HASHED,
+    PRINCIPAL_ID_MODES,
+    ResolvePrincipalHook,
+)
 from baton.sinks import HttpSink, Sink, StdoutSink
 
 # ``_VENDOR_ID_PATTERN`` is imported, not defined here, because a DSN's server
 # segment IS a vendor_id and both rules have to be one object. Restating the
 # ceiling as a second regex is how the two drift; this repo has already costed
 # that number wrong twice.
+
+logger = logging.getLogger(__name__)
 
 # Per-tool intent-param injection modes (mirrors baton-proxy's BATON_INTENT_PARAM).
 _INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required", "off"})
@@ -41,7 +48,7 @@ class CaseInsensitiveHeaders(dict[str, str]):
     ``isinstance(ctx.headers, dict)``, ``.copy()``, ``json.dumps(ctx.headers)``
     and ``|`` — and since ``resolve_principal_via_hook`` catches bare
     ``Exception``, a hook that merely logged its headers before reading a key
-    would have started nulling ``user_id`` silently. That is the identical
+    would have started nulling ``principal_id`` silently. That is the identical
     fail-open this class exists to close, re-created pointing the other way. As
     a ``dict`` subclass every behaviour a standalone hook had is preserved and
     three read paths additionally fold case; methods not listed below
@@ -82,7 +89,7 @@ class CaseInsensitiveHeaders(dict[str, str]):
         answers ``.get(None)`` with ``None`` and ``d[None]`` with ``KeyError``,
         and calling ``.lower()`` unconditionally would turn both into
         ``AttributeError`` — a new exception from a hook that used to work,
-        swallowed by the same fail-open guard, nulling ``user_id``. Preserving
+        swallowed by the same fail-open guard, nulling ``principal_id``. Preserving
         dict behaviour means preserving it for the odd key too.
         """
         return key.lower() if isinstance(key, str) else key
@@ -104,7 +111,7 @@ class CaseInsensitiveHeaders(dict[str, str]):
     # set-then-read simply worked, and it lands in the same silent place: a
     # hook that normalizes before reading (``setdefault`` a fallback, then read
     # it back) raises, ``resolve_principal_via_hook`` swallows it, and
-    # ``user_id`` goes null on every event. The same fail-open this class
+    # ``principal_id`` goes null on every event. The same fail-open this class
     # exists to close, re-created on the other half of the mapping protocol.
 
     def __setitem__(self, key: str, value: str) -> None:
@@ -136,7 +143,7 @@ class CaseInsensitiveHeaders(dict[str, str]):
 
 @dataclass(frozen=True)
 class SessionResolutionContext:
-    """Normalized input to ``VendorConfig.resolve_user``.
+    """Normalized input to ``VendorConfig.resolve_principal``.
 
     Deliberately does not carry the raw SDK ``Context`` object — the
     official ``mcp`` and standalone ``fastmcp`` libraries expose different,
@@ -167,7 +174,7 @@ class SessionResolutionContext:
 
     ⚠ **The symptom differs by deployment and the worse one is not the obvious
     one.** Where no token exists (stdio, or HTTP with no OAuth) the miss yields
-    a null ``user_id`` on every event. But where a token DOES exist — HTTP +
+    a null ``principal_id`` on every event. But where a token DOES exist — HTTP +
     OAuth, the shape ``X-Forwarded-User`` actually lives in — the hook is rung 0
     and a raise falls through to rung 1, so events carried the token's ``h1:``
     pseudonym instead of the hook's ``v1:`` one. Same person, two different
@@ -177,7 +184,7 @@ class SessionResolutionContext:
 
     ⚠ **The name is a fossil.** This was built for
     ``VendorConfig.resolve_session_id``, which was REMOVED 2026-09-12 (SPEC
-    §3.4 rung 0). ``resolve_user`` had already adopted the same four fields,
+    §3.4 rung 0). ``resolve_principal`` had already adopted the same four fields,
     so the shape outlived the hook it was named for. Kept under its released
     name rather than renamed: it has been public since 0.7.x and a rename is
     a second breaking change for a cosmetic gain.
@@ -232,26 +239,43 @@ def _resolve_tenant_id(explicit: str | None, vendor_id: str) -> str:
     return vendor_id
 
 
-def _resolve_user_id_hmac_key(explicit: bytes | str | None) -> bytes | None:
-    """``user_id_hmac_key``: explicit → ``BATON_USER_ID_HMAC_KEY`` → ``None``.
+def _resolve_principal_id_hmac_key(
+    explicit: bytes | str | None, *, mode: str = PRINCIPAL_ID_MODE_HASHED
+) -> bytes | None:
+    """``principal_id_hmac_key``: explicit → ``BATON_PRINCIPAL_ID_HMAC_KEY`` → ``None``.
 
-    The env var is the contract baton-proxy and baton-extmcp have honoured
-    since 0.5.0 and the one the console's setup string names, so it keeps
-    working here unchanged. The explicit field is additive, for a vendor whose
-    secrets arrive from a manager rather than the environment.
+    ⚠ **The variable was ``BATON_USER_ID_HMAC_KEY`` until 0.8.6**, renamed with
+    the field and with no fallback: the old name is NOT read. It is only
+    DETECTED, and warned about, because an upgrade that silently stopped
+    hashing would look exactly like a deployment that never configured identity
+    — ``principal_id`` fails open, so nothing else would say so. The explicit
+    field is additive, for a vendor whose secrets arrive from a manager rather
+    than the environment, and suppresses the warning because it wins anyway.
+    So does ``mode="raw"``, which needs no key: a leftover old variable there is
+    not a broken setup, and saying identity is OFF would be false.
 
     ``None`` is a supported state, not an error: it means hashed-mode identity
-    is off and events emit without ``user_id``.
+    is off and events emit without ``principal_id``.
     """
     if explicit is not None:
         # A ``str`` is encoded rather than refused, because the env path has
         # always taken one and a vendor moving a working secret from
-        # ``BATON_USER_ID_HMAC_KEY`` into the field would otherwise hit
+        # ``BATON_PRINCIPAL_ID_HMAC_KEY`` into the field would otherwise hit
         # ``hmac.new``'s "expected bytes" TypeError — and only in the
         # deployment shape this field exists for (HTTP + OAuth), so never in
         # their local testing. Same secret, same bytes, either way.
         return explicit.encode("utf-8") if isinstance(explicit, str) else explicit
-    from_env = os.environ.get("BATON_USER_ID_HMAC_KEY")
+    from_env = os.environ.get("BATON_PRINCIPAL_ID_HMAC_KEY")
+    if (
+        mode == PRINCIPAL_ID_MODE_HASHED
+        and not from_env
+        and os.environ.get("BATON_USER_ID_HMAC_KEY")
+    ):
+        logger.warning(
+            "baton: BATON_USER_ID_HMAC_KEY is set, but it was renamed to "
+            "BATON_PRINCIPAL_ID_HMAC_KEY in 0.8.6 and is no longer read, so hashed "
+            "principal_id is OFF. Set BATON_PRINCIPAL_ID_HMAC_KEY to turn it back on."
+        )
     return from_env.encode("utf-8") if from_env else None
 
 
@@ -374,13 +398,13 @@ class VendorConfig:
     running both also makes two competing ``workflow`` labels that a consumer
     has to arbitrate."""
 
-    user_id_mode: str = "hashed"
-    """How an authenticated end-user principal reaches the wire (SPEC §11.4
-    ``user_id``). ``"hashed"`` (default) emits ``h1:<hex>`` — an HMAC computed
-    in this process, so the collector only ever sees the pseudonym. ``"raw"``
-    emits the subject verbatim.
+    principal_id_mode: str = "hashed"
+    """How a resolved principal reaches the wire (SPEC §11.4 ``principal_id``).
+    ``"hashed"`` (default) emits ``<scheme>:<hex>`` — an HMAC computed in this
+    process, so the collector only ever sees the pseudonym. ``"raw"`` emits the
+    principal verbatim.
 
-    **``"raw"`` puts real end-user identity in the collector's database.** It
+    **``"raw"`` puts real identities in the collector's database.** It
     is the right choice for a vendor instrumenting a server whose users are
     themselves, or one with no residency obligation who would rather read a
     name than a hash — and the wrong choice by default, which is why it is not
@@ -388,21 +412,22 @@ class VendorConfig:
     VENDOR's customers, and shipping their identities to a third party is a
     decision only that vendor can make.
 
-    Hashed mode needs ``user_id_hmac_key``; raw mode needs nothing. The two are
+    Hashed mode needs ``principal_id_hmac_key``; raw mode needs nothing. The two are
     distinguishable on the wire without a second field, because a hashed value
-    always carries the ``h1:`` scheme prefix."""
+    always carries a registered scheme prefix (``h1:`` attested, ``v1:``
+    asserted) and a consumer treats anything else as a raw identity."""
 
-    user_id_hmac_key: bytes | str | None = field(default=None, repr=False)
-    """Secret keying the ``user_id`` HMAC in ``"hashed"`` mode.
+    principal_id_hmac_key: bytes | str | None = field(default=None, repr=False)
+    """Secret keying the ``principal_id`` HMAC in ``"hashed"`` mode.
 
     ⚠ **``repr=False`` — PRE-EXISTING, and not part of the DSN lane that
     brought the other two.** It is the same defect in the same ``repr`` for the
     same reason, found while fixing them: a field whose own docstring says the
     vendor holds it and Baton never sees it has no business printing itself.
 
-    Resolved explicit → ``BATON_USER_ID_HMAC_KEY`` → ``None``. Unset means
-    hashed identity is fail-open-skipped: ``user_id`` is dropped, events still
-    emit, and it is logged once. ``user_id`` is additive analytics — never a
+    Resolved explicit → ``BATON_PRINCIPAL_ID_HMAC_KEY`` → ``None``. Unset means
+    hashed identity is fail-open-skipped: ``principal_id`` is dropped, events still
+    emit, and it is logged once. ``principal_id`` is additive analytics — never a
     consent or authorization gate.
 
     **The vendor generates and holds this; Baton never sees it.** That is what
@@ -420,13 +445,13 @@ class VendorConfig:
     while historical ones keep ``h1:``. The discontinuity is accepted and
     documented — the raw value was never stored, so nothing can be re-hashed."""
 
-    resolve_user: ResolveUserHook | None = None
+    resolve_principal: ResolvePrincipalHook | None = None
     """Optional vendor-supplied identity resolver, checked BEFORE the verified
     access token and winning outright when both resolve (SPEC §11.4).
 
     **This is the only way a stdio vendor's principal can reach Baton.** The
     token path reads a contextvar set by MCP's bearer-auth ASGI middleware, and
-    stdio has no ASGI — so ``user_id`` is HTTP-only without this hook, on every
+    stdio has no ASGI — so ``principal_id`` is HTTP-only without this hook, on every
     supported version. A vendor already authenticating stdio users out of band
     knows exactly who the user is and previously had no way to say so.
 
@@ -444,7 +469,7 @@ class VendorConfig:
     vendor opted in, which makes it the more specific claim even though it is
     the less verified one.
 
-    ⚠ **In ``user_id_mode="raw"`` the distinction is not on the wire**, because
+    ⚠ **In ``principal_id_mode="raw"`` the distinction is not on the wire**, because
     raw mode emits the principal verbatim and untagged from both paths. Raw
     mode forfeits provenance the same way it forfeits pseudonymity; if you need
     to tell asserted from attested downstream, use hashed mode.
@@ -599,7 +624,7 @@ def resolve_config(config: VendorConfig) -> VendorConfig:
     # ⚠ **Validated BEFORE the sink is built, and the order is the point.**
     # ``HttpSink.__init__`` eagerly constructs an ``httpx.AsyncClient``, so a
     # config that fails validation for an unrelated reason — an emptied
-    # consent_token, a bad user_id_mode — used to leave that client
+    # consent_token, a bad principal_id_mode — used to leave that client
     # unreachable and never closed, printing an unclosed-transport warning on
     # top of the real error. The callers validate again; it is pure, and a
     # second call costs nothing next to a resource that outlives its error.
@@ -642,29 +667,29 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             "without one MUST be rejected by the consumer per SPEC §2.3. Leave "
             "it unset to take the SDK's default."
         )
-    if config.user_id_hmac_key is not None and not isinstance(
-        config.user_id_hmac_key, bytes | bytearray | str
+    if config.principal_id_hmac_key is not None and not isinstance(
+        config.principal_id_hmac_key, bytes | bytearray | str
     ):
         raise ValueError(
-            f"user_id_hmac_key must be bytes or str, got "
-            f"{type(config.user_id_hmac_key).__name__} — it keys an HMAC, and "
+            f"principal_id_hmac_key must be bytes or str, got "
+            f"{type(config.principal_id_hmac_key).__name__} — it keys an HMAC, and "
             f"a wrong type fails at the FIRST AUTHENTICATED CALL rather than "
             f"here, which is a deployment a vendor cannot reach in local "
             f"testing."
         )
-    if config.resolve_user is not None and not callable(config.resolve_user):
+    if config.resolve_principal is not None and not callable(config.resolve_principal):
         raise ValueError(
-            f"VendorConfig.resolve_user must be callable, got "
-            f"{type(config.resolve_user).__name__}. Unvalidated it would fail "
+            f"VendorConfig.resolve_principal must be callable, got "
+            f"{type(config.resolve_principal).__name__}. Unvalidated it would fail "
             f"inside the hook's own fail-open guard — logged, identity "
             f"silently absent for the life of the process — and that guard is "
             f"there for a vendor's resolver raising, not for the field holding "
             f"the wrong thing."
         )
-    if config.user_id_mode not in USER_ID_MODES:
+    if config.principal_id_mode not in PRINCIPAL_ID_MODES:
         raise ValueError(
-            f"user_id_mode {config.user_id_mode!r} must be one of "
-            f"{sorted(USER_ID_MODES)} — 'hashed' emits an HMAC pseudonym, "
+            f"principal_id_mode {config.principal_id_mode!r} must be one of "
+            f"{sorted(PRINCIPAL_ID_MODES)} — 'hashed' emits an HMAC pseudonym, "
             f"'raw' emits the end user's identity verbatim to the collector."
         )
     if config.intent_param_mode not in _INTENT_PARAM_MODES:

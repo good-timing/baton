@@ -28,9 +28,9 @@ from baton.integrations._annotation_name import derive_annotation_tool_name
 from baton.integrations._config import SessionResolutionContext
 from baton.integrations._llm_text import build_annotation_tool_description
 from baton.integrations.identity_adapter import (
-    USER_ID_MODE_HASHED,
-    ResolveUserHook,
-    resolve_call_user_id,
+    PRINCIPAL_ID_MODE_HASHED,
+    ResolvePrincipalHook,
+    resolve_call_principal_id,
 )
 from baton.integrations.runtime_adapter import (
     UNKNOWN_AGENT_RUNTIME,
@@ -72,9 +72,9 @@ def register_annotation_tool(
     proactive_mode: str = "off",
     scrubber: Callable[[Any], Any] = identity_scrub,
     proactive_tracker: ProactiveTracker | None = None,
-    user_id_mode: str = USER_ID_MODE_HASHED,
-    user_id_hmac_key: bytes | None = None,
-    resolve_user_hook: ResolveUserHook | None = None,
+    principal_id_mode: str = PRINCIPAL_ID_MODE_HASHED,
+    principal_id_hmac_key: bytes | None = None,
+    resolve_principal_hook: ResolvePrincipalHook | None = None,
     identity_warned: set[str] | None = None,
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
@@ -147,16 +147,16 @@ def register_annotation_tool(
                 tool_name=name,
                 arguments={},
             )
-            if resolve_user_hook is not None
+            if resolve_principal_hook is not None
             else None
         )
-        annotation_user_id = await resolve_call_user_id(
+        annotation_principal_id = await resolve_call_principal_id(
             _auth.current_access_token(),
-            hook=resolve_user_hook,
+            hook=resolve_principal_hook,
             hook_context=identity_hook_context,
-            mode=user_id_mode,
+            mode=principal_id_mode,
             tenant_id=tenant_id,
-            hmac_key=user_id_hmac_key,
+            hmac_key=principal_id_hmac_key,
             logger=logger,
             warned=warned,
         )
@@ -170,7 +170,7 @@ def register_annotation_tool(
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
-                user_id=annotation_user_id,
+                principal_id=annotation_principal_id,
                 runtime_meta=scrubbed_meta,
                 payload=AnnotationPayload(
                     intent=scrubber(user_goal) if user_goal else None,

@@ -470,7 +470,7 @@ class TestNothingTheDsnBUILDSPrintsTheBearer:
             vendor_display_name="Echo",
             consent_token="ct",
             dsn=f"https://{KEY}@ingest.example.com/{WORKSPACE}/{SERVER}",
-            user_id_hmac_key="a-vendor-secret-nobody-else-holds",
+            principal_id_hmac_key="a-vendor-secret-nobody-else-holds",
         )
 
     def test_the_config_does_not_print_the_dsn(self) -> None:
@@ -489,7 +489,7 @@ class TestNothingTheDsnBUILDSPrintsTheBearer:
     def test_reading_either_field_by_name_is_unchanged(self) -> None:
         config = self._config()
         assert config.dsn is not None and KEY in config.dsn
-        assert config.user_id_hmac_key == "a-vendor-secret-nobody-else-holds"
+        assert config.principal_id_hmac_key == "a-vendor-secret-nobody-else-holds"
 
     def test_the_sink_the_dsn_built_does_not_print_its_bearer(self) -> None:
         """⚠ **Checked because the TypeScript sink DID leak here, not because

@@ -52,9 +52,9 @@ from baton.integrations._llm_text import (
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 from baton.integrations.identity_adapter import (
-    USER_ID_MODE_HASHED,
-    ResolveUserHook,
-    resolve_call_user_id,
+    PRINCIPAL_ID_MODE_HASHED,
+    ResolvePrincipalHook,
+    resolve_call_principal_id,
 )
 from baton.integrations.runtime_adapter import (
     UNKNOWN_AGENT_RUNTIME,
@@ -86,9 +86,9 @@ class BatonMiddleware(Middleware):
         intent_param_mode: str = "optional",
         proactive_tracker: ProactiveTracker | None = None,
         server_meta: dict[str, Any] | None = None,
-        user_id_mode: str = USER_ID_MODE_HASHED,
-        user_id_hmac_key: bytes | None = None,
-        resolve_user_hook: ResolveUserHook | None = None,
+        principal_id_mode: str = PRINCIPAL_ID_MODE_HASHED,
+        principal_id_hmac_key: bytes | None = None,
+        resolve_principal_hook: ResolvePrincipalHook | None = None,
         identity_warned: set[str] | None = None,
     ) -> None:
         self._tenant_id = tenant_id
@@ -102,9 +102,9 @@ class BatonMiddleware(Middleware):
         self._intent_param_mode = intent_param_mode
         self._proactive = proactive_tracker or ProactiveTracker()
         self._server_meta = server_meta or {}
-        self._user_id_mode = user_id_mode
-        self._user_id_hmac_key = user_id_hmac_key
-        self._resolve_user_hook = resolve_user_hook
+        self._principal_id_mode = principal_id_mode
+        self._principal_id_hmac_key = principal_id_hmac_key
+        self._resolve_principal_hook = resolve_principal_hook
         # Warn-once state for the missing-HMAC-key line. SHARED with the
         # annotation path via install.py so the line is logged once per
         # install, not once per emit path.
@@ -420,7 +420,7 @@ class BatonMiddleware(Middleware):
         #
         # ⚠ This comment used to read "``None`` on stdio and on any
         # unauthenticated call". The stdio half stopped being true when
-        # ``resolve_user`` landed — a hook is the one identity mechanism that
+        # ``resolve_principal`` landed — a hook is the one identity mechanism that
         # works there, and it is the reason the hook exists.
         #
         # The context is built only when a hook exists: ``extract_headers`` is
@@ -432,16 +432,16 @@ class BatonMiddleware(Middleware):
                 tool_name=tool_name,
                 arguments=params,
             )
-            if self._resolve_user_hook is not None
+            if self._resolve_principal_hook is not None
             else None
         )
-        call_user_id = await resolve_call_user_id(
+        call_principal_id = await resolve_call_principal_id(
             _auth.current_access_token(),
-            hook=self._resolve_user_hook,
+            hook=self._resolve_principal_hook,
             hook_context=identity_hook_context,
-            mode=self._user_id_mode,
+            mode=self._principal_id_mode,
             tenant_id=self._tenant_id,
-            hmac_key=self._user_id_hmac_key,
+            hmac_key=self._principal_id_hmac_key,
             logger=logger,
             warned=self._identity_warned,
         )
@@ -478,7 +478,7 @@ class BatonMiddleware(Middleware):
                     sequence_number=seq_ann,
                     captured_at=datetime.now(UTC),
                     agent_runtime=runtime,
-                    user_id=call_user_id,
+                    principal_id=call_principal_id,
                     runtime_meta=scrubbed_meta,
                     payload=AnnotationPayload(
                         intent=scrubbed_intent,
@@ -521,7 +521,7 @@ class BatonMiddleware(Middleware):
                     sequence_number=seq_start,
                     captured_at=datetime.now(UTC),
                     agent_runtime=runtime,
-                    user_id=call_user_id,
+                    principal_id=call_principal_id,
                     call_id=call_id,
                     runtime_meta=scrubbed_meta,
                     payload=ToolCallStartPayload(
@@ -559,7 +559,7 @@ class BatonMiddleware(Middleware):
                     sequence_number=seq_err,
                     captured_at=datetime.now(UTC),
                     agent_runtime=runtime,
-                    user_id=call_user_id,
+                    principal_id=call_principal_id,
                     call_id=call_id,
                     runtime_meta=scrubbed_meta,
                     payload=ToolCallErrorPayload(
@@ -603,7 +603,7 @@ class BatonMiddleware(Middleware):
                 sequence_number=seq_end,
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
-                user_id=call_user_id,
+                principal_id=call_principal_id,
                 call_id=call_id,
                 runtime_meta=scrubbed_meta,
                 payload=ToolCallEndPayload(

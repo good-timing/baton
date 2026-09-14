@@ -202,13 +202,17 @@ class _EventEnvelope(BaseModel):
     consent_token: str
     sdk_version: str = __version__
     agent_runtime: str = "unknown"
-    user_id: str | None = None
-    """Hashed end-user actor (SPEC §11.4 + §9 per-user path).
-    HMAC-SHA256, per-tenant, hashed AT THE EDGE by the capture layer — the raw
-    principal is never transmitted. Console groups by
-    ``(tenant_id, vendor_id, user_id)``. Null when no identity resolved or no
-    HMAC key configured; additive + nullable so pre-user_id consumers are
-    unaffected."""
+    principal_id: str | None = None
+    """Who the vendor resolved behind this event (SPEC §11.4) — a person, a
+    service account or an organisation, at the grain the vendor resolved it.
+    Renamed from ``user_id`` in 0.8.6; the value is unchanged.
+
+    In ``"hashed"`` mode (the default) an HMAC-SHA256 pseudonym computed per
+    tenant AT THE EDGE — ``h1:`` attested, ``v1:`` asserted — so the raw
+    principal is never transmitted. In ``"raw"`` mode, the principal verbatim.
+    Console groups by ``(tenant_id, vendor_id, principal_id)``; it is NOT an
+    agent-run key, since one principal commonly covers concurrent runs. Null
+    when no identity resolved, or in hashed mode with no HMAC key configured."""
     call_id: str | None = None
     """The minted per-call correlation key (SPEC §11.4, OPTIONAL + nullable).
 
@@ -226,7 +230,7 @@ class _EventEnvelope(BaseModel):
     Minted as a bare opaque UUID string in a local variable inside the scope
     that emits both legs — per-call by construction and correct across
     processes. Never derived from the JSON-RPC request id, which restarts at 1
-    per connection. It says WHICH CALL, never WHO; the principal is ``user_id``.
+    per connection. It says WHICH CALL, never WHO; the principal is ``principal_id``.
     """
     runtime_meta: dict[str, Any] | None = None
     """Runtime-supplied ``_meta`` envelope from the MCP request (SPEC §11.4).

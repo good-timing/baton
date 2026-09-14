@@ -61,7 +61,7 @@ async def test_a_sync_hook_can_read_the_callers_contextvars() -> None:
     contextvar-backed, on both adapters — the adapters' own docstrings say so.
 
     Without ``copy_context`` the natural hook a vendor writes —
-    ``def resolve_user(ctx): return Principal(user_id=get_access_token()...)``
+    ``def resolve_principal(ctx): return Principal(principal_id=get_access_token()...)``
     — reads ``None`` on the worker thread, raises ``AttributeError``, gets
     contained, and produces no identity. Silently. Forever. Measured that way
     before this test existed.

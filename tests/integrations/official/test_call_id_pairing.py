@@ -11,7 +11,7 @@ per-call scope reds ``test_the_two_calls_get_distinct_ids``, and dropping it fro
 the error leg reds ``test_every_leg_of_a_call_carries_a_call_id``, each on its
 own assertion rather than on a timeout or a ``TypeError``.
 
-Here rather than in ``tests/functional/`` for the reason ``test_user_id.py`` and
+Here rather than in ``tests/functional/`` for the reason ``test_principal_id.py`` and
 ``test_agent_runtime.py`` are: **``mcp-matrix`` runs
 ``tests/integrations/official/`` and nothing else**, against mcp 1.20.0 /
 1.25.0 / 1.27.2 / 2.0.0. Whether one session even carries two concurrent

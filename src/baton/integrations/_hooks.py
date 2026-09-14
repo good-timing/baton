@@ -4,7 +4,7 @@ A hook is somebody else's code running inside our capture path, on the
 vendor's hot path, per tool call. Everything here exists because of what that
 code is allowed to do to a server that merely installed us.
 
-**Why a worker thread.** A vendor's ``resolve_user`` will usually do I/O to
+**Why a worker thread.** A vendor's ``resolve_principal`` will usually do I/O to
 answer — a directory lookup, a database read — and the natural way to write
 that is a plain ``def``. Called inline on the event loop, a blocking hook
 suspends not just its own request but EVERY concurrent tool call on the
@@ -20,7 +20,7 @@ loop, so the two halves are one fix and neither works alone.
 **Why ``anyio`` rather than a hand-rolled thread.** This module ran on its own
 ``threading.Thread`` until 2026-09-11, and got two of the four properties a
 worker needs WRONG on the first pass: it dropped the caller's ``contextvars``
-(so a hook calling ``get_access_token()`` — the whole point of ``resolve_user``
+(so a hook calling ``get_access_token()`` — the whole point of ``resolve_principal``
 — read ``None``), and it had no ceiling (so a wedged dependency stranded one
 thread per tool call). The contextvar copy is free here; **the ceiling is
 NOT**, and this module claimed it was until it was measured — see
@@ -270,7 +270,7 @@ async def run_vendor_hook(
             # resource is threads, not a particular hook — but it means this
             # message names the caller, not necessarily the culprit. It was
             # written when there were TWO hook kinds; ``resolve_session_id``
-            # was removed 2026-09-12 and ``resolve_user`` is now the only
+            # was removed 2026-09-12 and ``resolve_principal`` is now the only
             # caller, so today the caller and the culprit coincide. Kept
             # process-wide rather than narrowed: the next hook re-creates the
             # case, and a ceiling that has to be re-widened is worse than one

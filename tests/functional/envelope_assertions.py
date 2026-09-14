@@ -48,7 +48,7 @@ def _non_nullable_fields(model: type[BaseModel]) -> set[str]:
 # Every concrete event class shares _EventEnvelope's fields plus its own
 # event_type + payload, all non-nullable; ToolCallStartEvent is just a
 # representative pick. Excludes the envelope's genuinely nullable fields
-# (user_id, runtime_meta) — their absence-vs-null is not a shape defect.
+# (principal_id, runtime_meta) — their absence-vs-null is not a shape defect.
 REQUIRED_ENVELOPE_FIELDS = _non_nullable_fields(ToolCallStartEvent)
 
 

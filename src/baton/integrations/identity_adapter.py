@@ -8,7 +8,7 @@ releases before anybody noticed.
 
 **This is the attested half of identity.** ``agent_runtime`` is what a client
 says it is — self-reported, never verified, and a client may call itself
-anything. ``user_id`` is derived from a bearer token the VENDOR's own verifier
+anything. ``principal_id`` is derived from a bearer token the VENDOR's own verifier
 already validated, so it is the one identity claim on the envelope that
 something checked. Keep the two apart; they answer different questions and they
 are trustworthy to different degrees.
@@ -17,7 +17,7 @@ are trustworthy to different degrees.
 is ASGI middleware (``mcp.server.auth.middleware.bearer_auth`` operates on a
 Starlette ``Scope``), and ``get_access_token()`` reads a contextvar that
 middleware sets. On stdio nothing sets it, so there is no token, no principal
-and no ``user_id`` — not a failure, just the shape of the transport. A vendor
+and no ``principal_id`` — not a failure, just the shape of the transport. A vendor
 on stdio who wants identity needs a different carrier entirely.
 
 ⚠ **``claims`` does not exist on ``mcp < 1.27``.** ``AccessToken`` gained
@@ -53,35 +53,35 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from baton.identity import HASH_SCHEME, VENDOR_HASH_SCHEME, Principal, hash_user_id
+from baton.identity import HASH_SCHEME, VENDOR_HASH_SCHEME, Principal, hash_principal_id
 from baton.integrations._hooks import run_vendor_hook
 
 if TYPE_CHECKING:
-    # Type-only, and it has to be: ``_config`` imports ``ResolveUserHook`` and
-    # ``USER_ID_MODES`` from this module at runtime, so a runtime import back
+    # Type-only, and it has to be: ``_config`` imports ``ResolvePrincipalHook`` and
+    # ``PRINCIPAL_ID_MODES`` from this module at runtime, so a runtime import back
     # would be a cycle. The CALLER builds the context and passes it in, which
-    # is also why ``resolve_call_user_id`` takes one rather than making one.
+    # is also why ``resolve_call_principal_id`` takes one rather than making one.
     from baton.integrations._config import SessionResolutionContext
 
 #: Emit the HMAC of the principal. The console sees ``h1:<hex>`` and never the
 #: raw identity — the residency contract (the console DB is metadata-only) and
 #: the default.
-USER_ID_MODE_HASHED = "hashed"
+PRINCIPAL_ID_MODE_HASHED = "hashed"
 
 #: Emit the principal VERBATIM. A deliberate opt-in that puts real end-user
 #: identity on the wire and into the console database. Correct for a vendor
 #: dogfooding their own server, or one with no residency obligation who wants
 #: to read a name instead of a hash; wrong by default, which is why it is not
 #: the default.
-USER_ID_MODE_RAW = "raw"
+PRINCIPAL_ID_MODE_RAW = "raw"
 
-USER_ID_MODES = frozenset({USER_ID_MODE_HASHED, USER_ID_MODE_RAW})
+PRINCIPAL_ID_MODES = frozenset({PRINCIPAL_ID_MODE_HASHED, PRINCIPAL_ID_MODE_RAW})
 
 #: Cap on a RAW principal. Same posture and same number as the declared
 #: ``agent_runtime`` tiers: it is external text copied onto every event of the
 #: call, so it gets a bound. Hashed values are fixed-width by construction and
 #: are not capped — truncating a digest would destroy the join.
-RAW_USER_ID_MAX_LEN = 128
+RAW_PRINCIPAL_ID_MAX_LEN = 128
 
 
 #: A vendor's per-request identity resolver. Takes the adapter-neutral
@@ -89,22 +89,22 @@ RAW_USER_ID_MAX_LEN = 128
 #: it is not coupled to either library's ``Context`` type. The shape and its
 #: name are inherited from ``resolve_session_id``, which shared it until that
 #: hook was removed 2026-09-12; this is now its only caller.
-ResolveUserHook = Callable[
+ResolvePrincipalHook = Callable[
     ["SessionResolutionContext"], "Awaitable[Principal | None] | Principal | None"
 ]
 
 
 async def resolve_principal_via_hook(
-    hook: ResolveUserHook,
+    hook: ResolvePrincipalHook,
     context: SessionResolutionContext,
     *,
     logger: logging.Logger,
 ) -> Principal | None:
-    """Call a vendor's ``resolve_user`` hook and normalize its result.
+    """Call a vendor's ``resolve_principal`` hook and normalize its result.
 
     Never raises. An exception is logged and treated as a miss, so identity
     falls through to the verified-token path exactly as if no hook were
-    configured — ``user_id`` is additive analytics and a vendor's own bug in
+    configured — ``principal_id`` is additive analytics and a vendor's own bug in
     their resolver may not fail their tool call (SPEC §11.2 fail-open).
 
     Accepts sync or async hooks, mirroring ``VendorConfig.scrubber``.
@@ -114,37 +114,37 @@ async def resolve_principal_via_hook(
     is the shape a vendor reaches for first — AgentCat's ``identify()``, the
     prior art this hook is modelled on, returns a dict — and duck-typing it
     would put an unvalidated value on the identity path, where the very next
-    thing that happens is an HMAC over ``principal.user_id``. A wrong return is
+    thing that happens is an HMAC over ``principal.principal_id``. A wrong return is
     a miss, logged, never a partially-built ``Principal``.
     """
     try:
-        result = await run_vendor_hook(hook, context, hook_name="resolve_user", logger=logger)
+        result = await run_vendor_hook(hook, context, hook_name="resolve_principal", logger=logger)
     except Exception:
-        logger.warning("baton: resolve_user hook raised; falling through", exc_info=True)
+        logger.warning("baton: resolve_principal hook raised; falling through", exc_info=True)
         return None
     if result is None:
         return None
     if not isinstance(result, Principal):
         logger.warning(
-            "baton: resolve_user hook returned %s, not a baton.Principal — "
+            "baton: resolve_principal hook returned %s, not a baton.Principal — "
             "ignoring it and falling through to the verified token. Return "
-            "Principal(user_id=...) or None.",
+            "Principal(principal_id=...) or None.",
             type(result).__name__,
         )
         return None
-    if not isinstance(result.user_id, str) or not result.user_id.strip():
-        # An empty user_id would hash to a real, stable digest naming nobody,
+    if not isinstance(result.principal_id, str) or not result.principal_id.strip():
+        # An empty principal_id would hash to a real, stable digest naming nobody,
         # merging every such caller into one actor — the exact collapse this
         # field exists to undo. A miss, not a value.
         #
-        # ⚠ ``.strip()``, not truthiness. ``hash_user_id`` canonicalizes with
+        # ⚠ ``.strip()``, not truthiness. ``hash_principal_id`` canonicalizes with
         # NFC → strip → lower, so " " and "\t\n" hash IDENTICALLY — measured
         # ``h1:14fa5f91…`` for both. A blank header value or a padded CHAR(n)
         # column is the reachable shape, and truthiness waves it straight
         # through into exactly the merge the sentence above claims to stop.
         logger.warning(
-            "baton: resolve_user hook returned a Principal with an empty or "
-            "non-string user_id — ignoring it and falling through."
+            "baton: resolve_principal hook returned a Principal with an empty or "
+            "non-string principal_id — ignoring it and falling through."
         )
         return None
     # ``issuer`` gets the SAME coercion the attested path applies to
@@ -153,13 +153,13 @@ async def resolve_principal_via_hook(
     # (1) It is folded into the HMAC message only when it is not ``None``, so
     #     ``issuer=""`` and ``issuer=None`` produce DIFFERENT digests for one
     #     person. A vendor writing the natural
-    #     ``Principal(user_id=sub, issuer=claims.get("iss", ""))`` would get a
+    #     ``Principal(principal_id=sub, issuer=claims.get("iss", ""))`` would get a
     #     stable-but-wrong pseudonym, and switching to ``None`` later would
     #     silently rename every one of their users — the actor split this
     #     field exists to prevent, introduced by the field itself.
     # (2) A non-string issuer — a UUID object, an int tenant id — reaches
     #     ``unicodedata.normalize`` and raises ``TypeError``. That is caught
-    #     downstream, but the cost is the whole event's ``user_id``, including
+    #     downstream, but the cost is the whole event's ``principal_id``, including
     #     the attested one the token could still have produced. Coercing here
     #     means a junk issuer costs the issuer, not the identity.
     if not isinstance(result.issuer, str) or not result.issuer:
@@ -200,7 +200,7 @@ def principal_from_access_token(token: Any) -> Principal | None:
         issuer = claims.get("iss")
         if not isinstance(issuer, str) or not issuer:
             issuer = None
-        return Principal(user_id=sub, issuer=issuer)
+        return Principal(principal_id=sub, issuer=issuer)
     except Exception:
         # Broad on purpose, same reason ``runtime_adapter`` is: this reads
         # attributes off an object a VENDOR's verifier constructed, and an
@@ -210,7 +210,7 @@ def principal_from_access_token(token: Any) -> Principal | None:
         return None
 
 
-def resolve_user_id(
+def resolve_principal_id(
     token: Any,
     *,
     mode: str,
@@ -219,7 +219,7 @@ def resolve_user_id(
     logger: logging.Logger,
     warned: set[str],
 ) -> str | None:
-    """Resolve a verified token into the envelope's ``user_id``, or ``None``.
+    """Resolve a verified token into the envelope's ``principal_id``, or ``None``.
 
     **The ATTESTED path, and only that one.** It reads the token and hands the
     principal to ``_finish_principal`` — the edge-hash chokepoint, where the
@@ -228,8 +228,8 @@ def resolve_user_id(
     where the same rule is what keeps raw identity from reaching a
     console-bound sink by some path nobody audited.
 
-    Callers on an emit path want ``resolve_call_user_id``, which checks a
-    vendor's ``resolve_user`` hook first and falls through to this. This
+    Callers on an emit path want ``resolve_call_principal_id``, which checks a
+    vendor's ``resolve_principal`` hook first and falls through to this. This
     function remains the whole of identity for a deployment with no hook
     configured, which is every deployment today.
 
@@ -244,7 +244,7 @@ def resolve_user_id(
     - ``hashed`` with no HMAC key configured → ``None``, warned once
     - ``raw`` → the subject verbatim, no key needed
 
-    ``user_id`` is additive analytics. It is never a consent or authorization
+    ``principal_id`` is additive analytics. It is never a consent or authorization
     gate, so nothing here may raise, and nothing here may stop an event.
     """
     return _finish_principal(
@@ -271,7 +271,7 @@ def _finish_principal(
     """Turn a resolved principal into the finished wire value, or ``None``.
 
     **The edge-hash chokepoint, and the single copy of it.** Both provenances
-    end here — the attested token read and the asserted ``resolve_user`` hook —
+    end here — the attested token read and the asserted ``resolve_principal`` hook —
     so the cap, the raw-mode rules, the missing-key warning and the hashing
     failure mode are the same for both by construction rather than by two
     implementations agreeing. They differ in exactly one argument, ``scheme``,
@@ -281,7 +281,7 @@ def _finish_principal(
     if principal is None:
         return None
 
-    if mode == USER_ID_MODE_RAW:
+    if mode == PRINCIPAL_ID_MODE_RAW:
         # Verbatim, and deliberately NOT through the vendor's scrubber. A
         # scrubber that redacts emails maps every distinct user onto one
         # redaction constant, which merges all of them into a single actor —
@@ -296,7 +296,7 @@ def _finish_principal(
         # defeats the only reason to choose this mode. The cost is the exact
         # collision the issuer was folded in to prevent — two identity
         # providers, one `sub` — which raw mode accepts by construction.
-        return principal.user_id[:RAW_USER_ID_MAX_LEN]
+        return principal.principal_id[:RAW_PRINCIPAL_ID_MAX_LEN]
 
     if hmac_key is None:
         if "no_hmac_key" not in warned:
@@ -306,16 +306,16 @@ def _finish_principal(
             # to explain that would put the raw identity in the vendor's log
             # files, which is the residency leak one layer sideways.
             logger.warning(
-                "baton: identity resolved but no user_id HMAC key is set — "
-                "dropping user_id (events still emit). Set "
-                "BATON_USER_ID_HMAC_KEY, or pass "
-                "VendorConfig(user_id_hmac_key=...), to attach it."
+                "baton: identity resolved but no principal_id HMAC key is set — "
+                "dropping principal_id (events still emit). Set "
+                "BATON_PRINCIPAL_ID_HMAC_KEY, or pass "
+                "VendorConfig(principal_id_hmac_key=...), to attach it."
             )
         return None
 
     try:
-        return hash_user_id(
-            principal.user_id,
+        return hash_principal_id(
+            principal.principal_id,
             tenant_id=tenant_id,
             key=hmac_key,
             issuer=principal.issuer,
@@ -327,14 +327,14 @@ def _finish_principal(
         # public path now coerces and validates at install, this function is
         # reachable by constructing an adapter directly. A guard costs nothing
         # and makes the contract literally true rather than nearly true.
-        logger.warning("baton: user_id hashing failed; dropping user_id", exc_info=True)
+        logger.warning("baton: principal_id hashing failed; dropping principal_id", exc_info=True)
         return None
 
 
-async def resolve_call_user_id(
+async def resolve_call_principal_id(
     token: Any,
     *,
-    hook: ResolveUserHook | None,
+    hook: ResolvePrincipalHook | None,
     hook_context: SessionResolutionContext | None,
     mode: str,
     tenant_id: str,
@@ -342,9 +342,9 @@ async def resolve_call_user_id(
     logger: logging.Logger,
     warned: set[str],
 ) -> str | None:
-    """The envelope's ``user_id`` for one call — both provenances, in order.
+    """The envelope's ``principal_id`` for one call — both provenances, in order.
 
-    **Rung 0: the vendor's ``resolve_user`` hook (ASSERTED).** Tagged ``v1:``.
+    **Rung 0: the vendor's ``resolve_principal`` hook (ASSERTED).** Tagged ``v1:``.
     **Rung 1: the verified access token (ATTESTED).** Tagged ``h1:``.
     ``None`` when neither resolves, which is the common case and never an
     error. SPEC §11.4 carries the same ladder and the consumer-side rules.
@@ -371,9 +371,9 @@ async def resolve_call_user_id(
     exactly as if it had not been configured.
 
     ⚠ **One case deliberately does NOT fall through: a hook that returned a
-    usable principal the SDK then could not hash** (a ``user_id`` carrying an
+    usable principal the SDK then could not hash** (a ``principal_id`` carrying an
     unpaired surrogate is the reachable shape; a non-string ``issuer`` is
-    coerced away before it gets here). That emits NO ``user_id`` rather than
+    coerced away before it gets here). That emits NO ``principal_id`` rather than
     the token's. The difference from the cases above is what the hook said: a
     hook returning ``None`` has no opinion about this request, so the token is
     the best available answer — but a hook that named a person and failed to
@@ -381,7 +381,7 @@ async def resolve_call_user_id(
     reason it sits above the token. Substituting the gateway's service account
     there would file the call under a plausible, wrong, and heavily-merged
     actor. Losing the join beats inventing one (CHARTER, the D2 join rule),
-    and a null ``user_id`` is already the common, well-handled case.
+    and a null ``principal_id`` is already the common, well-handled case.
     """
     if hook is not None and hook_context is not None:
         principal = await resolve_principal_via_hook(hook, hook_context, logger=logger)
@@ -395,7 +395,7 @@ async def resolve_call_user_id(
                 logger=logger,
                 warned=warned,
             )
-    return resolve_user_id(
+    return resolve_principal_id(
         token,
         mode=mode,
         tenant_id=tenant_id,

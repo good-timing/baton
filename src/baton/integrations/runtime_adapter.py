@@ -259,7 +259,7 @@ def detect_agent_runtime(
     IMMEDIATE MCP client, which behind a gateway is the gateway rather than the
     agent — measured, both fastmcp in-process probes report ``mcp``, the client
     LIBRARY's name. And it is self-asserted, never attested: a client picks its
-    own ``clientInfo``. Attested identity is ``user_id``, a different field on
+    own ``clientInfo``. Attested identity is ``principal_id``, a different field on
     a different condition; keep the two claims apart.
     """
     meta_dict = meta_to_dict(meta)

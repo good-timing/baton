@@ -9,7 +9,7 @@ Core (always installed):
 - ``__version__`` — embedded in every emitted event's ``sdk_version`` field
 - ``Client``, ``AsyncClient``, ``SignalType`` — library API for Skill-instrumented
   agent code (see the "Library API" section in ``README.md``)
-- ``Principal`` — the return type of a ``VendorConfig.resolve_user`` hook.
+- ``Principal`` — the return type of a ``VendorConfig.resolve_principal`` hook.
   Exported because that hook cannot be written without constructing one.
 
 Integrations (optional, opt-in via pip extras):

@@ -543,7 +543,7 @@ class TestEnvelopeFields:
 
 
 class TestExtractHeaders:
-    """``extract_headers`` feeds SPEC §3.4 rung 4 and the ``resolve_user``
+    """``extract_headers`` feeds SPEC §3.4 rung 4 and the ``resolve_principal``
     hook's context. It used to feed rung 0 as well; that rung
     (``VendorConfig.resolve_session_id``) was REMOVED 2026-09-12 and its six
     tests went with it. These two stay because the header read is a separate

@@ -8,6 +8,45 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## 0.8.6: `user_id` is now `principal_id`
+
+### Changed
+
+- ⚠ **BREAKING — the identity field and everything that configures it are
+  renamed, with no aliases.** The value is unchanged: same derivation, same
+  `h1:` / `v1:` tags, and every hashed value is byte-identical, because the
+  field name was never part of the HMAC.
+
+  | was | now |
+  |---|---|
+  | envelope `user_id` | `principal_id` |
+  | `VendorConfig(resolve_user=...)` | `resolve_principal=...` |
+  | `VendorConfig(user_id_mode=...)` | `principal_id_mode=...` |
+  | `VendorConfig(user_id_hmac_key=...)` | `principal_id_hmac_key=...` |
+  | `BATON_USER_ID_HMAC_KEY` | `BATON_PRINCIPAL_ID_HMAC_KEY` |
+  | `Principal(user_id=...)` | `Principal(principal_id=...)` |
+  | `hash_user_id(...)` | `hash_principal_id(...)` |
+
+  **Why.** The field was documented as "which person" and "which customer" at
+  once. What a vendor can honestly resolve is often a service account (a
+  gateway's token) or an organisation (an org-scoped key), and under the old
+  name those looked like misuse. `principal_id` is whoever your verifier
+  attested or your resolver asserted, at whatever grain that is. It is not an
+  agent-run key: one principal commonly covers several concurrent runs.
+
+  **What you change.** Rename the config keywords above; an old keyword now
+  raises `TypeError` when `VendorConfig` is built, so nothing half-works.
+  Rename the environment variable: the old one is **not read**, but if it is
+  set and the new one is not, the SDK logs a WARNING saying so, because hashed
+  identity fails open and would otherwise just stop appearing.
+
+  **If you run your own collector,** accept `principal_id` before upgrading
+  producers, and keep accepting `user_id` as the same field until every
+  producer is on 0.8.6. SPEC §11.4 and §13 carry the definition and the
+  consumer rules.
+
+---
+
 ## 0.8.5: the name agents read comes from your server, not from the DSN
 
 ### Changed

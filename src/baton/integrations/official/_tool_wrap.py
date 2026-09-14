@@ -100,9 +100,9 @@ from baton.integrations._session import (
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 from baton.integrations.identity_adapter import (
-    USER_ID_MODE_HASHED,
-    ResolveUserHook,
-    resolve_call_user_id,
+    PRINCIPAL_ID_MODE_HASHED,
+    ResolvePrincipalHook,
+    resolve_call_principal_id,
 )
 from baton.integrations.official import _auth
 from baton.integrations.official._registry import get_tool_manager, get_tool_registry
@@ -173,9 +173,9 @@ def install_wraps(
     intent_param_mode: str = "optional",
     proactive_tracker: ProactiveTracker | None = None,
     server_meta: dict[str, Any] | None = None,
-    user_id_mode: str = USER_ID_MODE_HASHED,
-    user_id_hmac_key: bytes | None = None,
-    resolve_user_hook: ResolveUserHook | None = None,
+    principal_id_mode: str = PRINCIPAL_ID_MODE_HASHED,
+    principal_id_hmac_key: bytes | None = None,
+    resolve_principal_hook: ResolvePrincipalHook | None = None,
     identity_warned: set[str] | None = None,
 ) -> None:
     """Inject + wrap all currently-registered tools AND future registrations."""
@@ -253,9 +253,9 @@ def install_wraps(
                 tracker=tracker,
                 fallback_session_id=fallback_session_id,
                 tenant_id=tenant_id,
-                user_id_mode=user_id_mode,
-                user_id_hmac_key=user_id_hmac_key,
-                resolve_user_hook=resolve_user_hook,
+                principal_id_mode=principal_id_mode,
+                principal_id_hmac_key=principal_id_hmac_key,
+                resolve_principal_hook=resolve_principal_hook,
                 identity_warned=warned,
                 surface_state=surface_state,
                 emit_surface=emit_surface,
@@ -441,9 +441,9 @@ def _wrap_tool_run(
     tracker: ProactiveTracker,
     fallback_session_id: str,
     tenant_id: str,
-    user_id_mode: str,
-    user_id_hmac_key: bytes | None,
-    resolve_user_hook: ResolveUserHook | None,
+    principal_id_mode: str,
+    principal_id_hmac_key: bytes | None,
+    resolve_principal_hook: ResolvePrincipalHook | None,
     identity_warned: set[str],
     surface_state: _SurfaceState,
     emit_surface: Callable[[str, str, dict[str, Any]], Awaitable[None]],
@@ -539,13 +539,13 @@ def _wrap_tool_run(
         )
         # Identity resolves HERE, beside the runtime detect and for the same
         # structural reason: one place per call, before anything is emitted.
-        # ``resolve_call_user_id`` returns the FINISHED wire value — a hash or
+        # ``resolve_call_principal_id`` returns the FINISHED wire value — a hash or
         # a deliberate raw principal — so the raw identity never travels past
         # this line into the emitters, mirroring baton-proxy's edge-hash
         # chokepoint. ``None`` when neither provenance resolves.
         #
         # ⚠ This comment used to read "Unauthenticated calls (every stdio one)
-        # get ``None``". That stopped being true when ``resolve_user`` landed:
+        # get ``None``". That stopped being true when ``resolve_principal`` landed:
         # the hook is the only identity mechanism stdio has, and carrying a
         # stdio principal is the reason it was built.
         # ONE extraction per tool call, shared by the identity hook below and
@@ -562,16 +562,16 @@ def _wrap_tool_run(
                 tool_name=name,
                 arguments=params,
             )
-            if resolve_user_hook is not None
+            if resolve_principal_hook is not None
             else None
         )
-        call_user_id = await resolve_call_user_id(
+        call_principal_id = await resolve_call_principal_id(
             _auth.current_access_token(),
-            hook=resolve_user_hook,
+            hook=resolve_principal_hook,
             hook_context=identity_hook_context,
-            mode=user_id_mode,
+            mode=principal_id_mode,
             tenant_id=tenant_id,
-            hmac_key=user_id_hmac_key,
+            hmac_key=principal_id_hmac_key,
             logger=logger,
             warned=identity_warned,
         )
@@ -594,7 +594,7 @@ def _wrap_tool_run(
                 scrubbed_task,
                 scrubbed_meta,
                 call_agent_runtime,
-                call_user_id,
+                call_principal_id,
             )
 
         # The per-call join key (SPEC §11.4). A LOCAL of this wrapper call,
@@ -634,7 +634,7 @@ def _wrap_tool_run(
                 scrubbed_expected,
                 scrubbed_task,
                 call_agent_runtime,
-                call_user_id,
+                call_principal_id,
                 call_id,
             )
         called_at = monotonic()
@@ -652,7 +652,7 @@ def _wrap_tool_run(
                 monotonic() - called_at,
                 scrubbed_meta,
                 call_agent_runtime,
-                call_user_id,
+                call_principal_id,
                 call_id,
             )
             raise
@@ -668,7 +668,7 @@ def _wrap_tool_run(
                 monotonic() - called_at,
                 scrubbed_meta,
                 call_agent_runtime,
-                call_user_id,
+                call_principal_id,
                 call_id,
             )
         return result
@@ -709,7 +709,7 @@ async def _resolve_call_session_id(
     identifier the SDK did not mint. A vendor's handle differed from a
     client's only in who supplied it, which the join rule does not
     distinguish. What a vendor knows about a caller now reaches Baton through
-    ``VendorConfig.resolve_user`` and lands in ``user_id``, where the console
+    ``VendorConfig.resolve_principal`` and lands in ``principal_id``, where the console
     can group on it downstream and change its mind later.
 
     **Rungs 1-2 were retired 2026-09-09** — they keyed the session on
@@ -875,7 +875,7 @@ def _make_emitters(
         workflow: str | None,
         runtime_meta: dict[str, Any] | None,
         agent_runtime: str,
-        user_id: str | None,
+        principal_id: str | None,
     ) -> None:
         await safe_write(
             sink,
@@ -887,7 +887,7 @@ def _make_emitters(
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
-                user_id=user_id,
+                principal_id=principal_id,
                 runtime_meta=runtime_meta,
                 payload=AnnotationPayload(
                     intent=intent,
@@ -909,7 +909,7 @@ def _make_emitters(
         call_expected: str | None,
         call_workflow: str | None,
         agent_runtime: str,
-        user_id: str | None,
+        principal_id: str | None,
         call_id: str,
     ) -> None:
         injected_any = any(v is not None for v in (call_intent, call_expected, call_workflow))
@@ -923,7 +923,7 @@ def _make_emitters(
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
-                user_id=user_id,
+                principal_id=principal_id,
                 call_id=call_id,
                 runtime_meta=runtime_meta,
                 payload=ToolCallStartPayload(
@@ -945,7 +945,7 @@ def _make_emitters(
         duration_s: float,
         runtime_meta: dict[str, Any] | None,
         agent_runtime: str,
-        user_id: str | None,
+        principal_id: str | None,
         call_id: str,
     ) -> None:
         await safe_write(
@@ -958,7 +958,7 @@ def _make_emitters(
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
-                user_id=user_id,
+                principal_id=principal_id,
                 call_id=call_id,
                 runtime_meta=runtime_meta,
                 payload=ToolCallEndPayload(
@@ -977,7 +977,7 @@ def _make_emitters(
         duration_s: float,
         runtime_meta: dict[str, Any] | None,
         agent_runtime: str,
-        user_id: str | None,
+        principal_id: str | None,
         call_id: str,
     ) -> None:
         await safe_write(
@@ -990,7 +990,7 @@ def _make_emitters(
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
-                user_id=user_id,
+                principal_id=principal_id,
                 call_id=call_id,
                 runtime_meta=runtime_meta,
                 payload=ToolCallErrorPayload(

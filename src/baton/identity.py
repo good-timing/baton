@@ -1,8 +1,11 @@
-"""End-user identity — resolve a raw principal, hash it at the edge.
+"""Principal identity — resolve a raw principal, hash it at the edge.
 
-Baton attaches an end-user actor (``user_id``) to every event so the Console
-can answer "which *customer* hit this" and group by
-``(tenant_id, vendor_id, user_id)``.
+Baton attaches the resolved principal (``principal_id``) to every event so the
+Console can group by ``(tenant_id, vendor_id, principal_id)``. A principal is
+whoever the vendor's verifier attested or its resolver asserted — a person, a
+service account or an organisation — so that grouping is at the grain the
+vendor resolved, and it is not an agent-run key. The field was ``user_id``
+until 0.8.6; it was renamed because the value never had to be a person.
 
 Residency contract: the Console DB is metadata-only and may only ever see the
 HASH — raw identity must never leave the capture edge. So hashing happens HERE,
@@ -10,7 +13,7 @@ before an event reaches any console-bound sink.
 
 Two pieces:
 
-- ``hash_user_id`` — the per-tenant HMAC. Zero new deps (stdlib
+- ``hash_principal_id`` — the per-tenant HMAC. Zero new deps (stdlib
   ``hmac``/``hashlib``/``unicodedata``).
 - ``IdentityResolver`` / ``Principal`` — the per-modality seam. Each capture
   modality ships a resolver that turns its native carrier into a ``Principal``;
@@ -20,7 +23,7 @@ Ported from ``baton_proxy.identity`` — keep the two copies in lockstep until
 the shared package lands (same discipline as ``scrub.py``).
 
 ⚠ **The copies are OUT of lockstep as of 2026-09-09, deliberately and in one
-direction.** ``hash_user_id`` here takes an optional ``issuer``; the proxy copy
+direction.** ``hash_principal_id`` here takes an optional ``issuer``; the proxy copy
 does not yet. The default is what keeps that safe: ``issuer=None`` produces the
 identical message the proxy produces, so the two agree on every hash either has
 ever emitted, and only issuer-bearing hashes — values that did not exist before
@@ -55,7 +58,7 @@ from typing import Any, Protocol
 HASH_SCHEME = "h1"
 
 #: Scheme tag for a principal a VENDOR ASSERTED rather than one an identity
-#: provider attested — the ``VendorConfig.resolve_user`` hook's output. It sits
+#: provider attested — the ``VendorConfig.resolve_principal`` hook's output. It sits
 #: OUTSIDE the ``h*`` family on purpose: ``h2:`` is spoken for by the rotation
 #: seam above, and rotation must keep every letter it may later want. Sharing
 #: ``h1:`` was the alternative and it is the one thing this tag exists to
@@ -72,22 +75,23 @@ VENDOR_HASH_SCHEME = "v1"
 
 @dataclass(frozen=True)
 class Principal:
-    """A resolved end-user identity, RAW (pre-hash).
+    """A resolved principal, RAW (pre-hash) — a person, a service account or an
+    organisation, whichever the resolver can honestly name.
 
-    Only ``user_id`` is hashed onto the wire today. ``user_name`` / ``user_data``
+    Only ``principal_id`` is hashed onto the wire today. ``user_name`` / ``user_data``
     are PII confined to the customer-owned payload tier — they are NOT emitted
     to the console path today and are force-scrubbed out of payloads (see
     scrub ``REDACT_FIELD_NAMES``).
     """
 
-    user_id: str
+    principal_id: str
     user_name: str | None = None
     user_data: dict[str, Any] | None = None
     issuer: str | None = None
     """The identity provider that minted the principal (the OIDC ``iss``
     claim), when one is known.
 
-    Carried because ``user_id`` alone is **unique only per issuer** — the
+    Carried because ``principal_id`` alone is **unique only per issuer** — the
     ``mcp`` SDK says so in its own ``AccessToken.subject`` comment. A vendor
     running two identity providers can legitimately have two different people
     arrive under the same ``sub``, and hashing ``sub`` alone would collapse
@@ -96,16 +100,16 @@ class Principal:
 
     Optional, and ``None`` for every modality that has no notion of an issuer
     (a gateway header, a static env principal). ``None`` hashes exactly as
-    this function always has — see ``hash_user_id``."""
+    this function always has — see ``hash_principal_id``."""
 
 
 class IdentityResolver(Protocol):
     """Turns a modality-native carrier into a ``Principal``. Returns ``None``
-    when no identity is available — the core then skips ``user_id``
+    when no identity is available — the core then skips ``principal_id``
     (fail-open).
 
     ⚠ **This is NOT the shape a vendor implements.** The vendor-facing seam is
-    ``VendorConfig.resolve_user`` — a plain callable taking the adapter-neutral
+    ``VendorConfig.resolve_principal`` — a plain callable taking the adapter-neutral
     ``SessionResolutionContext``, which is the hook vendors write. A
     method-on-an-object Protocol taking an
     untyped ``carrier`` would be a second convention for the same job, and the
@@ -116,7 +120,7 @@ class IdentityResolver(Protocol):
     It stays because ``baton_proxy.identity`` carries this Protocol verbatim
     and the two copies are kept in lockstep; deleting it here diverges them for
     no gain. The return contract — ``Principal | None``, never raising — is
-    what ``resolve_user`` honours."""
+    what ``resolve_principal`` honours."""
 
     def resolve(self, carrier: Any) -> Principal | None: ...
 
@@ -127,7 +131,7 @@ def _canonicalize(raw_principal: str) -> str:
     return unicodedata.normalize("NFC", raw_principal).strip().lower()
 
 
-def hash_user_id(
+def hash_principal_id(
     raw_principal: str,
     *,
     tenant_id: str,
@@ -135,7 +139,7 @@ def hash_user_id(
     issuer: str | None = None,
     scheme: str = HASH_SCHEME,
 ) -> str:
-    """HMAC-SHA256 a raw principal into a console-safe, per-tenant ``user_id``.
+    """HMAC-SHA256 a raw principal into a console-safe, per-tenant ``principal_id``.
 
     ``tenant_id`` is folded into the HMAC MESSAGE (not just the key) so the same
     principal under two tenants can never collide or be cross-tenant-correlated.
@@ -146,7 +150,7 @@ def hash_user_id(
     it (RFC 7519 §4.1.2; the ``mcp`` SDK repeats the caveat on
     ``AccessToken.subject``). Two identity providers behind one vendor can hand
     out the same ``sub`` to different people, and without the issuer those two
-    people hash to one ``user_id`` — a silent merge of exactly the kind this
+    people hash to one ``principal_id`` — a silent merge of exactly the kind this
     project keeps finding.
 
     ``scheme`` tags the DERIVATION, and only the tag changes — the digest for a

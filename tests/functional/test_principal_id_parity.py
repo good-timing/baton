@@ -1,4 +1,4 @@
-"""Both MCP adapters must produce the SAME ``user_id`` from the same token.
+"""Both MCP adapters must produce the SAME ``principal_id`` from the same token.
 
 The companion to ``test_agent_runtime_parity.py``, and it exists for the same
 recorded reason: ``detect_agent_runtime`` lived under one adapter's package,
@@ -65,7 +65,7 @@ async def _run_official_path(
     token: Any,
     mode: str,
     monkeypatch: pytest.MonkeyPatch,
-    resolve_user: Any = None,
+    resolve_principal: Any = None,
 ) -> str:
     from baton.integrations.official import VendorConfig, _auth, install_baton
     from baton.integrations.official._compat import MCPServerClass as FastMCP
@@ -87,9 +87,9 @@ async def _run_official_path(
             consent_token="ct_parity",
             sink=FileSink(str(events_path)),
             tenant_id=TENANT,
-            user_id_mode=mode,
-            user_id_hmac_key=HMAC_KEY,
-            resolve_user=resolve_user,
+            principal_id_mode=mode,
+            principal_id_hmac_key=HMAC_KEY,
+            resolve_principal=resolve_principal,
         ),
     )
     try:
@@ -108,7 +108,7 @@ async def _run_standalone_path(
     token: Any,
     mode: str,
     monkeypatch: pytest.MonkeyPatch,
-    resolve_user: Any = None,
+    resolve_principal: Any = None,
 ) -> None:
     from fastmcp import Client, FastMCP
 
@@ -130,9 +130,9 @@ async def _run_standalone_path(
             consent_token="ct_parity",
             sink=FileSink(str(events_path)),
             tenant_id=TENANT,
-            user_id_mode=mode,
-            user_id_hmac_key=HMAC_KEY,
-            resolve_user=resolve_user,
+            principal_id_mode=mode,
+            principal_id_hmac_key=HMAC_KEY,
+            resolve_principal=resolve_principal,
         ),
     )
     try:
@@ -145,13 +145,13 @@ async def _run_standalone_path(
         await handle.aclose()
 
 
-def _user_ids(path: Path) -> set[str | None]:
+def _principal_ids(path: Path) -> set[str | None]:
     events = without_surface_snapshots(_read_events(path))
     assert events, f"no events captured at {path} — the assertion would be vacuous"
-    return {ev.get("user_id") for ev in events}
+    return {ev.get("principal_id") for ev in events}
 
 
-async def test_both_adapters_hash_one_principal_to_one_user_id(
+async def test_both_adapters_hash_one_principal_to_one_principal_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The expected value first, then agreement.
@@ -160,17 +160,19 @@ async def test_both_adapters_hash_one_principal_to_one_user_id(
     the two runs, because two adapters that both dropped the field agree
     perfectly.
     """
-    from baton.identity import hash_user_id
+    from baton.identity import hash_principal_id
 
-    expected = hash_user_id(CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"])
+    expected = hash_principal_id(
+        CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"]
+    )
 
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
     await _run_official_path(official_path, _official_token(), "hashed", monkeypatch)
     await _run_standalone_path(standalone_path, _standalone_token(), "hashed", monkeypatch)
 
-    official = _user_ids(official_path)
-    standalone = _user_ids(standalone_path)
+    official = _principal_ids(official_path)
+    standalone = _principal_ids(standalone_path)
 
     assert official == {expected}, f"official adapter: {official}"
     assert standalone == {expected}, f"standalone adapter: {standalone}"
@@ -206,8 +208,8 @@ async def test_both_adapters_agree_in_raw_mode_too(
     await _run_official_path(official_path, _official_token(), "raw", monkeypatch)
     await _run_standalone_path(standalone_path, _standalone_token(), "raw", monkeypatch)
 
-    assert _user_ids(official_path) == {CLAIMS["sub"]}
-    assert _user_ids(standalone_path) == {CLAIMS["sub"]}
+    assert _principal_ids(official_path) == {CLAIMS["sub"]}
+    assert _principal_ids(standalone_path) == {CLAIMS["sub"]}
 
 
 async def test_both_adapters_drop_the_field_when_unauthenticated(
@@ -218,15 +220,15 @@ async def test_both_adapters_drop_the_field_when_unauthenticated(
     await _run_official_path(official_path, None, "hashed", monkeypatch)
     await _run_standalone_path(standalone_path, None, "hashed", monkeypatch)
 
-    assert _user_ids(official_path) == {None}
-    assert _user_ids(standalone_path) == {None}
+    assert _principal_ids(official_path) == {None}
+    assert _principal_ids(standalone_path) == {None}
 
 
 # ---------------------------------------------------------------------------
 # The vendor identity hook (N11) — the ASSERTED provenance.
 #
 # These run through the same two drivers as everything above, which is the
-# point: each driver calls a tool AND the annotation tool, and ``_user_ids``
+# point: each driver calls a tool AND the annotation tool, and ``_principal_ids``
 # collapses every emitted event to a SET. A hook wired into the tool-call path
 # but not the annotation path yields two values on one run and fails here,
 # without a test that names the annotation path at all.
@@ -251,25 +253,25 @@ async def test_the_hook_supplies_identity_where_no_token_exists(
 
     ``token=None`` is what ``get_access_token()`` returns on every stdio call
     on every supported version — MCP auth is ASGI middleware and stdio has no
-    ASGI. Before the hook this run emitted no ``user_id`` at all, on either
+    ASGI. Before the hook this run emitted no ``principal_id`` at all, on either
     adapter. The expected value is computed here rather than compared between
     runs, for the reason at the top of this file.
     """
-    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_user_id
+    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_principal_id
 
-    expected = hash_user_id(
+    expected = hash_principal_id(
         HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=HOOK_ISS, scheme=VENDOR_HASH_SCHEME
     )
     assert expected.startswith("v1:")
 
-    hook = _hook(Principal(user_id=HOOK_SUB, issuer=HOOK_ISS))
+    hook = _hook(Principal(principal_id=HOOK_SUB, issuer=HOOK_ISS))
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(official_path, None, "hashed", monkeypatch, resolve_user=hook)
-    await _run_standalone_path(standalone_path, None, "hashed", monkeypatch, resolve_user=hook)
+    await _run_official_path(official_path, None, "hashed", monkeypatch, resolve_principal=hook)
+    await _run_standalone_path(standalone_path, None, "hashed", monkeypatch, resolve_principal=hook)
 
-    official = _user_ids(official_path)
-    standalone = _user_ids(standalone_path)
+    official = _principal_ids(official_path)
+    standalone = _principal_ids(standalone_path)
     assert official == {expected}, f"official adapter: {official}"
     assert standalone == {expected}, f"standalone adapter: {standalone}"
 
@@ -285,26 +287,28 @@ async def test_the_hook_wins_over_a_verified_token_and_says_so_in_the_tag(
     as the value is what distinguishes "the hook won" from "the hook happened
     to produce the same string".
     """
-    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_user_id
+    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_principal_id
 
-    asserted = hash_user_id(
+    asserted = hash_principal_id(
         HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=HOOK_ISS, scheme=VENDOR_HASH_SCHEME
     )
-    attested = hash_user_id(CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"])
+    attested = hash_principal_id(
+        CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"]
+    )
     assert asserted != attested
 
-    hook = _hook(Principal(user_id=HOOK_SUB, issuer=HOOK_ISS))
+    hook = _hook(Principal(principal_id=HOOK_SUB, issuer=HOOK_ISS))
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
     await _run_official_path(
-        official_path, _official_token(), "hashed", monkeypatch, resolve_user=hook
+        official_path, _official_token(), "hashed", monkeypatch, resolve_principal=hook
     )
     await _run_standalone_path(
-        standalone_path, _standalone_token(), "hashed", monkeypatch, resolve_user=hook
+        standalone_path, _standalone_token(), "hashed", monkeypatch, resolve_principal=hook
     )
 
     for path in (official_path, standalone_path):
-        got = _user_ids(path)
+        got = _principal_ids(path)
         assert got == {asserted}, f"{path.name}: {got}"
         assert attested not in got, f"{path.name} used the token despite a hook"
 
@@ -318,9 +322,11 @@ async def test_a_hook_that_raises_falls_back_to_the_token_and_events_still_emit(
     produced nothing would also survive a looser check, and "the hook broke so
     identity vanished" is the failure this guard exists to prevent.
     """
-    from baton.identity import hash_user_id
+    from baton.identity import hash_principal_id
 
-    attested = hash_user_id(CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"])
+    attested = hash_principal_id(
+        CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"]
+    )
 
     def boom(_ctx: Any) -> Any:
         raise RuntimeError("the vendor's directory service is down")
@@ -328,14 +334,14 @@ async def test_a_hook_that_raises_falls_back_to_the_token_and_events_still_emit(
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
     await _run_official_path(
-        official_path, _official_token(), "hashed", monkeypatch, resolve_user=boom
+        official_path, _official_token(), "hashed", monkeypatch, resolve_principal=boom
     )
     await _run_standalone_path(
-        standalone_path, _standalone_token(), "hashed", monkeypatch, resolve_user=boom
+        standalone_path, _standalone_token(), "hashed", monkeypatch, resolve_principal=boom
     )
 
-    assert _user_ids(official_path) == {attested}
-    assert _user_ids(standalone_path) == {attested}
+    assert _principal_ids(official_path) == {attested}
+    assert _principal_ids(standalone_path) == {attested}
 
 
 async def test_an_async_hook_works_on_both_adapters(
@@ -343,22 +349,24 @@ async def test_an_async_hook_works_on_both_adapters(
 ) -> None:
     """Sync or async, matching ``scrubber``. A
     vendor resolving identity will usually be doing I/O to do it."""
-    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_user_id
+    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_principal_id
 
-    expected = hash_user_id(
+    expected = hash_principal_id(
         HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=None, scheme=VENDOR_HASH_SCHEME
     )
 
     async def resolve(_ctx: Any) -> Any:
-        return Principal(user_id=HOOK_SUB)
+        return Principal(principal_id=HOOK_SUB)
 
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(official_path, None, "hashed", monkeypatch, resolve_user=resolve)
-    await _run_standalone_path(standalone_path, None, "hashed", monkeypatch, resolve_user=resolve)
+    await _run_official_path(official_path, None, "hashed", monkeypatch, resolve_principal=resolve)
+    await _run_standalone_path(
+        standalone_path, None, "hashed", monkeypatch, resolve_principal=resolve
+    )
 
-    assert _user_ids(official_path) == {expected}
-    assert _user_ids(standalone_path) == {expected}
+    assert _principal_ids(official_path) == {expected}
+    assert _principal_ids(standalone_path) == {expected}
 
 
 async def test_the_hook_sees_the_calls_own_context_not_an_install_time_value(
@@ -371,21 +379,21 @@ async def test_the_hook_sees_the_calls_own_context_not_an_install_time_value(
     principal derived from the context the hook was handed, and then finding
     BOTH resulting hashes on the wire.
     """
-    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_user_id
+    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_principal_id
 
     def per_call(ctx: Any) -> Any:
         # ``tool_name`` differs between the lookup call and the annotation
         # call, so one hook yields two principals on one run.
-        return Principal(user_id=f"user-of-{ctx.tool_name}")
+        return Principal(principal_id=f"user-of-{ctx.tool_name}")
 
     official_path = tmp_path / "official.jsonl"
     annotate = await _run_official_path(
-        official_path, None, "hashed", monkeypatch, resolve_user=per_call
+        official_path, None, "hashed", monkeypatch, resolve_principal=per_call
     )
-    got = _user_ids(official_path)
+    got = _principal_ids(official_path)
 
     def h(sub: str) -> str:
-        return hash_user_id(
+        return hash_principal_id(
             sub, tenant_id=TENANT, key=HMAC_KEY, issuer=None, scheme=VENDOR_HASH_SCHEME
         )
 
@@ -406,14 +414,14 @@ async def test_raw_mode_does_not_tag_a_hook_principal(
     assume a ``v1:`` prefix survives into raw mode."""
     from baton.identity import Principal
 
-    hook = _hook(Principal(user_id=HOOK_SUB, issuer=HOOK_ISS))
+    hook = _hook(Principal(principal_id=HOOK_SUB, issuer=HOOK_ISS))
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(official_path, None, "raw", monkeypatch, resolve_user=hook)
-    await _run_standalone_path(standalone_path, None, "raw", monkeypatch, resolve_user=hook)
+    await _run_official_path(official_path, None, "raw", monkeypatch, resolve_principal=hook)
+    await _run_standalone_path(standalone_path, None, "raw", monkeypatch, resolve_principal=hook)
 
-    assert _user_ids(official_path) == {HOOK_SUB}
-    assert _user_ids(standalone_path) == {HOOK_SUB}
+    assert _principal_ids(official_path) == {HOOK_SUB}
+    assert _principal_ids(standalone_path) == {HOOK_SUB}
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +457,7 @@ def _vendor_hook(ctx: Any) -> Any:
     from baton.identity import Principal
 
     assert ctx.headers is not None
-    return Principal(user_id=ctx.headers[CANONICAL_SPELLING])
+    return Principal(principal_id=ctx.headers[CANONICAL_SPELLING])
 
 
 def _official_headers() -> Any:
@@ -483,7 +491,7 @@ async def test_one_vendor_hook_resolves_the_same_principal_on_both_adapters() ->
     from baton.integrations._config import SessionResolutionContext
     from baton.integrations.identity_adapter import resolve_principal_via_hook
 
-    expected = Principal(user_id="employee-4417")
+    expected = Principal(principal_id="employee-4417")
     resolved: dict[str, Any] = {}
 
     for adapter, extract in (("official", _official_headers), ("standalone", _standalone_headers)):
@@ -498,7 +506,7 @@ async def test_one_vendor_hook_resolves_the_same_principal_on_both_adapters() ->
     assert resolved["official"] == expected, resolved
     assert resolved["standalone"] == expected, (
         "the hook fell open on standalone: it raised KeyError, was caught, and "
-        "the vendor gets a null user_id on every event"
+        "the vendor gets a null principal_id on every event"
     )
 
 

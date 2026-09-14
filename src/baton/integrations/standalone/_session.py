@@ -147,7 +147,7 @@ def extract_headers() -> Mapping[str, str] | None:
     raises — empty outside a live HTTP request (e.g. stdio).
     ``include_all=True`` so a vendor's hook can read headers the default view
     strips (e.g. ``authorization``, which both the session-lookup hook and the
-    ``resolve_user`` identity hook may need).
+    ``resolve_principal`` identity hook may need).
 
     ⚠ **The ``dict`` this returns is case-SENSITIVE and that is deliberate.**
     ASGI has already lowercased its keys, so a vendor hook reading the canonical
@@ -173,7 +173,7 @@ async def resolve_call_session_id(*, fallback: str) -> str:
     identifier the SDK did not mint. It differed from those two only in who
     supplied the value, and the join rule does not distinguish a client's
     handle from a vendor's. What the vendor knows about a caller now reaches
-    Baton through ``VendorConfig.resolve_user``, which lands in ``user_id`` —
+    Baton through ``VendorConfig.resolve_principal``, which lands in ``principal_id`` —
     a field the console can partition on downstream, where the decision can
     be changed and re-run.
 
