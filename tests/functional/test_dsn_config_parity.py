@@ -280,16 +280,35 @@ class TestTheRulesAreTheSameOnBothDoors:
 
 
 class TestWhatTheDsnDoesNotTakeOver:
-    def test_the_display_name_defaults_to_the_server_slug_verbatim(self) -> None:
-        from baton.integrations._config import VendorConfig, resolve_config
+    async def test_the_dsn_segment_is_the_display_name_only_until_install(self) -> None:
+        """The segment is still what ``resolve_config`` fills in, verbatim:
+        the config it returns must validate, and validation refuses an empty
+        display name. It is no longer what an agent reads. Install replaces it
+        with the server's own name on BOTH doors; until 0.8.5 this test pinned
+        the segment and looked no further, which is how instructions reading
+        "wrapped in the srv-51885073 usage and friction SDK" shipped green.
+        """
+        from fastmcp import FastMCP as StandaloneServer
 
-        resolved = resolve_config(
-            VendorConfig(dsn=f"https://{KEY}@h.example.com/{WORKSPACE}/{SERVER}")
-        )
+        from baton.install import install_baton
+        from baton.integrations._config import VendorConfig, resolve_config
+        from baton.integrations.official._compat import MCPServerClass as OfficialServer
+
+        dsn = f"https://{KEY}@h.example.com/{WORKSPACE}/{SERVER}"
         # Verbatim, not "Echo Server": this string reaches the calling agent,
         # and a capitalisation the vendor never chose is a fabricated name in
         # front of their users.
-        assert resolved.vendor_display_name == SERVER
+        assert resolve_config(VendorConfig(dsn=dsn)).vendor_display_name == SERVER
+
+        for mcp in (OfficialServer("Echo Official"), StandaloneServer("Echo Standalone")):
+            handle = install_baton(mcp, dsn=dsn)
+            try:
+                instructions = mcp.instructions
+                assert instructions is not None
+                assert f"wrapped in the {mcp.name} usage and friction SDK" in instructions
+                assert SERVER not in instructions
+            finally:
+                await handle.aclose()
 
     def test_an_explicit_display_name_survives_a_dsn(self) -> None:
         from baton.integrations._config import VendorConfig, resolve_config

@@ -8,6 +8,62 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## 0.8.5: the name agents read comes from your server, not from the DSN
+
+### Changed
+
+- ⚠ **With only a `dsn`, the display name is now your MCP server's own name,
+  not the DSN's server segment.** `install_baton(MCPServer("toybox-pantry"),
+  dsn=...)` used to write server instructions reading "This server is wrapped
+  in the srv-51885073 usage and friction SDK ... when a srv-51885073 tool call
+  goes wrong", and the annotation tool's description named `srv-51885073`
+  too. Both now say `toybox-pantry`. 0.8.3 already took the annotation tool's
+  name from the server; this takes the display name from the same place, so a
+  DSN-only install names you one way everywhere an agent reads.
+
+  **Verbatim, not slugged.** The tool name is slugged because it has a pattern
+  to satisfy. The display name is your own string and reaches your users, so
+  `"Toybox Pantry (beta)"` is shown as written, beside a tool called
+  `toybox-pantry-beta_annotate`.
+
+  **Where the DSN segment is kept:** in every case where the tool name keeps
+  `{vendor_id}_annotate`. A name the library invented (fastmcp's
+  `FastMCP-<4 hex>`, the official SDK's `FastMCP` or `mcp-server`, a server
+  literally named `fastmcp`), a name that is not a string or whose read
+  raises, a blank name, and a name that would push the server instructions
+  past their 1500-character cap all keep the segment, exactly as before.
+
+  **When the cap has room for only one readable name, the tool name keeps
+  it.** In proactive mode a 30-character server name fits beside its
+  39-character tool name with nothing to spare. At 31 characters the display
+  name falls back to the segment and the tool name stays readable. So every
+  install that booted on 0.8.4 keeps the tool name it had there, and none can
+  stop booting because of this change.
+
+  **You keep full control.** An explicit `vendor_display_name=` still wins,
+  even one that happens to equal the segment, and so does
+  `annotation_tool_name=`. Without a `dsn` nothing changes: the display name
+  is still yours to give, and still required.
+
+  **Nothing on the wire changes.** The display name reaches only the server
+  instructions and the annotation tool's description, and neither is
+  captured: `surface_snapshot` records the instructions as they were before
+  the SDK rewrote them, and leaves the SDK's own tool out of `tools`.
+
+  **One rule in both SDKs.** The TypeScript twin of this change is
+  `fix/annotate-name` in `baton-ts`.
+
+  Also changed here, and invisible from outside: the display name was
+  settled in `resolve_config`, where no server is in hand, and the tool name
+  at install. Both are now settled at install in one call each adapter makes
+  once (`resolve_annotation_names`), the display name first so the tool
+  name's budget check sees the real text. `resolve_config` on its own still
+  fills in the segment, because the config it returns must validate.
+  `resolve_annotation_tool_name` is kept with its 0.8.4 behaviour for callers
+  that import it.
+
+---
+
 ## 0.8.4 — one `resolve_user` hook reads a header the same way on both adapters
 
 ### Fixed

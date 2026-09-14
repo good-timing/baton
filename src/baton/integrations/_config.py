@@ -294,10 +294,15 @@ class VendorConfig:
     tool description, and any LLM-facing strings. Whitelabel obligation
     (SPEC §5.4): no Baton-branded strings reach the calling agent.
 
-    Defaults to the DSN's server segment verbatim when a ``dsn`` is given and
-    this is not. Verbatim rather than prettified: this string reaches the
-    calling agent, so inventing a capitalisation the vendor never chose would
-    put a fabricated name in front of their users."""
+    Defaults, when a ``dsn`` is given and this is not, to your MCP server's own
+    name verbatim (``FastMCP("Toybox Pantry")`` reads "Toybox Pantry"), and to
+    the DSN's server segment when the server carries no name of its own or its
+    name would not fit the server instructions. Verbatim rather than
+    prettified: this string reaches the calling agent, so inventing a
+    capitalisation the vendor never chose would put a fabricated name in front
+    of their users. The server-name half is settled at install, where the
+    server is in hand (``resolve_annotation_names``); ``resolve_config`` on its
+    own still returns the DSN segment."""
 
     consent_token: str = DEFAULT_CONSENT_TOKEN
     """End-user consent token attached to every emitted event per SPEC §2.3 +
@@ -480,9 +485,9 @@ class VendorConfig:
         install_baton(mcp, dsn="https://baton_pk_...@ingest.example.com/ten_.../echo-server")
 
     Supplying it fills ``vendor_id``, ``tenant_id`` and ``sink`` (an
-    ``HttpSink`` at the DSN's origin, authenticated with its key), and
-    ``vendor_display_name`` when that is not given. Grammar and rationale:
-    ``baton._dsn``.
+    ``HttpSink`` at the DSN's origin, authenticated with its key), and lets
+    ``vendor_display_name`` default when that is not given (see that field).
+    Grammar and rationale: ``baton._dsn``.
 
     ⚠ **``repr=False``, because this string contains the bearer.** Measured:
     ``repr(config)`` printed the whole DSN, key included, and this config is
@@ -584,6 +589,10 @@ def resolve_config(config: VendorConfig) -> VendorConfig:
         dsn=dsn_string,
         vendor_id=dsn.vendor_id,
         tenant_id=dsn.tenant_id,
+        # The PRE-INSTALL default, and only that: install replaces it with the
+        # server's own name (``resolve_annotation_names``). Kept here because
+        # the config this returns must validate, and validation refuses an
+        # empty display name.
         vendor_display_name=config.vendor_display_name or dsn.vendor_id,
     )
 

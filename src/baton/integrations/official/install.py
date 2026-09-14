@@ -49,7 +49,7 @@ import logging
 from baton._optout import capture_disabled
 from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
-from baton.integrations._annotation_name import resolve_annotation_tool_name
+from baton.integrations._annotation_name import resolve_annotation_names
 from baton.integrations._config import (
     VendorConfig,
     _resolve_tenant_id,
@@ -103,6 +103,9 @@ def install_baton(
     # the instructions write silently succeeds on a bare ``Server``, and only
     # ``install_wraps`` finally dies, on a server Baton has already modified.
     require_high_level_server(mcp)
+    # Read BEFORE ``build_config``, which fills an unset display name in from
+    # the DSN and so leaves a defaulted value and a chosen one looking alike.
+    display_name_given = config is not None and bool(config.vendor_display_name)
     config = build_config(config, dsn)
     _validate_vendor_config(config)
 
@@ -128,7 +131,11 @@ def install_baton(
     proactive_tracker = ProactiveTracker()
     sink = resolve_sink(config)
 
-    annotation_tool_name = resolve_annotation_tool_name(mcp, config)
+    # Both LLM-facing names, the display name first so the tool name's budget
+    # check sees the real text. See ``resolve_annotation_names``.
+    vendor_display_name, annotation_tool_name = resolve_annotation_names(
+        mcp, config, display_name_given=display_name_given
+    )
 
     # Captured BEFORE any Baton mutation below — the vendor-true baseline the
     # surface-snapshot hash is authored against. See integrations._surface.
@@ -149,7 +156,7 @@ def install_baton(
     # writable backing differs across the rename (``_mcp_server`` →
     # ``_lowlevel_server``), so route through the compat helper.
     instructions = build_server_instructions(
-        vendor_display_name=config.vendor_display_name,
+        vendor_display_name=vendor_display_name,
         annotation_tool_name=annotation_tool_name,
         proactive_mode=config.proactive_mode,
     )
@@ -180,7 +187,7 @@ def install_baton(
     register_annotation_tool(
         mcp,
         vendor_id=config.vendor_id,
-        vendor_display_name=config.vendor_display_name,
+        vendor_display_name=vendor_display_name,
         tenant_id=tenant_id,
         consent_token=config.consent_token,
         sink=sink,

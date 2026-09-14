@@ -8,6 +8,14 @@ agent listing the vendor's tools reads as noise.
 
 Design note: ``annotation_tool_name_from_the_server_object.md``.
 
+As of 0.8.5 the display name comes from the same place. A DSN-only install
+used to name the vendor by the DSN's server segment, so the instructions an
+agent reads said "wrapped in the srv-51885073 usage and friction SDK". Now it
+is ``server.name`` VERBATIM (the vendor's own string, which reaches their
+users, so it is not slugged), behind the same guards the tool name uses.
+``resolve_annotation_names`` settles both in one call, and ``baton-ts``
+implements the same rule.
+
 **This composes a cosmetic LOCAL LABEL, never an id.** Identity stays opaque
 and console-owned; nothing here reaches the wire.
 
@@ -22,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from baton.integrations._llm_text import build_server_instructions
 
@@ -158,6 +166,21 @@ def annotation_tool_name_from_server(
     exactly as it did before. If THAT does not fit either, the resulting raise
     is the pre-existing one, unchanged and with its own message.
     """
+    server_name = _name_the_vendor_chose(server)
+    if server_name is None:
+        return None
+    return _tool_name_within_budget(
+        server_name, vendor_display_name=vendor_display_name, proactive_mode=proactive_mode
+    )
+
+
+def _name_the_vendor_chose(server: Any) -> str | None:
+    """``server.name`` when the VENDOR chose it, else ``None``.
+
+    The guards the tool name and the display name share, in one place so the
+    two cannot disagree about what counts as a name: a read that throws, a
+    value that is not a string, and a name the library invented.
+    """
     try:
         raw = getattr(server, "name", None)
     except Exception:
@@ -171,6 +194,15 @@ def annotation_tool_name_from_server(
         return None
     if _is_library_placeholder(raw, type(server).__name__):
         return None
+    return raw
+
+
+def _tool_name_candidate(raw: str) -> str | None:
+    """``{slug}_annotate`` from a vendor-chosen name, validated, or ``None``.
+
+    Not yet checked against the instructions budget: the display name is
+    rendered beside this candidate before the tool name's own check runs.
+    """
     slug = slug_server_name(raw)
     if slug is None:
         return None
@@ -180,6 +212,17 @@ def annotation_tool_name_from_server(
     # alternative to a check here is a raise at a vendor's import — and a
     # returned-but-unvalidated name is exactly what would get there.
     if not TOOL_NAME_PATTERN.match(candidate):
+        return None
+    return candidate
+
+
+def _tool_name_within_budget(
+    raw: str, *, vendor_display_name: str, proactive_mode: str
+) -> str | None:
+    """``_tool_name_candidate``, or ``None`` if it would not render beside
+    ``vendor_display_name``."""
+    candidate = _tool_name_candidate(raw)
+    if candidate is None:
         return None
     if not _fits_the_instructions_budget(candidate, vendor_display_name, proactive_mode):
         logger.warning(
@@ -218,21 +261,101 @@ def derive_annotation_tool_name(vendor_id: str, override: str | None = None) -> 
     return name
 
 
-def resolve_annotation_tool_name(server: Any, config: VendorConfig) -> str:
-    """The whole ladder in one call: explicit → server-derived → ``vendor_id``.
+class AnnotationNames(NamedTuple):
+    """The two LLM-facing names ``install_baton`` threads, in the order they settle."""
 
-    Both adapters call this once at install and thread the RESULT to the
-    capture layer, the server instructions, the handle and the registration —
-    so there is one resolution and no second site to drift from it. Sits with
-    ``_resolve_tenant_id`` / ``resolve_sink`` in spirit: library-agnostic,
-    reads only ``config`` and passes ``server`` through opaquely.
+    vendor_display_name: str
+    annotation_tool_name: str
+
+
+def resolve_annotation_names(
+    server: Any, config: VendorConfig, *, display_name_given: bool
+) -> AnnotationNames:
+    """Both names in one call: the display name FIRST, then the tool name.
+
+    Both adapters call this once at install and thread the RESULT: the tool
+    name to the capture layer, the server instructions, the handle and the
+    registration; the display name to the server instructions and the
+    annotation tool's description. One resolution, no second site to drift
+    from it. Library-agnostic: reads only ``config``, passes ``server`` through
+    opaquely, and reads ``server.name`` exactly once.
+
+    **The display name** is ``config.vendor_display_name`` unless the vendor
+    left it unset and a DSN filled it in. ``display_name_given`` says which,
+    and the adapter reads it BEFORE ``build_config``: after it, a defaulted
+    value and one the vendor typed are the same string, and an explicit name
+    that happens to equal the DSN segment must still win. When the DSN filled
+    it in, the display name is the server's name VERBATIM (the vendor's own
+    string, which reaches their users, so it is not slugged). It falls back to
+    the DSN segment on the tool name's guards (a library placeholder, a
+    non-string, a read that throws), on a blank name, and when the server
+    instructions would not render within the cap.
+
+    **Why the display name goes first.** Each name's budget check needs the
+    other name, so one of the two is checked against a name that is not final
+    yet. The tool name's check has to see the REAL display text: checked
+    against the 12-character DSN segment it could approve a 39-character tool
+    name, the display name could then become a longer server name, and the
+    render would raise at the vendor's import. So the display name settles
+    first, and the tool-name ladder below runs unchanged against it.
+
+    The display name is rendered beside the tool name that ladder is about to
+    PROPOSE: the explicit override, else the server-derived name before its
+    budget check, else ``{vendor_id}_annotate``. That decides who keeps the
+    readable name when the budget has room for only one, and it is the tool
+    name. So every install that booted on 0.8.4 keeps the tool name it had
+    there, and the only thing this changes is the display name, wherever it
+    fits beside that tool name.
+
+    Every pair that uses the server's name has been rendered once already. Any
+    other pair is one 0.8.4 produced too, and if it does not fit, the raise is
+    the pre-existing one, unchanged.
     """
-    return derive_annotation_tool_name(
+    server_name = _name_the_vendor_chose(server)
+
+    vendor_display_name = config.vendor_display_name
+    if not display_name_given and config.dsn and server_name is not None and server_name.strip():
+        proposed = (
+            config.annotation_tool_name
+            or _tool_name_candidate(server_name)
+            or f"{config.vendor_id}{_SUFFIX}"
+        )
+        if _fits_the_instructions_budget(proposed, server_name, config.proactive_mode):
+            vendor_display_name = server_name
+        else:
+            logger.warning(
+                "baton: the server name %r does not fit the server-instructions "
+                "budget as vendor_display_name beside the annotation tool %r; "
+                "keeping the DSN's server segment %r. Pass vendor_display_name= "
+                "to name the server in fewer characters.",
+                server_name,
+                proposed,
+                vendor_display_name,
+            )
+
+    annotation_tool_name = derive_annotation_tool_name(
         config.vendor_id,
         config.annotation_tool_name
-        or annotation_tool_name_from_server(
-            server,
-            vendor_display_name=config.vendor_display_name,
-            proactive_mode=config.proactive_mode,
+        or (
+            _tool_name_within_budget(
+                server_name,
+                vendor_display_name=vendor_display_name,
+                proactive_mode=config.proactive_mode,
+            )
+            if server_name is not None
+            else None
         ),
     )
+    return AnnotationNames(vendor_display_name, annotation_tool_name)
+
+
+def resolve_annotation_tool_name(server: Any, config: VendorConfig) -> str:
+    """The tool name alone, budgeted against ``config.vendor_display_name`` as given.
+
+    Install does not call this; it calls ``resolve_annotation_names``, which
+    settles the display name first. Kept with its 0.8.4 behaviour because
+    ``baton-console``'s tests import it by this path
+    (``test_onboarding_recipes_execute.py``) and the console depends on
+    ``baton-sdk`` by floor, so removing it would break them on upgrade.
+    """
+    return resolve_annotation_names(server, config, display_name_given=True).annotation_tool_name
