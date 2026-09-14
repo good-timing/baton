@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.8.4 — one `resolve_user` hook reads a header the same way on both adapters
 
 ### Fixed
 
