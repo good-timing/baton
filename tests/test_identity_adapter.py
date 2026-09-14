@@ -318,76 +318,55 @@ def test_a_str_hmac_key_is_encoded_rather_than_exploding_at_call_time() -> None:
     """
     from baton.integrations._config import _resolve_principal_id_hmac_key
 
-    assert _resolve_principal_id_hmac_key("secret") == b"secret"
-    assert _resolve_principal_id_hmac_key(b"secret") == b"secret"
+    assert _resolve_principal_id_hmac_key("secret", mode="hashed") == b"secret"
+    assert _resolve_principal_id_hmac_key(b"secret", mode="hashed") == b"secret"
     # And the two spellings must agree, or moving the secret between them
     # would silently re-pseudonymise every user.
     from baton.identity import hash_principal_id
 
     assert hash_principal_id("alice", tenant_id=TENANT, key=b"secret") == hash_principal_id(
-        "alice", tenant_id=TENANT, key=_resolve_principal_id_hmac_key("secret") or b""
+        "alice",
+        tenant_id=TENANT,
+        key=_resolve_principal_id_hmac_key("secret", mode="hashed") or b"",
     )
 
 
-def test_the_renamed_hmac_env_var_is_not_read_and_says_so(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """0.8.6 renamed ``BATON_USER_ID_HMAC_KEY`` with no fallback.
-
-    Hashed identity fails open, so an upgrade that stopped reading the key
-    would look exactly like a deployment that never configured identity. The
-    old name is detected only to say so — its value is never used, and never
-    echoed into a log line.
-    """
-    from baton.integrations import _config
-
-    monkeypatch.delenv("BATON_PRINCIPAL_ID_HMAC_KEY", raising=False)
-    monkeypatch.setenv("BATON_USER_ID_HMAC_KEY", "old-secret-value")
-    with caplog.at_level(logging.WARNING, logger=_config.logger.name):
-        assert _config._resolve_principal_id_hmac_key(None) is None
-    messages = [r.getMessage() for r in caplog.records]
-    assert any("BATON_PRINCIPAL_ID_HMAC_KEY" in m for m in messages), messages
-    assert not any("old-secret-value" in m for m in messages), messages
-
-
 @pytest.mark.parametrize(
-    ("new_env", "explicit"),
-    [("new-secret", None), (None, "explicit-secret")],
-    ids=["new-env-var", "explicit-field"],
+    ("new_env", "explicit", "mode", "expected", "warns"),
+    [
+        (None, None, "hashed", None, True),
+        ("new-secret", None, "hashed", b"new-secret", False),
+        (None, "explicit-secret", "hashed", b"explicit-secret", False),
+        (None, None, "raw", None, False),
+    ],
+    ids=["old-name-only", "new-env-var", "explicit-field", "raw-mode"],
 )
-def test_no_rename_warning_when_the_key_arrives_the_new_way(
+def test_the_renamed_hmac_env_var_is_never_read_and_warned_about_only_when_it_matters(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     new_env: str | None,
     explicit: str | None,
+    mode: str,
+    expected: bytes | None,
+    warns: bool,
 ) -> None:
-    """A leftover old variable beside a working key is noise, not a problem."""
+    """0.8.6 renamed ``BATON_USER_ID_HMAC_KEY`` with no fallback.
+
+    Hashed identity fails open, so a leftover old variable with nothing in its
+    place is warned about. Beside a working key, or in raw mode (no key
+    needed), it is not. Its value is never used or logged.
+    """
     from baton.integrations import _config
 
     monkeypatch.setenv("BATON_USER_ID_HMAC_KEY", "old-secret-value")
-    if new_env is None:
-        monkeypatch.delenv("BATON_PRINCIPAL_ID_HMAC_KEY", raising=False)
-    else:
+    if new_env:
         monkeypatch.setenv("BATON_PRINCIPAL_ID_HMAC_KEY", new_env)
     with caplog.at_level(logging.WARNING, logger=_config.logger.name):
-        got = _config._resolve_principal_id_hmac_key(explicit)
-    assert got == (new_env or explicit or "").encode()
-    assert not any("BATON_USER_ID_HMAC_KEY" in r.getMessage() for r in caplog.records)
-
-
-def test_no_rename_warning_in_raw_mode(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Raw mode needs no key, so a leftover old variable is not a broken setup
-    and must not be reported as identity being OFF."""
-    from baton.integrations import _config
-    from baton.integrations.identity_adapter import PRINCIPAL_ID_MODE_RAW
-
-    monkeypatch.delenv("BATON_PRINCIPAL_ID_HMAC_KEY", raising=False)
-    monkeypatch.setenv("BATON_USER_ID_HMAC_KEY", "old-secret-value")
-    with caplog.at_level(logging.WARNING, logger=_config.logger.name):
-        assert _config._resolve_principal_id_hmac_key(None, mode=PRINCIPAL_ID_MODE_RAW) is None
-    assert not any("BATON_USER_ID_HMAC_KEY" in r.getMessage() for r in caplog.records)
+        assert _config._resolve_principal_id_hmac_key(explicit, mode=mode) == expected
+    assert ("BATON_USER_ID_HMAC_KEY" in caplog.text) is warns
+    # The part that tells the operator what to do: the name to set instead.
+    assert ("BATON_PRINCIPAL_ID_HMAC_KEY" in caplog.text) is warns
+    assert "old-secret-value" not in caplog.text
 
 
 def test_a_token_accessor_that_raises_cannot_reach_the_tool_call() -> None:

@@ -51,10 +51,11 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   2.x.** mcp 2.x names its capability fields in snake_case with the camelCase
   wire name as an alias, and the snapshot dumped them without the alias — so a
   server on mcp 2.x reported `list_changed` where the protocol says
-  `listChanged`, and the same server produced a different `surface_hash` on
-  mcp 1.x and 2.x. Unchanged on mcp 1.x, byte for byte. **On mcp 2.x the hash
+  `listChanged`. Unchanged on mcp 1.x, byte for byte. **On mcp 2.x the hash
   changes once at this release**, so a collector keyed on it records one new
-  surface per server.
+  surface per server. This fixes the key names only: one server's hash still
+  differs between mcp 1.x and 2.x, because the two libraries report different
+  capability fields and server versions.
 
 ---
 

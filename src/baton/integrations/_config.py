@@ -239,20 +239,13 @@ def _resolve_tenant_id(explicit: str | None, vendor_id: str) -> str:
     return vendor_id
 
 
-def _resolve_principal_id_hmac_key(
-    explicit: bytes | str | None, *, mode: str = PRINCIPAL_ID_MODE_HASHED
-) -> bytes | None:
+def _resolve_principal_id_hmac_key(explicit: bytes | str | None, *, mode: str) -> bytes | None:
     """``principal_id_hmac_key``: explicit → ``BATON_PRINCIPAL_ID_HMAC_KEY`` → ``None``.
 
-    ⚠ **The variable was ``BATON_USER_ID_HMAC_KEY`` until 0.8.6**, renamed with
-    the field and with no fallback: the old name is NOT read. It is only
-    DETECTED, and warned about, because an upgrade that silently stopped
-    hashing would look exactly like a deployment that never configured identity
-    — ``principal_id`` fails open, so nothing else would say so. The explicit
-    field is additive, for a vendor whose secrets arrive from a manager rather
-    than the environment, and suppresses the warning because it wins anyway.
-    So does ``mode="raw"``, which needs no key: a leftover old variable there is
-    not a broken setup, and saying identity is OFF would be false.
+    In hashed mode with neither set, a leftover ``BATON_USER_ID_HMAC_KEY`` (the
+    pre-0.8.6 name, which is NOT read) logs a WARNING: identity fails open, so
+    nothing else would say it stopped. ``mode`` is required so no caller can
+    skip that distinction.
 
     ``None`` is a supported state, not an error: it means hashed-mode identity
     is off and events emit without ``principal_id``.
@@ -690,7 +683,7 @@ def _validate_vendor_config(config: VendorConfig) -> None:
         raise ValueError(
             f"principal_id_mode {config.principal_id_mode!r} must be one of "
             f"{sorted(PRINCIPAL_ID_MODES)} — 'hashed' emits an HMAC pseudonym, "
-            f"'raw' emits the end user's identity verbatim to the collector."
+            f"'raw' emits the principal verbatim to the collector."
         )
     if config.intent_param_mode not in _INTENT_PARAM_MODES:
         raise ValueError(

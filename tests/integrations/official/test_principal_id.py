@@ -42,7 +42,7 @@ from tests.integrations.official._fake_context import _FakeContextV1, _FakeConte
 #: kwarg — so a token built below simply has no claims to read.
 _CLAIMS_SUPPORTED = "claims" in AccessToken.model_fields
 
-HMAC_KEY = b"official-user-id-key"
+HMAC_KEY = b"official-principal-id-key"
 
 
 def _read(path: Path) -> list[dict[str, Any]]:
@@ -74,7 +74,7 @@ async def _drive(
 
     monkeypatch.setattr(_auth, "get_access_token_or_none", lambda: token)
 
-    mcp = FastMCP("user-id-official")
+    mcp = FastMCP("principal-id-official")
 
     @mcp.tool()
     def lookup(name: str) -> dict[str, Any]:
@@ -228,7 +228,7 @@ async def test_hashed_mode_without_a_key_still_emits_events(
 def test_an_invalid_mode_is_refused_at_install() -> None:
     """D3's refusal posture: a misconfiguration that would silently emit the
     wrong thing fails loudly at install instead."""
-    mcp = FastMCP("user-id-invalid")
+    mcp = FastMCP("principal-id-invalid")
     with pytest.raises(ValueError, match="principal_id_mode"):
         install_baton(
             mcp,

@@ -1,11 +1,8 @@
 """Principal identity — resolve a raw principal, hash it at the edge.
 
 Baton attaches the resolved principal (``principal_id``) to every event so the
-Console can group by ``(tenant_id, vendor_id, principal_id)``. A principal is
-whoever the vendor's verifier attested or its resolver asserted — a person, a
-service account or an organisation — so that grouping is at the grain the
-vendor resolved, and it is not an agent-run key. The field was ``user_id``
-until 0.8.6; it was renamed because the value never had to be a person.
+Console can group by ``(tenant_id, vendor_id, principal_id)``, at whatever grain
+the vendor resolved (SPEC §11.4).
 
 Residency contract: the Console DB is metadata-only and may only ever see the
 HASH — raw identity must never leave the capture edge. So hashing happens HERE,

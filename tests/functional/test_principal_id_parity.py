@@ -37,7 +37,7 @@ from tests._event_helpers import without_surface_snapshots
 pytestmark = pytest.mark.functional
 
 TENANT = "tenant-parity"
-HMAC_KEY = b"parity-user-id-key"
+HMAC_KEY = b"parity-principal-id-key"
 CLAIMS = {"sub": "alice@acme.example", "iss": "https://idp.example"}
 
 
@@ -151,7 +151,7 @@ def _principal_ids(path: Path) -> set[str | None]:
     return {ev.get("principal_id") for ev in events}
 
 
-async def test_both_adapters_hash_one_principal_to_one_principal_id(
+async def test_both_adapters_hash_one_principal_identically(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The expected value first, then agreement.

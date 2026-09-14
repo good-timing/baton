@@ -68,8 +68,8 @@ if TYPE_CHECKING:
 #: the default.
 PRINCIPAL_ID_MODE_HASHED = "hashed"
 
-#: Emit the principal VERBATIM. A deliberate opt-in that puts real end-user
-#: identity on the wire and into the console database. Correct for a vendor
+#: Emit the principal VERBATIM. A deliberate opt-in that puts real identities
+#: on the wire and into the console database. Correct for a vendor
 #: dogfooding their own server, or one with no residency obligation who wants
 #: to read a name instead of a hash; wrong by default, which is why it is not
 #: the default.

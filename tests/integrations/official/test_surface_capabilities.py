@@ -1,9 +1,4 @@
-"""``surface_snapshot.capabilities`` keeps the protocol's wire names on every mcp major.
-
-mcp 2.x declares capability fields snake_case, with the camelCase wire name as
-the ALIAS. A plain ``model_dump`` therefore emitted ``list_changed`` where the
-protocol — and SPEC §11.4.2's own example — says ``listChanged``, and one server
-hashed to two different surfaces depending on its mcp major.
+"""``surface_snapshot.capabilities`` dump under their camelCase wire names on every mcp major.
 
 Here rather than beside ``_surface.py``'s other callers because
 ``mcp-matrix`` runs only ``tests/integrations/official/``, so every mcp leg

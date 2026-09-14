@@ -203,16 +203,10 @@ class _EventEnvelope(BaseModel):
     sdk_version: str = __version__
     agent_runtime: str = "unknown"
     principal_id: str | None = None
-    """Who the vendor resolved behind this event (SPEC §11.4) — a person, a
-    service account or an organisation, at the grain the vendor resolved it.
-    Renamed from ``user_id`` in 0.8.6; the value is unchanged.
-
-    In ``"hashed"`` mode (the default) an HMAC-SHA256 pseudonym computed per
-    tenant AT THE EDGE — ``h1:`` attested, ``v1:`` asserted — so the raw
-    principal is never transmitted. In ``"raw"`` mode, the principal verbatim.
-    Console groups by ``(tenant_id, vendor_id, principal_id)``; it is NOT an
-    agent-run key, since one principal commonly covers concurrent runs. Null
-    when no identity resolved, or in hashed mode with no HMAC key configured."""
+    """Who the vendor resolved behind this event — a person, a service account
+    or an organisation (SPEC §11.4). An HMAC pseudonym computed at the edge in
+    ``"hashed"`` mode (the default), the principal verbatim in ``"raw"`` mode.
+    Null when no identity resolved, or in hashed mode with no key configured."""
     call_id: str | None = None
     """The minted per-call correlation key (SPEC §11.4, OPTIONAL + nullable).
 
