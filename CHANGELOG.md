@@ -45,6 +45,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   producer is on 0.8.6. SPEC §11.4 and §13 carry the definition and the
   consumer rules.
 
+### Fixed
+
+- **`surface_snapshot.capabilities` keeps the protocol's wire names on mcp
+  2.x.** mcp 2.x names its capability fields in snake_case with the camelCase
+  wire name as an alias, and the snapshot dumped them without the alias — so a
+  server on mcp 2.x reported `list_changed` where the protocol says
+  `listChanged`, and the same server produced a different `surface_hash` on
+  mcp 1.x and 2.x. Unchanged on mcp 1.x, byte for byte. **On mcp 2.x the hash
+  changes once at this release**, so a collector keyed on it records one new
+  surface per server.
+
 ---
 
 ## 0.8.5: the name agents read comes from your server, not from the DSN

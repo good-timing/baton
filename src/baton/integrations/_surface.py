@@ -54,8 +54,15 @@ def build_server_meta(lowlevel_server: Any) -> dict[str, Any]:
     capabilities = opts.capabilities
     return {
         "server_info": {"name": opts.server_name, "version": opts.server_version},
+        # ``by_alias=True``: mcp 2.x declares these fields snake_case with the
+        # wire's camelCase as the ALIAS, so a plain dump emitted ``list_changed``
+        # where the protocol says ``listChanged`` — and the same server hashed
+        # to two surfaces depending on its mcp major. On 1.x the field names
+        # are already camelCase and the flag changes nothing (measured on
+        # 1.27.2). The standalone adapter's tool dump carries it for the same
+        # reason.
         "capabilities": (
-            capabilities.model_dump(mode="json")
+            capabilities.model_dump(mode="json", by_alias=True)
             if hasattr(capabilities, "model_dump")
             else capabilities
         ),
