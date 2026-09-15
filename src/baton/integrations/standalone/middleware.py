@@ -26,6 +26,7 @@ from fastmcp.tools import Tool
 from mcp.types import CallToolRequestParams, ListToolsRequest
 from pydantic_core import to_jsonable_python
 
+from baton._meta_coords import round_meta_coordinates
 from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
 from baton.events import (
@@ -445,9 +446,12 @@ class BatonMiddleware(Middleware):
             logger=logger,
             warned=self._identity_warned,
         )
-        # Scrub the meta dict if a scrubber is configured — meta values may
-        # carry runtime-supplied identifiers that vendors want filtered.
-        scrubbed_meta = self._scrubber(meta_dict) if meta_dict is not None else None
+        # Round coordinates first, whatever scrubber is configured
+        # (``_meta_coords``), then scrub — meta values may carry
+        # runtime-supplied identifiers that vendors want filtered.
+        scrubbed_meta = (
+            self._scrubber(round_meta_coordinates(meta_dict)) if meta_dict is not None else None
+        )
 
         # ⚠ The ordering constraint that used to live here DIED with rung 0
         # (removed 2026-09-12). It read "resolved AFTER the goal-param strip +

@@ -8,6 +8,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Changed
+
+- **Coordinates in `_meta` are rounded to 1 decimal before they reach `runtime_meta`.** Any `latitude` or `longitude` key in a request's `_meta` (case-insensitive, exact, at any depth) holding a float or a plain decimal string is rounded in its own type; ints, bools, `None` and non-numeric strings are left alone. So ChatGPT's `openai/userLocation` arrives at roughly 10 km instead of metres, with city, region, country and timezone kept. Both adapters do this after runtime detection and before your scrubber, so it applies with a custom `VendorConfig(scrubber=...)` too. Tool params and results are not touched: a tool of yours that takes or returns coordinates is captured at full precision.
+
 ## 0.8.8: `pip install baton-sdk` is the whole install
 
 ### Changed

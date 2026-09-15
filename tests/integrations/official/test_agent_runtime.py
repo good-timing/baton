@@ -24,15 +24,18 @@ The functional parity test asserts the two adapters AGREE; this one asserts
 the official adapter is right on every mcp version we support.
 """
 
+import copy
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from baton.integrations.official import VendorConfig, install_baton
+from baton.integrations.official import VendorConfig, _tool_wrap, install_baton
 from baton.integrations.official._compat import MCPServerClass as FastMCP
+from baton.scrub import identity_scrub
 from baton.sinks import FileSink
+from tests._chatgpt_meta import CHATGPT_MAC_META
 from tests._event_helpers import without_surface_snapshots
 from tests._mcp_session import connected_session
 
@@ -186,3 +189,110 @@ async def test_the_annotation_event_carries_no_session_bearing_meta(tmp_path: Pa
         f"annotation carries runtime_meta {annotation.get('runtime_meta')!r} while its "
         f"session_id is {annotation['session_id']!r}, which ignored the meta's own handle"
     )
+
+
+# ChatGPT-shaped meta minus the one key that makes it a 2026-07-28 envelope:
+# mcp 2.x refuses an enveloped request on a handshake-era connection, which is
+# what ``connected_session`` opens (ChatGPT's own requests ride a 2026-07-28
+# connection). The declared ``clientInfo`` stays, so tier 1 answers from it.
+_CHATGPT_META = {
+    k: v for k, v in CHATGPT_MAC_META.items() if k != "io.modelcontextprotocol/protocolVersion"
+}
+_PRECISE_LATITUDE = "37.79535123456789"
+
+
+async def test_runtime_meta_carries_rounded_coordinates_while_detection_reads_the_raw_meta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ChatGPT-shaped ``_meta`` over a real session. The emitted
+    ``runtime_meta`` carries rounded coordinates, and ``detect_agent_runtime``
+    still receives the unrounded meta.
+
+    The spy is what makes the second half checkable. Every key the runtime
+    ladder reads reaches ``runtime_meta`` unchanged, so the reported runtime
+    alone cannot tell a detect before the rounding from one after it. The
+    coordinates can: they are the only thing that changes here.
+    """
+    seen: list[tuple[dict[str, Any], str | None]] = []
+    real_detect = _tool_wrap.detect_agent_runtime
+
+    def spy(meta: Any, **kwargs: Any) -> str | None:
+        runtime = real_detect(meta, **kwargs)
+        seen.append((copy.deepcopy(meta), runtime))
+        return runtime
+
+    monkeypatch.setattr(_tool_wrap, "detect_agent_runtime", spy)
+    events = await _drive(tmp_path / "e.jsonl", _CHATGPT_META)
+
+    assert seen, "the tool wrapper never called detect_agent_runtime"
+    for meta, _ in seen:
+        location = meta["openai/userLocation"]
+        assert (location["latitude"], location["longitude"]) == ("37.79535", "-122.39366"), (
+            f"detection was handed scrubbed meta: {location!r}"
+        )
+    detected = {runtime for _, runtime in seen} - {None}
+
+    calls = [ev for ev in events if ev["event_type"] in {"tool_call_start", "tool_call_end"}]
+    assert {ev["event_type"] for ev in calls} == {"tool_call_start", "tool_call_end"}
+    for ev in calls:
+        assert ev["runtime_meta"]["openai/userLocation"] == {
+            "city": "San Carlos",
+            "region": "California",
+            "country": "US",
+            "latitude": "37.8",
+            "timezone": "America/Los_Angeles",
+            "longitude": "-122.4",
+        }, ev["event_type"]
+        assert ev["agent_runtime"] in detected, (
+            f"{ev['event_type']} reported {ev['agent_runtime']!r}; detection returned {detected}"
+        )
+        assert ev["agent_runtime"] == "openai-mcp", ev["event_type"]
+
+
+async def _capture_a_located_call(events_path: Path, **config: Any) -> dict[str, dict[str, Any]]:
+    """One call of a vendor tool that itself takes and returns a ``latitude``,
+    carrying ChatGPT-shaped ``_meta``. Returns the call's events by type."""
+    mcp = FastMCP("coords-official")
+
+    @mcp.tool()
+    def forecast(latitude: str) -> dict[str, Any]:
+        return {"latitude": latitude}
+
+    handle = install_baton(
+        mcp,
+        VendorConfig(
+            vendor_id="rt",
+            vendor_display_name="Runtime Vendor",
+            consent_token="ct_rt",
+            sink=FileSink(str(events_path)),
+            **config,
+        ),
+    )
+    try:
+        async with connected_session(mcp) as client:
+            await client.call_tool("forecast", {"latitude": _PRECISE_LATITUDE}, meta=_CHATGPT_META)
+    finally:
+        await handle.aclose()
+    by_type = {ev["event_type"]: ev for ev in _read(events_path)}
+    assert {"tool_call_start", "tool_call_end"} <= set(by_type), sorted(by_type)
+    return by_type
+
+
+async def test_a_tools_own_coordinates_are_captured_at_full_precision(tmp_path: Path) -> None:
+    """The rounding is for what the CLIENT's ``_meta`` reveals about the person,
+    not the vendor's data: the same event rounds its ``runtime_meta`` and keeps
+    the tool's ``latitude`` param and result exactly as sent."""
+    by_type = await _capture_a_located_call(tmp_path / "e.jsonl")
+    start, end = by_type["tool_call_start"], by_type["tool_call_end"]
+    assert start["payload"]["params"] == {"latitude": _PRECISE_LATITUDE}
+    assert _PRECISE_LATITUDE in json.dumps(end["payload"]["result"])
+    assert start["runtime_meta"]["openai/userLocation"]["latitude"] == "37.8"
+
+
+async def test_a_vendor_scrubber_does_not_opt_out_of_the_rounding(tmp_path: Path) -> None:
+    """The rounding runs before ``VendorConfig(scrubber=...)``, so even the
+    explicit opt-out, ``identity_scrub``, still gets it."""
+    by_type = await _capture_a_located_call(tmp_path / "e.jsonl", scrubber=identity_scrub)
+    for event_type in ("tool_call_start", "tool_call_end"):
+        location = by_type[event_type]["runtime_meta"]["openai/userLocation"]
+        assert (location["latitude"], location["longitude"]) == ("37.8", "-122.4"), event_type

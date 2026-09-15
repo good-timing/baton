@@ -22,6 +22,7 @@ from typing import Any
 
 from fastmcp import Context, FastMCP
 
+from baton._meta_coords import round_meta_coordinates
 from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent, AnnotationPayload
 from baton.integrations._annotation_name import derive_annotation_tool_name
@@ -123,7 +124,11 @@ def register_annotation_tool(
         runtime = detect_agent_runtime(raw_meta, context=ctx, scrubber=scrubber) or (
             UNKNOWN_AGENT_RUNTIME
         )
-        scrubbed_meta = scrubber(meta_dict) if meta_dict is not None else None
+        # Coordinates round before the vendor's scrubber, whatever it is
+        # (``_meta_coords``); the detect above read the raw meta.
+        scrubbed_meta = (
+            scrubber(round_meta_coordinates(meta_dict)) if meta_dict is not None else None
+        )
 
         # SPEC §3.4's ladder, resolved by the SAME function the middleware's
         # tool-call path uses — an annotation that resolved differently from
