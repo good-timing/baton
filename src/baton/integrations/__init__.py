@@ -2,11 +2,11 @@
 
 Each integration wraps a particular agent surface (MCP, future Managed Agents,
 future A2A, etc.) and adapts it to the core Baton event-emitter substrate.
-Optional dependencies are declared via pip extras in ``pyproject.toml``:
+The adapters use the ``mcp`` or ``fastmcp`` your server already has. The pip
+extras in ``pyproject.toml`` only add each library's supported version range:
 
-    pip install baton-sdk[mcp]              # official Anthropic ``mcp`` SDK
-    pip install baton-sdk[fastmcp]          # standalone ``fastmcp`` library
-    pip install baton-sdk[http]             # HttpSink (POST to a collector)
+    pip install "baton-sdk[mcp]"            # official Anthropic ``mcp`` SDK
+    pip install "baton-sdk[fastmcp]"        # standalone ``fastmcp`` library
 
 There are TWO MCP adapters because there are two different libraries, and
 both name their server class ``FastMCP`` — pick by your import, not by the

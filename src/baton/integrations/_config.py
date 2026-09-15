@@ -635,7 +635,7 @@ def resolve_config(config: VendorConfig) -> VendorConfig:
 
     return replace(
         identity,
-        # Constructed here rather than lazily so a missing ``[http]`` extra
+        # Constructed here rather than lazily so a sink that cannot be built
         # raises at install, where the vendor is watching — not at the first
         # tool call, in production, on somebody else's machine.
         sink=HttpSink(dsn.origin, api_key=dsn.key),

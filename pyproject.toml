@@ -33,13 +33,18 @@ dependencies = [
     # ``mcp`` package and ``fastmcp`` both already require it, so a wrapped vendor
     # inherits nothing new. UUIDv7 (event_id / session_id) is generated in-tree by
     # ``baton._uuid`` — stdlib ``uuid.uuid7`` on 3.14+, a monotonic RFC-9562
-    # fallback below — so we take no ``uuid6`` dependency. ``httpx`` is an optional
-    # ``[http]`` extra (see below): only ``HttpSink`` needs it, and it too is free
-    # on any mcp/fastmcp server.
+    # fallback below — so we take no ``uuid6`` dependency.
     "pydantic>=2.0",
+    # ``httpx`` is ``HttpSink``'s async client, and a DSN always builds an
+    # ``HttpSink``. CORE since 0.8.8. It was an ``[http]`` extra on the rule
+    # above, and the rule stopped holding: ``mcp`` 2.x and ``fastmcp`` 4.x depend
+    # on ``httpx2``, not ``httpx``, so a fresh ``pip install "baton-sdk[mcp]"``
+    # could not run the DSN quickstart (measured 2026-09-15). A blocking client
+    # (urllib) is not an alternative: the SDK emits from inside the event loop.
+    "httpx>=0.25",
     # ``anyio`` runs vendor hooks off the event loop (``integrations/_hooks``).
-    # CORE rather than an extra, decided 2026-09-11, and it is the one
-    # dependency here that is NOT free by the rule above: a LIBRARY-API user
+    # CORE rather than an extra, decided 2026-09-11, and NOT free by the rule
+    # above for every install (``httpx`` is the other): a LIBRARY-API user
     # (``Client`` / ``Trace``, no MCP server) installs it for a code path they
     # cannot reach. Taken deliberately — anyio is small and pure Python, and
     # the alternative was importing it inside the function, because
@@ -118,12 +123,8 @@ mcp = [
 fastmcp = [
     "fastmcp>=2.14,<5",
 ]
-# ``HttpSink`` (the production path — POST events to a Baton Console) needs an
-# async HTTP client. httpx is required (not urllib): the SDK emits from inside
-# the event loop, where a blocking client would stall it. Kept as an extra so
-# the zero-infra demo path (stdout/file sinks, pure stdlib) installs nothing;
-# httpx is already in any mcp/fastmcp server's tree, so this costs a real vendor
-# nothing.
+# Kept so an existing ``baton-sdk[http]`` install line still resolves without a
+# warning. httpx is a core dependency (see ``dependencies``).
 http = [
     "httpx>=0.25",
 ]

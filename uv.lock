@@ -143,6 +143,7 @@ version = "0.8.7"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
+    { name = "httpx" },
     { name = "pydantic" },
 ]
 
@@ -190,6 +191,7 @@ requires-dist = [
     { name = "baton-sdk", extras = ["mcp"], marker = "extra == 'all'" },
     { name = "baton-sdk", extras = ["test"], marker = "extra == 'dev'" },
     { name = "fastmcp", marker = "extra == 'fastmcp'", specifier = ">=2.14,<5" },
+    { name = "httpx", specifier = ">=0.25" },
     { name = "httpx", marker = "extra == 'http'", specifier = ">=0.25" },
     { name = "jsonschema", marker = "extra == 'test'", specifier = ">=4.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.20,<3" },

@@ -8,6 +8,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Changed
+
+- **`httpx` is a core dependency, so `pip install baton-sdk` is the whole install.** A DSN always builds an `HttpSink`, and `mcp` 2.x and `fastmcp` 4.x depend on `httpx2`, not `httpx`. So on 0.8.7 and earlier, a fresh `pip install "baton-sdk[mcp]"` or `"baton-sdk[fastmcp]"` raised `ImportError` at `install_baton(mcp, dsn=...)`, and a bare `pip install baton-sdk` raised it at `Client(dsn=...)`. The `[http]` extra still resolves, and `[mcp]` / `[fastmcp]` still add each library's supported version range. The `ImportError` that claimed httpx is "already present in any mcp/fastmcp server's dependency tree" now names the real fix.
+
 ## 0.8.7: intent is asked for on every call, never enforced
 
 ### Changed
