@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.8.7: intent is asked for on every call, never enforced
 
 ### Changed
 
