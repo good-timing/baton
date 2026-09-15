@@ -37,7 +37,6 @@ def main() -> int:
 
     client = Client(
         vendor_id="example-vendor",
-        consent_token="ct_demo",
         sink=HttpSink(url=ingest_url, api_key=api_key),
     )
 
