@@ -8,6 +8,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Changed
+
+- **`VendorConfig.intent_param_mode` now defaults to `"required"` (was `"optional"`).** Every wrapped tool's advertised schema lists `user_goal` as required, and its description leads with `REQUIRED.`. That is an advertisement and nothing more: a `tools/call` that omits `user_goal` is never rejected by anything Baton adds. Your handler runs, the result comes back, and the event carries no `call_intent`. Measured through a real client session on both adapters, on every `mcp` and `fastmcp` version CI's matrix pins (official adapter: mcp 1.20.0, 1.25.0, 1.27.2, 1.30.0, 2.0.0, 2.2.0; standalone adapter: fastmcp 2.14.7, 3.4.2, 4.0.2, 4.0.3), and now pinned by tests that drive that session. `expected_result` and `overall_task` stay optional in every mode, and a tool that already declares its own `user_goal` keeps it. `surface_hash` does not change; `seam_augmentations.intent_param.mode` reports `required`. To keep the previous advertisement, set `VendorConfig(intent_param_mode="optional")`. This matches baton-proxy, whose default moved on 2026-09-01.
+
 ## 0.8.6: `user_id` is now `principal_id`
 
 ### Changed
@@ -972,7 +978,8 @@ Kept in lockstep with baton-proxy 0.3.0's intent-injection design (D1–D6).
   synthesises one proactive annotation (deduped against a real annotation-tool
   proactive via a shared `ProactiveTracker`); every call's intent rides
   `tool_call_start.payload.call_intent` with `intent_source="injected_param"`.
-  Mode via `VendorConfig.intent_param_mode`: `optional` (default) | `required` |
+  Mode via `VendorConfig.intent_param_mode`: `optional` (default at this
+  release; `required` has been the default since 2026-09-15) | `required` |
   `off`. Tools that already declare `baton_intent` are left untouched (`native`
   disposition — never stripped). Ports baton-proxy 0.3.0's design (D1–D6) to the
   SDK. The FastMCP adapter (`BatonMiddleware`) injects per-request in

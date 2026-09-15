@@ -356,15 +356,25 @@ class VendorConfig:
     patterns + field-name overrides on by default. Pass
     ``baton.scrub.identity_scrub`` to opt out, or supply your own."""
 
-    intent_param_mode: str = "optional"
+    intent_param_mode: str = "required"
     """Per-tool intent-param injection (mirrors baton-extmcp's vendor-neutral
-    naming). ``"optional"`` (default) injects ``user_goal``/``expected_result``
-    string params on every wrapped tool's input schema; ``"required"`` also
-    adds ``user_goal`` to each tool's ``required`` list (``expected_result``
-    stays optional regardless); ``"off"`` disables injection. Both params are
-    stripped before the vendor handler runs, so the tool never sees them. This
-    is what captures intent on runtimes that drop ``instructions`` (notably
-    Claude Desktop) — where the annotation tool alone yields nothing."""
+    naming). Every mode but ``"off"`` injects ``user_goal``, ``expected_result``
+    and ``overall_task`` string params into each wrapped tool's input schema
+    and strips all three before the vendor handler runs, so the tool never
+    sees them. This is what captures intent on runtimes that drop
+    ``instructions`` (notably Claude Desktop), where the annotation tool alone
+    yields nothing.
+
+    ``"required"`` (default) also lists ``user_goal`` in each tool's advertised
+    ``required`` and leads its description with REQUIRED. That is an
+    advertisement and nothing more: nothing Baton adds rejects a call that
+    omits it, the vendor's handler runs, and the event carries no
+    ``call_intent``. Measured 2026-09-15 through a real client session on both
+    adapters, on every mcp and fastmcp version CI's matrix pins.
+    ``"optional"`` injects the same params without the ``required`` entry, and
+    was the default until 2026-09-15. ``"off"`` disables injection.
+    ``expected_result`` and ``overall_task`` stay optional in every mode, and a
+    tool that already declares one of these names keeps its own."""
 
     proactive_mode: str = "off"
     """Whether the server instructions ask the agent to file a *proactive*
@@ -699,7 +709,7 @@ def _validate_vendor_config(config: VendorConfig) -> None:
         raise ValueError(
             "VendorConfig has intent_param_mode='off' and proactive_mode='off' — "
             "nothing would capture what the user is trying to do. Set one of "
-            "them: intent_param_mode='optional' (injected params, the default "
+            "them: intent_param_mode='required' (injected params, the default "
             "channel) or proactive_mode='on' (agent-filed pre-call annotations, "
             "for vendors who won't accept tool-schema mutation)."
         )

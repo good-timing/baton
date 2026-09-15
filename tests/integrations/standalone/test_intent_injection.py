@@ -10,6 +10,7 @@ first injected intent.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -25,8 +26,9 @@ from baton.integrations._llm_text import (
     build_expected_result_param_description,
     build_user_goal_param_description,
 )
+from baton.integrations.standalone import VendorConfig, install_baton
 from baton.integrations.standalone.middleware import BatonMiddleware
-from baton.sinks import HttpSink, Sink
+from baton.sinks import FileSink, HttpSink, Sink
 from tests._event_helpers import without_surface_snapshots
 
 
@@ -68,7 +70,7 @@ def _build_mcp(sink: Sink, **mw_kwargs: Any) -> FastMCP:
 
 class TestListInjection:
     async def test_optional_mode_injects_param(self, sink: Sink) -> None:
-        mcp = _build_mcp(sink)  # default mode = optional
+        mcp = _build_mcp(sink, intent_param_mode="optional")
 
         @mcp.tool()
         def echo(text: str) -> str:
@@ -430,3 +432,145 @@ class TestOverallTaskParam:
         await sink.flush()
         ann = next(ev for ev in captured if ev["event_type"] == "annotation")
         assert ann["payload"]["workflow"] == "file q3 notes"
+
+
+# =============================================================================
+# the default: user_goal advertised as required, never enforced (2026-09-15)
+# =============================================================================
+
+
+def _read_events(path: str) -> list[dict[str, Any]]:
+    with open(path) as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def _wire(result: Any) -> dict[str, Any]:
+    """A ``CallToolResult`` as it crossed the wire. mcp 2.0 renamed the Python
+    attr ``isError`` and kept the wire alias, so dump by alias."""
+    return result.model_dump(by_alias=True, mode="json")
+
+
+def _echo_server(path: str, **overrides: Any) -> tuple[FastMCP, Any, list[str]]:
+    """A vendor server with one ``echo`` tool, wrapped through the real
+    ``install_baton`` so ``VendorConfig``'s default is the one under test.
+    ``seen`` is what the vendor's handler actually received."""
+    seen: list[str] = []
+    mcp = FastMCP("test-vendor")
+
+    @mcp.tool()
+    def echo(text: str) -> str:
+        seen.append(text)
+        return f"echo:{text}"
+
+    handle = install_baton(
+        mcp,
+        VendorConfig(
+            vendor_id="test-vendor",
+            vendor_display_name="Test Vendor",
+            consent_token="ct_test",
+            sink=FileSink(path),
+            **overrides,
+        ),
+    )
+    return mcp, handle, seen
+
+
+class TestRequiredByDefaultIsNeverEnforced:
+    """``intent_param_mode`` defaults to ``required``, which ADVERTISES
+    ``user_goal`` as required and must never refuse a call that omits it.
+
+    Driven through fastmcp's in-memory ``Client``, a real MCP session, so the
+    client, the server's call path and the middleware chain all see the
+    ``tools/call``. The middleware advertises on a copy of the ``tools/list``
+    response; this pins that nothing on the call path checks arguments against
+    that copy. Measured not to on fastmcp 2.14.7, 3.4.2, 4.0.2 and 4.0.3
+    (2026-09-15).
+    """
+
+    async def test_a_call_without_user_goal_is_served(self, tmp_path: Any) -> None:
+        path = str(tmp_path / "events.jsonl")
+        mcp, handle, seen = _echo_server(path)
+        try:
+            async with Client(mcp) as client:
+                echo_tool = next(t for t in await client.list_tools() if t.name == "echo")
+                schema = echo_tool.inputSchema
+                without = _wire(await client.call_tool_mcp("echo", {"text": "a"}))
+                with_goal = _wire(
+                    await client.call_tool_mcp("echo", {"text": "b", USER_GOAL_PARAM_NAME: "why"})
+                )
+            await handle.flush()
+        finally:
+            await handle.aclose()
+
+        assert USER_GOAL_PARAM_NAME in schema["required"]
+        assert schema["properties"][USER_GOAL_PARAM_NAME]["description"].startswith("REQUIRED.")
+        assert not without.get("isError"), without
+        assert without["content"][0]["text"] == "echo:a"
+        assert not with_goal.get("isError"), with_goal
+        assert seen == ["a", "b"], "the vendor's handler ran for both calls"
+        starts = [e for e in _read_events(path) if e["event_type"] == "tool_call_start"]
+        assert [s["payload"].get("call_intent") for s in starts] == [None, "why"]
+
+    async def test_a_native_user_goal_is_left_alone(self, tmp_path: Any) -> None:
+        """A tool that declares its own ``user_goal`` keeps it: not added to
+        ``required``, not re-described, and the caller's value reaches the
+        handler instead of being captured."""
+        path = str(tmp_path / "events.jsonl")
+        mcp = FastMCP("test-vendor")
+
+        @mcp.tool()
+        def echo(text: str, user_goal: str = "") -> str:
+            return f"{text}|{user_goal}"
+
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="test-vendor",
+                vendor_display_name="Test Vendor",
+                consent_token="ct_test",
+                sink=FileSink(path),
+            ),
+        )
+        try:
+            async with Client(mcp) as client:
+                echo_tool = next(t for t in await client.list_tools() if t.name == "echo")
+                schema = echo_tool.inputSchema
+                result = _wire(
+                    await client.call_tool_mcp(
+                        "echo", {"text": "x", USER_GOAL_PARAM_NAME: "vendor-value"}
+                    )
+                )
+            await handle.flush()
+        finally:
+            await handle.aclose()
+
+        assert USER_GOAL_PARAM_NAME not in schema.get("required", [])
+        ours = {
+            build_user_goal_param_description(intent_param_mode=m) for m in ("optional", "required")
+        }
+        assert schema["properties"][USER_GOAL_PARAM_NAME].get("description") not in ours
+        assert result["content"][0]["text"] == "x|vendor-value"
+        start = next(e for e in _read_events(path) if e["event_type"] == "tool_call_start")
+        assert start["payload"].get("call_intent") is None
+
+    async def test_the_default_does_not_move_the_surface_hash(self, tmp_path: Any) -> None:
+        """The snapshot hashes the vendor-true surface, so moving the default
+        must leave every existing server's ``surface_hash`` where it was. The
+        mode is recorded beside the hash, in ``seam_augmentations``."""
+        payloads: dict[str, dict[str, Any]] = {}
+        for label, overrides in (("optional", {"intent_param_mode": "optional"}), ("default", {})):
+            path = str(tmp_path / f"{label}.jsonl")
+            mcp, handle, _ = _echo_server(path, **overrides)
+            try:
+                async with Client(mcp) as client:
+                    await client.list_tools()
+                await handle.flush()
+            finally:
+                await handle.aclose()
+            payloads[label] = next(
+                e for e in _read_events(path) if e["event_type"] == "surface_snapshot"
+            )["payload"]
+
+        assert payloads["default"]["surface_hash"] == payloads["optional"]["surface_hash"]
+        assert payloads["default"]["seam_augmentations"]["intent_param"]["mode"] == "required"
+        assert payloads["optional"]["seam_augmentations"]["intent_param"]["mode"] == "optional"

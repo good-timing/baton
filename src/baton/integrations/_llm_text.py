@@ -258,8 +258,9 @@ def build_user_goal_param_description(*, intent_param_mode: str = "optional") ->
 
     ``intent_param_mode="required"`` swaps the leading label for "REQUIRED.",
     matching the ``required`` entry the injector adds under that mode. Any
-    other mode (including the ``"optional"`` default) returns the text
-    unchanged.
+    other mode returns the "OPTIONAL." text. This parameter's own default is
+    that base text, not the product default: ``VendorConfig.intent_param_mode``
+    defaults to ``"required"``, and both adapters always pass their mode.
     """
     if intent_param_mode == "required":
         return _USER_GOAL_PARAM_DESCRIPTION_REQUIRED

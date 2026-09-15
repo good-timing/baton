@@ -83,7 +83,7 @@ class BatonMiddleware(Middleware):
         counter: SessionCounter | None = None,
         fallback_session_id: str | None = None,
         annotation_tool_name: str | None = None,
-        intent_param_mode: str = "optional",
+        intent_param_mode: str = "required",
         proactive_tracker: ProactiveTracker | None = None,
         server_meta: dict[str, Any] | None = None,
         principal_id_mode: str = PRINCIPAL_ID_MODE_HASHED,
