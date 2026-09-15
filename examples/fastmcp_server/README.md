@@ -57,6 +57,5 @@ install_baton(
 )
 ```
 
-`baton-sdk`'s only base dependency is `pydantic`; `httpx` (for `HttpSink`) is the
-optional `[http]` extra. Both are already required by `fastmcp`, so adding Baton
-to a FastMCP server pulls in no new transitive dependencies.
+`baton-sdk` depends on `pydantic`, `anyio` and `httpx`, and uses the `fastmcp`
+your server already has.

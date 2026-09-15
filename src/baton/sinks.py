@@ -46,18 +46,17 @@ if TYPE_CHECKING:
 def _require_httpx() -> Any:
     """Import httpx or raise a pointed install hint.
 
-    httpx is an optional ``[http]`` extra — only ``HttpSink`` needs it. The
-    stdlib sinks (``StdoutSink`` / ``FileSink``) carry no dependency, so the
-    zero-infra demo path installs nothing. httpx (not urllib) because the SDK
-    emits from inside the event loop, where a blocking client would stall it.
+    httpx is a core dependency, imported here rather than at module scope so
+    ``import baton`` does not load it when no ``HttpSink`` is built. httpx (not
+    urllib) because the SDK emits from inside the event loop, where a blocking
+    client would stall it.
     """
     try:
         import httpx
-    except ImportError as e:  # pragma: no cover - exercised via the [http] extra
+    except ImportError as e:  # pragma: no cover - a broken install
         raise ImportError(
-            "HttpSink requires the 'http' extra. Install with: "
-            "pip install 'baton-sdk[http]' (httpx is already present in any "
-            "mcp/fastmcp server's dependency tree)."
+            "HttpSink needs httpx, which baton-sdk depends on, and this "
+            "environment does not have it. Reinstall with: pip install baton-sdk"
         ) from e
     return httpx
 
@@ -504,7 +503,7 @@ class HttpSink(Sink):
                 return
 
     async def _send_with_retry(self, event: Event) -> str:
-        import httpx  # installed — construction of this sink required the [http] extra
+        import httpx  # importable — constructing this sink already imported it
 
         url = self._events_url()
         headers = self._auth_headers()

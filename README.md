@@ -11,15 +11,10 @@ Full picture, both integration paths, and the Console: **[goodtiming.ai/docs.htm
 ## Install
 
 ```sh
-pip install "baton-sdk[mcp,http]"      # MCP integration for the official `mcp` SDK
-pip install "baton-sdk[fastmcp,http]"  # MCP integration for the standalone `fastmcp` library
-pip install "baton-sdk[http]"          # library API, for Skill-instrumented code
-pip install "baton-sdk[all]"           # everything
+pip install baton-sdk
 ```
 
-Quote the extras. `zsh` — the default shell on macOS — globs square brackets, so an unquoted `pip install baton-sdk[mcp]` fails with `no matches found` before pip ever runs.
-
-`http` installs `httpx`, which `HttpSink` needs, and a DSN always builds an `HttpSink`. Neither `mcp` 2.x nor `fastmcp` 4.x brings `httpx` with it, so leave `http` off only when events go to stdout or a file.
+One line for both integration paths. It installs `pydantic`, `anyio` and `httpx`, and wraps the `mcp` or `fastmcp` your server already has.
 
 ## Quickstart — one string
 

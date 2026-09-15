@@ -306,7 +306,7 @@ def _resolve_client_config(
         # ``httpx.AsyncClient`` that nothing would then be able to close.
         consent = _resolve_consent_token(consent_token)
         return _ClientConfig(
-            # Built here, not lazily: a missing ``[http]`` extra must fail
+            # Built here, not lazily: a sink that cannot be built must fail
             # where the vendor is looking rather than at the first traced call.
             sink=HttpSink(parsed.origin, api_key=parsed.key),
             vendor_id=parsed.vendor_id,
