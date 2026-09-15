@@ -19,7 +19,6 @@ from baton.sinks import FileSink
 def main() -> None:
     client = Client(
         vendor_id="example-vendor",
-        consent_token="ct_demo",
         sink=FileSink("./events.jsonl"),
     )
 

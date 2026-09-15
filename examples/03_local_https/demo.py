@@ -26,7 +26,6 @@ from baton.sinks import HttpSink
 def main() -> None:
     client = Client(
         vendor_id="example-vendor",
-        consent_token="ct_demo",
         sink=HttpSink(url="http://127.0.0.1:8765", api_key="dev-key"),
     )
 

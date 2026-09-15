@@ -133,7 +133,6 @@ def run_sync(ingest_url: str) -> None:
 
     client = Client(
         vendor_id="vendor-sync-spike",
-        consent_token="ct-spike-sync",
         sink=HttpSink(url=ingest_url, api_key="bk_test_sync"),
     )
     try:
@@ -188,7 +187,6 @@ async def run_async(ingest_url: str) -> None:
 
     client = AsyncClient(
         vendor_id="vendor-async-spike",
-        consent_token="ct-spike-async",
         sink=HttpSink(url=ingest_url, api_key="bk_test_async"),
     )
     try:

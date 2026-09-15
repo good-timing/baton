@@ -2,9 +2,9 @@
 
 A **DSN** carries the four values an install needs in one string::
 
-    https://baton_pk_<random>@ingest.goodtiming.ai/ten_<8 hex>/echo-server
-    │       │                 │                    │           │
-    scheme  key (the bearer)  authority            workspace   server
+    https://baton_pk_<random>@baton.goodtiming.ai/ten_<8 hex>/echo-server
+    │       │                 │                   │           │
+    scheme  key (the bearer)  authority           workspace   server
 
     dsn        = scheme "://" key "@" authority "/" workspace "/" server
     scheme     = "https" | "http"

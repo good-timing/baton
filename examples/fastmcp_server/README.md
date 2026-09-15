@@ -27,7 +27,7 @@ is an ordinary bookmarks server; the only Baton-specific code is the
 ## Run it
 
 ```sh
-pip install baton-sdk[fastmcp]
+pip install "baton-sdk[fastmcp]"
 python examples/fastmcp_server/demo.py
 ```
 
@@ -51,7 +51,6 @@ install_baton(
     VendorConfig(
         vendor_id="bookmarks",
         vendor_display_name="Bookmarks",
-        consent_token=os.environ["BATON_CONSENT_TOKEN"],
         sink=StdoutSink(),
     ),
 )

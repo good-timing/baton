@@ -8,8 +8,6 @@ Run the demo against it with `python examples/fastmcp_server/demo.py`.
 
 from __future__ import annotations
 
-import os
-
 from fastmcp import FastMCP
 
 # ----------------------------------------------------------------------------
@@ -48,7 +46,6 @@ install_baton(
     VendorConfig(
         vendor_id="bookmarks",
         vendor_display_name="Bookmarks",
-        consent_token=os.environ.get("BATON_CONSENT_TOKEN", "demo-local"),
         sink=StdoutSink(),  # swap for HttpSink(...) to ship to a Console
     ),
 )

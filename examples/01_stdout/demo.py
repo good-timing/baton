@@ -20,7 +20,6 @@ from baton.sinks import StdoutSink
 def main() -> None:
     client = Client(
         vendor_id="example-vendor",
-        consent_token="ct_demo",
         sink=StdoutSink(),
     )
 

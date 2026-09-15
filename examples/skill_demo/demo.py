@@ -67,7 +67,6 @@ def main() -> None:
 
     baton = Client(
         vendor_id="acme",
-        consent_token="demo-consent-token",
         sink=HttpSink(url="http://127.0.0.1:8765", api_key="dev-key"),
     )
 
