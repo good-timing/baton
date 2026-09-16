@@ -29,6 +29,8 @@ async def your_tool(...): ...
 
 On `mcp` 1.x the class is `mcp.server.fastmcp.FastMCP`; on standalone `fastmcp` it is `fastmcp.FastMCP`. `install_baton` detects which you passed and raises `TypeError`, before mutating anything, if it is neither.
 
+**Installing changes what your server advertises**, which is the point and is worth knowing before you ship it: each tool handler is wrapped, a `<vendor>_annotate` tool is registered, the server's `instructions` are rewritten, and three intent parameters are added to every tool's schema and stripped again before your handler sees them. [What gets injected](https://goodtiming.ai/docs.html#injected-tools).
+
 That is the whole configuration. Copy the string from **/account**, where it is labelled DSN. It packs four values — the collector to send to, your workspace, this server, and the key that binds them — and the SDK unpacks them and builds the sink itself. Tools registered before and after the call are both captured.
 
 **If you distribute your server, put the DSN in your source.** A stdio server runs on your user's machine, spawned by their MCP client, which passes it a fixed allowlist of environment variables — six names on macOS and Linux — plus whatever that user wrote in their own client config. Nothing from your `.env` is in either list. For a hosted server, set `BATON_DSN` and call `install_baton(mcp)` with no arguments.
@@ -57,7 +59,17 @@ with client.trace(
 
 ## PII scrubbing
 
-**On by default.** `baton.scrub.Scrubber` walks every event payload and redacts email / `Bearer …` / `sk-*` / `AKIA*` / JWT / Luhn-validated card / NA-format phone, plus a list of sensitive field names. Opt out with `VendorConfig(scrubber=baton.scrub.identity_scrub)`.
+**On by default.** `baton.scrub.Scrubber` walks every event payload and redacts email / `Bearer …` / `sk-*` / `AKIA*` / JWT / Luhn-validated card / NA-format phone, plus a list of sensitive field names. Opt out by passing a config instead of a bare DSN:
+
+```python
+from baton import install_baton, VendorConfig
+from baton.scrub import identity_scrub
+
+install_baton(mcp, VendorConfig(
+    dsn="https://baton_pk_...@baton.goodtiming.ai/ten_.../echo-server",
+    scrubber=identity_scrub,
+))
+```
 
 **It is pattern matching, not a guarantee.** `{"name": "Jane Doe", "address": "12 Elm St"}` passes through untouched, and a card number is redacted when its digits are contiguous but **not** when they are spaced or hyphenated. Decide what your server puts in tool params and results on that basis — do not tell your users "PII is scrubbed" on the strength of it. [What it does and does not catch](https://goodtiming.ai/docs.html#pii).
 
