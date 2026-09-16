@@ -89,7 +89,7 @@ This is the canonical signal schema the collector worker produces by stitching e
 | `signal_id` | string (UUIDv7) | yes | Client-generated. Idempotency key. |
 | `signal_type` | enum (see below) | yes | Classification of the signal. Eight signal types (failures + seven friction categories). |
 | `vendor_id` | string | yes | Stable vendor identifier; matches `VendorConfig.vendor_id`. Lowercase ASCII, `[a-z0-9-]+`. |
-| `session_id` | string | yes | Session correlation ID. Under `correlation_mode=session-stitched` (§3.4): stable across tool calls in one agent session. Under `correlation_mode=per-event`: an opaque per-event UUID with no cross-event linkage. See §3.4 for the layered resolution fallback. |
+| `session_id` | string | yes | Session correlation ID. Stable across tool calls in one agent session where a session-scoped identifier is observable; an opaque per-event UUID where none is. See §3.4 for the correlation modes and the layered resolution fallback. |
 | `consent_token` | string | yes | Proof of end-user consent. See §2.3. |
 | `created_at` | timestamp | yes | When the SDK packaged the signal. |
 | `intent` | string \| null | yes (nullable) | Natural-language description of what the end user was trying to accomplish. Source: see §5. May be null if not supplied. |
@@ -213,7 +213,11 @@ This is the canonical signal schema the collector worker produces by stitching e
 
 ### 3.4 Correlation modes
 
-The SDK declares one of two correlation modes per emitted event (and per assembled SignalPayload). The mode determines how the worker correlates events into signals.
+There are two correlation modes. The mode determines how the worker correlates events into signals.
+
+⚠ **The mode is NOT carried on the wire, and as of 2026-09-15 nothing signals it.** The envelope field `correlation_mode` was specified but never implemented by any producer; it was dropped on 2026-09-09 and removed as a wire field on 2026-09-15 (§13); the name survives below only in historical entries and in pointers like this one. It had one job — telling a deliberate per-event stream apart from the merge defect described at rung 5 — and it could not do that job, because the table below defines per-event mode as "a freshly minted UUID per event", which is byte-identical to what the defect emits. A field that cannot discriminate the two cases it exists to discriminate is not a mechanism.
+
+⚠ **So the mode is currently UNSIGNALLABLE, and that is not urgent only because per-event mode is UNBUILT** — see rung 5 below, which no adapter implements. Nothing emits per-event mode, so there is nothing for a consumer to tell apart yet. **How the mode is signalled once something does emit it is an open design decision (D-2/D-3), not a gap in this section.** Every clause below that reads "in per-event mode, do X" is therefore describing behaviour whose TRIGGER is undecided. A consumer MUST NOT infer the mode from `session_id` values today: the SDK does not vary them by mode, and both modes are permitted to produce a distinct id per event.
 
 | Mode | Meaning | When the SDK selects it |
 |---|---|---|
@@ -244,7 +248,15 @@ The SDK declares one of two correlation modes per emitted event (and per assembl
 3. **Agent-runtime-specific session key** — per-runtime adapter table in §5.2 (e.g., a future `_meta["claudecode/sessionId"]` if Anthropic ships one).
 4. **MCP protocol-level session — the `Mcp-Session-Id` header**, read directly from the request. Surrounding whitespace is not part of a field value (RFC 9110 §5.5), so the header is stripped before use and a blank one is a MISS that falls through to the next rung — a blank accepted as an id would file every such call under one session and merge unrelated conversations. Carried by old-spec (pre-2026-07-28) **stateful** streamable HTTP; removed for new-spec streamable HTTP per SEP-2567; never sent by SSE, which carries its id as a `session_id` query param; and not issued at all in stateless mode.
 4b. **The server library's own per-connection session id** — e.g. FastMCP's `Context.session_id`. Usable only where the underlying MCP SDK keeps one session object per connection, so the id survives across calls (mcp 1.x). mcp 2.x rebuilds that object per request, minting a fresh value every call, so the rung is disabled there — as it is when the SDK version cannot be determined, because losing a join is recoverable and inventing one between two users is not. Applies only to a live HTTP request that rung 4 did not answer: in practice SSE, and stateless streamable HTTP, where it degrades to a per-request id.
-5. **Per-event UUID** — when every live rung yields nothing, i.e. rungs 3, 4 and 4b (0, 1 and 2 are retired and yield nothing by construction; numbering is preserved, so this reads as "0-4b" in older text). Sets `correlation_mode=per-event`. **Not implemented by any adapter yet**: both terminate instead on a process-wide id minted at install, which is stable but merges every client of a multi-user server. Tracked as design-note D2.
+5. **Per-event UUID** — when every live rung yields nothing, i.e. rungs 3, 4 and 4b (0, 1 and 2 are retired and yield nothing by construction; numbering is preserved, so this reads as "0-4b" in older text). **Not implemented by any adapter yet**: both terminate instead on a process-wide id minted at install, which is stable but merges every client of a multi-user server. Tracked as design-note D2.
+
+   ⚠ **This rung MUST NOT fire on every exhausted ladder, and as written it would.** "Every live rung yields nothing" is also true on stdio and on the in-memory transport — where the process-wide id is the CORRECT answer, because one process serves one agent. It is the WRONG answer only where one process serves many callers, i.e. behind an HTTP request. The two cases are indistinguishable in the resolved value: both emit `sdk-<uuid7>`, so the prefix says "the ladder ran out" and nothing says which dead end.
+
+   ⇒ **Condition this rung on `transport_observed` (§11.4)**: fire it **only** where the producer observed `http`. Every other state — `no-http-request`, `read-failed`, absent, or any value this document does not register — does NOT fire, and keeps the process-wide id. That is a positive match, the same posture §11.4 requires of a consumer's grouping rule, and it is deliberately not a claim about what those other states mean: this rung's failure mode is manufacturing per-event ids for a stream that should have been grouped, so only positive evidence of a multi-caller transport may trigger it.
+
+   ⚠ **A producer MUST NOT report an exception in its own transport read as `no-http-request`.** That state asserts a fact about the deployment — one process, one caller — and an unreadable context is not that fact. A producer whose read raises MUST emit `read-failed`. Folding the two makes a producer defect arrive as evidence that grouping is safe, which is exactly the merge this rung and that field exist to prevent.
+
+   ⚠ **Amendment pending, NOT yet normative.** The trigger above is specified; what a fired rung EMITS is not, because the mode it selects has no wire signal (§3.4) — a stream of fresh UUIDs is what the merge defect already produces. Producers MUST NOT implement this rung until D-3 settles the emitted shape. Recorded so the condition is not lost when it is.
 
 **Implications for the Console worker:**
 
@@ -456,7 +468,7 @@ Different MCP clients populate `_meta` very differently. Observed behavior:
 | Cursor | `_meta.progressToken` only | Per-request int | MAY use as a session-relative call ordering hint. No Cursor-specific stable correlation key (no `cursor/*` namespace observed). SDK MUST rely on synthesized session_id for cross-call correlation. |
 | (Future runtimes) | TBD | TBD | Add per-runtime adapters as discovered. |
 
-**MCP spec evolution note (2026-07-28 release candidate, ships July 28, 2026):** SEP-2567 removes the protocol-level session for streamable HTTP (`Mcp-Session-Id` header gone). On stdio, process lifetime continues to provide implicit session scoping. On streamable HTTP under the new spec, the SDK MUST rely on the layered fallback in §3.4 — W3C trace context (now standardized in `_meta` per SEP-414) is the preferred primary path. `correlation_mode=per-event` is the conformant fallback when no session-bearing key is observable; see §3.4 + §11.3 for worker-side semantics.
+**MCP spec evolution note (2026-07-28 release candidate, ships July 28, 2026):** SEP-2567 removes the protocol-level session for streamable HTTP (`Mcp-Session-Id` header gone). On stdio, process lifetime continues to provide implicit session scoping. On streamable HTTP under the new spec, the SDK MUST rely on the layered fallback in §3.4 — W3C trace context (now standardized in `_meta` per SEP-414) is the preferred primary path. per-event mode is the conformant fallback when no session-bearing key is observable; see §3.4 + §11.3 for worker-side semantics.
 
 **`agent_runtime` resolution (updated 2026-09-09).** The SDK reads the client's DECLARED identity where it exists, and falls back to the per-runtime key heuristic above. In priority order, first hit wins:
 
@@ -745,7 +757,7 @@ A conforming SDK MUST NOT:
 A conforming Console MUST:
 
 1. **Ingest events idempotently.** Re-receiving the same `event_id` MUST be a no-op (deduplicated).
-2. **Reconstruct sessions from events** when `correlation_mode=session-stitched` (§3.4). Group by `session_id`; sort by `sequence_number`; tolerate small reordering windows for late-arriving events. When `correlation_mode=per-event`, the worker MUST NOT group events across `event_id` boundaries — each event stands alone (adjacent events may originate from different customers sharing the server instance).
+2. **Reconstruct sessions from events** when in session-stitched mode (§3.4). ⚠ **`correlation_mode` was REMOVED as a wire field (§13, 2026-09-15); the mode is currently unsignalled and its trigger is an open decision (D-2/D-3). The rule below is retained as the BEHAVIOUR each mode requires — only what selects it is undecided.** Group by `session_id`; sort by `sequence_number`; tolerate small reordering windows for late-arriving events. In per-event mode, the worker MUST NOT group events across `event_id` boundaries — each event stands alone (adjacent events may originate from different customers sharing the server instance).
 3. **Stitch events into SignalPayload** (§3) per the correlation rules in §11.5 (session-stitched mode), OR promote each signal-worthy event directly to a SignalPayload (per-event mode; see §11.5 closing paragraph).
 4. **Detect retry_loop and other state-dependent signal types** by querying recent events for the session/tool/params.
 5. **Run policy** (§11.6) and emit 0..N actions per signal.
@@ -764,16 +776,16 @@ Every event has these fields:
   "event_id": "01H4F...",                    // UUIDv7
   "event_type": "tool_call_end",             // see enum below
   "session_id": "...",                       // from layered fallback per §3.4
-  "correlation_mode": "session-stitched",    // "session-stitched" | "per-event"; see §3.4
   "call_id": "0193f2c1-...",                 // optional; minted per call, identical on both legs; see below
   "tenant_id": "...",                        // the account/customer; from VendorConfig
   "vendor_id": "...",                        // the wrapped vendor; matches VendorConfig.vendor_id (see note below)
-  "sequence_number": 42,                     // monotonic per session (session-stitched mode); 1 (per-event mode)
+  "sequence_number": 42,                     // monotonic per session (session-stitched mode); 1 (per-event mode) — ⚠ NOT a mode discriminator, see §3.4
   "captured_at": "2026-05-19T16:42:03Z",     // SDK timestamp at emission
   "consent_token": "...",                    // from VendorConfig; see §9
   "sdk_version": "0.1.0",
   "agent_runtime": "claude-code",
   "principal_id": "h1:9f2c...",              // optional; who the vendor resolved behind the call, hashed at the edge by default; see below
+  "transport_observed": "http",              // optional; what the SDK OBSERVED beneath the call, never what it concluded; see below
   "runtime_meta": {"claudecode/toolUseId": "...", "progressToken": 1},  // optional; verbatim _meta from MCP request (PII-scrubbed); see §11.4.1
   "trace_context": {"traceparent": "...", "tracestate": null, "baggage": null},  // optional; from _meta if present
   "payload": { ... }                         // event-type-specific fields
@@ -811,6 +823,29 @@ Four rules, each of them a mistake this project has already made or nearly made:
 - **It MUST be opaque** — a bare UUID. No tenant, user, session or tool name encoded, or the join key becomes a data-handling concern in its own right.
 - **It goes in its own envelope field, never inside `runtime_meta`.** That dict is the client's `_meta` forwarded verbatim (§11.4.1). An id the producer minted MUST stay separable from ids it merely observed.
 - **It says WHICH CALL, never WHO.** The principal is `principal_id`, a different field on a different condition. Keep the two claims apart.
+
+**`transport_observed` — what the SDK observed beneath this call (OPTIONAL, nullable).** A record of an OBSERVATION, deliberately not of a conclusion. Registered values:
+
+| value | the producer observed | means |
+|---|---|---|
+| `"http"` | an HTTP request object was reachable from the call's context | the call arrived over an HTTP transport. One process MAY be serving many callers |
+| `"no-http-request"` | a live MCP request with no HTTP request behind it | stdio or an in-memory transport. One process is one caller |
+| `"read-failed"` | the producer's own read of the transport raised | **nothing about the transport.** Its own value so a consumer can COUNT how often the read fails, rather than a producer defect arriving disguised as a fact |
+| absent / `null` | the producer did not look | no MCP transport exists — the library API — or a producer predating this field |
+
+**Why the values name the observation.** "stdio" is not what is measured. The absence of an HTTP request covers real stdio AND the in-memory transport, and further transports exist which do not split into one-caller and many-caller. Naming the value after what was seen keeps the inference — and the right to revise it — with the consumer.
+
+**Why `read-failed` is not folded into `no-http-request`.** They are opposite kinds of fact. `no-http-request` is evidence about a deployment; `read-failed` is evidence about the producer. Folding the second into the first delivers a producer bug to consumers as a statement about the customer's transport, and any consumer rule that treats `no-http-request` as safe to group would then group on a defect.
+
+**What it is for.** The `session_id` ladder's terminus (§3.4 rung 5) means two opposite things and is identical on the wire: a process-wide fallback id under `no-http-request` describes one agent and is correct to group, while the same id under `http` describes a multi-user server with no discriminator, where grouping merges unrelated callers. This field is what lets a consumer tell those apart.
+
+**Consumer rules.**
+
+- New values MAY be registered here without a major version, so a consumer MUST NOT reject an event for carrying an unrecognised one, and MUST NOT treat it as any registered value. **A validating consumer that rejects the event rather than the value discards the whole call** — its `call_id` and `principal_id` with it — over an advisory field.
+- A consumer that groups events on a producer-minted fallback `session_id` MUST do so only where `transport_observed` is **exactly** `no-http-request`. Expressing the rule the other way — group unless `http` — admits `read-failed`, absence, and every unrecognised value into the grouped set, which is the merge this field exists to prevent.
+- The field is advisory and carries no security property. It is the producer's own report about its own process, is not attested, and MUST NOT be used for authorization or tenancy decisions.
+
+**It goes in its own envelope field, never inside `runtime_meta`.** That dict is the client's `_meta` forwarded verbatim (§11.4.1); an observation the producer made about itself must stay separable from text the client supplied.
 
 **`tenant_id` vs `vendor_id`.** Both are required and they are not synonyms. `tenant_id` identifies the **account** the events belong to (the Baton customer). `vendor_id` identifies the **wrapped vendor** the SDK is instrumenting, and matches `VendorConfig.vendor_id`. In vendor-mode the account corresponds to a single wrapped vendor (the SDK currently sets `tenant_id` to the vendor's own id). In customer-mode a single account wraps several vendors under a distinct `tenant_id`, and the collector groups friction per wrapped vendor with `(tenant_id, vendor_id)`. Implementations MUST NOT assume `tenant_id == vendor_id` in general. The collector MUST reject envelopes missing either field.
 
@@ -921,7 +956,7 @@ Channels (Pylon, Slack, Notion, etc.) MUST receive assembled `SignalPayload` obj
 
 Migration note: Console implementations that currently do correlation in Channels (e.g., a v0.2 ticketing Channel reading raw events from Postgres) MUST migrate to consuming `SignalPayload` from a worker-side store before v0.3. The interim "session-windowed Channels" pattern is acknowledged as v0.2 expedient, not normative.
 
-**Per-event mode (when `correlation_mode=per-event`, §3.4):** the correlation rules above do not apply. Each signal-worthy event becomes its own SignalPayload directly:
+**Per-event mode (§3.4, the mode formerly selected by `correlation_mode=per-event`; see §13):** the correlation rules above do not apply. Each signal-worthy event becomes its own SignalPayload directly:
 
 - An `annotation` event with `signal_type` populated → SignalPayload with `intent` / `expected_outcome` / `signal_type` / `suggested_improvement` / `workflow` / `context` populated from the annotation; `tool_calls=[]` and `observed_outcomes=[]` (the worker cannot safely correlate with surrounding tool calls — adjacent events may originate from different customers sharing the server instance).
 - A `tool_call_error` event → SignalPayload with `signal_type=failure`, `tool_calls=[{tool_name, params, called_at, attempt: 1}]`, and `observed_outcomes=[{status: "error", error_type, error_body, duration_ms, responded_at}]` derived from the single event.
@@ -1003,6 +1038,12 @@ Defined error codes:
 
 > ⚠ **Entries below dated before 2026-09-09 still read "Unreleased" and are not.** They shipped across **0.4.0–0.7.2** — the undated one at the bottom of this list is the intent-param entry, and `call_intent` / `intent_source` shipped in 0.4.0 — and the version stamp this list used through `0.2.8` stopped being applied after it. Restamping means mapping **ten** entries to the releases that actually carried them: archaeology, easy to get wrong, and not a thing to do inside a release. (This note said "fifteen" and "0.5.x–0.7.2" until 2026-09-11; both were wrong, in a note whose whole job is to stop a later reader mis-reading the list.) Recorded here so the word "Unreleased" below is read as a stale label rather than a claim.
 
+
+- **Unreleased (spec-only, 2026-09-15)** — **two envelope changes, one added and one removed, both affecting no producer today.**
+
+  **(1) ADDED: `transport_observed`** (§11.4), an optional nullable string recording what the producer OBSERVED beneath a call — `"http"`, `"no-http-request"`, `"read-failed"` — or absent where it did not look. Additive and optional, so a producer that never emits it stays conformant and no consumer has to change. It exists because §3.4 rung 5's terminus is correct on one deployment shape and a stranger-merging defect on another, and the two are identical on the wire; measured in production on 2026-09-15, where two clients of one HTTP server landed in one session. **The registered value set is open**: consumers MUST tolerate an unregistered value rather than reject the event, and MUST key any grouping rule on `no-http-request` positively. Specified here ahead of both SDKs deliberately, in the order the `call_id` and `principal_id` fields used — a collector whose ingest refuses unknown fields rejects the whole event otherwise, and the SDK drops a non-429 4xx without reading the body, so the call's other fields go with it.
+
+  **(2) REMOVED: `correlation_mode`.** Specified since the envelope was written, **implemented by no producer, carried in no schema** (`baton-spec` reverted it) and read by no consumer. Dropped by decision on 2026-09-09 and removed from this document today. **The reason is that it could not do its one job**: it existed to tell a deliberate per-event stream apart from the rung-5 merge defect, and §3.4 defines per-event mode as "a freshly minted UUID per event" — byte-identical to what the defect emits. No consumer action: the field never appeared on a wire, so nothing can be reading it. ⚠ **This does not remove the two correlation MODES**, which remain in §3.4 as named behaviours. It removes the claim that the mode is carried on the wire. **Nothing signals the mode today**, which is tolerable only because per-event mode is itself unimplemented; how it is signalled is an open decision (D-2/D-3) and MUST be settled before any producer implements rung 5. Consumers MUST NOT infer the mode from `session_id` in the meantime.
 
 - **0.8.7 (SDK-only, 2026-09-15)**: **no envelope, field or shape change; the SDK's `VendorConfig.intent_param_mode` default moves from `optional` to `required`, matching baton-proxy (2026-09-01 entry below).** `required` keeps the meaning that entry defined for every producer: `user_goal` is listed in each wrapped tool's advertised `required` and its description leads with `REQUIRED.`, and nothing Baton adds rejects a `tools/call` that omits it. The call is served, the vendor's handler runs, and `tool_call_start` carries `call_intent: null`. Measured 2026-09-15 through a real client session on both adapters, before and after the flip: the official adapter on mcp 1.20.0, 1.25.0, 1.27.2, 1.30.0, 2.0.0 and 2.2.0, the standalone adapter on fastmcp 2.14.7, 3.4.2, 4.0.2 and 4.0.3. `expected_result` and `overall_task` stay optional in every mode, and a tool that declares its own `user_goal` is untouched. **Consumer consequence:** `surface_snapshot.seam_augmentations.intent_param.mode` reads `required` for an SDK producer on the default, where it read `optional`. `surface_hash` does not move, because the snapshot hashes the vendor-true surface before injection (§11.4.2). The expected effect is a larger share of `tool_call_start` events carrying `call_intent`; that is a prediction rather than a measurement, and the baseline to compare against is the proxy's 89% under `optional`. A consumer must still treat a null `call_intent` as normal, since a call that omits the param is served, not refused. A producer that sets `intent_param_mode` explicitly emits exactly what it emitted before.
 

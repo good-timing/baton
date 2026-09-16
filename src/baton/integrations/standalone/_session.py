@@ -59,8 +59,10 @@ survives either way — both legs of a call share one request, so they share the
 id; what a split costs is ``sequence_number`` continuity (restarts at 1 per
 call), the once-per-session proactive (fires per call), and the cross-request
 ``*_annotate`` → call join. SPEC §3.4's real answer here is rung 5, a per-event
-UUID with ``correlation_mode=per-event``, unbuilt in both adapters and tracked
-as D2.
+UUID, unbuilt in both adapters and tracked as D2. (It used to read
+``correlation_mode=per-event``; that envelope field was dropped 2026-09-09 and
+removed from SPEC 2026-09-15 — it could not tell a deliberate per-event stream
+apart from the merge defect, since both emit a fresh UUID per event.)
 """
 
 from __future__ import annotations
@@ -177,10 +179,15 @@ async def resolve_call_session_id(*, fallback: str) -> str:
     a field the console can partition on downstream, where the decision can
     be changed and re-run.
 
-    ``fallback`` is **not** SPEC rung 5. Rung 5 is a per-event UUID carrying
-    ``correlation_mode=per-event``; neither adapter implements it, so both
-    terminate on a process-wide id that is stable but merges every client of a
-    multi-user server. That gap is D2.
+    ``fallback`` is **not** SPEC rung 5. Rung 5 is a per-event UUID; neither
+    adapter implements it, so both terminate on a process-wide id that is
+    stable but merges every client of a multi-user server. That gap is D2.
+    ⚠ Rung 5 is also **not implementable yet**, and not only for want of code:
+    SPEC now conditions it on ``transport_observed`` (this fallback is the
+    CORRECT answer on stdio, where one process is one agent), and what a fired
+    rung emits is undecided — a stream of fresh UUIDs is indistinguishable from
+    the merge defect, which is why the ``correlation_mode`` field was dropped
+    rather than kept. D-3 settles the shape.
 
     **Rungs 1-2 were retired 2026-09-09** — ``_meta.traceparent``'s trace-id
     and a client-supplied ``_meta["io.baton/session_id"]`` both keyed the
