@@ -1,8 +1,8 @@
 # Baton SDK
 
-**Pre-1.0** — the public API is not yet stable, and breaking changes are flagged in [SPEC §13](https://github.com/good-timing/baton/blob/main/docs/SPEC.md) and [CHANGELOG.md](https://github.com/good-timing/baton/blob/main/CHANGELOG.md).
+**Pre-1.0.** The public API is not yet stable. Breaking changes are flagged in [SPEC §13](https://github.com/good-timing/baton/blob/main/docs/SPEC.md) and [CHANGELOG.md](https://github.com/good-timing/baton/blob/main/CHANGELOG.md).
 
-MCP standardizes how agents discover and call your tools. It does not capture *why* a call happened or whether it helped the user. Baton instruments those interactions on the vendor side — by wrapping your MCP server, or by direct library calls in your own code — and captures intent, the tool calls, expected outcomes and observed outcomes, plus friction signals. It hands each one to a sink. Everything after that — correlation, policy, routing — happens downstream of the sink, not in this package.
+MCP standardizes how agents discover and call your tools. It does not capture *why* a call happened or whether it helped the user. Baton instruments those interactions on the vendor side, either by wrapping your MCP server or through direct library calls in your own code. It captures intent, the tool calls, expected outcomes and observed outcomes, plus friction signals, and hands each one to a sink. Correlation, policy and routing all happen downstream of the sink, not in this package.
 
 **The docs are at [goodtiming.ai/docs.html](https://goodtiming.ai/docs.html)**: both integration paths, the proxy, the gateway and the Console, with the full configuration reference. This page is the short version.
 
@@ -29,11 +29,11 @@ async def your_tool(...): ...
 
 On `mcp` 1.x the class is `mcp.server.fastmcp.FastMCP`; on standalone `fastmcp` it is `fastmcp.FastMCP`. `install_baton` detects which you passed and raises `TypeError`, before mutating anything, if it is neither.
 
-**Installing changes what your server advertises**, which is the point and is worth knowing before you ship it: each tool handler is wrapped, a `<vendor>_annotate` tool is registered, the server's `instructions` are rewritten, and three intent parameters are added to every tool's schema and stripped again before your handler sees them. [What gets injected](https://goodtiming.ai/docs.html#injected-tools).
+Copy the DSN from **/account**. It packs four values: the collector to send to, your workspace, this server, and the key that binds them. The SDK unpacks them and builds the sink itself. Tools registered before and after the call are both captured.
 
-That is the whole configuration. Copy the string from **/account**, where it is labelled DSN. It packs four values — the collector to send to, your workspace, this server, and the key that binds them — and the SDK unpacks them and builds the sink itself. Tools registered before and after the call are both captured.
+**Installing changes what your server advertises.** Each tool handler is wrapped, a `<vendor>_annotate` tool is registered, the server's `instructions` are rewritten, and three intent parameters are added to every tool's schema and stripped again before your handler sees them. [What gets injected](https://goodtiming.ai/docs.html#injected-tools).
 
-**If you distribute your server, put the DSN in your source.** A stdio server runs on your user's machine, spawned by their MCP client, which passes it a fixed allowlist of environment variables — six names on macOS and Linux — plus whatever that user wrote in their own client config. Nothing from your `.env` is in either list. For a hosted server, set `BATON_DSN` and call `install_baton(mcp)` with no arguments.
+**If you distribute your server, put the DSN in your source.** A stdio server runs on your user's machine, spawned by their MCP client, which passes it a fixed allowlist of environment variables (six names on macOS and Linux) plus whatever that user wrote in their own client config. Nothing from your `.env` is in either list. For a hosted server, set `BATON_DSN` and call `install_baton(mcp)` with no arguments.
 
 Sending to your own collector instead, or trying the package before you have a key, means naming the parts rather than passing a DSN: [Without a DSN](https://goodtiming.ai/docs.html#without-dsn).
 
@@ -71,19 +71,19 @@ install_baton(mcp, VendorConfig(
 ))
 ```
 
-**It is pattern matching, not a guarantee.** `{"name": "Jane Doe", "address": "12 Elm St"}` passes through untouched, and a card number is redacted when its digits are contiguous but **not** when they are spaced or hyphenated. Decide what your server puts in tool params and results on that basis — do not tell your users "PII is scrubbed" on the strength of it. [What it does and does not catch](https://goodtiming.ai/docs.html#pii).
+**It is pattern matching, not a guarantee.** `{"name": "Jane Doe", "address": "12 Elm St"}` passes through untouched, and a card number is redacted when its digits are contiguous but **not** when they are spaced or hyphenated. Decide what your server puts in tool params and results on that basis. Do not tell your users "PII is scrubbed" on the strength of it. [What it does and does not catch](https://goodtiming.ai/docs.html#pii).
 
 ## Turning capture off
 
 `BATON_DISABLED=1` in the environment of the process running the server, and the SDK installs nothing at all: no wrapped tools, no annotation tool, no instructions rewrite, no collector connection, no background thread.
 
-The switch belongs to whoever RUNS the server — your user for a server you distribute, you for one you host. **If you pass this on to your users, say where the variable goes**: for a server started by an MCP client it belongs in that client's config file, **not in their shell**, which never reaches the process. [The long version](https://goodtiming.ai/docs.html#off-switch).
+The switch belongs to whoever RUNS the server: your user for a server you distribute, you for one you host. **If you pass this on to your users, say where the variable goes.** For a server started by an MCP client it belongs in that client's config file, **not in their shell**, which never reaches the process. [The long version](https://goodtiming.ai/docs.html#off-switch).
 
 ## More
 
 | | |
 |---|---|
-| [goodtiming.ai/docs.html](https://goodtiming.ai/docs.html) | The docs — both integration paths, sinks, `VendorConfig`, the proxy, the gateway, the Console |
+| [goodtiming.ai/docs.html](https://goodtiming.ai/docs.html) | The docs: both integration paths, sinks, `VendorConfig`, the proxy, the gateway, the Console |
 | [`docs/SPEC.md`](https://github.com/good-timing/baton/blob/main/docs/SPEC.md) | The wire protocol. The contract a collector consumes |
 | [`docs/CHARTER.md`](https://github.com/good-timing/baton/blob/main/docs/CHARTER.md) | Why the SDK is thin, and what deliberately lives downstream of the sink |
 | [`examples/`](https://github.com/good-timing/baton/tree/main/examples) | The four-rung sink ladder. Start with `examples/01_stdout/demo.py`, which needs no key |
