@@ -421,18 +421,20 @@ def _wrap_tool_run(
             str,
             str | None,
             str,
+            str | None,
         ],
         Awaitable[None],
     ],
     emit_after: Callable[
-        [str, str, Any, float, dict[str, Any] | None, str, str | None, str], Awaitable[None]
+        [str, str, Any, float, dict[str, Any] | None, str, str | None, str, str | None],
+        Awaitable[None],
     ],
     emit_error: Callable[
-        [str, str, BaseException, float, dict[str, Any] | None, str, str | None, str],
+        [str, str, BaseException, float, dict[str, Any] | None, str, str | None, str, str | None],
         Awaitable[None],
     ],
     emit_proactive: Callable[
-        [str, str, str, str | None, str | None, dict[str, Any] | None, str, str | None],
+        [str, str, str, str | None, str | None, dict[str, Any] | None, str, str | None, str | None],
         Awaitable[None],
     ],
     scrubber: Callable[[Any], Any],
@@ -556,6 +558,11 @@ def _wrap_tool_run(
         # hook is configured, it is not free", which was guarding a cost that
         # had always been paid one line later.
         call_headers = _extract_headers_from_context(context)
+        # Read from the same context, one line apart, and DELIBERATELY not from
+        # ``call_headers`` above: that helper folds an AttributeError into the
+        # same ``None`` as a real absence (register A6), and this field exists
+        # to keep those apart. See ``observe_transport``.
+        call_transport = observe_transport(context)
         identity_hook_context = (
             SessionResolutionContext(
                 headers=call_headers,
@@ -600,6 +607,7 @@ def _wrap_tool_run(
                 scrubbed_meta,
                 call_agent_runtime,
                 call_principal_id,
+                call_transport,
             )
 
         # The per-call join key (SPEC §11.4). A LOCAL of this wrapper call,
@@ -641,6 +649,7 @@ def _wrap_tool_run(
                 call_agent_runtime,
                 call_principal_id,
                 call_id,
+                call_transport,
             )
         called_at = monotonic()
         try:
@@ -659,6 +668,7 @@ def _wrap_tool_run(
                 call_agent_runtime,
                 call_principal_id,
                 call_id,
+                call_transport,
             )
             raise
         # MRTR (mcp>=2.0): an InputRequiredResult means the call paused mid-flight
@@ -675,11 +685,64 @@ def _wrap_tool_run(
                 call_agent_runtime,
                 call_principal_id,
                 call_id,
+                call_transport,
             )
         return result
 
     setattr(wrapper, _WRAPPED_SENTINEL, True)
     return wrapper
+
+
+def observe_transport(context: Any) -> str | None:
+    """What we observed beneath this call, for the envelope's ``transport_observed``.
+
+    ⚠ **Deliberately NOT built on ``_extract_headers_from_context`` below.** That
+    helper catches ``AttributeError`` and returns the same ``None`` as a genuine
+    absence, so an unexpected context shape reads there as "no HTTP" — register
+    A6, a live defect. Deriving a transport from it would publish that bug as a
+    fact about the customer's deployment, and ``no-http-request`` is not a label
+    but a LICENCE: SPEC §3.4 lets a consumer group a process-wide fallback
+    ``session_id`` on it and only on it. Handing that out because our own read
+    crashed is how a producer bug becomes two strangers in one conversation.
+
+    Nor does it consult ``context.headers``, which looks like a shortcut and is
+    two traps. It is mcp 2.0+ only, so it is vacuously empty across the whole
+    mcp 1.x band (register A7) — two of four supported legs — while the request
+    object splits correctly on those same rows. And on mcp 2.x it is *derived
+    from* ``request_context.request.headers``, so it adds no information and one
+    more way to disagree.
+
+    The four outcomes, keyed on the request object exactly as SPEC §11.4 requires:
+
+    - no context at all → ``None``. We were handed nothing to look at.
+    - ``request_context`` raises ``ValueError`` → ``None``. The library's
+      deliberate, documented answer to "is there a live request?" when a tool is
+      called programmatically (``mcp.call_tool()``). **Not** ``no-http-request``,
+      which SPEC defines as "a LIVE MCP request with no HTTP request behind it"
+      — this is not that, and claiming it would assert a fact about a deployment
+      that is not running. **Not** ``read-failed`` either: nothing failed.
+    - ``rc.request is None`` → ``"no-http-request"``. Stdio or in-memory, where
+      the attribute is real and its value is the signal (verified on mcp 2.1.1:
+      ``ServerRequestContext.request: RequestT | None = None``).
+    - a request object → ``"http"``.
+    - anything else raised → ``"read-failed"``. The whole point of the value.
+    """
+    if context is None:
+        return None
+    try:
+        rc = context.request_context
+    except ValueError:
+        return None
+    except Exception:
+        logger.debug("transport_observed: the request-context read raised", exc_info=True)
+        return "read-failed"
+    try:
+        if rc is None:
+            return None
+        return "no-http-request" if rc.request is None else "http"
+    except Exception:
+        logger.debug("transport_observed: the request read raised", exc_info=True)
+        return "read-failed"
 
 
 def _extract_headers_from_context(context: Any) -> Mapping[str, str] | None:
@@ -845,16 +908,20 @@ def _make_emitters(
             str,
             str | None,
             str,
+            str | None,
         ],
         Awaitable[None],
     ],
-    Callable[[str, str, Any, float, dict[str, Any] | None, str, str | None, str], Awaitable[None]],
     Callable[
-        [str, str, BaseException, float, dict[str, Any] | None, str, str | None, str],
+        [str, str, Any, float, dict[str, Any] | None, str, str | None, str, str | None],
         Awaitable[None],
     ],
     Callable[
-        [str, str, str, str | None, str | None, dict[str, Any] | None, str, str | None],
+        [str, str, BaseException, float, dict[str, Any] | None, str, str | None, str, str | None],
+        Awaitable[None],
+    ],
+    Callable[
+        [str, str, str, str | None, str | None, dict[str, Any] | None, str, str | None, str | None],
         Awaitable[None],
     ],
     Callable[[str, str, dict[str, Any]], Awaitable[None]],
@@ -881,6 +948,7 @@ def _make_emitters(
         runtime_meta: dict[str, Any] | None,
         agent_runtime: str,
         principal_id: str | None,
+        transport_observed: str | None,
     ) -> None:
         await safe_write(
             sink,
@@ -893,6 +961,7 @@ def _make_emitters(
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
                 principal_id=principal_id,
+                transport_observed=transport_observed,
                 runtime_meta=runtime_meta,
                 payload=AnnotationPayload(
                     intent=intent,
@@ -916,6 +985,7 @@ def _make_emitters(
         agent_runtime: str,
         principal_id: str | None,
         call_id: str,
+        transport_observed: str | None,
     ) -> None:
         injected_any = any(v is not None for v in (call_intent, call_expected, call_workflow))
         await safe_write(
@@ -929,6 +999,7 @@ def _make_emitters(
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
                 principal_id=principal_id,
+                transport_observed=transport_observed,
                 call_id=call_id,
                 runtime_meta=runtime_meta,
                 payload=ToolCallStartPayload(
@@ -952,6 +1023,7 @@ def _make_emitters(
         agent_runtime: str,
         principal_id: str | None,
         call_id: str,
+        transport_observed: str | None,
     ) -> None:
         await safe_write(
             sink,
@@ -964,6 +1036,7 @@ def _make_emitters(
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
                 principal_id=principal_id,
+                transport_observed=transport_observed,
                 call_id=call_id,
                 runtime_meta=runtime_meta,
                 payload=ToolCallEndPayload(
@@ -984,6 +1057,7 @@ def _make_emitters(
         agent_runtime: str,
         principal_id: str | None,
         call_id: str,
+        transport_observed: str | None,
     ) -> None:
         await safe_write(
             sink,
@@ -996,6 +1070,7 @@ def _make_emitters(
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
                 principal_id=principal_id,
+                transport_observed=transport_observed,
                 call_id=call_id,
                 runtime_meta=runtime_meta,
                 payload=ToolCallErrorPayload(

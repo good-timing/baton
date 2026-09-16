@@ -35,6 +35,7 @@ from baton.integrations.official._compat import MCPServerClass as FastMCP
 from baton.integrations.official._tool_wrap import (
     _extract_headers_from_context,
     _extract_meta_from_context,
+    observe_transport,
 )
 from baton.integrations.runtime_adapter import UNKNOWN_AGENT_RUNTIME, detect_agent_runtime
 from baton.scrub import identity_scrub
@@ -231,6 +232,7 @@ def register_annotation_tool(
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
                 principal_id=annotation_principal_id,
+                transport_observed=observe_transport(ctx),
                 payload=AnnotationPayload(
                     intent=scrubber(user_goal) if user_goal else None,
                     expected_outcome=(scrubber(expected_result) if expected_result else None),

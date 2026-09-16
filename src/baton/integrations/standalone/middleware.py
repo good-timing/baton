@@ -63,7 +63,11 @@ from baton.integrations.runtime_adapter import (
     meta_to_dict,
 )
 from baton.integrations.standalone import _auth
-from baton.integrations.standalone._session import extract_headers, resolve_call_session_id
+from baton.integrations.standalone._session import (
+    extract_headers,
+    observe_transport,
+    resolve_call_session_id,
+)
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
 
@@ -462,6 +466,16 @@ class BatonMiddleware(Middleware):
         # above it feeds it. Said explicitly so the next reader neither
         # preserves a constraint that no longer exists nor thinks they broke
         # one by moving the call.
+        # Read once per call, beside the session it conditions. SPEC §3.4
+        # rung 5 fires only where this says ``"http"``, because the
+        # process-wide fallback below is the CORRECT answer on stdio and a
+        # stranger-merging one on a hosted server, and the two are identical
+        # in the resolved value.
+        #
+        # Unconditional, unlike the hook-gated ``extract_headers`` above. The
+        # cost argument in that comment is already spent here: the very next
+        # line resolves the session, which reads headers on every call anyway.
+        call_transport = observe_transport()
         session_id = await self._extract_session_id()
 
         # The session's FIRST injected-param intent also becomes a proactive
@@ -483,6 +497,7 @@ class BatonMiddleware(Middleware):
                     captured_at=datetime.now(UTC),
                     agent_runtime=runtime,
                     principal_id=call_principal_id,
+                    transport_observed=call_transport,
                     runtime_meta=scrubbed_meta,
                     payload=AnnotationPayload(
                         intent=scrubbed_intent,
@@ -526,6 +541,7 @@ class BatonMiddleware(Middleware):
                     captured_at=datetime.now(UTC),
                     agent_runtime=runtime,
                     principal_id=call_principal_id,
+                    transport_observed=call_transport,
                     call_id=call_id,
                     runtime_meta=scrubbed_meta,
                     payload=ToolCallStartPayload(
@@ -564,6 +580,7 @@ class BatonMiddleware(Middleware):
                     captured_at=datetime.now(UTC),
                     agent_runtime=runtime,
                     principal_id=call_principal_id,
+                    transport_observed=call_transport,
                     call_id=call_id,
                     runtime_meta=scrubbed_meta,
                     payload=ToolCallErrorPayload(
@@ -608,6 +625,7 @@ class BatonMiddleware(Middleware):
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
                 principal_id=call_principal_id,
+                transport_observed=call_transport,
                 call_id=call_id,
                 runtime_meta=scrubbed_meta,
                 payload=ToolCallEndPayload(

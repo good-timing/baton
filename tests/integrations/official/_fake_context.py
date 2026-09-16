@@ -31,7 +31,20 @@ class _FakeRequestContext:
 
 
 class _FakeContextV2:
-    """Mimics mcp 2.0's ``Context``: a first-class ``.headers`` property."""
+    """Mimics mcp 2.0's ``Context``: a first-class ``.headers`` property.
+
+    ⚠ **``.headers`` is NOT independent of ``request_context.request``, and this
+    fake used to model it as if it were.** It set ``.headers`` while leaving
+    ``request_context`` with no request at all, which is a state real mcp 2.x
+    cannot reach: ``Context.headers`` there is literally
+    ``getattr(self.request_context.request, "headers", None)`` (verified on mcp
+    2.1.1). The split went unnoticed while every reader consulted ``.headers``
+    first and stopped. ``observe_transport`` keys on the request object — as
+    SPEC §11.4 requires, because headers are vacuously empty across the whole
+    mcp 1.x band — so it read this fake as having no HTTP at all while the fake
+    was meant to model an HTTP call. Attaching the request keeps the two in the
+    relationship the library actually holds them in.
+    """
 
     def __init__(
         self,
@@ -42,7 +55,9 @@ class _FakeContextV2:
         request_state: str | None = None,
     ) -> None:
         self.headers = headers
-        self.request_context = _FakeRequestContext(meta=meta)
+        self.request_context = _FakeRequestContext(
+            _FakeRequest(headers) if headers else None, meta=meta
+        )
         # mcp>=2.0's MRTR properties — present directly on Context, not nested.
         # Both default None (a fresh, non-continuation call) so every existing
         # caller of this fake is unaffected.

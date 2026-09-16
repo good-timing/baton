@@ -68,7 +68,7 @@ apart from the merge defect, since both emit a fresh UUID per event.)
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from importlib.metadata import PackageNotFoundError, version
 
 from fastmcp.server.dependencies import get_context, get_http_headers
@@ -160,6 +160,53 @@ def extract_headers() -> Mapping[str, str] | None:
     having to remember. See ``CaseInsensitiveHeaders`` for the whole story."""
     headers = get_http_headers(include_all=True)
     return headers if headers else None
+
+
+def observe_transport(*, _get_http_request: Callable[[], object] | None = None) -> str | None:
+    """What we observed beneath this call, for the envelope's ``transport_observed``.
+
+    ⚠ **Deliberately NOT built on ``extract_headers`` above, which cannot answer
+    this.** It delegates to fastmcp's ``get_http_headers``, whose own contract is
+    "never raises ... an empty dict if there is no active HTTP request" — so it
+    swallows the ``RuntimeError`` that IS the absence signal and returns the same
+    empty mapping either way. Reading a transport off it would fold "no HTTP
+    request" and "the read broke" into one answer, which is the precise merge
+    ``Event.transport_observed`` forbids, and the defect register A6 records in
+    the official adapter's equivalent helper. Headers are also the wrong carrier
+    on their own merits: they are vacuously empty across the whole mcp 1.x band
+    (register A7) while the request object splits correctly there.
+
+    So this calls ``get_http_request`` itself and reads the three outcomes apart:
+
+    - returns a request → ``"http"``
+    - raises ``RuntimeError`` → ``"no-http-request"``, fastmcp's deliberate,
+      named absence signal (``"No active HTTP request found."``)
+    - raises anything else → ``"read-failed"``
+
+    ⚠ **The exception type is a GUESS about a third party and is treated as one.**
+    ``RuntimeError`` is confirmed on fastmcp 3.3.1 / 3.4.7 / 4.0.2 / 4.0.3, and
+    commit ``8b4356d`` in this repo records fastmcp raising ``RuntimeError``
+    where its own docstring promised ``ValueError``. The default branch is
+    therefore ``read-failed`` rather than ``no-http-request``: if a version ever
+    signals absence some other way we under-report a real stdio server, which
+    loses a grouping. The reverse mistake invents one.
+
+    ``_get_http_request`` is a seam for the test that proves the last paragraph;
+    nothing in the SDK passes it.
+    """
+    get_request = _get_http_request
+    if get_request is None:
+        from fastmcp.server.dependencies import get_http_request
+
+        get_request = get_http_request
+    try:
+        get_request()
+    except RuntimeError:
+        return "no-http-request"
+    except Exception:
+        logger.debug("transport_observed: the HTTP request read raised", exc_info=True)
+        return "read-failed"
+    return "http"
 
 
 async def resolve_call_session_id(*, fallback: str) -> str:

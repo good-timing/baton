@@ -39,7 +39,11 @@ from baton.integrations.runtime_adapter import (
     meta_to_dict,
 )
 from baton.integrations.standalone import _auth
-from baton.integrations.standalone._session import extract_headers, resolve_call_session_id
+from baton.integrations.standalone._session import (
+    extract_headers,
+    observe_transport,
+    resolve_call_session_id,
+)
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_write
 
@@ -176,6 +180,7 @@ def register_annotation_tool(
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
                 principal_id=annotation_principal_id,
+                transport_observed=observe_transport(),
                 runtime_meta=scrubbed_meta,
                 payload=AnnotationPayload(
                     intent=scrubber(user_goal) if user_goal else None,
