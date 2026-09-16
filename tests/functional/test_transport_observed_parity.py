@@ -231,6 +231,20 @@ def test_a_raised_read_is_read_failed_not_absence() -> None:
 
     assert observe_official(_Exploding()) == "read-failed"
 
+    # ⚠ The SECOND failure point, and the one register A6 actually describes:
+    # ``request_context`` answers fine and the request read is what explodes.
+    # The official resolver has two try blocks and the row above only reaches
+    # the first, so without this the A6 shape itself was never covered.
+    class _ExplodingRequest:
+        @property
+        def request(self) -> Any:
+            raise AttributeError("unexpected request-context shape")
+
+    class _CtxWithExplodingRequest:
+        request_context = _ExplodingRequest()
+
+    assert observe_official(_CtxWithExplodingRequest()) == "read-failed"
+
     pytest.importorskip("fastmcp")
     from baton.integrations.standalone._session import observe_transport as observe_standalone
 
