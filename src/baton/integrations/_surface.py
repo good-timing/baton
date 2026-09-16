@@ -87,6 +87,7 @@ def build_seam_augmentations(
     injected_tool_names: list[str],
     intent_param_names: list[str],
     intent_param_mode: str,
+    required_names: list[str],
 ) -> dict[str, Any]:
     """The as-served delta Baton added on top of the vendor-true surface —
     mirrors proxy's ``seam_augmentations`` so a consumer can render both
@@ -94,11 +95,19 @@ def build_seam_augmentations(
     (where the suffix is optional), the SDK's ``build_server_instructions``
     unconditionally documents the annotation tool whenever ``install_baton``
     runs.
+
+    ``required_names`` is which of ``names`` the mode advertises as required.
+    It is per surface, not per tool: a tool that declares one of the names
+    itself is not escalated and is still covered by this list.
     """
     return {
         "injected_tools": sorted(injected_tool_names),
         "intent_param": (
-            {"names": sorted(intent_param_names), "mode": intent_param_mode}
+            {
+                "names": sorted(intent_param_names),
+                "required_names": sorted(required_names),
+                "mode": intent_param_mode,
+            }
             if intent_param_mode != "off"
             else None
         ),

@@ -106,6 +106,7 @@ from baton.integrations._llm_text import (
     build_expected_result_param_description,
     build_overall_task_param_description,
     build_user_goal_param_description,
+    required_param_names,
 )
 from baton.integrations._session import (
     session_id_from_headers,
@@ -309,9 +310,9 @@ def install_wraps(
 
 
 def _inject_goal_params(tool: Any, intent_param_mode: str) -> dict[str, str]:
-    """Inject ``user_goal``/``expected_result`` into ``tool.parameters`` in
+    """Inject the three intent params into ``tool.parameters`` in
     place; return each param's disposition (``"injected"`` / ``"native"``),
-    keyed independently — a tool that already declares one of the two names
+    keyed independently — a tool that already declares one of the names
     is left untouched for that name only.
 
     Unlike the FastMCP middleware — which deep-copies on every ``on_list_tools``
@@ -331,7 +332,10 @@ def _inject_goal_params(tool: Any, intent_param_mode: str) -> dict[str, str]:
             USER_GOAL_PARAM_NAME,
             build_user_goal_param_description(intent_param_mode=intent_param_mode),
         ),
-        (EXPECTED_RESULT_PARAM_NAME, build_expected_result_param_description()),
+        (
+            EXPECTED_RESULT_PARAM_NAME,
+            build_expected_result_param_description(intent_param_mode=intent_param_mode),
+        ),
         (OVERALL_TASK_PARAM_NAME, build_overall_task_param_description()),
     ):
         if name in existing:
@@ -345,13 +349,21 @@ def _inject_goal_params(tool: Any, intent_param_mode: str) -> dict[str, str]:
     if not isinstance(new_props, dict):
         return dispositions
     new_props.update(to_inject)
-    if dispositions[USER_GOAL_PARAM_NAME] == "injected" and intent_param_mode == "required":
+    # Only params this adapter actually injected are escalated — a tool that
+    # declares one of the names natively keeps its own, per-param.
+    escalated = [
+        name
+        for name in required_param_names(intent_param_mode=intent_param_mode)
+        if dispositions.get(name) == "injected"
+    ]
+    if escalated:
         required = schema.get("required")
         if isinstance(required, list):
-            if USER_GOAL_PARAM_NAME not in required:
-                required.append(USER_GOAL_PARAM_NAME)
+            for name in escalated:
+                if name not in required:
+                    required.append(name)
         else:
-            schema["required"] = [USER_GOAL_PARAM_NAME]
+            schema["required"] = list(escalated)
     return dispositions
 
 
@@ -569,6 +581,9 @@ def _wrap_tool_run(
                             OVERALL_TASK_PARAM_NAME,
                         ],
                         intent_param_mode=intent_param_mode,
+                        required_names=list(
+                            required_param_names(intent_param_mode=intent_param_mode)
+                        ),
                     )
                     try:
                         await emit_surface(

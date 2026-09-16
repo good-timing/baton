@@ -390,16 +390,15 @@ class VendorConfig:
     ``instructions`` (notably Claude Desktop), where the annotation tool alone
     yields nothing.
 
-    ``"required"`` (default) also lists ``user_goal`` in each tool's advertised
-    ``required`` and leads its description with REQUIRED. That is an
-    advertisement and nothing more: nothing Baton adds rejects a call that
-    omits it, the vendor's handler runs, and the event carries no
-    ``call_intent``. Measured 2026-09-15 through a real client session on both
-    adapters, on every mcp and fastmcp version CI's matrix pins.
-    ``"optional"`` injects the same params without the ``required`` entry, and
-    was the default until 2026-09-15. ``"off"`` disables injection.
-    ``expected_result`` and ``overall_task`` stay optional in every mode, and a
-    tool that already declares one of these names keeps its own."""
+    ``"required"`` (default) also lists ``user_goal`` and ``expected_result``
+    in each tool's advertised ``required`` and leads their descriptions with
+    REQUIRED. That is an advertisement and nothing more: nothing Baton adds
+    rejects a call that omits one, the vendor's handler runs, and the event
+    carries no ``call_intent`` / ``call_expected``.
+    ``"optional"`` injects the same params without the ``required`` entries.
+    ``"off"`` disables injection.
+    ``overall_task`` stays optional in every mode, and a tool that already
+    declares one of these names keeps its own."""
 
     proactive_mode: str = "off"
     """Whether the server instructions ask the agent to file a *proactive*

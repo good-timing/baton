@@ -16,10 +16,10 @@ is an ordinary bookmarks server; the only Baton-specific code is the
   even on clients that ignore server instructions (e.g. Claude Desktop), where
   the annotation tool alone would capture nothing. Toggle with
   `VendorConfig(intent_param_mode=...)`: `required` (default) | `optional` |
-  `off`. `required` lists `user_goal` as required in the advertised schema but
-  never refuses a call that omits it: your handler still runs, and the event
-  carries no `call_intent`. `expected_result` and `overall_task` stay optional
-  in every mode.
+  `off`. `required` lists `user_goal` and `expected_result` as required in the
+  advertised schema but never refuses a call that omits one: your handler still
+  runs, and the event carries no `call_intent` / `call_expected`. `overall_task`
+  stays optional in every mode.
 - **Zero-config sink** — the example uses `StdoutSink()`, which writes one JSON
   envelope per line to stderr. No backend, no dependencies beyond the SDK. Swap in
   `HttpSink(...)` to ship to a Console (see [`../04_hosted_console/`](../04_hosted_console/)).

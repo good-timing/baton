@@ -193,13 +193,16 @@ OVERALL_TASK_PARAM_NAME = "overall_task"
 INTENT_SOURCE_PARAM = "injected_param"
 
 # The leading label has to track ``intent_param_mode``: under ``"required"``
-# the injector appends ``user_goal`` to the schema's advertised ``required``
-# list, so a description still opening "OPTIONAL." contradicts the schema it
-# ships inside — the model reads both. Only the label moves; the body is
-# byte-identical across modes, because that sentence is the measured text and
-# the mode is not a licence to reword it. ``expected_result`` and
-# ``overall_task`` are never added to ``required`` in any mode, so their
-# "OPTIONAL." is true everywhere and they get no variant.
+# the injector appends the escalated params to the schema's advertised
+# ``required`` list, so a description still opening "OPTIONAL." contradicts the
+# schema it ships inside — the model reads both. Only the label moves; the body
+# is byte-identical across modes, because that sentence is the measured text and
+# the mode is not a licence to reword it.
+#
+# ``required`` escalates ``user_goal`` and ``expected_result``.
+# ``overall_task`` is NEVER escalated: it is a grouping key whose value is
+# worthless unless repeated verbatim, so forcing a label the agent does not
+# have splits one task into several.
 _USER_GOAL_PARAM_BODY = (
     "One sentence: what the user is actually trying to accomplish "
     "with this call (their goal, not a restatement of the arguments)."
@@ -207,10 +210,12 @@ _USER_GOAL_PARAM_BODY = (
 _USER_GOAL_PARAM_DESCRIPTION = "OPTIONAL. " + _USER_GOAL_PARAM_BODY
 _USER_GOAL_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + _USER_GOAL_PARAM_BODY
 
-_EXPECTED_RESULT_PARAM_DESCRIPTION = (
-    "OPTIONAL. One sentence: what a successful result should look like, so a "
+_EXPECTED_RESULT_PARAM_BODY = (
+    "One sentence: what a successful result should look like, so a "
     "silent/thin failure can be told apart from success."
 )
+_EXPECTED_RESULT_PARAM_DESCRIPTION = "OPTIONAL. " + _EXPECTED_RESULT_PARAM_BODY
+_EXPECTED_RESULT_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + _EXPECTED_RESULT_PARAM_BODY
 
 # The stability contract is the load-bearing design element: user_goal/
 # expected_result are call-scoped diagnostics that reword freely, so they
@@ -267,9 +272,35 @@ def build_user_goal_param_description(*, intent_param_mode: str = "optional") ->
     return _USER_GOAL_PARAM_DESCRIPTION
 
 
-def build_expected_result_param_description() -> str:
-    """Build the injected ``expected_result`` param's ``description`` field."""
+def build_expected_result_param_description(*, intent_param_mode: str = "optional") -> str:
+    """Build the injected ``expected_result`` param's ``description`` field.
+
+    Mirrors ``build_user_goal_param_description``: under ``"required"`` the
+    leading label becomes "REQUIRED.", matching the ``required`` entry the
+    injector adds under that mode. The body is byte-identical
+    across modes. This parameter's own default is the "OPTIONAL." text, not the
+    product default — ``VendorConfig.intent_param_mode`` defaults to
+    ``"required"``, and both adapters always pass their mode.
+    """
+    if intent_param_mode == "required":
+        return _EXPECTED_RESULT_PARAM_DESCRIPTION_REQUIRED
     return _EXPECTED_RESULT_PARAM_DESCRIPTION
+
+
+def required_param_names(*, intent_param_mode: str) -> tuple[str, ...]:
+    """Which injected params ``intent_param_mode`` advertises as required.
+
+    Read by both adapters' injectors and both ``build_seam_augmentations``
+    call sites. It answers per MODE, not per tool: a tool that declares one of
+    these names itself keeps its own schema and is not escalated.
+
+    ``required`` is advertised and never enforced: a call omitting the param is
+    served as it would be unwrapped, pinned by
+    ``TestRequiredByDefaultIsNeverEnforced`` on both adapters.
+    """
+    if intent_param_mode != "required":
+        return ()
+    return (USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME)
 
 
 def build_overall_task_param_description() -> str:

@@ -44,6 +44,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Changed
 
+- **`intent_param_mode="required"` now also advertises `expected_result` as
+  required**, next to `user_goal` (SPEC §13). Each wrapped tool's advertised
+  `required` list gains the name and the param's description leads with
+  REQUIRED. It is still an advertisement only: a call that omits it is served
+  as before and the event carries no `call_expected`. `overall_task` is never
+  escalated, and a tool that declares either name itself is untouched.
+  `surface_snapshot.seam_augmentations.intent_param` gains `required_names`,
+  the list of params advertised as required; a consumer must read a missing
+  `required_names` as unknown, not as empty. If your agents' tool-list
+  snapshots or schema tests pin the advertised `required` list, they will
+  change. Set `intent_param_mode="optional"` to keep both params optional.
 - **BREAKING: the SDK no longer reads the OAuth access token on its own.
   `principal` comes ONLY from `VendorConfig.resolve_principal`** (SPEC §11.4,
   §13). Until now, with no hook configured (or a hook that returned nothing), the

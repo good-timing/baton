@@ -58,6 +58,7 @@ from baton.integrations._llm_text import (
     build_expected_result_param_description,
     build_overall_task_param_description,
     build_user_goal_param_description,
+    required_param_names,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 from baton.integrations.identity_adapter import (
@@ -133,9 +134,9 @@ class BatonMiddleware(Middleware):
         """Inject ``user_goal``/``expected_result`` into every wrapped tool's schema.
 
         Runs on the vendor-true tool list returned by the server; each tool's
-        input schema gains optional (``user_goal`` additionally required if
-        configured) ``user_goal``/``expected_result`` strings. Both are stripped
-        again in ``on_call_tool`` before the vendor handler runs, so the tool
+        input schema gains the ``user_goal``/``expected_result``/``overall_task``
+        strings, the first two listed as required under ``required`` mode. All
+        are stripped again in ``on_call_tool`` before the vendor handler runs, so the tool
         never sees them. This is the capture path that survives runtimes which
         drop ``instructions`` (Claude Desktop).
 
@@ -165,9 +166,9 @@ class BatonMiddleware(Middleware):
         return out
 
     def _inject_goal_params(self, tool: Tool) -> tuple[Tool, dict[str, str]]:
-        """Return a copy of ``tool`` with ``user_goal``/``expected_result``
-        injected, plus each param's disposition (``"injected"``/``"native"``),
-        keyed independently — a tool that already declares one of the two names
+        """Return a copy of ``tool`` with the three intent params injected,
+        plus each param's disposition (``"injected"``/``"native"``),
+        keyed independently — a tool that already declares one of the names
         is left untouched for that name only, and ``on_call_tool`` forwards the
         vendor's own value for it instead of stripping it. Mirrors
         baton-extmcp's injector."""
@@ -183,7 +184,10 @@ class BatonMiddleware(Middleware):
                 USER_GOAL_PARAM_NAME,
                 build_user_goal_param_description(intent_param_mode=self._intent_param_mode),
             ),
-            (EXPECTED_RESULT_PARAM_NAME, build_expected_result_param_description()),
+            (
+                EXPECTED_RESULT_PARAM_NAME,
+                build_expected_result_param_description(intent_param_mode=self._intent_param_mode),
+            ),
             (OVERALL_TASK_PARAM_NAME, build_overall_task_param_description()),
         ):
             if name in existing:
@@ -199,16 +203,21 @@ class BatonMiddleware(Middleware):
         if not isinstance(new_props, dict):
             return tool, dispositions
         new_props.update(to_inject)
-        if (
-            dispositions[USER_GOAL_PARAM_NAME] == "injected"
-            and self._intent_param_mode == "required"
-        ):
+        # Only params this adapter actually injected are escalated — a tool that
+        # declares one of the names natively keeps its own, per-param.
+        escalated = [
+            name
+            for name in required_param_names(intent_param_mode=self._intent_param_mode)
+            if dispositions.get(name) == "injected"
+        ]
+        if escalated:
             required = new_schema.get("required")
             if isinstance(required, list):
-                if USER_GOAL_PARAM_NAME not in required:
-                    required.append(USER_GOAL_PARAM_NAME)
+                for name in escalated:
+                    if name not in required:
+                        required.append(name)
             else:
-                new_schema["required"] = [USER_GOAL_PARAM_NAME]
+                new_schema["required"] = list(escalated)
         return tool.model_copy(update={"parameters": new_schema}), dispositions
 
     async def _maybe_emit_surface_snapshot(self, tools: Sequence[Tool]) -> None:
@@ -257,6 +266,9 @@ class BatonMiddleware(Middleware):
                     OVERALL_TASK_PARAM_NAME,
                 ],
                 intent_param_mode=self._intent_param_mode,
+                required_names=list(
+                    required_param_names(intent_param_mode=self._intent_param_mode)
+                ),
             )
             seq = await self._next_seq(self._fallback_session_id)
             event = SurfaceSnapshotEvent(

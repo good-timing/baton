@@ -133,8 +133,11 @@ class TestListInjection:
         ``required`` list, so a description still opening "OPTIONAL." would
         contradict the schema it ships inside — and the model reads both.
         Pinned in BOTH directions: the ``optional`` leg is the control that
-        proves the mode is what moves the label, not the injection. And
-        ``expected_result`` is never escalated, so its label must NOT move.
+        proves the mode is what moves the label, not the injection. Since D8
+        ``expected_result`` is escalated too, so its label moves in lockstep
+        with its own ``required`` entry. ``overall_task`` is never escalated,
+        and is now the control that separates a label tracking the SCHEMA from
+        one tracking the mode.
         """
         for mode, expected_lead in (("optional", "OPTIONAL."), ("required", "REQUIRED.")):
             mcp = FastMCP("test-vendor-mcp")
@@ -167,11 +170,18 @@ class TestListInjection:
                     goal_desc[len(expected_lead) :]
                     == build_user_goal_param_description()[len("OPTIONAL.") :]
                 )
-                assert (
-                    props[EXPECTED_RESULT_PARAM_NAME]["description"]
-                    == build_expected_result_param_description()
+                expected_desc = props[EXPECTED_RESULT_PARAM_NAME]["description"]
+                assert expected_desc == build_expected_result_param_description(
+                    intent_param_mode=mode
                 )
-                assert props[EXPECTED_RESULT_PARAM_NAME]["description"].startswith("OPTIONAL.")
+                assert expected_desc.startswith(expected_lead)
+                # Only the label moved here too.
+                assert (
+                    expected_desc[len(expected_lead) :]
+                    == build_expected_result_param_description()[len("OPTIONAL.") :]
+                )
+                # overall_task is the control: never escalated, label never moves.
+                assert props[OVERALL_TASK_PARAM_NAME]["description"].startswith("OPTIONAL.")
             finally:
                 await handle.aclose()
 
@@ -278,11 +288,10 @@ class TestListInjection:
         # native param means no synthesised proactive either
         assert not any(e["event_type"] == "annotation" for e in events)
 
-    async def test_expected_result_injected_optional_even_in_required_mode(
-        self, events_path: str
-    ) -> None:
-        """``required`` mode escalates only ``user_goal`` — ``expected_result``
-        stays optional regardless."""
+    async def test_expected_result_escalated_in_required_mode(self, events_path: str) -> None:
+        """``required`` escalates ``user_goal`` AND ``expected_result`` (D8,
+        2026-09-15) — but never ``overall_task``, asserted here as the control
+        so the boundary is pinned in one place."""
         mcp = FastMCP("test-vendor-mcp")
 
         @mcp.tool()
@@ -303,7 +312,10 @@ class TestListInjection:
             tools = await mcp.list_tools()
             echo_tool = next(t for t in tools if t.name == "echo")
             assert EXPECTED_RESULT_PARAM_NAME in _input_schema(echo_tool)["properties"]
-            assert EXPECTED_RESULT_PARAM_NAME not in _input_schema(echo_tool).get("required", [])
+            required = _input_schema(echo_tool).get("required", [])
+            assert EXPECTED_RESULT_PARAM_NAME in required
+            assert USER_GOAL_PARAM_NAME in required
+            assert OVERALL_TASK_PARAM_NAME not in required
         finally:
             await handle.aclose()
 
@@ -538,8 +550,7 @@ class TestOverallTaskParam:
     async def test_overall_task_injected_optional_even_in_required_mode(
         self, events_path: str
     ) -> None:
-        """``required`` mode escalates only ``user_goal`` — ``overall_task``
-        stays optional like ``expected_result``."""
+        """``required`` mode never escalates ``overall_task``."""
         mcp = FastMCP("test-vendor-mcp")
 
         @mcp.tool()
@@ -667,7 +678,7 @@ class TestOverallTaskParam:
 
 
 # =============================================================================
-# the default: user_goal advertised as required, never enforced (2026-09-15)
+# the default: user_goal + expected_result advertised as required, never enforced
 # =============================================================================
 
 
@@ -730,6 +741,7 @@ class TestRequiredByDefaultIsNeverEnforced:
             await handle.aclose()
 
         assert USER_GOAL_PARAM_NAME in schema["required"]
+        assert EXPECTED_RESULT_PARAM_NAME in schema["required"]
         assert schema["properties"][USER_GOAL_PARAM_NAME]["description"].startswith("REQUIRED.")
         assert not without.get("isError"), without
         assert without["content"][0]["text"] == "echo:a"
@@ -778,6 +790,7 @@ class TestRequiredByDefaultIsNeverEnforced:
         assert result["content"][0]["text"] == "x|vendor-value"
         start = next(e for e in _read_events(events_path) if e["event_type"] == "tool_call_start")
         assert start["payload"].get("call_intent") is None
+        assert start["payload"].get("call_expected") is None
 
     async def test_the_default_does_not_move_the_surface_hash(self, tmp_path: Any) -> None:
         """The snapshot hashes the vendor-true surface, so moving the default
@@ -800,3 +813,8 @@ class TestRequiredByDefaultIsNeverEnforced:
         assert payloads["default"]["surface_hash"] == payloads["optional"]["surface_hash"]
         assert payloads["default"]["seam_augmentations"]["intent_param"]["mode"] == "required"
         assert payloads["optional"]["seam_augmentations"]["intent_param"]["mode"] == "optional"
+        assert payloads["default"]["seam_augmentations"]["intent_param"]["required_names"] == [
+            "expected_result",
+            "user_goal",
+        ]
+        assert payloads["optional"]["seam_augmentations"]["intent_param"]["required_names"] == []
