@@ -226,6 +226,33 @@ class _EventEnvelope(BaseModel):
     processes. Never derived from the JSON-RPC request id, which restarts at 1
     per connection. It says WHICH CALL, never WHO; the principal is ``principal_id``.
     """
+    transport_observed: str | None = None
+    """What this producer OBSERVED beneath the call, never what it concluded
+    (SPEC §11.4, OPTIONAL + nullable).
+
+    ``"http"`` — an HTTP request object was reachable from the call's context,
+    so one process MAY be serving many callers. ``"no-http-request"`` — a live
+    MCP request with no HTTP behind it: stdio or in-memory, where one process
+    is one caller. ``"read-failed"`` — this producer's own read of the
+    transport raised, which says nothing about the deployment and everything
+    about us. Null where we did not look: the library API, which has no MCP
+    transport at all.
+
+    **A raised read MUST become ``"read-failed"``, never ``"no-http-request"``.**
+    That value asserts a fact about the customer's deployment, and an
+    unreadable context is not that fact. Folding the two ships one of our bugs
+    as evidence that grouping is safe — the exact merge SPEC §3.4 rung 5 and
+    this field exist to prevent. The official adapter is where this bites:
+    ``_extract_headers_from_context`` already catches ``AttributeError`` and
+    returns the same ``None`` as a genuine absence, so this read keys on
+    ``request_context.request`` directly and maps ONLY ``None``.
+
+    Deliberately a plain ``str`` and not an enum: SPEC registers new values
+    without a major version, and a consumer must tolerate one it does not know
+    rather than reject the event. It says WHAT WE SAW, never who or where — no
+    address, no host, no port — so it carries no security property and is not
+    for authorization.
+    """
     runtime_meta: dict[str, Any] | None = None
     """Runtime-supplied ``_meta`` envelope from the MCP request (SPEC §11.4).
     Per SPEC §11.5 the Console worker uses this to derive turn / cycle
