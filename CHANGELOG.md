@@ -8,7 +8,21 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.8.9: the envelope says what was underneath the call
+
+### Added
+
+- **Every event carries `transport_observed`, recording what the SDK saw beneath the call.** An optional nullable string, `SPEC §11.4`: `"http"` when a live HTTP request was there, `"no-http-request"` when a live MCP request had none behind it (stdio or in-memory), `"read-failed"` when our own read of the transport raised, and absent when the SDK was not handed anything to look at. Both adapters emit it.
+
+  It exists because `SPEC §3.4`'s session ladder ends in a process-wide fallback id, and that terminus is correct on one deployment shape and wrong on another — the two are identical on the wire. Measured in production on 2026-09-15, two clients of one HTTP server landed in one session. `no-http-request` is the only value that licenses a consumer to group on that fallback.
+
+  **The value set is open**: tolerate an unregistered value rather than reject the event, and key any grouping rule on `no-http-request` positively, never on "not http". A read that raised becomes `"read-failed"` and never `"no-http-request"`, because handing out the grouping licence on our own bug is how a producer defect turns into two strangers in one conversation.
+
+  **Consumer consequence:** additive and optional, so nothing has to change. A collector with a closed envelope schema must accept the field before upgrading.
+
+### Removed
+
+- **`correlation_mode` is gone from `SPEC §11.4`.** Implemented by no producer, carried in no schema and read by no consumer, so nothing can break. It existed to tell a deliberate per-event stream from the ladder's merge defect, and it could not: `SPEC §3.4` defines per-event mode as a fresh UUID per event, which is byte-identical to what the defect emits. The two correlation *modes* remain in §3.4 as named behaviours; what is removed is the claim that the mode travels on the wire.
 
 ### Changed
 
