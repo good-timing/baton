@@ -534,7 +534,7 @@ async def test_every_combination_of_source_and_form_occurs(
     from baton.identity import Principal
 
     hook = _hook(Principal(principal_id=HOOK_SUB, issuer=HOOK_ISS))
-    seen = {}
+    cells = 0
     for mode, form in (("hashed", "hashed"), ("raw", "raw")):
         for label, token, resolver in (
             ("attested", _official_token(), None),
@@ -543,11 +543,17 @@ async def test_every_combination_of_source_and_form_occurs(
             path = tmp_path / f"{label}-{mode}.jsonl"
             await _run_official_path(path, token, mode, monkeypatch, resolve_principal=resolver)
             got = _one_principal(path)
-            seen[(label, form)] = got
+            # The off-diagonal cells are the work: a producer deriving either
+            # member from the other passes both diagonal cells and fails here.
             assert got["source"] == label, got
             assert got["form"] == form, got
+            cells += 1
 
-    assert len(seen) == 4, seen
+    # Guards against a vacuous pass — a loop that ran zero times, or a fixture
+    # change that dropped a row, would otherwise report green having asserted
+    # nothing. It is NOT a claim that the four cells were distinct; the
+    # per-cell assertions above are what establish that.
+    assert cells == 4, f"the 2x2 ran {cells} cells"
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from baton.events import PrincipalWire
 from baton.identity import hash_principal_id
 from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
@@ -53,7 +54,7 @@ class _OldBandToken:
     scopes: list[str] = field(default_factory=list)
 
 
-def _resolve(token: Any, **kw: Any) -> str | None:
+def _resolve(token: Any, **kw: Any) -> PrincipalWire | None:
     params: dict[str, Any] = {
         "mode": PRINCIPAL_ID_MODE_HASHED,
         "tenant_id": TENANT,

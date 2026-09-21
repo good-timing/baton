@@ -406,58 +406,92 @@ def _extract_one_goal_param(
 # Internals — wrap
 # =============================================================================
 
+# The five emitter signatures, written ONCE.
+#
+# Each of these was spelled out IN FULL at both of its two sites — the
+# parameter list of ``_wrap_tool_run`` and the return tuple of
+# ``_make_emitters`` — and the principal's slot is an interior position in a
+# long positional list. A change made to one copy and not its twin typechecks
+# until the two meet, and "which slot is the principal" was a question you had
+# to answer by counting. An alias written once and referenced twice makes it
+# unanswerable wrongly.
+#
+# The parameter ORDER is the contract. The concrete definitions in
+# ``_make_emitters`` name the same slots as keyword parameters, which is what
+# lets mypy check the two spellings against each other; the comments below are
+# what lets a reader do the same without running it.
+_EmitBefore = Callable[
+    [
+        str,  # session_id
+        str,  # tool name
+        dict[str, Any],  # params
+        dict[str, Any] | None,  # runtime_meta
+        str | None,  # call_intent
+        str | None,  # call_expected
+        str | None,  # call_workflow
+        str,  # agent_runtime
+        PrincipalWire | None,  # principal
+        str,  # call_id
+        str | None,  # transport_observed
+    ],
+    Awaitable[None],
+]
+
+_EmitAfter = Callable[
+    [
+        str,  # session_id
+        str,  # tool name
+        Any,  # result
+        float,  # duration_s
+        dict[str, Any] | None,  # runtime_meta
+        str,  # agent_runtime
+        PrincipalWire | None,  # principal
+        str,  # call_id
+        str | None,  # transport_observed
+    ],
+    Awaitable[None],
+]
+
+_EmitError = Callable[
+    [
+        str,  # session_id
+        str,  # tool name
+        BaseException,  # exc
+        float,  # duration_s
+        dict[str, Any] | None,  # runtime_meta
+        str,  # agent_runtime
+        PrincipalWire | None,  # principal
+        str,  # call_id
+        str | None,  # transport_observed
+    ],
+    Awaitable[None],
+]
+
+_EmitProactive = Callable[
+    [
+        str,  # session_id
+        str,  # tool name
+        str,  # intent
+        str | None,  # expected_outcome
+        str | None,  # workflow
+        dict[str, Any] | None,  # runtime_meta
+        str,  # agent_runtime
+        PrincipalWire | None,  # principal
+        str | None,  # transport_observed
+    ],
+    Awaitable[None],
+]
+
+_EmitSurface = Callable[[str, str, dict[str, Any]], Awaitable[None]]
+
 
 def _wrap_tool_run(
     name: str,
     tool: Any,
-    emit_before: Callable[
-        [
-            str,
-            str,
-            dict[str, Any],
-            dict[str, Any] | None,
-            str | None,
-            str | None,
-            str | None,
-            str,
-            PrincipalWire | None,
-            str,
-            str | None,
-        ],
-        Awaitable[None],
-    ],
-    emit_after: Callable[
-        [str, str, Any, float, dict[str, Any] | None, str, PrincipalWire | None, str, str | None],
-        Awaitable[None],
-    ],
-    emit_error: Callable[
-        [
-            str,
-            str,
-            BaseException,
-            float,
-            dict[str, Any] | None,
-            str,
-            PrincipalWire | None,
-            str,
-            str | None,
-        ],
-        Awaitable[None],
-    ],
-    emit_proactive: Callable[
-        [
-            str,
-            str,
-            str,
-            str | None,
-            str | None,
-            dict[str, Any] | None,
-            str,
-            PrincipalWire | None,
-            str | None,
-        ],
-        Awaitable[None],
-    ],
+    emit_before: _EmitBefore,
+    emit_after: _EmitAfter,
+    emit_error: _EmitError,
+    emit_proactive: _EmitProactive,
     scrubber: Callable[[Any], Any],
     *,
     intent_param_mode: str,
@@ -470,7 +504,7 @@ def _wrap_tool_run(
     resolve_principal_hook: ResolvePrincipalHook | None,
     identity_warned: set[str],
     surface_state: _SurfaceState,
-    emit_surface: Callable[[str, str, dict[str, Any]], Awaitable[None]],
+    emit_surface: _EmitSurface,
     annotation_tool_name: str | None,
 ) -> Callable[..., Awaitable[Any]]:
     """Build an async wrapper around ``tool.run`` that strips the injected
@@ -917,55 +951,11 @@ def _make_emitters(
     counter: SessionCounter,
     scrubber: Callable[[Any], Any],
 ) -> tuple[
-    Callable[
-        [
-            str,
-            str,
-            dict[str, Any],
-            dict[str, Any] | None,
-            str | None,
-            str | None,
-            str | None,
-            str,
-            PrincipalWire | None,
-            str,
-            str | None,
-        ],
-        Awaitable[None],
-    ],
-    Callable[
-        [str, str, Any, float, dict[str, Any] | None, str, PrincipalWire | None, str, str | None],
-        Awaitable[None],
-    ],
-    Callable[
-        [
-            str,
-            str,
-            BaseException,
-            float,
-            dict[str, Any] | None,
-            str,
-            PrincipalWire | None,
-            str,
-            str | None,
-        ],
-        Awaitable[None],
-    ],
-    Callable[
-        [
-            str,
-            str,
-            str,
-            str | None,
-            str | None,
-            dict[str, Any] | None,
-            str,
-            PrincipalWire | None,
-            str | None,
-        ],
-        Awaitable[None],
-    ],
-    Callable[[str, str, dict[str, Any]], Awaitable[None]],
+    _EmitBefore,
+    _EmitAfter,
+    _EmitError,
+    _EmitProactive,
+    _EmitSurface,
 ]:
     """Build five async emitters: ``tool_call_start`` / ``_end`` / ``_error``,
     the synthesised-proactive ``annotation``, and ``surface_snapshot``.

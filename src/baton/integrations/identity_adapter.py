@@ -8,10 +8,14 @@ releases before anybody noticed.
 
 **This is the attested half of identity.** ``agent_runtime`` is what a client
 says it is — self-reported, never verified, and a client may call itself
-anything. ``principal.id`` is derived from a bearer token the VENDOR's own verifier
-already validated, so it is the one identity claim on the envelope that
-something checked. Keep the two apart; they answer different questions and they
-are trustworthy to different degrees.
+anything. A principal resolved here from a bearer token the VENDOR's own
+verifier already validated is the one identity claim on the envelope that
+something checked — and it is marked ``principal.source == "attested"`` so a
+consumer can tell. ⚠ **The field as a whole is NOT attested identity.** This
+module resolves both provenances, and the other one — a vendor's
+``resolve_principal`` hook — is checked by nothing; SPEC §11.4 forbids
+presenting it as verified. Keep all of it apart from ``agent_runtime``: they
+answer different questions and they are trustworthy to different degrees.
 
 **Transport reality: this is HTTP-only, on every supported version.** MCP auth
 is ASGI middleware (``mcp.server.auth.middleware.bearer_auth`` operates on a
@@ -254,8 +258,8 @@ def resolve_attested_principal(
     function remains the whole of identity for a deployment with no hook
     configured, which is every deployment today.
 
-    ``warned`` is a caller-owned set used to log the missing-key case exactly
-    once per install rather than once per tool call.
+    ``warned`` is a caller-owned set used to log the missing-key and
+    unknown-mode cases exactly once per install rather than once per tool call.
 
     Fail-open throughout — every branch that cannot produce a value returns
     ``None`` and the event ships without the field:
@@ -263,6 +267,8 @@ def resolve_attested_principal(
     - no auth on the request (or stdio, where there is none) → ``None``
     - ``mcp < 1.27`` with no ``claims`` on the token → ``None``
     - ``hashed`` with no HMAC key configured → ``None``, warned once
+    - a ``mode`` this module does not recognise → ``None``, warned once. It
+      has no truthful ``form``, and ``form`` is what a consumer classifies on
     - ``raw`` → the subject verbatim, no key needed
 
     ``principal`` is additive analytics. It is never a consent or authorization
@@ -324,12 +330,19 @@ def _finish_principal(
     #: door the hashing guard below is written for.
     form = _FORM_BY_MODE.get(mode)
     if form is None:
-        logger.warning(
-            "baton: unknown principal_id_mode %r — dropping the principal "
-            "(events still emit). Expected one of %s.",
-            mode,
-            sorted(PRINCIPAL_ID_MODES),
-        )
+        # Once per install, not once per call, for the same reason the
+        # missing-key branch below is throttled — and more so here: `mode` is
+        # fixed for the life of the process, so this cannot stop repeating
+        # once it starts. (The hashing-failure branch is deliberately NOT
+        # throttled; that one can vary per call.)
+        if "unknown_mode" not in warned:
+            warned.add("unknown_mode")
+            logger.warning(
+                "baton: unknown principal_id_mode %r — dropping the principal "
+                "(events still emit). Expected one of %s.",
+                mode,
+                sorted(PRINCIPAL_ID_MODES),
+            )
         return None
 
     if mode == PRINCIPAL_ID_MODE_RAW:

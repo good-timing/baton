@@ -176,10 +176,16 @@ class SessionResolutionContext:
     one.** Where no token exists (stdio, or HTTP with no OAuth) the miss yields
     no ``principal`` on any event. But where a token DOES exist — HTTP +
     OAuth, the shape ``X-Forwarded-User`` actually lives in — the hook is rung 0
-    and a raise falls through to rung 1, so events carried the token's ``h1:``
-    pseudonym instead of the hook's ``v1:`` one. Same person, two different
-    pseudonyms depending on which adapter the vendor shipped: an actor split,
-    not an absence. A plain dict is folded below, in ``__post_init__``; see
+    and a raise falls through to rung 1, so events carried the TOKEN's
+    principal instead of the hook's — a different person, silently, depending
+    on which adapter the vendor shipped. ⚠ **The symptom recorded here was an
+    actor SPLIT** — the two rungs then hashed under different scheme tags
+    (``h1:`` vs the retired ``v1:``), so one person arrived as two pseudonyms.
+    Retiring the tag makes the two rungs byte-identical for one
+    ``(tenant, principal, issuer)``, so the same bug now shows up as a
+    ``source`` flip on an unchanged ``id`` where the two rungs name the same
+    person, and as the wrong person where they do not. Harder to see, not
+    fixed: this guard is what stops it. A plain dict is folded below, in ``__post_init__``; see
     ``CaseInsensitiveHeaders`` for the direction rule.
 
     ⚠ **The name is a fossil.** This was built for
@@ -415,10 +421,18 @@ class VendorConfig:
     VENDOR's customers, and shipping their identities to a third party is a
     decision only that vendor can make.
 
-    Hashed mode needs ``principal_id_hmac_key``; raw mode needs nothing. The two are
-    distinguishable on the wire without a second field, because a hashed value
-    always carries a registered scheme prefix (``h1:`` attested, ``v1:``
-    asserted) and a consumer treats anything else as a raw identity."""
+    Hashed mode needs ``principal_id_hmac_key``; raw mode needs nothing. Which
+    one was emitted is ``principal.form`` on the envelope, and that member is
+    the ONLY legal discriminator.
+
+    ⚠ **A consumer MUST NOT read the classification off the value's shape**
+    (SPEC §11.4). This paragraph used to say the opposite — that a scheme
+    prefix made the two distinguishable "without a second field" — and that
+    rule cannot work: ``mailto:jane@example.com``, ``acct:…``, ``urn:uuid:…``
+    and ``https://accounts.example.com/…`` are all legitimate OIDC subject
+    forms, so anything testing for "letters then a colon" classifies a live
+    email address as a safe pseudonym. The prefix that remains on a hashed
+    value names the HMAC key generation and nothing else."""
 
     principal_id_hmac_key: bytes | str | None = field(default=None, repr=False)
     """Secret keying the ``principal.id`` HMAC in ``"hashed"`` mode.
@@ -465,17 +479,26 @@ class VendorConfig:
 
     ⚠ **A hook principal is ASSERTED, not attested.** The token path carries an
     identity an IdP verified; this one carries whatever the vendor says, and the
-    SDK cannot check it. So it hashes under its own scheme tag — ``v1:`` rather
-    than ``h1:`` — and a consumer can tell the two apart on the wire. It is
-    checked ABOVE the token deliberately: a gateway's token frequently names a
-    service account rather than the end user, and this hook exists only where a
-    vendor opted in, which makes it the more specific claim even though it is
-    the less verified one.
+    SDK cannot check it. A consumer reads which it got from
+    ``principal.source`` — ``"asserted"`` here, ``"attested"`` for the token —
+    and MUST NOT present an asserted principal as a verified one. It is checked
+    ABOVE the token deliberately: a gateway's token frequently names a service
+    account rather than the end user, and this hook exists only where a vendor
+    opted in, which makes it the more specific claim even though it is the less
+    verified one.
 
-    ⚠ **In ``principal_id_mode="raw"`` the distinction is not on the wire**, because
-    raw mode emits the principal verbatim and untagged from both paths. Raw
-    mode forfeits provenance the same way it forfeits pseudonymity; if you need
-    to tell asserted from attested downstream, use hashed mode.
+    ⚠ **The digests are IDENTICAL; only ``source`` separates them.** This used
+    to hash under its own scheme tag, ``v1:``, which is now RETIRED — the tag
+    was never part of the HMAC message, so one ``(tenant, principal, issuer)``
+    always produced the same hex either way. A consumer that told the two apart
+    by reading the prefix must stop and read ``source``.
+
+    ⚠ **``principal_id_mode="raw"`` keeps the distinction**, which is a change.
+    Raw mode emits the principal verbatim and untagged from both paths, so
+    while provenance rode the tag, raw forfeited it — the one mode that puts a
+    REAL identity on the wire was the one where nobody could tell an attested
+    subject from a vendor's assertion. ``source`` is a member now and rides
+    every mode.
 
     ⚠ **It is not ``default_agent_runtime`` returning.** That was a static
     value set once at install, asserting over whatever a client declared per
