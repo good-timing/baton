@@ -359,6 +359,11 @@ class HttpSink(Sink):
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"}
 
+    #: Cap on the collector's refusal text copied into the vendor's log. A
+    #: remote server's message landing in someone else's log file gets a
+    #: bound, the same posture the declared ``agent_runtime`` tiers take.
+    _REFUSAL_BODY_MAX_LEN = 500
+
     @staticmethod
     def _classify_status(status: int) -> str:
         if 200 <= status < 300:
@@ -366,6 +371,48 @@ class HttpSink(Sink):
         if 400 <= status < 500 and status != 429:
             return "permanent_failure"
         return "transient_failure"
+
+    def _log_refusal(self, response: Any) -> None:
+        """Say out loud that the collector refused an event, and why.
+
+        ⚠ **This existed nowhere, and the silence was the defect.** A refused
+        event was popped off the buffer and the drain recorded a circuit
+        SUCCESS — so from inside the vendor's process, a collector rejecting
+        EVERY envelope looked exactly like one accepting every envelope. A
+        producer emitting a shape the collector refuses would lose one hundred
+        percent of its capture with nothing in the log to say so, and the
+        first symptom is an empty console days later.
+
+        That silence is also what made a strict collector unsafe to have, and
+        it is the wrong end to fix: a collector that refuses a malformed
+        envelope is stating a contract, and a contract nobody can hear is a
+        trap rather than a contract.
+
+        **The BODY is logged, not just the status.** A bare 422 sends a reader
+        to the transport layer; the collector's own message ("envelope carries
+        both `principal` and `principal_id`") sends them to the line that
+        caused it. Capped, because it is a remote server's text landing in a
+        vendor's log file.
+
+        ⚠ **The circuit breaker is deliberately NOT told about this.** It
+        exists so the SDK stops piling retries on a DEAD endpoint, and a 4xx
+        proves the endpoint is alive and answering. Counting it as a failure
+        would open the circuit after a run of refused events and stop the GOOD
+        ones going out too — turning one producer bug into total capture loss,
+        which is the outcome this whole guard exists to make visible.
+        """
+        try:
+            detail = response.text[: self._REFUSAL_BODY_MAX_LEN]
+        except Exception:  # pragma: no cover — a body that cannot be decoded
+            detail = "<unreadable>"
+        # Same local lookup the shutdown path uses — this module keeps no
+        # module-level logger.
+        logging.getLogger("baton").warning(
+            "baton: collector REFUSED an event and it has been dropped "
+            "(HTTP %s): %s — the event is gone; nothing retries a 4xx.",
+            response.status_code,
+            detail,
+        )
 
     def _atexit_flush(self) -> None:
         """Best-effort flush when the process exits without an explicit
@@ -465,6 +512,7 @@ class HttpSink(Sink):
                         self._buffer.popleft()
                         sent += 1
                     elif outcome == "permanent_failure":
+                        self._log_refusal(response)
                         self._buffer.popleft()  # unrecoverable, give up
                         dropped += 1
                     else:
@@ -513,6 +561,10 @@ class HttpSink(Sink):
             try:
                 response = await self._http_client.post(url, json=body, headers=headers)
                 outcome = self._classify_status(response.status_code)
+                if outcome == "permanent_failure":
+                    # Logged HERE, which is the only scope holding the
+                    # response — the drain loop above sees a bare string.
+                    self._log_refusal(response)
                 if outcome != "transient_failure":
                     return outcome
             except httpx.HTTPError:

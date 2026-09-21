@@ -11,6 +11,7 @@ Uses pytest-httpserver for a real in-process HTTP server (no mocks).
 from __future__ import annotations
 
 import asyncio
+import logging
 import warnings
 from datetime import UTC, datetime
 from typing import Any
@@ -797,3 +798,59 @@ class TestMultiSink:
             await sink.write(_make_event())
         msgs = {str(e) for e in info.value.exceptions}
         assert msgs == {"first", "second"}
+
+
+class TestARejectedEventSaysSo:
+    """**A 4xx must not vanish.** The drain path popped the event, recorded a
+    circuit SUCCESS and logged nothing at all — so a collector refusing every
+    envelope looked, from the vendor's process, exactly like a collector
+    accepting every envelope.
+
+    That silence is what made a strict collector unsafe, and it is the real
+    defect: a console that 422s a producer bug is stating a contract, and a
+    contract nobody can hear is a trap. Found while arguing about the
+    collector's strictness, which was the wrong end.
+
+    ⚠ **The circuit breaker is deliberately NOT touched.** It exists so the
+    SDK stops piling retries on a DEAD endpoint, and a 4xx proves the endpoint
+    is alive — counting it as a failure would open the circuit after a run of
+    rejected events and stop the GOOD ones going out too. Recording success
+    there is right; only the silence was wrong.
+    """
+
+    async def test_the_status_and_body_are_logged_when_an_event_is_refused(
+        self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        httpserver.expect_request("/v0/events", method="POST").respond_with_data(
+            '{"detail":"envelope carries both `principal` and `principal_id`"}', status=422
+        )
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+        sink._enqueue_for_test(_make_event())
+
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            await sink.flush()
+
+        assert len(sink._buffer) == 0, "the event is still dropped — this is not a retry change"
+        blob = caplog.text
+        assert "422" in blob, f"the status must name itself: {blob!r}"
+        assert "principal" in blob, (
+            "the collector's REASON must survive — a status with no body sends a "
+            f"reader to the wrong layer: {blob!r}"
+        )
+        sink._closed = True
+
+    async def test_a_2xx_stays_quiet(
+        self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The negative control. A warning on every successful send would be
+        noise, and noise is how the next real one gets missed."""
+        httpserver.expect_request("/v0/events", method="POST").respond_with_data("", status=202)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+        sink._enqueue_for_test(_make_event())
+
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            await sink.flush()
+
+        assert len(sink._buffer) == 0
+        assert caplog.text == "", f"a successful send logged: {caplog.text!r}"
+        sink._closed = True
