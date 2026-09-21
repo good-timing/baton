@@ -25,7 +25,7 @@ from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_RAW,
     RAW_PRINCIPAL_ID_MAX_LEN,
     principal_from_access_token,
-    resolve_principal_id,
+    resolve_attested_principal,
 )
 
 KEY = b"unit-test-key"
@@ -62,7 +62,7 @@ def _resolve(token: Any, **kw: Any) -> str | None:
         "warned": set(),
     }
     params.update(kw)
-    return resolve_principal_id(token, **params)
+    return resolve_attested_principal(token, **params)
 
 
 # --------------------------------------------------------------------------
@@ -193,13 +193,18 @@ def test_the_tenant_is_still_folded_in() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_hashed_mode_emits_the_scheme_prefix_and_never_the_principal() -> None:
+def test_hashed_mode_emits_the_key_generation_tag_and_never_the_principal() -> None:
     got = _resolve(_Token(claims={"sub": "alice@acme.com", "iss": "https://idp"}))
     assert got is not None
-    assert got.startswith("h1:")
-    assert "alice" not in got
-    assert "acme.com" not in got
-    assert "idp" not in got
+    assert got.id.startswith("h1:")
+    assert got.form == "hashed"
+    assert got.source == "attested"
+    # The whole object, serialised — a member that leaked the subject would
+    # pass a check that only read `id`.
+    blob = got.model_dump_json()
+    assert "alice" not in blob
+    assert "acme.com" not in blob
+    assert "idp" not in blob
 
 
 def test_raw_mode_emits_the_subject_verbatim() -> None:
@@ -212,19 +217,24 @@ def test_raw_mode_emits_the_subject_verbatim() -> None:
         _Token(claims={"sub": "Alice@Acme.COM", "iss": "https://idp"}),
         mode=PRINCIPAL_ID_MODE_RAW,
     )
-    assert got == "Alice@Acme.COM"
+    assert got is not None
+    assert got.id == "Alice@Acme.COM"
+    assert got.form == "raw"
+    # ⚠ The provenance SURVIVES raw mode now. It did not while the scheme tag
+    # carried it, and that loss is what the object was built to end.
+    assert got.source == "attested"
 
 
 def test_raw_mode_is_capped() -> None:
     got = _resolve(_Token(claims={"sub": "x" * 500}), mode=PRINCIPAL_ID_MODE_RAW)
     assert got is not None
-    assert len(got) == RAW_PRINCIPAL_ID_MAX_LEN
+    assert len(got.id) == RAW_PRINCIPAL_ID_MAX_LEN
 
 
 def test_raw_mode_needs_no_hmac_key() -> None:
     """The key is a hashing concern; raw mode does not hash."""
     got = _resolve(_Token(claims={"sub": "alice"}), mode=PRINCIPAL_ID_MODE_RAW, hmac_key=None)
-    assert got == "alice"
+    assert got is not None and got.id == "alice"
 
 
 # --------------------------------------------------------------------------
@@ -246,7 +256,7 @@ def test_hashed_mode_without_a_key_drops_the_field_and_warns_once(
     logger = logging.getLogger("baton.test.identity")
     with caplog.at_level(logging.WARNING, logger=logger.name):
         for _ in range(5):
-            got = resolve_principal_id(
+            got = resolve_attested_principal(
                 _Token(claims={"sub": "alice@acme.com"}),
                 mode=PRINCIPAL_ID_MODE_HASHED,
                 tenant_id=TENANT,
@@ -373,7 +383,7 @@ def test_a_token_accessor_that_raises_cannot_reach_the_tool_call() -> None:
     """fastmcp's ``get_access_token()`` ends in an explicit ``raise TypeError``
     on its conversion path, reachable when a vendor's verifier returns a
     non-fastmcp ``AccessToken``. Called in an argument expression it sat
-    OUTSIDE ``resolve_principal_id``'s never-raise boundary."""
+    OUTSIDE ``resolve_attested_principal``'s never-raise boundary."""
     from baton.integrations.standalone import _auth
 
     def _boom() -> Any:

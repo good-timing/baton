@@ -423,3 +423,119 @@ class TestDiscriminatedUnion:
         parsed = adapter.validate_json(payload_json)
         assert isinstance(parsed, ToolCallErrorEvent)
         assert parsed.payload.error_type == "TimeoutError"
+
+
+# =============================================================================
+# `principal` — the object, SPEC §11.4
+#
+# ⚠ **The schema tests below are not redundant with the parser tests.** Every
+# test above POSTs or constructs a body and asserts on the parsed model, so
+# this file had complete coverage of the parser and none of the schema the
+# same class generates. `baton-console` shipped exactly that gap on exactly
+# this field a week ago: a rename left `/openapi.json` advertising an internal
+# name and DROPPING the one every producer sends, and no parser test could
+# see it. Here the generated artifact is `events.schema.json`, which is
+# PUBLISHED to `baton-spec` and validated by every other producer repo — so a
+# schema that disagrees with this model is a cross-repo defect, not a
+# cosmetic one.
+# =============================================================================
+
+
+class TestPrincipalObject:
+    def test_all_three_members_ride_the_wire(self) -> None:
+        from baton.events import PrincipalWire
+
+        event = ToolCallStartEvent(
+            **_envelope(),
+            principal=PrincipalWire(id="h1:9f2c", source="attested", form="hashed"),
+            payload=ToolCallStartPayload(tool_name="lookup"),
+        )
+        dumped = event.model_dump(mode="json")
+        assert dumped["principal"] == {"id": "h1:9f2c", "source": "attested", "form": "hashed"}
+
+    def test_the_retired_flat_spelling_is_gone_from_the_envelope(self) -> None:
+        """`principal_id` is not accepted, not emitted, and not a silent extra.
+
+        The envelope is `extra="forbid"`, so a producer still sending the flat
+        field fails loudly here rather than dropping the identity into a field
+        nobody reads. Prod ingest treats both spellings on one envelope as a
+        422, so a model that quietly accepted both would emit an envelope the
+        collector refuses.
+        """
+        with pytest.raises(ValidationError):
+            ToolCallStartEvent(
+                **_envelope(),
+                principal_id="h1:9f2c",  # type: ignore[call-arg]
+                payload=ToolCallStartPayload(tool_name="lookup"),
+            )
+
+        event = ToolCallStartEvent(**_envelope(), payload=ToolCallStartPayload(tool_name="lookup"))
+        assert "principal_id" not in event.model_dump(mode="json")
+
+    def test_a_partial_object_is_malformed_not_a_degraded_reading(self) -> None:
+        """SPEC §11.4: all three members REQUIRED when the object is present.
+
+        The guarantee the shape exists to give is that there is no conformant
+        event carrying an `id` whose `form` a consumer has to guess. A default
+        on any member would hand that guess back to the producer silently.
+        """
+        from baton.events import PrincipalWire
+
+        for partial in (
+            {"id": "h1:9f2c"},
+            {"id": "h1:9f2c", "source": "attested"},
+            {"id": "h1:9f2c", "form": "hashed"},
+            {"source": "attested", "form": "hashed"},
+        ):
+            with pytest.raises(ValidationError):
+                PrincipalWire(**partial)  # type: ignore[arg-type]
+
+    def test_an_unregistered_value_is_carried_not_rejected(self) -> None:
+        """The fourth source — alias-derived, from N7/E6 — must cost no
+        migration, and `transport_observed`'s rule is copied verbatim: an
+        unknown value is never rejected and never read as a known one.
+
+        A `Literal` here would make this producer unable to emit a value SPEC
+        registers later, and would turn a forward-compatible envelope into a
+        `ValidationError` at the emit boundary — on a path SPEC §11.2 requires
+        to fail open.
+        """
+        from baton.events import PrincipalWire
+
+        got = PrincipalWire(id="x", source="alias-derived", form="tokenized")
+        assert (got.source, got.form) == ("alias-derived", "tokenized")
+
+    def test_an_extra_member_is_refused(self) -> None:
+        from baton.events import PrincipalWire
+
+        with pytest.raises(ValidationError):
+            PrincipalWire(id="x", source="attested", form="hashed", issuer="nope")  # type: ignore[call-arg]
+
+    def test_the_GENERATED_schema_says_what_the_model_says(self) -> None:
+        """The published contract, read off the artifact rather than the class.
+
+        `events.schema.json` in `baton-spec` is generated from this model and
+        validated by `baton-proxy`, `baton-extmcp` and `baton-ts`. Built here
+        the way `baton-spec/scripts/generate.py` builds it — `TypeAdapter(Event)
+        .json_schema()`, not a hand-rolled equivalent — so this asserts on the
+        generator's own input and a change that parses correctly but publishes
+        wrongly reds here.
+        """
+        schema = TypeAdapter(Event).json_schema()
+
+        for name, variant in schema.get("$defs", {}).items():
+            if "principal" not in variant.get("properties", {}):
+                continue
+            assert "principal_id" not in variant["properties"], (
+                f"{name} still advertises the retired flat field"
+            )
+
+        defs = schema["$defs"]
+        principal = defs["PrincipalWire"]
+        assert set(principal["required"]) == {"id", "source", "form"}
+        assert principal.get("additionalProperties") is False
+        # Open value sets: a registered-only enum in the PUBLISHED schema would
+        # make every other producer repo reject an event carrying a value SPEC
+        # adds later, which is the cross-repo shape of the same mistake.
+        for member in ("source", "form"):
+            assert "enum" not in principal["properties"][member], member

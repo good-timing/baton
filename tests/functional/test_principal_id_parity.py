@@ -146,9 +146,44 @@ async def _run_standalone_path(
 
 
 def _principal_ids(path: Path) -> set[str | None]:
+    """Just the ``id`` member, for the tests whose subject is the VALUE.
+
+    Reads it out of the object, so a run that emitted a bare string where the
+    object belongs fails here rather than comparing equal to itself.
+    """
+    return {dict(p)["id"] if p is not None else None for p in _principals(path)}
+
+
+def _principals(path: Path) -> set[tuple[tuple[str, Any], ...] | None]:
+    """Every event's whole ``principal``, frozen so it can go in a set.
+
+    ``None`` for an event that carried none — which SPEC §11.4 makes the
+    common case and never an error. The set is over ALL events of the run for
+    the reason recorded at the hook section below: a change wired into the
+    tool-call path but not the annotation path yields two entries here.
+    """
     events = without_surface_snapshots(_read_events(path))
     assert events, f"no events captured at {path} — the assertion would be vacuous"
-    return {ev.get("principal_id") for ev in events}
+    out: set[tuple[tuple[str, Any], ...] | None] = set()
+    for ev in events:
+        assert "principal_id" not in ev, (
+            f"{path.name} emitted the RETIRED flat field `principal_id` — "
+            "SPEC §11.4 carries the object, and prod ingest treats the two "
+            "spellings on one envelope as a 422"
+        )
+        principal = ev.get("principal")
+        out.add(None if principal is None else tuple(sorted(principal.items())))
+    return out
+
+
+def _one_principal(path: Path) -> dict[str, Any]:
+    """The single principal a run emitted, as a dict. Fails when a run emitted
+    more than one — which is the merge every test here is written to catch."""
+    got = _principals(path)
+    assert len(got) == 1, f"{path.name} emitted {len(got)} distinct principals: {got}"
+    frozen = got.pop()
+    assert frozen is not None, f"{path.name} emitted no principal at all"
+    return dict(frozen)
 
 
 async def test_both_adapters_hash_one_principal_identically(
@@ -212,16 +247,23 @@ async def test_both_adapters_agree_in_raw_mode_too(
     assert _principal_ids(standalone_path) == {CLAIMS["sub"]}
 
 
-async def test_both_adapters_drop_the_field_when_unauthenticated(
+async def test_both_adapters_drop_the_WHOLE_object_when_unauthenticated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The negative control, and it is about the object rather than the id.
+
+    SPEC §11.4 makes ``principal`` all-or-nothing: a producer emits all three
+    members or omits it. So "nobody was resolved" is a missing object, never an
+    object with a null ``id`` and a ``source`` for an identity that does not
+    exist — which is malformed, not a degraded reading.
+    """
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
     await _run_official_path(official_path, None, "hashed", monkeypatch)
     await _run_standalone_path(standalone_path, None, "hashed", monkeypatch)
 
-    assert _principal_ids(official_path) == {None}
-    assert _principal_ids(standalone_path) == {None}
+    assert _principals(official_path) == {None}
+    assert _principals(standalone_path) == {None}
 
 
 # ---------------------------------------------------------------------------
@@ -257,12 +299,13 @@ async def test_the_hook_supplies_identity_where_no_token_exists(
     adapter. The expected value is computed here rather than compared between
     runs, for the reason at the top of this file.
     """
-    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_principal_id
+    from baton.identity import Principal, hash_principal_id
 
-    expected = hash_principal_id(
-        HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=HOOK_ISS, scheme=VENDOR_HASH_SCHEME
+    expected = hash_principal_id(HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=HOOK_ISS)
+    assert expected.startswith("h1:"), (
+        "`v1:` is RETIRED — an asserted principal hashes under the key-generation "
+        "tag like any other, and its provenance rides `principal.source`"
     )
-    assert expected.startswith("v1:")
 
     hook = _hook(Principal(principal_id=HOOK_SUB, issuer=HOOK_ISS))
     official_path = tmp_path / "official.jsonl"
@@ -270,28 +313,29 @@ async def test_the_hook_supplies_identity_where_no_token_exists(
     await _run_official_path(official_path, None, "hashed", monkeypatch, resolve_principal=hook)
     await _run_standalone_path(standalone_path, None, "hashed", monkeypatch, resolve_principal=hook)
 
-    official = _principal_ids(official_path)
-    standalone = _principal_ids(standalone_path)
-    assert official == {expected}, f"official adapter: {official}"
-    assert standalone == {expected}, f"standalone adapter: {standalone}"
+    for path in (official_path, standalone_path):
+        assert _one_principal(path) == {
+            "id": expected,
+            "source": "asserted",
+            "form": "hashed",
+        }, path.name
 
 
-async def test_the_hook_wins_over_a_verified_token_and_says_so_in_the_tag(
+async def test_the_hook_wins_over_a_verified_token_and_says_so_in_the_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Precedence, and the tag that keeps it honest.
+    """Precedence, and the member that keeps it honest.
 
     The token here is the SAME one every other test in this file uses, so the
     attested value is known: if precedence were the other way round, these runs
-    would emit the ``h1:`` hash of ``CLAIMS["sub"]``. Asserting the tag as well
-    as the value is what distinguishes "the hook won" from "the hook happened
-    to produce the same string".
+    would emit the hash of ``CLAIMS["sub"]``. Asserting ``source`` as well as
+    the value is what distinguishes "the hook won" from "the hook happened to
+    produce the same string" — the job the ``v1:`` tag used to do, moved to a
+    member that survives ``"raw"`` mode.
     """
-    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_principal_id
+    from baton.identity import Principal, hash_principal_id
 
-    asserted = hash_principal_id(
-        HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=HOOK_ISS, scheme=VENDOR_HASH_SCHEME
-    )
+    asserted = hash_principal_id(HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=HOOK_ISS)
     attested = hash_principal_id(
         CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"]
     )
@@ -308,9 +352,9 @@ async def test_the_hook_wins_over_a_verified_token_and_says_so_in_the_tag(
     )
 
     for path in (official_path, standalone_path):
-        got = _principal_ids(path)
-        assert got == {asserted}, f"{path.name}: {got}"
-        assert attested not in got, f"{path.name} used the token despite a hook"
+        got = _one_principal(path)
+        assert got == {"id": asserted, "source": "asserted", "form": "hashed"}, path.name
+        assert got["id"] != attested, f"{path.name} used the token despite a hook"
 
 
 async def test_a_hook_that_raises_falls_back_to_the_token_and_events_still_emit(
@@ -349,11 +393,9 @@ async def test_an_async_hook_works_on_both_adapters(
 ) -> None:
     """Sync or async, matching ``scrubber``. A
     vendor resolving identity will usually be doing I/O to do it."""
-    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_principal_id
+    from baton.identity import Principal, hash_principal_id
 
-    expected = hash_principal_id(
-        HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=None, scheme=VENDOR_HASH_SCHEME
-    )
+    expected = hash_principal_id(HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=None)
 
     async def resolve(_ctx: Any) -> Any:
         return Principal(principal_id=HOOK_SUB)
@@ -379,7 +421,7 @@ async def test_the_hook_sees_the_calls_own_context_not_an_install_time_value(
     principal derived from the context the hook was handed, and then finding
     BOTH resulting hashes on the wire.
     """
-    from baton.identity import VENDOR_HASH_SCHEME, Principal, hash_principal_id
+    from baton.identity import Principal, hash_principal_id
 
     def per_call(ctx: Any) -> Any:
         # ``tool_name`` differs between the lookup call and the annotation
@@ -393,9 +435,7 @@ async def test_the_hook_sees_the_calls_own_context_not_an_install_time_value(
     got = _principal_ids(official_path)
 
     def h(sub: str) -> str:
-        return hash_principal_id(
-            sub, tenant_id=TENANT, key=HMAC_KEY, issuer=None, scheme=VENDOR_HASH_SCHEME
-        )
+        return hash_principal_id(sub, tenant_id=TENANT, key=HMAC_KEY, issuer=None)
 
     assert h("user-of-lookup") in got
     assert h(f"user-of-{annotate}") in got, (
@@ -405,13 +445,21 @@ async def test_the_hook_sees_the_calls_own_context_not_an_install_time_value(
     assert len(got) == 2, got
 
 
-async def test_raw_mode_does_not_tag_a_hook_principal(
+async def test_raw_mode_KEEPS_the_provenance_it_used_to_forfeit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Documented, not incidental: raw mode forfeits provenance the same way
-    it forfeits pseudonymity, so a consumer cannot tell asserted from attested
-    there. SPEC §11.4 says so; this pins it rather than letting a future reader
-    assume a ``v1:`` prefix survives into raw mode."""
+    """**The defect this whole change exists to fix, asserted directly.**
+
+    This test previously pinned the OPPOSITE and was right to: provenance was
+    encoded in the scheme tag, ``"raw"`` mode emits no tag, so an asserted
+    principal and an attested one reached the wire as indistinguishable bare
+    strings and no consumer could recover which it held. SPEC §11.4 conceded it
+    in its own derivation row.
+
+    ``source`` is a member now, so it survives a mode that has no tag to carry
+    it. The value stays verbatim — that is what ``"raw"`` means and it has not
+    changed — and the classification travels beside it.
+    """
     from baton.identity import Principal
 
     hook = _hook(Principal(principal_id=HOOK_SUB, issuer=HOOK_ISS))
@@ -420,8 +468,86 @@ async def test_raw_mode_does_not_tag_a_hook_principal(
     await _run_official_path(official_path, None, "raw", monkeypatch, resolve_principal=hook)
     await _run_standalone_path(standalone_path, None, "raw", monkeypatch, resolve_principal=hook)
 
-    assert _principal_ids(official_path) == {HOOK_SUB}
-    assert _principal_ids(standalone_path) == {HOOK_SUB}
+    for path in (official_path, standalone_path):
+        assert _one_principal(path) == {
+            "id": HOOK_SUB,
+            "source": "asserted",
+            "form": "raw",
+        }, path.name
+
+
+async def test_the_two_provenances_are_BYTE_IDENTICAL_and_differ_only_in_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**The discriminating case the old suite could not hold.**
+
+    While ``v1:``/``h1:`` existed, "the hook won" and "the token won" were
+    distinguishable by the value's first three bytes, so every precedence test
+    in this file could pass by reading a prefix. Retiring ``v1:`` removes that
+    crutch: the tag was never part of the HMAC message, so one
+    ``(tenant, principal, issuer)`` resolved through the HOOK and through the
+    TOKEN now produces the same digest, character for character, and ``source``
+    is the ONLY thing that tells them apart.
+
+    That is the property SPEC §13 calls a relabel rather than a recomputation,
+    and it is what makes the retirement safe. A producer that quietly kept
+    tagging the asserted path differently passes every other test here and
+    fails this one.
+    """
+    from baton.identity import Principal
+
+    # One identity, reached two ways. The hook returns exactly what the token
+    # carries, so any difference in the emitted `id` is the producer's doing.
+    same = Principal(principal_id=CLAIMS["sub"], issuer=CLAIMS["iss"])
+
+    via_hook = tmp_path / "hook.jsonl"
+    via_token = tmp_path / "token.jsonl"
+    await _run_official_path(via_hook, None, "hashed", monkeypatch, resolve_principal=_hook(same))
+    await _run_official_path(via_token, _official_token(), "hashed", monkeypatch)
+
+    hook_principal = _one_principal(via_hook)
+    token_principal = _one_principal(via_token)
+
+    assert hook_principal["id"] == token_principal["id"], (
+        "the two provenances produced different digests for one identity — "
+        "the scheme tag is back in the HMAC message, or the asserted path is "
+        "still tagging itself"
+    )
+    assert hook_principal["source"] == "asserted"
+    assert token_principal["source"] == "attested"
+    assert hook_principal["form"] == token_principal["form"] == "hashed"
+
+
+async def test_every_combination_of_source_and_form_occurs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SPEC §11.4: "the two members are independent, and every combination
+    occurs" — ``form`` says nothing about trust and ``source`` says nothing
+    about privacy.
+
+    The 2x2, on one adapter, because the cross-adapter agreement is pinned
+    above and what is at stake here is that neither member is quietly derived
+    from the other. A producer computing ``source`` from ``mode`` — the exact
+    joining this change undid — passes the four single-cell tests and fails
+    this one on the off-diagonal.
+    """
+    from baton.identity import Principal
+
+    hook = _hook(Principal(principal_id=HOOK_SUB, issuer=HOOK_ISS))
+    seen = {}
+    for mode, form in (("hashed", "hashed"), ("raw", "raw")):
+        for label, token, resolver in (
+            ("attested", _official_token(), None),
+            ("asserted", None, hook),
+        ):
+            path = tmp_path / f"{label}-{mode}.jsonl"
+            await _run_official_path(path, token, mode, monkeypatch, resolve_principal=resolver)
+            got = _one_principal(path)
+            seen[(label, form)] = got
+            assert got["source"] == label, got
+            assert got["form"] == form, got
+
+    assert len(seen) == 4, seen
 
 
 # ---------------------------------------------------------------------------

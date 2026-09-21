@@ -27,7 +27,7 @@ from baton.integrations._llm_text import build_annotation_tool_description
 from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
     ResolvePrincipalHook,
-    resolve_call_principal_id,
+    resolve_call_principal,
 )
 from baton.integrations.official import _auth
 from baton.integrations.official._compat import ContextClass as Context
@@ -187,7 +187,7 @@ def register_annotation_tool(
         # Identity, on the same terms as the tool-call path: the finished
         # wire value, resolved once, raw principal never travelling past it.
         # Unlike ``runtime_meta`` just above, there is no asymmetry argument
-        # against emitting this one — ``principal_id`` carries no session identity,
+        # against emitting this one — ``principal`` carries no session identity,
         # so it cannot disagree with the envelope's ``session_id`` the way a
         # forwarded meta key can.
         # Identity here takes the SAME ladder the tool-call path takes, hook
@@ -205,7 +205,7 @@ def register_annotation_tool(
             if resolve_principal_hook is not None
             else None
         )
-        annotation_principal_id = await resolve_call_principal_id(
+        annotation_principal = await resolve_call_principal(
             _auth.current_access_token(),
             hook=resolve_principal_hook,
             hook_context=identity_hook_context,
@@ -231,7 +231,7 @@ def register_annotation_tool(
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
-                principal_id=annotation_principal_id,
+                principal=annotation_principal,
                 transport_observed=observe_transport(ctx),
                 payload=AnnotationPayload(
                     intent=scrubber(user_goal) if user_goal else None,

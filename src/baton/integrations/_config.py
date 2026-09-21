@@ -48,7 +48,7 @@ class CaseInsensitiveHeaders(dict[str, str]):
     ``isinstance(ctx.headers, dict)``, ``.copy()``, ``json.dumps(ctx.headers)``
     and ``|`` — and since ``resolve_principal_via_hook`` catches bare
     ``Exception``, a hook that merely logged its headers before reading a key
-    would have started nulling ``principal_id`` silently. That is the identical
+    would have started dropping ``principal`` silently. That is the identical
     fail-open this class exists to close, re-created pointing the other way. As
     a ``dict`` subclass every behaviour a standalone hook had is preserved and
     three read paths additionally fold case; methods not listed below
@@ -89,7 +89,7 @@ class CaseInsensitiveHeaders(dict[str, str]):
         answers ``.get(None)`` with ``None`` and ``d[None]`` with ``KeyError``,
         and calling ``.lower()`` unconditionally would turn both into
         ``AttributeError`` — a new exception from a hook that used to work,
-        swallowed by the same fail-open guard, nulling ``principal_id``. Preserving
+        swallowed by the same fail-open guard, dropping ``principal``. Preserving
         dict behaviour means preserving it for the odd key too.
         """
         return key.lower() if isinstance(key, str) else key
@@ -111,7 +111,7 @@ class CaseInsensitiveHeaders(dict[str, str]):
     # set-then-read simply worked, and it lands in the same silent place: a
     # hook that normalizes before reading (``setdefault`` a fallback, then read
     # it back) raises, ``resolve_principal_via_hook`` swallows it, and
-    # ``principal_id`` goes null on every event. The same fail-open this class
+    # ``principal`` is absent on every event. The same fail-open this class
     # exists to close, re-created on the other half of the mapping protocol.
 
     def __setitem__(self, key: str, value: str) -> None:
@@ -174,7 +174,7 @@ class SessionResolutionContext:
 
     ⚠ **The symptom differs by deployment and the worse one is not the obvious
     one.** Where no token exists (stdio, or HTTP with no OAuth) the miss yields
-    a null ``principal_id`` on every event. But where a token DOES exist — HTTP +
+    no ``principal`` on any event. But where a token DOES exist — HTTP +
     OAuth, the shape ``X-Forwarded-User`` actually lives in — the hook is rung 0
     and a raise falls through to rung 1, so events carried the token's ``h1:``
     pseudonym instead of the hook's ``v1:`` one. Same person, two different
@@ -248,7 +248,7 @@ def _resolve_principal_id_hmac_key(explicit: bytes | str | None, *, mode: str) -
     skip that distinction.
 
     ``None`` is a supported state, not an error: it means hashed-mode identity
-    is off and events emit without ``principal_id``.
+    is off and events emit without ``principal``.
     """
     if explicit is not None:
         # A ``str`` is encoded rather than refused, because the env path has
@@ -402,7 +402,7 @@ class VendorConfig:
     has to arbitrate."""
 
     principal_id_mode: str = "hashed"
-    """How a resolved principal reaches the wire (SPEC §11.4 ``principal_id``).
+    """How a resolved principal reaches the wire (SPEC §11.4 ``principal.form``).
     ``"hashed"`` (default) emits ``<scheme>:<hex>`` — an HMAC computed in this
     process, so the collector only ever sees the pseudonym. ``"raw"`` emits the
     principal verbatim.
@@ -421,7 +421,7 @@ class VendorConfig:
     asserted) and a consumer treats anything else as a raw identity."""
 
     principal_id_hmac_key: bytes | str | None = field(default=None, repr=False)
-    """Secret keying the ``principal_id`` HMAC in ``"hashed"`` mode.
+    """Secret keying the ``principal.id`` HMAC in ``"hashed"`` mode.
 
     ⚠ **``repr=False`` — PRE-EXISTING, and not part of the DSN lane that
     brought the other two.** It is the same defect in the same ``repr`` for the
@@ -429,8 +429,8 @@ class VendorConfig:
     vendor holds it and Baton never sees it has no business printing itself.
 
     Resolved explicit → ``BATON_PRINCIPAL_ID_HMAC_KEY`` → ``None``. Unset means
-    hashed identity is fail-open-skipped: ``principal_id`` is dropped, events still
-    emit, and it is logged once. ``principal_id`` is additive analytics — never a
+    hashed identity is fail-open-skipped: ``principal`` is dropped, events still
+    emit, and it is logged once. ``principal`` is additive analytics — never a
     consent or authorization gate.
 
     **The vendor generates and holds this; Baton never sees it.** That is what
@@ -454,7 +454,7 @@ class VendorConfig:
 
     **This is the only way a stdio vendor's principal can reach Baton.** The
     token path reads a contextvar set by MCP's bearer-auth ASGI middleware, and
-    stdio has no ASGI — so ``principal_id`` is HTTP-only without this hook, on every
+    stdio has no ASGI — so ``principal`` is HTTP-only without this hook, on every
     supported version. A vendor already authenticating stdio users out of band
     knows exactly who the user is and previously had no way to say so.
 

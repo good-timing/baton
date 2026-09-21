@@ -104,7 +104,7 @@ async def test_identity_failures_cannot_fail_the_call_either(
         events = [json.loads(x) for x in events_path.read_text().splitlines() if x.strip()]
         calls = [e for e in events if e["event_type"].startswith("tool_call")]
         assert calls, "the call must still have been captured"
-        assert {e.get("principal_id") for e in calls} == {None}
+        assert {e.get("principal") for e in calls} == {None}
 
 
 async def test_a_str_hmac_key_does_not_break_the_call(
@@ -130,8 +130,10 @@ async def test_a_str_hmac_key_does_not_break_the_call(
     finally:
         await handle.aclose()
     events = [json.loads(x) for x in events_path.read_text().splitlines() if x.strip()]
-    ids = {e.get("principal_id") for e in events if e["event_type"].startswith("tool_call")}
-    assert ids and all(v is not None and v.startswith("h1:") for v in ids), ids
+    principals = [e.get("principal") for e in events if e["event_type"].startswith("tool_call")]
+    assert principals and all(
+        p is not None and p["id"].startswith("h1:") and p["form"] == "hashed" for p in principals
+    ), principals
 
 
 async def test_the_missing_key_warning_fires_once_per_install(

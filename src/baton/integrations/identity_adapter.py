@@ -8,7 +8,7 @@ releases before anybody noticed.
 
 **This is the attested half of identity.** ``agent_runtime`` is what a client
 says it is — self-reported, never verified, and a client may call itself
-anything. ``principal_id`` is derived from a bearer token the VENDOR's own verifier
+anything. ``principal.id`` is derived from a bearer token the VENDOR's own verifier
 already validated, so it is the one identity claim on the envelope that
 something checked. Keep the two apart; they answer different questions and they
 are trustworthy to different degrees.
@@ -17,7 +17,7 @@ are trustworthy to different degrees.
 is ASGI middleware (``mcp.server.auth.middleware.bearer_auth`` operates on a
 Starlette ``Scope``), and ``get_access_token()`` reads a contextvar that
 middleware sets. On stdio nothing sets it, so there is no token, no principal
-and no ``principal_id`` — not a failure, just the shape of the transport. A vendor
+and no attested ``principal`` — not a failure, just the shape of the transport. A vendor
 on stdio who wants identity needs a different carrier entirely.
 
 ⚠ **``claims`` does not exist on ``mcp < 1.27``.** ``AccessToken`` gained
@@ -53,14 +53,15 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from baton.identity import HASH_SCHEME, VENDOR_HASH_SCHEME, Principal, hash_principal_id
+from baton.events import PrincipalWire
+from baton.identity import Principal, hash_principal_id
 from baton.integrations._hooks import run_vendor_hook
 
 if TYPE_CHECKING:
     # Type-only, and it has to be: ``_config`` imports ``ResolvePrincipalHook`` and
     # ``PRINCIPAL_ID_MODES`` from this module at runtime, so a runtime import back
     # would be a cycle. The CALLER builds the context and passes it in, which
-    # is also why ``resolve_call_principal_id`` takes one rather than making one.
+    # is also why ``resolve_call_principal`` takes one rather than making one.
     from baton.integrations._config import SessionResolutionContext
 
 #: Emit the HMAC of the principal. The console sees ``h1:<hex>`` and never the
@@ -76,6 +77,26 @@ PRINCIPAL_ID_MODE_HASHED = "hashed"
 PRINCIPAL_ID_MODE_RAW = "raw"
 
 PRINCIPAL_ID_MODES = frozenset({PRINCIPAL_ID_MODE_HASHED, PRINCIPAL_ID_MODE_RAW})
+
+#: ``principal.source`` — a verified token's ``sub``. An identity provider
+#: checked this. HTTP-only, on every supported version.
+PRINCIPAL_SOURCE_ATTESTED = "attested"
+
+#: ``principal.source`` — a vendor's own per-request resolver. The vendor
+#: states who this is and nothing in the protocol checked the claim. The only
+#: identity mechanism that exists on stdio, and NOT a degraded ``attested``.
+PRINCIPAL_SOURCE_ASSERTED = "asserted"
+
+#: The two members happen to share a vocabulary with the two modes above, and
+#: that is a coincidence of spelling rather than a derivation: ``form`` is the
+#: mode's OUTCOME, ``source`` is which rung resolved the principal, and SPEC
+#: §11.4 requires them to stay independent ("every combination occurs"). The
+#: mapping is written out rather than passing ``mode`` through, so a third mode
+#: cannot silently become a third ``form``.
+_FORM_BY_MODE = {
+    PRINCIPAL_ID_MODE_HASHED: "hashed",
+    PRINCIPAL_ID_MODE_RAW: "raw",
+}
 
 #: Cap on a RAW principal. Same posture and same number as the declared
 #: ``agent_runtime`` tiers: it is external text copied onto every event of the
@@ -104,7 +125,7 @@ async def resolve_principal_via_hook(
 
     Never raises. An exception is logged and treated as a miss, so identity
     falls through to the verified-token path exactly as if no hook were
-    configured — ``principal_id`` is additive analytics and a vendor's own bug in
+    configured — ``principal`` is additive analytics and a vendor's own bug in
     their resolver may not fail their tool call (SPEC §11.2 fail-open).
 
     Accepts sync or async hooks, mirroring ``VendorConfig.scrubber``.
@@ -159,7 +180,7 @@ async def resolve_principal_via_hook(
     #     field exists to prevent, introduced by the field itself.
     # (2) A non-string issuer — a UUID object, an int tenant id — reaches
     #     ``unicodedata.normalize`` and raises ``TypeError``. That is caught
-    #     downstream, but the cost is the whole event's ``principal_id``, including
+    #     downstream, but the cost is the whole event's ``principal``, including
     #     the attested one the token could still have produced. Coercing here
     #     means a junk issuer costs the issuer, not the identity.
     if not isinstance(result.issuer, str) or not result.issuer:
@@ -210,7 +231,7 @@ def principal_from_access_token(token: Any) -> Principal | None:
         return None
 
 
-def resolve_principal_id(
+def resolve_attested_principal(
     token: Any,
     *,
     mode: str,
@@ -218,8 +239,8 @@ def resolve_principal_id(
     hmac_key: bytes | None,
     logger: logging.Logger,
     warned: set[str],
-) -> str | None:
-    """Resolve a verified token into the envelope's ``principal_id``, or ``None``.
+) -> PrincipalWire | None:
+    """Resolve a verified token into the envelope's ``principal``, or ``None``.
 
     **The ATTESTED path, and only that one.** It reads the token and hands the
     principal to ``_finish_principal`` — the edge-hash chokepoint, where the
@@ -228,7 +249,7 @@ def resolve_principal_id(
     where the same rule is what keeps raw identity from reaching a
     console-bound sink by some path nobody audited.
 
-    Callers on an emit path want ``resolve_call_principal_id``, which checks a
+    Callers on an emit path want ``resolve_call_principal``, which checks a
     vendor's ``resolve_principal`` hook first and falls through to this. This
     function remains the whole of identity for a deployment with no hook
     configured, which is every deployment today.
@@ -244,7 +265,7 @@ def resolve_principal_id(
     - ``hashed`` with no HMAC key configured → ``None``, warned once
     - ``raw`` → the subject verbatim, no key needed
 
-    ``principal_id`` is additive analytics. It is never a consent or authorization
+    ``principal`` is additive analytics. It is never a consent or authorization
     gate, so nothing here may raise, and nothing here may stop an event.
     """
     return _finish_principal(
@@ -252,7 +273,7 @@ def resolve_principal_id(
         mode=mode,
         tenant_id=tenant_id,
         hmac_key=hmac_key,
-        scheme=HASH_SCHEME,
+        source=PRINCIPAL_SOURCE_ATTESTED,
         logger=logger,
         warned=warned,
     )
@@ -264,21 +285,51 @@ def _finish_principal(
     mode: str,
     tenant_id: str,
     hmac_key: bytes | None,
-    scheme: str,
+    source: str,
     logger: logging.Logger,
     warned: set[str],
-) -> str | None:
-    """Turn a resolved principal into the finished wire value, or ``None``.
+) -> PrincipalWire | None:
+    """Turn a resolved principal into the finished wire object, or ``None``.
 
     **The edge-hash chokepoint, and the single copy of it.** Both provenances
     end here — the attested token read and the asserted ``resolve_principal`` hook —
     so the cap, the raw-mode rules, the missing-key warning and the hashing
     failure mode are the same for both by construction rather than by two
-    implementations agreeing. They differ in exactly one argument, ``scheme``,
-    which is the whole point: the value a consumer reads to know which kind of
+    implementations agreeing. They differ in exactly one argument, ``source``,
+    which is the whole point: the member a consumer reads to know which kind of
     claim it is holding.
+
+    ⚠ **``source`` used to be ``scheme``, and the difference is the change.**
+    It selected a tag glued onto the digest — ``h1:`` or ``v1:`` — so
+    provenance rode the value, and ``"raw"`` mode, which emits no tag, dropped
+    it with no way for a consumer to recover it. ``v1:`` is now RETIRED: both
+    rungs hash under ``HASH_SCHEME`` (the KEY GENERATION, not a provenance
+    marker) and provenance is a member that survives every mode. Safe as a
+    relabel rather than a recomputation because the tag was never part of the
+    HMAC message — one ``(tenant_id, principal, issuer)`` always produced the
+    same digest under either letter.
+
+    **All three members or nothing.** Every branch that cannot produce a value
+    returns ``None``, never a partial object: SPEC §11.4 makes a partial one
+    malformed, so "we know who but not how" is not a state this may emit.
     """
     if principal is None:
+        return None
+
+    #: A mode this function does not recognise cannot be given a truthful
+    #: ``form``, and guessing one is the failure the member exists to prevent —
+    #: ``form`` is what a consumer classifies on. Unreachable from the public
+    #: path (``_config`` validates against ``PRINCIPAL_ID_MODES`` at install),
+    #: and reachable by constructing an adapter directly, which is the same
+    #: door the hashing guard below is written for.
+    form = _FORM_BY_MODE.get(mode)
+    if form is None:
+        logger.warning(
+            "baton: unknown principal_id_mode %r — dropping the principal "
+            "(events still emit). Expected one of %s.",
+            mode,
+            sorted(PRINCIPAL_ID_MODES),
+        )
         return None
 
     if mode == PRINCIPAL_ID_MODE_RAW:
@@ -296,7 +347,16 @@ def _finish_principal(
         # defeats the only reason to choose this mode. The cost is the exact
         # collision the issuer was folded in to prevent — two identity
         # providers, one `sub` — which raw mode accepts by construction.
-        return principal.principal_id[:RAW_PRINCIPAL_ID_MAX_LEN]
+        #
+        # ⚠ What raw mode NO LONGER forfeits is the provenance. That was a
+        # documented loss while the scheme tag carried it; `source` is a member
+        # now and rides every mode, so a consumer here is told a real identity
+        # AND which mechanism named it.
+        return PrincipalWire(
+            id=principal.principal_id[:RAW_PRINCIPAL_ID_MAX_LEN],
+            source=source,
+            form=form,
+        )
 
     if hmac_key is None:
         if "no_hmac_key" not in warned:
@@ -306,20 +366,23 @@ def _finish_principal(
             # to explain that would put the raw identity in the vendor's log
             # files, which is the residency leak one layer sideways.
             logger.warning(
-                "baton: identity resolved but no principal_id HMAC key is set — "
-                "dropping principal_id (events still emit). Set "
+                "baton: identity resolved but no principal HMAC key is set — "
+                "dropping the principal (events still emit). Set "
                 "BATON_PRINCIPAL_ID_HMAC_KEY, or pass "
                 "VendorConfig(principal_id_hmac_key=...), to attach it."
             )
         return None
 
     try:
-        return hash_principal_id(
-            principal.principal_id,
-            tenant_id=tenant_id,
-            key=hmac_key,
-            issuer=principal.issuer,
-            scheme=scheme,
+        return PrincipalWire(
+            id=hash_principal_id(
+                principal.principal_id,
+                tenant_id=tenant_id,
+                key=hmac_key,
+                issuer=principal.issuer,
+            ),
+            source=source,
+            form=form,
         )
     except Exception:
         # The docstring above says nothing here may raise; this is the call
@@ -327,11 +390,11 @@ def _finish_principal(
         # public path now coerces and validates at install, this function is
         # reachable by constructing an adapter directly. A guard costs nothing
         # and makes the contract literally true rather than nearly true.
-        logger.warning("baton: principal_id hashing failed; dropping principal_id", exc_info=True)
+        logger.warning("baton: principal hashing failed; dropping the principal", exc_info=True)
         return None
 
 
-async def resolve_call_principal_id(
+async def resolve_call_principal(
     token: Any,
     *,
     hook: ResolvePrincipalHook | None,
@@ -341,11 +404,11 @@ async def resolve_call_principal_id(
     hmac_key: bytes | None,
     logger: logging.Logger,
     warned: set[str],
-) -> str | None:
-    """The envelope's ``principal_id`` for one call — both provenances, in order.
+) -> PrincipalWire | None:
+    """The envelope's ``principal`` for one call — both provenances, in order.
 
-    **Rung 0: the vendor's ``resolve_principal`` hook (ASSERTED).** Tagged ``v1:``.
-    **Rung 1: the verified access token (ATTESTED).** Tagged ``h1:``.
+    **Rung 0: the vendor's ``resolve_principal`` hook.** ``source: "asserted"``.
+    **Rung 1: the verified access token.** ``source: "attested"``.
     ``None`` when neither resolves, which is the common case and never an
     error. SPEC §11.4 carries the same ladder and the consumer-side rules.
 
@@ -354,9 +417,15 @@ async def resolve_call_principal_id(
     token names whatever principal the gateway authenticated, which is
     frequently a service account rather than the person, while a hook exists
     only where a vendor deliberately wrote one for this purpose. The more
-    specific claim wins over the better-verified one, and the scheme tag is
-    what keeps that honest downstream: a consumer is never told an assertion
-    was verified, it is told which it got and decides for itself.
+    specific claim wins over the better-verified one, and ``source`` is what
+    keeps that honest downstream: a consumer is never told an assertion was
+    verified, it is told which it got and decides for itself.
+
+    ⚠ **That honesty used to live in the scheme tag and it no longer does.**
+    Both rungs now hash under the same tag, so the two provenances are
+    BYTE-IDENTICAL for one ``(tenant_id, principal, issuer)`` and ``source``
+    is the only thing separating them. A consumer still reading the prefix
+    sees one actor where there are two claims of different weight.
 
     ⚠ **The hook is not consulted when it is not configured, and that path must
     stay free.** ``hook_context`` is built by the caller only when ``hook`` is
@@ -373,7 +442,7 @@ async def resolve_call_principal_id(
     ⚠ **One case deliberately does NOT fall through: a hook that returned a
     usable principal the SDK then could not hash** (a ``principal_id`` carrying an
     unpaired surrogate is the reachable shape; a non-string ``issuer`` is
-    coerced away before it gets here). That emits NO ``principal_id`` rather than
+    coerced away before it gets here). That emits NO ``principal`` rather than
     the token's. The difference from the cases above is what the hook said: a
     hook returning ``None`` has no opinion about this request, so the token is
     the best available answer — but a hook that named a person and failed to
@@ -381,7 +450,7 @@ async def resolve_call_principal_id(
     reason it sits above the token. Substituting the gateway's service account
     there would file the call under a plausible, wrong, and heavily-merged
     actor. Losing the join beats inventing one (CHARTER, the D2 join rule),
-    and a null ``principal_id`` is already the common, well-handled case.
+    and an absent ``principal`` is already the common, well-handled case.
     """
     if hook is not None and hook_context is not None:
         principal = await resolve_principal_via_hook(hook, hook_context, logger=logger)
@@ -391,11 +460,11 @@ async def resolve_call_principal_id(
                 mode=mode,
                 tenant_id=tenant_id,
                 hmac_key=hmac_key,
-                scheme=VENDOR_HASH_SCHEME,
+                source=PRINCIPAL_SOURCE_ASSERTED,
                 logger=logger,
                 warned=warned,
             )
-    return resolve_principal_id(
+    return resolve_attested_principal(
         token,
         mode=mode,
         tenant_id=tenant_id,

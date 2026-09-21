@@ -55,7 +55,7 @@ from baton.integrations._surface import assemble_surface, build_seam_augmentatio
 from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
     ResolvePrincipalHook,
-    resolve_call_principal_id,
+    resolve_call_principal,
 )
 from baton.integrations.runtime_adapter import (
     UNKNOWN_AGENT_RUNTIME,
@@ -440,7 +440,7 @@ class BatonMiddleware(Middleware):
             if self._resolve_principal_hook is not None
             else None
         )
-        call_principal_id = await resolve_call_principal_id(
+        call_principal = await resolve_call_principal(
             _auth.current_access_token(),
             hook=self._resolve_principal_hook,
             hook_context=identity_hook_context,
@@ -496,7 +496,7 @@ class BatonMiddleware(Middleware):
                     sequence_number=seq_ann,
                     captured_at=datetime.now(UTC),
                     agent_runtime=runtime,
-                    principal_id=call_principal_id,
+                    principal=call_principal,
                     transport_observed=call_transport,
                     runtime_meta=scrubbed_meta,
                     payload=AnnotationPayload(
@@ -540,7 +540,7 @@ class BatonMiddleware(Middleware):
                     sequence_number=seq_start,
                     captured_at=datetime.now(UTC),
                     agent_runtime=runtime,
-                    principal_id=call_principal_id,
+                    principal=call_principal,
                     transport_observed=call_transport,
                     call_id=call_id,
                     runtime_meta=scrubbed_meta,
@@ -579,7 +579,7 @@ class BatonMiddleware(Middleware):
                     sequence_number=seq_err,
                     captured_at=datetime.now(UTC),
                     agent_runtime=runtime,
-                    principal_id=call_principal_id,
+                    principal=call_principal,
                     transport_observed=call_transport,
                     call_id=call_id,
                     runtime_meta=scrubbed_meta,
@@ -624,7 +624,7 @@ class BatonMiddleware(Middleware):
                 sequence_number=seq_end,
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
-                principal_id=call_principal_id,
+                principal=call_principal,
                 transport_observed=call_transport,
                 call_id=call_id,
                 runtime_meta=scrubbed_meta,

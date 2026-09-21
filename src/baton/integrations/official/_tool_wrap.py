@@ -75,6 +75,7 @@ from baton._uuid import uuid7
 from baton.events import (
     AnnotationEvent,
     AnnotationPayload,
+    PrincipalWire,
     SurfaceSnapshotEvent,
     SurfaceSnapshotPayload,
     ToolCallEndEvent,
@@ -103,7 +104,7 @@ from baton.integrations._surface import assemble_surface, build_seam_augmentatio
 from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
     ResolvePrincipalHook,
-    resolve_call_principal_id,
+    resolve_call_principal,
 )
 from baton.integrations.official import _auth
 from baton.integrations.official._registry import get_tool_manager, get_tool_registry
@@ -419,22 +420,42 @@ def _wrap_tool_run(
             str | None,
             str | None,
             str,
-            str | None,
+            PrincipalWire | None,
             str,
             str | None,
         ],
         Awaitable[None],
     ],
     emit_after: Callable[
-        [str, str, Any, float, dict[str, Any] | None, str, str | None, str, str | None],
+        [str, str, Any, float, dict[str, Any] | None, str, PrincipalWire | None, str, str | None],
         Awaitable[None],
     ],
     emit_error: Callable[
-        [str, str, BaseException, float, dict[str, Any] | None, str, str | None, str, str | None],
+        [
+            str,
+            str,
+            BaseException,
+            float,
+            dict[str, Any] | None,
+            str,
+            PrincipalWire | None,
+            str,
+            str | None,
+        ],
         Awaitable[None],
     ],
     emit_proactive: Callable[
-        [str, str, str, str | None, str | None, dict[str, Any] | None, str, str | None, str | None],
+        [
+            str,
+            str,
+            str,
+            str | None,
+            str | None,
+            dict[str, Any] | None,
+            str,
+            PrincipalWire | None,
+            str | None,
+        ],
         Awaitable[None],
     ],
     scrubber: Callable[[Any], Any],
@@ -542,7 +563,7 @@ def _wrap_tool_run(
         )
         # Identity resolves HERE, beside the runtime detect and for the same
         # structural reason: one place per call, before anything is emitted.
-        # ``resolve_call_principal_id`` returns the FINISHED wire value — a hash or
+        # ``resolve_call_principal`` returns the FINISHED wire value — a hash or
         # a deliberate raw principal — so the raw identity never travels past
         # this line into the emitters, mirroring baton-proxy's edge-hash
         # chokepoint. ``None`` when neither provenance resolves.
@@ -573,7 +594,7 @@ def _wrap_tool_run(
             if resolve_principal_hook is not None
             else None
         )
-        call_principal_id = await resolve_call_principal_id(
+        call_principal = await resolve_call_principal(
             _auth.current_access_token(),
             hook=resolve_principal_hook,
             hook_context=identity_hook_context,
@@ -606,7 +627,7 @@ def _wrap_tool_run(
                 scrubbed_task,
                 scrubbed_meta,
                 call_agent_runtime,
-                call_principal_id,
+                call_principal,
                 call_transport,
             )
 
@@ -647,7 +668,7 @@ def _wrap_tool_run(
                 scrubbed_expected,
                 scrubbed_task,
                 call_agent_runtime,
-                call_principal_id,
+                call_principal,
                 call_id,
                 call_transport,
             )
@@ -666,7 +687,7 @@ def _wrap_tool_run(
                 monotonic() - called_at,
                 scrubbed_meta,
                 call_agent_runtime,
-                call_principal_id,
+                call_principal,
                 call_id,
                 call_transport,
             )
@@ -683,7 +704,7 @@ def _wrap_tool_run(
                 monotonic() - called_at,
                 scrubbed_meta,
                 call_agent_runtime,
-                call_principal_id,
+                call_principal,
                 call_id,
                 call_transport,
             )
@@ -777,7 +798,7 @@ async def _resolve_call_session_id(
     identifier the SDK did not mint. A vendor's handle differed from a
     client's only in who supplied it, which the join rule does not
     distinguish. What a vendor knows about a caller now reaches Baton through
-    ``VendorConfig.resolve_principal`` and lands in ``principal_id``, where the console
+    ``VendorConfig.resolve_principal`` and lands in ``principal``, where the console
     can group on it downstream and change its mind later.
 
     **Rungs 1-2 were retired 2026-09-09** — they keyed the session on
@@ -906,22 +927,42 @@ def _make_emitters(
             str | None,
             str | None,
             str,
-            str | None,
+            PrincipalWire | None,
             str,
             str | None,
         ],
         Awaitable[None],
     ],
     Callable[
-        [str, str, Any, float, dict[str, Any] | None, str, str | None, str, str | None],
+        [str, str, Any, float, dict[str, Any] | None, str, PrincipalWire | None, str, str | None],
         Awaitable[None],
     ],
     Callable[
-        [str, str, BaseException, float, dict[str, Any] | None, str, str | None, str, str | None],
+        [
+            str,
+            str,
+            BaseException,
+            float,
+            dict[str, Any] | None,
+            str,
+            PrincipalWire | None,
+            str,
+            str | None,
+        ],
         Awaitable[None],
     ],
     Callable[
-        [str, str, str, str | None, str | None, dict[str, Any] | None, str, str | None, str | None],
+        [
+            str,
+            str,
+            str,
+            str | None,
+            str | None,
+            dict[str, Any] | None,
+            str,
+            PrincipalWire | None,
+            str | None,
+        ],
         Awaitable[None],
     ],
     Callable[[str, str, dict[str, Any]], Awaitable[None]],
@@ -947,7 +988,7 @@ def _make_emitters(
         workflow: str | None,
         runtime_meta: dict[str, Any] | None,
         agent_runtime: str,
-        principal_id: str | None,
+        principal: PrincipalWire | None,
         transport_observed: str | None,
     ) -> None:
         await safe_write(
@@ -960,7 +1001,7 @@ def _make_emitters(
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
-                principal_id=principal_id,
+                principal=principal,
                 transport_observed=transport_observed,
                 runtime_meta=runtime_meta,
                 payload=AnnotationPayload(
@@ -983,7 +1024,7 @@ def _make_emitters(
         call_expected: str | None,
         call_workflow: str | None,
         agent_runtime: str,
-        principal_id: str | None,
+        principal: PrincipalWire | None,
         call_id: str,
         transport_observed: str | None,
     ) -> None:
@@ -998,7 +1039,7 @@ def _make_emitters(
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
-                principal_id=principal_id,
+                principal=principal,
                 transport_observed=transport_observed,
                 call_id=call_id,
                 runtime_meta=runtime_meta,
@@ -1021,7 +1062,7 @@ def _make_emitters(
         duration_s: float,
         runtime_meta: dict[str, Any] | None,
         agent_runtime: str,
-        principal_id: str | None,
+        principal: PrincipalWire | None,
         call_id: str,
         transport_observed: str | None,
     ) -> None:
@@ -1035,7 +1076,7 @@ def _make_emitters(
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
-                principal_id=principal_id,
+                principal=principal,
                 transport_observed=transport_observed,
                 call_id=call_id,
                 runtime_meta=runtime_meta,
@@ -1055,7 +1096,7 @@ def _make_emitters(
         duration_s: float,
         runtime_meta: dict[str, Any] | None,
         agent_runtime: str,
-        principal_id: str | None,
+        principal: PrincipalWire | None,
         call_id: str,
         transport_observed: str | None,
     ) -> None:
@@ -1069,7 +1110,7 @@ def _make_emitters(
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 agent_runtime=agent_runtime,
-                principal_id=principal_id,
+                principal=principal,
                 transport_observed=transport_observed,
                 call_id=call_id,
                 runtime_meta=runtime_meta,

@@ -23,7 +23,8 @@ from typing import Any, NamedTuple
 
 import pytest
 
-from baton.identity import HASH_SCHEME, VENDOR_HASH_SCHEME, Principal, hash_principal_id
+from baton.events import PrincipalWire
+from baton.identity import Principal, hash_principal_id
 from baton.integrations._config import (
     CaseInsensitiveHeaders,
     SessionResolutionContext,
@@ -31,7 +32,7 @@ from baton.integrations._config import (
 )
 from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
-    resolve_call_principal_id,
+    resolve_call_principal,
     resolve_principal_via_hook,
 )
 
@@ -52,9 +53,19 @@ class _Token:
     )
 
 
-def _attested() -> str:
-    return hash_principal_id(
-        "attested@acme.example", tenant_id=TENANT, key=KEY, issuer="https://idp.example"
+def _attested() -> PrincipalWire:
+    """The token path's WHOLE object, not just its id.
+
+    Every fall-through test below compares against this, so each one now also
+    pins ``source`` and ``form`` for free — a fall-through that produced the
+    right digest under the wrong provenance used to compare equal.
+    """
+    return PrincipalWire(
+        id=hash_principal_id(
+            "attested@acme.example", tenant_id=TENANT, key=KEY, issuer="https://idp.example"
+        ),
+        source="attested",
+        form="hashed",
     )
 
 
@@ -73,7 +84,7 @@ async def _resolve_with_timeout(
         hooks_mod.HOOK_TIMEOUT_SECONDS = original
 
 
-async def _resolve(hook: Any, token: Any = None, **kw: Any) -> str | None:
+async def _resolve(hook: Any, token: Any = None, **kw: Any) -> PrincipalWire | None:
     params: dict[str, Any] = {
         "hook": hook,
         "hook_context": CTX,
@@ -84,37 +95,41 @@ async def _resolve(hook: Any, token: Any = None, **kw: Any) -> str | None:
         "warned": set(),
     }
     params.update(kw)
-    return await resolve_call_principal_id(token, **params)
+    return await resolve_call_principal(token, **params)
 
 
-async def test_a_principal_is_hashed_under_the_vendor_scheme() -> None:
+async def test_an_asserted_principal_hashes_under_the_KEY_GENERATION_tag() -> None:
+    """``v1:`` is retired: the hook's principal hashes under the same tag the
+    token's does, and ``source`` is what says which rung produced it."""
     got = await _resolve(lambda _c: Principal(principal_id="employee-1"))
-    assert got == hash_principal_id(
-        "employee-1", tenant_id=TENANT, key=KEY, scheme=VENDOR_HASH_SCHEME
+    assert got == PrincipalWire(
+        id=hash_principal_id("employee-1", tenant_id=TENANT, key=KEY),
+        source="asserted",
+        form="hashed",
     )
-    assert got is not None and got.startswith("v1:")
 
 
-async def test_the_tag_is_the_only_difference_from_the_attested_derivation() -> None:
-    """One person reached by two provenances is the same hex under two tags.
+async def test_SOURCE_is_now_the_only_difference_from_the_attested_derivation() -> None:
+    """One person reached by two provenances is one value, and ``source`` is
+    the only thing separating the two claims.
 
-    Deliberate, and worth pinning: the scheme is not part of the HMAC message,
-    so a consumer that later decides to unify the two provenances CAN, and one
-    that must keep them apart still can. Two unrelated digests would have
-    foreclosed the first option silently.
+    This used to read ``the same hex under two tags`` — the digests always
+    matched, because the scheme was never part of the HMAC message, and only
+    the three-character prefix differed. Retiring ``v1:`` collapses that last
+    difference into the member that can carry it in ``"raw"`` mode too. So the
+    assertion is now on the FULL id rather than on the hex after a colon.
     """
     asserted = await _resolve(lambda _c: Principal(principal_id="same-person"))
     attested = hash_principal_id("same-person", tenant_id=TENANT, key=KEY)
     assert asserted is not None
-    assert asserted.split(":", 1)[1] == attested.split(":", 1)[1]
-    assert asserted.startswith(f"{VENDOR_HASH_SCHEME}:")
-    assert attested.startswith(f"{HASH_SCHEME}:")
+    assert asserted.id == attested, "the tag is back in the HMAC message"
+    assert asserted.source == "asserted"
 
 
 async def test_the_hook_beats_a_usable_token() -> None:
     got = await _resolve(lambda _c: Principal(principal_id="employee-1"), token=_Token())
     assert got != _attested()
-    assert got is not None and got.startswith("v1:")
+    assert got is not None and got.source == "asserted"
 
 
 async def test_returning_none_falls_through_to_the_token() -> None:
@@ -338,7 +353,7 @@ async def test_a_junk_issuer_costs_the_issuer_not_the_identity(bad_issuer: Any) 
         lambda _c: Principal(principal_id="employee-1", issuer=bad_issuer), token=_Token()
     )
     assert got == await _resolve(lambda _c: Principal(principal_id="employee-1"))
-    assert got is not None and got.startswith("v1:")
+    assert got is not None and got.source == "asserted"
 
 
 async def test_a_principal_that_cannot_be_hashed_emits_nothing_rather_than_the_token() -> None:
@@ -402,11 +417,20 @@ def test_a_non_callable_resolve_principal_is_refused_at_install() -> None:
         )
 
 
-def test_the_vendor_scheme_sits_outside_the_rotation_family() -> None:
-    """``h2:`` is reserved for HMAC key rotation, so a vendor scheme must not
-    eat a letter rotation may later want (SPEC §11.4)."""
-    assert not VENDOR_HASH_SCHEME.startswith("h")
-    assert VENDOR_HASH_SCHEME != HASH_SCHEME
+def test_the_vendor_scheme_tag_STAYS_retired() -> None:
+    """``VENDOR_HASH_SCHEME`` (``v1:``) is gone and must not come back.
+
+    The old version of this test guarded the opposite — that the vendor tag sat
+    outside the ``h*`` rotation family, so it could not eat a letter rotation
+    might want. That constraint is satisfied more simply now: there is only one
+    family, and the prefix means only the key generation. A tag cannot carry
+    provenance through ``"raw"`` mode, which is why reintroducing one would
+    reopen the defect rather than restore a guarantee.
+    """
+    import baton.identity
+
+    assert not hasattr(baton.identity, "VENDOR_HASH_SCHEME")
+    assert hash_principal_id("x", tenant_id=TENANT, key=KEY).startswith("h1:")
 
 
 # =============================================================================

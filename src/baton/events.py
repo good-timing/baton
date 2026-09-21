@@ -175,6 +175,56 @@ this default describes is a builder instrumenting their own server.
 """
 
 
+class PrincipalWire(BaseModel):
+    """The principal AS EMITTED — the finished envelope value (SPEC §11.4).
+
+    ⚠ **Not ``baton.Principal``, and the two are easy to confuse.** That one is
+    what a vendor's ``resolve_principal`` hook HANDS US: a raw subject, an
+    optional issuer, optional PII that never leaves the payload tier. This one
+    is what we PUT ON THE WIRE after resolving and deriving it — the raw value
+    is gone by the time this is built, and nothing here is ever the input to a
+    hash. One is the question, this is the answer.
+
+    **All three members are REQUIRED, and that is the guarantee the object
+    exists to give.** A producer emits the whole thing or omits ``principal``
+    entirely; a partial object is malformed, not a degraded reading. So there
+    is no conformant event carrying an ``id`` whose ``form`` a consumer has to
+    guess, and none carrying a ``source`` for an identity nobody resolved. That
+    binding is structural here precisely because its predecessor — a scheme
+    prefix plus a paragraph of prose — was not.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    """The value: an HMAC pseudonym in ``"hashed"`` mode, the principal
+    verbatim in ``"raw"`` mode. Which one is ``form``, and it is NEVER the
+    value's shape — a real OIDC subject (``mailto:``, ``acct:``, ``urn:``,
+    ``https:``) reads as a scheme-tagged pseudonym to anything testing for
+    "letters then a colon"."""
+
+    source: str
+    """WHERE it came from: ``"attested"`` (a verified token's ``sub``) or
+    ``"asserted"`` (a vendor's own resolver, which nothing in the protocol
+    checks). Both are legitimate and asserted is not a degraded attested —
+    it is the only identity mechanism that exists on stdio."""
+
+    form: str
+    """WHAT it is: ``"hashed"`` or ``"raw"``. The privacy classification, and
+    the only thing a consumer may classify on."""
+
+    # ⚠ Deliberately `str`, not `Literal`, on BOTH members — the same decision
+    # `transport_observed` records and the collector's ingest makes on the
+    # columns behind this. A fourth source is already foreseen (alias-derived,
+    # from N7/E6), and a `Literal` would make this producer unable to emit a
+    # value SPEC registers later without a release. Worse, it would raise at
+    # the emit boundary, which SPEC §11.2 requires to fail OPEN: an identity
+    # read may never cost a tool call. The safety lives in the consumer rules
+    # stated positively — trust only exactly "attested", treat anything but
+    # exactly "hashed" as personal data — so an unregistered value fails safe
+    # without anything having to reject it.
+
+
 class _EventEnvelope(BaseModel):
     """Fields every Baton event carries. Concrete event classes (below)
     inherit this + add a ``event_type`` literal and typed ``payload``.
@@ -202,11 +252,17 @@ class _EventEnvelope(BaseModel):
     consent_token: str
     sdk_version: str = __version__
     agent_runtime: str = "unknown"
-    principal_id: str | None = None
+    principal: PrincipalWire | None = None
     """Who the vendor resolved behind this event — a person, a service account
-    or an organisation (SPEC §11.4). An HMAC pseudonym computed at the edge in
-    ``"hashed"`` mode (the default), the principal verbatim in ``"raw"`` mode.
-    Null when no identity resolved, or in hashed mode with no key configured."""
+    or an organisation (SPEC §11.4).
+
+    **Absent as a whole whenever no identity resolved**, which is the common
+    case and never an error: no auth on the request, stdio with no hook
+    configured, or hashed mode with no key. Never a partial object — see
+    ``PrincipalWire``.
+
+    Was the flat field ``user_id`` until 0.8.6, then the flat ``principal_id``,
+    and became this object at the release SPEC §13 leaves unnumbered."""
     call_id: str | None = None
     """The minted per-call correlation key (SPEC §11.4, OPTIONAL + nullable).
 
@@ -224,7 +280,7 @@ class _EventEnvelope(BaseModel):
     Minted as a bare opaque UUID string in a local variable inside the scope
     that emits both legs — per-call by construction and correct across
     processes. Never derived from the JSON-RPC request id, which restarts at 1
-    per connection. It says WHICH CALL, never WHO; the principal is ``principal_id``.
+    per connection. It says WHICH CALL, never WHO; the principal is ``principal.id``.
     """
     transport_observed: str | None = None
     """What this producer OBSERVED beneath the call, never what it concluded
@@ -312,6 +368,7 @@ __all__ = [
     "AnnotationPayload",
     "Event",
     "EventType",
+    "PrincipalWire",
     "SurfaceSnapshotEvent",
     "SurfaceSnapshotPayload",
     "ToolCallEndEvent",

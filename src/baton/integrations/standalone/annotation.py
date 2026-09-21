@@ -31,7 +31,7 @@ from baton.integrations._llm_text import build_annotation_tool_description
 from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
     ResolvePrincipalHook,
-    resolve_call_principal_id,
+    resolve_call_principal,
 )
 from baton.integrations.runtime_adapter import (
     UNKNOWN_AGENT_RUNTIME,
@@ -159,7 +159,7 @@ def register_annotation_tool(
             if resolve_principal_hook is not None
             else None
         )
-        annotation_principal_id = await resolve_call_principal_id(
+        annotation_principal = await resolve_call_principal(
             _auth.current_access_token(),
             hook=resolve_principal_hook,
             hook_context=identity_hook_context,
@@ -179,7 +179,7 @@ def register_annotation_tool(
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
                 agent_runtime=runtime,
-                principal_id=annotation_principal_id,
+                principal=annotation_principal,
                 transport_observed=observe_transport(),
                 runtime_meta=scrubbed_meta,
                 payload=AnnotationPayload(

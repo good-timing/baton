@@ -1,7 +1,7 @@
 """Principal identity — resolve a raw principal, hash it at the edge.
 
-Baton attaches the resolved principal (``principal_id``) to every event so the
-Console can group by ``(tenant_id, vendor_id, principal_id)``, at whatever grain
+Baton attaches the resolved principal (``principal``) to every event so the
+Console can group by ``(tenant_id, vendor_id, principal.id)``, at whatever grain
 the vendor resolved (SPEC §11.4).
 
 Residency contract: the Console DB is metadata-only and may only ever see the
@@ -54,20 +54,27 @@ from typing import Any, Protocol
 # stored, so it can't be re-hashed).
 HASH_SCHEME = "h1"
 
-#: Scheme tag for a principal a VENDOR ASSERTED rather than one an identity
-#: provider attested — the ``VendorConfig.resolve_principal`` hook's output. It sits
-#: OUTSIDE the ``h*`` family on purpose: ``h2:`` is spoken for by the rotation
-#: seam above, and rotation must keep every letter it may later want. Sharing
-#: ``h1:`` was the alternative and it is the one thing this tag exists to
-#: prevent — an assertion and an attestation rendering identically downstream,
-#: so a console cannot say which one it is showing (SPEC §11.4).
-#:
-#: ⚠ Both tags are in SPEC §11.4's REGISTERED SET, and that set — not the mere
-#: presence of a prefix — is what tells a consumer a value is a pseudonym. A
-#: raw principal can legitimately look tagged (``mailto:``, ``acct:``, ``urn:``,
-#: ``https:`` are all real OIDC subject forms), so a structural test reads a
-#: live email address as safe. Adding a scheme here is a SPEC change.
-VENDOR_HASH_SCHEME = "v1"
+# ⚠ ``VENDOR_HASH_SCHEME = "v1"`` lived here and is RETIRED (SPEC §13).
+#
+# It tagged a principal a VENDOR ASSERTED rather than one an identity provider
+# attested, so that "a console cannot say which one it is showing" could not
+# happen. The job was real; the carrier was wrong. A tag can only say it in
+# ``"hashed"`` mode — ``"raw"`` emits no tag at all — so the one mode that puts
+# a REAL identity on the wire was the one that dropped its provenance, and no
+# consumer could recover it. Provenance is now ``principal.source``, a member
+# that rides every mode.
+#
+# Retiring it was a RELABEL, not a recomputation: the tag was never part of the
+# HMAC message (see ``hash_principal_id``), so an asserted principal's digest
+# was always byte-identical to an attested one's for the same inputs. What
+# changes on the wire is the three characters in front of the hex — which SPEC
+# §13 records as a value change, because a consumer comparing whole id strings
+# across the upgrade sees one actor become two for every vendor that had
+# configured ``resolve_principal``.
+#
+# ⚠ **Do not reintroduce a provenance tag here.** The remaining ``h<n>:`` says
+# which HMAC KEY GENERATION produced the digest and nothing else. A second
+# meaning on that prefix is the exact joining this change undid.
 
 
 @dataclass(frozen=True)
@@ -102,7 +109,7 @@ class Principal:
 
 class IdentityResolver(Protocol):
     """Turns a modality-native carrier into a ``Principal``. Returns ``None``
-    when no identity is available — the core then skips ``principal_id``
+    when no identity is available — the core then omits ``principal``
     (fail-open).
 
     ⚠ **This is NOT the shape a vendor implements.** The vendor-facing seam is
@@ -136,7 +143,7 @@ def hash_principal_id(
     issuer: str | None = None,
     scheme: str = HASH_SCHEME,
 ) -> str:
-    """HMAC-SHA256 a raw principal into a console-safe, per-tenant ``principal_id``.
+    """HMAC-SHA256 a raw principal into a console-safe, per-tenant ``principal.id``.
 
     ``tenant_id`` is folded into the HMAC MESSAGE (not just the key) so the same
     principal under two tenants can never collide or be cross-tenant-correlated.
@@ -147,17 +154,22 @@ def hash_principal_id(
     it (RFC 7519 §4.1.2; the ``mcp`` SDK repeats the caveat on
     ``AccessToken.subject``). Two identity providers behind one vendor can hand
     out the same ``sub`` to different people, and without the issuer those two
-    people hash to one ``principal_id`` — a silent merge of exactly the kind this
+    people hash to one ``principal.id`` — a silent merge of exactly the kind this
     project keeps finding.
 
-    ``scheme`` tags the DERIVATION, and only the tag changes — the digest for a
-    given ``(tenant_id, principal, issuer)`` is identical under every scheme,
-    because the tag is not part of the HMAC message. That is deliberate: the
-    same person reached by two provenances is meant to be recognisably the same
-    hex under two tags, not two unrelated values, so a consumer that decides to
-    unify them downstream can, and one that must keep them apart still can.
-    ``VENDOR_HASH_SCHEME`` is the asserted-principal tag; the default is the
-    attested one and is what every pre-existing caller gets.
+    ``scheme`` names the HMAC KEY GENERATION, and only the tag changes — the
+    digest for a given ``(tenant_id, principal, issuer)`` is identical under
+    every scheme, because the tag is not part of the HMAC message. It exists
+    for ROTATION: cutting the secret moves new hashes to ``h2:`` while
+    historical ones keep ``h1:``, so a consumer comparing two values knows they
+    are incomparable rather than two people.
+
+    ⚠ **It is not a provenance marker and not a classifier** (SPEC §11.4). It
+    was both until ``v1:`` was retired, and the parameter survives only for the
+    rotation seam. Provenance is ``principal.source`` and pseudonymity is
+    ``principal.form``; both ride every derivation mode, which a tag cannot do
+    because ``"raw"`` emits none. Every caller in this repo now takes the
+    default — a second value here would have to be a new key generation.
 
     ⚠ **``issuer=None`` MUST hash byte-identically to the pre-issuer form**, and
     the append-only message layout below is what guarantees it. Every hash

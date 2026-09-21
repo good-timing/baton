@@ -8,6 +8,78 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased: the principal stops being a string with a prefix on it
+
+**Version deliberately undecided.** The latest release is 0.8.9 and this change
+spans four repos; SPEC §13 carries no number for it either. The input to that
+choice: a required-shape change on an existing field, plus a value change and a
+replaced consumer rule.
+
+⚠ **Deploy order is collector → SDK, and it is not negotiable.** The collector's
+event schema is `extra="forbid"`, so an SDK emitting `principal` at an ingest
+that has not accepted it gets a 422 on the WHOLE envelope — and the sink drops a
+non-429 4xx without reading the body, so the call's `call_id`, `runtime_meta`
+and payload go with the identity. `baton-console` has taken the object; nothing
+here may reach a collector that has not.
+
+### Changed
+
+- **BREAKING: the flat envelope field `principal_id` becomes the object
+  `principal`, carrying `id` + `source` + `form`** (`SPEC §11.4`). `source`
+  records WHERE the principal came from — `"attested"` (a verified token's
+  `sub`) or `"asserted"` (a vendor's own `resolve_principal` resolver). `form`
+  records WHAT `id` holds — `"hashed"` or `"raw"`. **All three are required
+  when the object is present**, so a producer emits the whole thing or omits
+  `principal` entirely, and there is no conformant event carrying an id whose
+  classification a consumer has to guess.
+
+  The scheme prefix encoded three independent facts in one string: whether the
+  value was a pseudonym, where it came from, and which HMAC key generation
+  produced it. Nothing but the encoding tied them, and `"raw"` mode — which
+  emits no prefix at all — dropped the first two together. So the one mode that
+  puts a REAL identity on the wire was the one where no consumer could tell an
+  attested subject from a vendor's assertion. `source` and `form` are members
+  now, and they ride every derivation mode.
+
+  **Consumer consequence:** a collector with a closed envelope schema MUST
+  accept the object before this ships, and SHOULD keep reading the flat
+  `principal_id` — and `user_id` before it — from earlier producers until none
+  remain. Both registered value sets are OPEN: tolerate an unregistered value
+  rather than reject the event, trust an attestation only where `source` is
+  exactly `"attested"`, and treat anything but exactly `"hashed"` as personal
+  data.
+
+- **BREAKING: the scheme tag `v1:` is RETIRED.** An asserted, hashed principal
+  now emits `h1:` — the same tag an attested one emits — and provenance travels
+  in `principal.source`. The remaining `h<n>:` records **only the HMAC key
+  generation**, which is the one of the three facts with no member of its own;
+  it is kept on the value because a key rotation otherwise looks like every
+  person becoming a new person with nothing on the wire saying why.
+
+  Safe as a relabel rather than a recomputation: the scheme tag was never part
+  of the HMAC message, so `v1:<hex>` and `h1:<hex>` were always the same digest
+  wearing two labels. **This is still a value change** — a consumer comparing
+  whole id strings across a producer's upgrade sees one actor become two, for
+  every vendor that had configured `resolve_principal`. A consumer that strips
+  a known prefix before comparing is unaffected; one that inferred provenance
+  from the letter must stop and read `source`. No backfill: stored events keep
+  the tag they were written with.
+
+- **`VendorConfig.principal_id_mode` and `principal_id_hmac_key` are
+  deliberately NOT renamed**, nor is `BATON_PRINCIPAL_ID_HMAC_KEY`. SPEC does
+  not ask for it, and renaming vendor-facing configuration to chase a wire
+  field breaks every existing deployment for no consumer benefit. `mode` now
+  selects `principal.form`; the knob's name says what it has always said.
+
+### Fixed
+
+- **`"raw"` mode no longer forfeits provenance.** It previously emitted the
+  principal verbatim and untagged, so an attested subject and a vendor-asserted
+  one reached the wire as indistinguishable bare strings — `SPEC §11.4`
+  conceded this in its own derivation row. `source` now rides both modes.
+
+---
+
 ## 0.8.9: the envelope says what was underneath the call
 
 ### Added

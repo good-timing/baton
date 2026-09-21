@@ -26,7 +26,7 @@ def current_access_token() -> Any | None:
     ends in an explicit ``raise TypeError`` on its conversion path, reachable
     when a vendor's ``TokenVerifier`` returns a non-fastmcp ``AccessToken``
     whose ``model_dump()`` is missing a key it wants. Calling it in an argument
-    expression put that raise OUTSIDE ``resolve_principal_id``'s never-raise
+    expression put that raise OUTSIDE ``resolve_attested_principal``'s never-raise
     boundary, where it would reach the vendor's tool call — the same fail-open
     hole the runtime detector had one layer over.
     """

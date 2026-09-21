@@ -107,6 +107,24 @@ async def _drive(
     return events
 
 
+def _pid(ev: dict[str, Any]) -> str | None:
+    """An event's ``principal.id``, or ``None`` when it carried no principal.
+
+    ⚠ Also the guard that the RETIRED flat spelling is gone: every read of the
+    principal in this file goes through here, so a regression that emitted
+    ``principal_id`` again would otherwise read as a clean ``None`` on every
+    assertion below rather than failing.
+    """
+    assert "principal_id" not in ev, "the retired flat field is back on the wire"
+    principal = ev.get("principal")
+    return None if principal is None else str(principal["id"])
+
+
+def _member(ev: dict[str, Any], name: str) -> str | None:
+    principal = ev.get("principal")
+    return None if principal is None else str(principal[name])
+
+
 async def test_every_event_of_a_call_carries_the_same_principal_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -122,7 +140,7 @@ async def test_every_event_of_a_call_carries_the_same_principal_id(
         _token(claims={"sub": "alice", "iss": "https://idp"}),
         monkeypatch=monkeypatch,
     )
-    by_type = {ev["event_type"]: ev.get("principal_id") for ev in events}
+    by_type = {ev["event_type"]: _pid(ev) for ev in events}
     assert "annotation" in by_type, f"no annotation event, got {sorted(by_type)}"
     assert "tool_call_start" in by_type, f"no tool_call_start, got {sorted(by_type)}"
 
@@ -155,7 +173,7 @@ async def test_a_vendor_subclass_carries_identity_on_every_version(
         VendorToken(token="jwt", client_id="acme-app", scopes=[], claims={"sub": "carol"}),
         monkeypatch=monkeypatch,
     )
-    principal_ids = {ev.get("principal_id") for ev in events}
+    principal_ids = {_pid(ev) for ev in events}
     assert principal_ids != {None}, "a vendor-declared claims field was not read"
     assert all(v is not None and v.startswith("h1:") for v in principal_ids), principal_ids
 
@@ -165,7 +183,7 @@ async def test_an_unauthenticated_call_emits_without_the_field(
 ) -> None:
     """Every stdio call, and most HTTP ones. Events must still flow."""
     events = await _drive(tmp_path / "e.jsonl", None, monkeypatch=monkeypatch)
-    assert {ev.get("principal_id") for ev in events} == {None}
+    assert {_pid(ev) for ev in events} == {None}
     assert any(ev["event_type"] == "tool_call_end" for ev in events), (
         "the call itself must still complete and emit"
     )
@@ -207,7 +225,7 @@ async def test_raw_mode_puts_the_principal_on_the_wire_deliberately(
         hmac_key=None,
         monkeypatch=monkeypatch,
     )
-    principal_ids = {ev.get("principal_id") for ev in events}
+    principal_ids = {_pid(ev) for ev in events}
     assert principal_ids == {"alice@acme.example"}, principal_ids
 
 
@@ -221,7 +239,7 @@ async def test_hashed_mode_without_a_key_still_emits_events(
         hmac_key=None,
         monkeypatch=monkeypatch,
     )
-    assert {ev.get("principal_id") for ev in events} == {None}
+    assert {_pid(ev) for ev in events} == {None}
     assert any(ev["event_type"] == "tool_call_end" for ev in events)
 
 
@@ -292,20 +310,21 @@ async def test_a_hook_carries_identity_on_every_leg_including_the_claimless_ones
     The expected value is computed here rather than pattern-matched, so a hash
     that is merely *present* cannot pass for the right one.
     """
-    from baton.identity import VENDOR_HASH_SCHEME, hash_principal_id
+    from baton.identity import hash_principal_id
 
-    expected = hash_principal_id(
-        "employee-4417", tenant_id="tenant-official", key=HMAC_KEY, scheme=VENDOR_HASH_SCHEME
-    )
+    expected = hash_principal_id("employee-4417", tenant_id="tenant-official", key=HMAC_KEY)
     events = await _drive(
         tmp_path / "e.jsonl",
         None,
         resolve_principal=_fixed_hook("employee-4417"),
         monkeypatch=monkeypatch,
     )
-    got = {ev.get("principal_id") for ev in events}
+    got = {_pid(ev) for ev in events}
     assert got == {expected}, got
-    assert expected.startswith("v1:")
+    # `v1:` is RETIRED: an asserted principal hashes under the key-generation
+    # tag, and `source` is what carries the provenance the tag used to.
+    assert expected.startswith("h1:")
+    assert {_member(ev, "source") for ev in events} == {"asserted"}
 
 
 async def test_the_annotation_path_consults_the_hook_on_every_leg(
@@ -321,7 +340,7 @@ async def test_the_annotation_path_consults_the_hook_on_every_leg(
         resolve_principal=_per_call_hook(),
         monkeypatch=monkeypatch,
     )
-    by_type = {ev["event_type"]: ev.get("principal_id") for ev in events}
+    by_type = {ev["event_type"]: _pid(ev) for ev in events}
     assert "annotation" in by_type, f"no annotation event captured: {list(by_type)}"
     assert by_type["annotation"] is not None, "the annotation path skipped the hook"
     assert all(v is not None for v in by_type.values()), by_type
@@ -342,7 +361,7 @@ async def test_a_hook_that_raises_leaves_the_call_and_the_events_intact(
         tmp_path / "e.jsonl", None, resolve_principal=boom, monkeypatch=monkeypatch
     )
     assert events, "the hook's exception cost the capture"
-    assert {ev.get("principal_id") for ev in events} == {None}
+    assert {_pid(ev) for ev in events} == {None}
 
 
 async def test_headers_are_extracted_once_per_call_when_a_hook_is_configured(

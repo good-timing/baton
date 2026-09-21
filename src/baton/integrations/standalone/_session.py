@@ -222,7 +222,7 @@ async def resolve_call_session_id(*, fallback: str) -> str:
     identifier the SDK did not mint. It differed from those two only in who
     supplied the value, and the join rule does not distinguish a client's
     handle from a vendor's. What the vendor knows about a caller now reaches
-    Baton through ``VendorConfig.resolve_principal``, which lands in ``principal_id`` —
+    Baton through ``VendorConfig.resolve_principal``, which lands in ``principal`` —
     a field the console can partition on downstream, where the decision can
     be changed and re-run.
 
