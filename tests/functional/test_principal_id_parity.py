@@ -1,4 +1,4 @@
-"""Both MCP adapters must produce the SAME ``principal_id`` from the same token.
+"""Both MCP adapters must produce the SAME ``principal`` from the same token.
 
 The companion to ``test_agent_runtime_parity.py``, and it exists for the same
 recorded reason: ``detect_agent_runtime`` lived under one adapter's package,
@@ -31,8 +31,9 @@ from typing import Any
 
 import pytest
 
+from baton.events import PrincipalWire
 from tests._asgi import fake_http_request, starlette_headers
-from tests._event_helpers import without_surface_snapshots
+from tests._event_helpers import principal_of, without_surface_snapshots
 
 pytestmark = pytest.mark.functional
 
@@ -146,16 +147,18 @@ async def _run_standalone_path(
 
 
 def _principal_ids(path: Path) -> set[str | None]:
-    """Just the ``id`` member, for the tests whose subject is the VALUE.
-
-    Reads it out of the object, so a run that emitted a bare string where the
-    object belongs fails here rather than comparing equal to itself.
-    """
-    return {dict(p)["id"] if p is not None else None for p in _principals(path)}
+    """Just the ``id`` member, for the tests whose subject is the VALUE."""
+    return {p.id if p is not None else None for p in _principals(path)}
 
 
-def _principals(path: Path) -> set[tuple[tuple[str, Any], ...] | None]:
-    """Every event's whole ``principal``, frozen so it can go in a set.
+def _principals(path: Path) -> set[PrincipalWire | None]:
+    """Every event's whole ``principal``, PARSED.
+
+    Parsing rather than comparing dicts is the point: ``PrincipalWire`` is
+    ``extra="forbid"`` with three required members, so every event of every
+    run here is checked for conformance on the way into the set — a partial
+    or over-full object fails before any assertion reads it. It is ``frozen``,
+    which is what lets these go in a set at all.
 
     ``None`` for an event that carried none — which SPEC §11.4 makes the
     common case and never an error. The set is over ALL events of the run for
@@ -164,16 +167,10 @@ def _principals(path: Path) -> set[tuple[tuple[str, Any], ...] | None]:
     """
     events = without_surface_snapshots(_read_events(path))
     assert events, f"no events captured at {path} — the assertion would be vacuous"
-    out: set[tuple[tuple[str, Any], ...] | None] = set()
-    for ev in events:
-        assert "principal_id" not in ev, (
-            f"{path.name} emitted the RETIRED flat field `principal_id` — "
-            "SPEC §11.4 carries the object, and prod ingest treats the two "
-            "spellings on one envelope as a 422"
-        )
-        principal = ev.get("principal")
-        out.add(None if principal is None else tuple(sorted(principal.items())))
-    return out
+    return {
+        None if (p := principal_of(ev)) is None else PrincipalWire.model_validate(p)
+        for ev in events
+    }
 
 
 def _one_principal(path: Path) -> dict[str, Any]:
@@ -181,9 +178,9 @@ def _one_principal(path: Path) -> dict[str, Any]:
     more than one — which is the merge every test here is written to catch."""
     got = _principals(path)
     assert len(got) == 1, f"{path.name} emitted {len(got)} distinct principals: {got}"
-    frozen = got.pop()
-    assert frozen is not None, f"{path.name} emitted no principal at all"
-    return dict(frozen)
+    one = got.pop()
+    assert one is not None, f"{path.name} emitted no principal at all"
+    return one.model_dump()
 
 
 async def test_both_adapters_hash_one_principal_identically(

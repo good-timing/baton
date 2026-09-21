@@ -184,24 +184,17 @@ def register_annotation_tool(
         # Emitting it becomes correct as soon as this tool resolves a real
         # session id instead of the fallback — unblocked, since the ``ctx``
         # that resolution needs is finally threaded in.
-        # Identity, on the same terms as the tool-call path: the finished
-        # wire value, resolved once, raw principal never travelling past it.
-        # Unlike ``runtime_meta`` just above, there is no asymmetry argument
-        # against emitting this one — ``principal`` carries no session identity,
-        # so it cannot disagree with the envelope's ``session_id`` the way a
-        # forwarded meta key can.
-        # Identity here takes the SAME ladder the tool-call path takes, hook
-        # included. Wiring only the tool-call path would give one session a
-        # DIFFERENT PERSON on its annotations than on its calls — the hook sits
-        # above the token, so the two rungs generally name different subjects —
-        # which is the split this field exists to prevent, arriving through the
-        # door built to fix it.
+        # Identity takes the SAME ladder the tool-call path takes, hook
+        # included, and carries the finished wire value — the raw principal
+        # never travels past the resolver. Wiring only the tool-call path
+        # would give one session a DIFFERENT PERSON on its annotations than on
+        # its calls, since the hook sits above the token and the two rungs
+        # generally name different subjects: the split this field exists to
+        # prevent, arriving through the door built to fix it.
         #
-        # ⚠ The consequence used to be stated as two actor IDS, one under
-        # ``v1:`` and one under ``h1:``. Retiring the tag makes the two rungs
-        # byte-identical for one (tenant, principal, issuer), so where they DO
-        # name the same person the ids now match and only ``source`` differs.
-        # The invariant is unchanged; the symptom is quieter.
+        # Unlike ``runtime_meta`` just above there is no asymmetry argument
+        # against emitting it — ``principal`` carries no session identity, so
+        # it cannot disagree with the envelope's ``session_id``.
         identity_hook_context = (
             SessionResolutionContext(
                 headers=_extract_headers_from_context(ctx),

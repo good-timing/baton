@@ -178,15 +178,8 @@ class SessionResolutionContext:
     OAuth, the shape ``X-Forwarded-User`` actually lives in — the hook is rung 0
     and a raise falls through to rung 1, so events carried the TOKEN's
     principal instead of the hook's — a different person, silently, depending
-    on which adapter the vendor shipped. ⚠ **The symptom recorded here was an
-    actor SPLIT** — the two rungs then hashed under different scheme tags
-    (``h1:`` vs the retired ``v1:``), so one person arrived as two pseudonyms.
-    Retiring the tag makes the two rungs byte-identical for one
-    ``(tenant, principal, issuer)``, so the same bug now shows up as a
-    ``source`` flip on an unchanged ``id`` where the two rungs name the same
-    person, and as the wrong person where they do not. Harder to see, not
-    fixed: this guard is what stops it. A plain dict is folded below, in ``__post_init__``; see
-    ``CaseInsensitiveHeaders`` for the direction rule.
+    on which adapter the vendor shipped. A plain dict is folded below, in
+    ``__post_init__``; see ``CaseInsensitiveHeaders`` for the direction rule.
 
     ⚠ **The name is a fossil.** This was built for
     ``VendorConfig.resolve_session_id``, which was REMOVED 2026-09-12 (SPEC
@@ -487,18 +480,13 @@ class VendorConfig:
     opted in, which makes it the more specific claim even though it is the less
     verified one.
 
-    ⚠ **The digests are IDENTICAL; only ``source`` separates them.** This used
-    to hash under its own scheme tag, ``v1:``, which is now RETIRED — the tag
-    was never part of the HMAC message, so one ``(tenant, principal, issuer)``
-    always produced the same hex either way. A consumer that told the two apart
-    by reading the prefix must stop and read ``source``.
+    ⚠ **The digests are IDENTICAL; only ``source`` separates them.** A
+    consumer that told the two apart by reading a ``v1:`` prefix must stop and
+    read ``source`` — see ``baton.identity.hash_principal_id``.
 
-    ⚠ **``principal_id_mode="raw"`` keeps the distinction**, which is a change.
-    Raw mode emits the principal verbatim and untagged from both paths, so
-    while provenance rode the tag, raw forfeited it — the one mode that puts a
-    REAL identity on the wire was the one where nobody could tell an attested
-    subject from a vendor's assertion. ``source`` is a member now and rides
-    every mode.
+    ⚠ **``principal_id_mode="raw"`` keeps the distinction**, which is a change:
+    raw used to forfeit provenance along with pseudonymity, and no longer
+    does.
 
     ⚠ **It is not ``default_agent_runtime`` returning.** That was a static
     value set once at install, asserting over whatever a client declared per

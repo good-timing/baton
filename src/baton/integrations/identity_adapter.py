@@ -80,7 +80,24 @@ PRINCIPAL_ID_MODE_HASHED = "hashed"
 #: the default.
 PRINCIPAL_ID_MODE_RAW = "raw"
 
-PRINCIPAL_ID_MODES = frozenset({PRINCIPAL_ID_MODE_HASHED, PRINCIPAL_ID_MODE_RAW})
+#: The mode→form mapping, and the source of truth for which modes exist.
+#:
+#: Written out rather than deriving ``form`` from ``mode`` at the call site,
+#: so a third mode cannot silently become a third ``form``. Deriving
+#: ``PRINCIPAL_ID_MODES`` from it closes the other direction too: a mode
+#: cannot be registered without someone choosing what it means for a
+#: consumer's classification.
+#:
+#: ⚠ The two vocabularies overlapping is a coincidence of spelling, not a
+#: derivation. SPEC §11.4 requires ``source`` and ``form`` to stay independent
+#: ("every combination occurs"); ``form`` is the mode's OUTCOME and ``source``
+#: is which rung resolved the principal.
+_FORM_BY_MODE = {
+    PRINCIPAL_ID_MODE_HASHED: "hashed",
+    PRINCIPAL_ID_MODE_RAW: "raw",
+}
+
+PRINCIPAL_ID_MODES = frozenset(_FORM_BY_MODE)
 
 #: ``principal.source`` — a verified token's ``sub``. An identity provider
 #: checked this. HTTP-only, on every supported version.
@@ -90,17 +107,6 @@ PRINCIPAL_SOURCE_ATTESTED = "attested"
 #: states who this is and nothing in the protocol checked the claim. The only
 #: identity mechanism that exists on stdio, and NOT a degraded ``attested``.
 PRINCIPAL_SOURCE_ASSERTED = "asserted"
-
-#: The two members happen to share a vocabulary with the two modes above, and
-#: that is a coincidence of spelling rather than a derivation: ``form`` is the
-#: mode's OUTCOME, ``source`` is which rung resolved the principal, and SPEC
-#: §11.4 requires them to stay independent ("every combination occurs"). The
-#: mapping is written out rather than passing ``mode`` through, so a third mode
-#: cannot silently become a third ``form``.
-_FORM_BY_MODE = {
-    PRINCIPAL_ID_MODE_HASHED: "hashed",
-    PRINCIPAL_ID_MODE_RAW: "raw",
-}
 
 #: Cap on a RAW principal. Same posture and same number as the declared
 #: ``agent_runtime`` tiers: it is external text copied onto every event of the
@@ -305,29 +311,24 @@ def _finish_principal(
     which is the whole point: the member a consumer reads to know which kind of
     claim it is holding.
 
-    ⚠ **``source`` used to be ``scheme``, and the difference is the change.**
-    It selected a tag glued onto the digest — ``h1:`` or ``v1:`` — so
-    provenance rode the value, and ``"raw"`` mode, which emits no tag, dropped
-    it with no way for a consumer to recover it. ``v1:`` is now RETIRED: both
-    rungs hash under ``HASH_SCHEME`` (the KEY GENERATION, not a provenance
-    marker) and provenance is a member that survives every mode. Safe as a
-    relabel rather than a recomputation because the tag was never part of the
-    HMAC message — one ``(tenant_id, principal, issuer)`` always produced the
-    same digest under either letter.
+    ⚠ **``source`` used to be ``scheme``**, selecting a tag glued onto the
+    digest. Both rungs now hash under ``HASH_SCHEME`` — the KEY GENERATION,
+    not a provenance marker — and provenance is a member that survives every
+    mode; see ``hash_principal_id``.
 
-    **All three members or nothing.** Every branch that cannot produce a value
-    returns ``None``, never a partial object: SPEC §11.4 makes a partial one
-    malformed, so "we know who but not how" is not a state this may emit.
+    **All three members or nothing**, and structurally so: there is exactly
+    ONE ``PrincipalWire(...)`` in this function, at the bottom, and every
+    branch that cannot produce a value returns ``None`` before reaching it.
+    SPEC §11.4 makes a partial object malformed, so "we know who but not how"
+    is not a state this may emit — and that is the same standard the paragraph
+    above holds the chokepoint to, rather than two construction sites agreeing.
     """
     if principal is None:
         return None
 
-    #: A mode this function does not recognise cannot be given a truthful
-    #: ``form``, and guessing one is the failure the member exists to prevent —
-    #: ``form`` is what a consumer classifies on. Unreachable from the public
-    #: path (``_config`` validates against ``PRINCIPAL_ID_MODES`` at install),
-    #: and reachable by constructing an adapter directly, which is the same
-    #: door the hashing guard below is written for.
+    # A mode this function does not recognise cannot be given a truthful
+    # ``form``, and guessing one is the failure the member exists to prevent —
+    # ``form`` is what a consumer classifies on.
     form = _FORM_BY_MODE.get(mode)
     if form is None:
         # Once per install, not once per call, for the same reason the
@@ -361,17 +362,11 @@ def _finish_principal(
         # collision the issuer was folded in to prevent — two identity
         # providers, one `sub` — which raw mode accepts by construction.
         #
-        # ⚠ What raw mode NO LONGER forfeits is the provenance. That was a
-        # documented loss while the scheme tag carried it; `source` is a member
-        # now and rides every mode, so a consumer here is told a real identity
-        # AND which mechanism named it.
-        return PrincipalWire(
-            id=principal.principal_id[:RAW_PRINCIPAL_ID_MAX_LEN],
-            source=source,
-            form=form,
-        )
-
-    if hmac_key is None:
+        # ⚠ What raw mode NO LONGER forfeits is the provenance: `source` is a
+        # member now and rides every mode, so a consumer here is told a real
+        # identity AND which mechanism named it.
+        value = principal.principal_id[:RAW_PRINCIPAL_ID_MAX_LEN]
+    elif hmac_key is None:
         if "no_hmac_key" not in warned:
             warned.add("no_hmac_key")
             # Never log the principal itself. This line exists because identity
@@ -386,25 +381,29 @@ def _finish_principal(
             )
         return None
 
-    try:
-        return PrincipalWire(
-            id=hash_principal_id(
+    else:
+        try:
+            value = hash_principal_id(
                 principal.principal_id,
                 tenant_id=tenant_id,
                 key=hmac_key,
                 issuer=principal.issuer,
-            ),
-            source=source,
-            form=form,
-        )
-    except Exception:
-        # The docstring above says nothing here may raise; this is the call
-        # that could. ``hmac.new`` rejects a non-bytes key, and while the
-        # public path now coerces and validates at install, this function is
-        # reachable by constructing an adapter directly. A guard costs nothing
-        # and makes the contract literally true rather than nearly true.
-        logger.warning("baton: principal hashing failed; dropping the principal", exc_info=True)
-        return None
+            )
+        except Exception:
+            # The docstring above says nothing here may raise; this is the
+            # call that could. ``hmac.new`` rejects a non-bytes key, and while
+            # the public path now coerces and validates at install, this
+            # function is reachable by constructing an adapter directly. A
+            # guard costs nothing and makes the contract literally true rather
+            # than nearly true.
+            logger.warning("baton: principal hashing failed; dropping the principal", exc_info=True)
+            return None
+
+    # The ONE construction site. Every branch above either set ``value`` or
+    # returned ``None``, so "all three members or nothing" is a property of
+    # the control flow rather than of two sites agreeing to pass the same
+    # three arguments.
+    return PrincipalWire(id=value, source=source, form=form)
 
 
 async def resolve_call_principal(
@@ -434,11 +433,10 @@ async def resolve_call_principal(
     keeps that honest downstream: a consumer is never told an assertion was
     verified, it is told which it got and decides for itself.
 
-    ⚠ **That honesty used to live in the scheme tag and it no longer does.**
-    Both rungs now hash under the same tag, so the two provenances are
-    BYTE-IDENTICAL for one ``(tenant_id, principal, issuer)`` and ``source``
-    is the only thing separating them. A consumer still reading the prefix
-    sees one actor where there are two claims of different weight.
+    ⚠ **The two rungs are BYTE-IDENTICAL for one ``(tenant_id, principal,
+    issuer)``**, so ``source`` is the only thing separating them — a consumer
+    still reading the prefix sees one actor where there are two claims of
+    different weight. Why that is so: ``hash_principal_id``.
 
     ⚠ **The hook is not consulted when it is not configured, and that path must
     stay free.** ``hook_context`` is built by the caller only when ``hook`` is

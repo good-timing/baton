@@ -33,7 +33,7 @@ from baton.integrations.official import VendorConfig, install_baton
 from baton.integrations.official._compat import MCPServerClass as FastMCP
 from baton.sinks import FileSink
 from tests._asgi import starlette_headers
-from tests._event_helpers import without_surface_snapshots
+from tests._event_helpers import principal_of, without_surface_snapshots
 from tests._mcp_session import connected_session
 from tests.integrations.official._fake_context import _FakeContextV1, _FakeContextV2
 
@@ -107,22 +107,19 @@ async def _drive(
     return events
 
 
-def _pid(ev: dict[str, Any]) -> str | None:
-    """An event's ``principal.id``, or ``None`` when it carried no principal.
-
-    ⚠ Also the guard that the RETIRED flat spelling is gone: every read of the
-    principal in this file goes through here, so a regression that emitted
-    ``principal_id`` again would otherwise read as a clean ``None`` on every
-    assertion below rather than failing.
-    """
-    assert "principal_id" not in ev, "the retired flat field is back on the wire"
-    principal = ev.get("principal")
-    return None if principal is None else str(principal["id"])
-
-
 def _member(ev: dict[str, Any], name: str) -> str | None:
-    principal = ev.get("principal")
+    """One member of an event's ``principal``, or ``None`` when it had none.
+
+    The primitive, so the retired-flat-field guard inside ``principal_of``
+    covers EVERY read in this file — an earlier version had two readers and
+    only one of them guarded.
+    """
+    principal = principal_of(ev)
     return None if principal is None else str(principal[name])
+
+
+def _pid(ev: dict[str, Any]) -> str | None:
+    return _member(ev, "id")
 
 
 async def test_every_event_of_a_call_carries_the_same_principal_id(

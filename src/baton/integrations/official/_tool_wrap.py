@@ -406,20 +406,14 @@ def _extract_one_goal_param(
 # Internals — wrap
 # =============================================================================
 
-# The five emitter signatures, written ONCE.
+# The five emitter signatures, written ONCE and referenced at both sites —
+# the parameter list of ``_wrap_tool_run`` and the return tuple of
+# ``_make_emitters``, which were previously two full copies each.
 #
-# Each of these was spelled out IN FULL at both of its two sites — the
-# parameter list of ``_wrap_tool_run`` and the return tuple of
-# ``_make_emitters`` — and the principal's slot is an interior position in a
-# long positional list. A change made to one copy and not its twin typechecks
-# until the two meet, and "which slot is the principal" was a question you had
-# to answer by counting. An alias written once and referenced twice makes it
-# unanswerable wrongly.
-#
-# The parameter ORDER is the contract. The concrete definitions in
-# ``_make_emitters`` name the same slots as keyword parameters, which is what
-# lets mypy check the two spellings against each other; the comments below are
-# what lets a reader do the same without running it.
+# Parameter ORDER is the contract. ``_make_emitters``' concrete defs name the
+# same slots as keyword parameters, which is what lets mypy check the two
+# spellings against each other; the slot comments below are what let a reader
+# do the same without running it.
 _EmitBefore = Callable[
     [
         str,  # session_id

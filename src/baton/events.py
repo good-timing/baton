@@ -194,7 +194,15 @@ class PrincipalWire(BaseModel):
     prefix plus a paragraph of prose — was not.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    """``frozen`` for two reasons beyond immutability being right here. It
+    makes the model HASHABLE, so a test can put emitted principals straight
+    into a set instead of freezing dicts into tuples and thawing them back —
+    and comparing whole models is what upgrades those assertions from "the
+    dict matched" to "the dict matched AND is a conformant ``PrincipalWire``".
+    And this value is resolved once per call and attached to every event of
+    that call, so nothing downstream has any business editing one event's
+    copy."""
 
     id: str
     """The value: an HMAC pseudonym in ``"hashed"`` mode, the principal

@@ -54,27 +54,12 @@ from typing import Any, Protocol
 # stored, so it can't be re-hashed).
 HASH_SCHEME = "h1"
 
-# ⚠ ``VENDOR_HASH_SCHEME = "v1"`` lived here and is RETIRED (SPEC §13).
-#
-# It tagged a principal a VENDOR ASSERTED rather than one an identity provider
-# attested, so that "a console cannot say which one it is showing" could not
-# happen. The job was real; the carrier was wrong. A tag can only say it in
-# ``"hashed"`` mode — ``"raw"`` emits no tag at all — so the one mode that puts
-# a REAL identity on the wire was the one that dropped its provenance, and no
-# consumer could recover it. Provenance is now ``principal.source``, a member
-# that rides every mode.
-#
-# Retiring it was a RELABEL, not a recomputation: the tag was never part of the
-# HMAC message (see ``hash_principal_id``), so an asserted principal's digest
-# was always byte-identical to an attested one's for the same inputs. What
-# changes on the wire is the three characters in front of the hex — which SPEC
-# §13 records as a value change, because a consumer comparing whole id strings
-# across the upgrade sees one actor become two for every vendor that had
-# configured ``resolve_principal``.
+# ⚠ ``VENDOR_HASH_SCHEME = "v1"`` lived here and is RETIRED (SPEC §13) — the
+# tag carried provenance, and provenance is ``principal.source`` now. Why, and
+# why it was safe: ``hash_principal_id`` below, which is the one account.
 #
 # ⚠ **Do not reintroduce a provenance tag here.** The remaining ``h<n>:`` says
-# which HMAC KEY GENERATION produced the digest and nothing else. A second
-# meaning on that prefix is the exact joining this change undid.
+# which HMAC KEY GENERATION produced the digest and nothing else.
 
 
 @dataclass(frozen=True)
@@ -164,12 +149,27 @@ def hash_principal_id(
     historical ones keep ``h1:``, so a consumer comparing two values knows they
     are incomparable rather than two people.
 
-    ⚠ **It is not a provenance marker and not a classifier** (SPEC §11.4). It
-    was both until ``v1:`` was retired, and the parameter survives only for the
-    rotation seam. Provenance is ``principal.source`` and pseudonymity is
-    ``principal.form``; both ride every derivation mode, which a tag cannot do
-    because ``"raw"`` emits none. Every caller in this repo now takes the
-    default — a second value here would have to be a new key generation.
+    ⚠ **It is not a provenance marker and not a classifier** (SPEC §11.4), and
+    this is the one place that account lives — everywhere else points here.
+
+    It was both until ``v1:`` was retired. That tag said a principal was
+    VENDOR-ASSERTED rather than IdP-attested, and the job was real; the carrier
+    was wrong. A tag can only speak in ``"hashed"`` mode, because ``"raw"``
+    emits none — so the one mode that puts a REAL identity on the wire was the
+    one that dropped its provenance, with nothing for a consumer to recover.
+    Provenance is ``principal.source`` and pseudonymity is ``principal.form``;
+    both ride every derivation mode, which a tag cannot do.
+
+    **Retiring it was a RELABEL, not a recomputation**, and the line below is
+    why: the tag is not in the HMAC message, so an asserted principal's digest
+    was always byte-identical to an attested one's for the same inputs. Only
+    the three characters in front of the hex move — which SPEC §13 still
+    records as a value change, because a consumer comparing whole id strings
+    across the upgrade sees one actor become two for every vendor that had
+    configured ``resolve_principal``.
+
+    Every caller in this repo now takes the default; a second value here would
+    have to be a new key generation.
 
     ⚠ **``issuer=None`` MUST hash byte-identically to the pre-issuer form**, and
     the append-only message layout below is what guarantees it. Every hash

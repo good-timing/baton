@@ -144,18 +144,9 @@ def register_annotation_tool(
         if signal_type is None:
             tracker.mark(session_id)
         seq = await counter.next(session_id)
-        # Identity here takes the SAME ladder the tool-call path takes, hook
-        # included. Wiring only the tool-call path would give one session a
-        # DIFFERENT PERSON on its annotations than on its calls — the hook sits
-        # above the token, so the two rungs generally name different subjects —
-        # which is the split this field exists to prevent, arriving through the
-        # door built to fix it.
-        #
-        # ⚠ The consequence used to be stated as two actor IDS, one under
-        # ``v1:`` and one under ``h1:``. Retiring the tag makes the two rungs
-        # byte-identical for one (tenant, principal, issuer), so where they DO
-        # name the same person the ids now match and only ``source`` differs.
-        # The invariant is unchanged; the symptom is quieter.
+        # Identity takes the SAME ladder the tool-call path takes, hook
+        # included; see ``official/annotation.py`` for why the annotation path
+        # must consult it too.
         identity_hook_context = (
             SessionResolutionContext(
                 headers=extract_headers(),

@@ -19,6 +19,7 @@ from baton.events import (
     AnnotationEvent,
     AnnotationPayload,
     Event,
+    PrincipalWire,
     SurfaceSnapshotEvent,
     SurfaceSnapshotPayload,
     ToolCallEndEvent,
@@ -443,8 +444,6 @@ class TestDiscriminatedUnion:
 
 class TestPrincipalObject:
     def test_all_three_members_ride_the_wire(self) -> None:
-        from baton.events import PrincipalWire
-
         event = ToolCallStartEvent(
             **_envelope(),
             principal=PrincipalWire(id="h1:9f2c", source="attested", form="hashed"),
@@ -479,8 +478,6 @@ class TestPrincipalObject:
         event carrying an `id` whose `form` a consumer has to guess. A default
         on any member would hand that guess back to the producer silently.
         """
-        from baton.events import PrincipalWire
-
         for partial in (
             {"id": "h1:9f2c"},
             {"id": "h1:9f2c", "source": "attested"},
@@ -500,14 +497,10 @@ class TestPrincipalObject:
         `ValidationError` at the emit boundary — on a path SPEC §11.2 requires
         to fail open.
         """
-        from baton.events import PrincipalWire
-
         got = PrincipalWire(id="x", source="alias-derived", form="tokenized")
         assert (got.source, got.form) == ("alias-derived", "tokenized")
 
     def test_an_extra_member_is_refused(self) -> None:
-        from baton.events import PrincipalWire
-
         with pytest.raises(ValidationError):
             PrincipalWire(id="x", source="attested", form="hashed", issuer="nope")  # type: ignore[call-arg]
 
