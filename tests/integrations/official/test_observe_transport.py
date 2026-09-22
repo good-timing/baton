@@ -1,4 +1,4 @@
-"""``observe_transport`` — the official adapter's four answers, asserted HERE.
+"""``observe_transport`` — the official adapter's five answers, and the WIRE.
 
 **Why this file sits in ``tests/integrations/official/`` and not beside the
 parity test.** ``mcp-matrix`` in ``ci.yml`` is the only job that pins an ``mcp``
@@ -20,20 +20,38 @@ covers BOTH adapters, so every file in it needs ``fastmcp`` — and this job
 resolves ``[mcp,test]`` and **fails on purpose if fastmcp is installed**
 (``ci.yml``: "must not have it", and the leg prints ``no fastmcp``). Adding that
 directory to the job's run line would break the job rather than close the gap.
-So the assertion is duplicated here in the one shape this leg can hold: the
-official adapter alone, no fastmcp, no server.
 
-The four answers are ``SPEC §11.4``'s and the function's docstring states the
+⚠ **Fakes alone are NOT enough, and the first cut of this file was fakes
+alone.** Every assertion below the unit block runs on a hand-built context, so
+it behaves identically on all four ``mcp`` legs — which gives the version-churn
+job it was written for no version-specific signal at all. Worse, it pins the
+FUNCTION and not the WIRE: measured 2026-09-22, cutting ``call_transport =
+observe_transport(context)`` to ``None`` in ``_tool_wrap.py`` severs the field
+from the envelope entirely and leaves this directory at **107 passed, exit 0**.
+``test_the_wire_carries_what_the_read_returned`` closes that, over a REAL
+in-memory session through ``connected_session`` — which needs only ``mcp`` and
+``anyio``, no fastmcp, and which ``test_agent_runtime.py`` in this same
+directory already uses. The fakes stay: they are the only way to reach the
+``read-failed`` branches, which no real session produces.
+
+The five answers are ``SPEC §11.4``'s and the function's docstring states the
 reasoning for each; this file pins them, it does not restate them.
 """
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from baton.integrations.official import VendorConfig, install_baton
+from baton.integrations.official._compat import MCPServerClass as FastMCP
 from baton.integrations.official._tool_wrap import observe_transport
+from baton.sinks import FileSink
+from tests._event_helpers import without_surface_snapshots
+from tests._mcp_session import connected_session
 
 from ._fake_context import _FakeContextV1, _FakeContextV2
 
@@ -128,6 +146,22 @@ def test_a_failing_request_read_reads_as_read_failed() -> None:
     assert observe_transport(_RequestRaises()) == "read-failed"
 
 
+def test_a_context_with_no_request_context_object_reads_as_none() -> None:
+    """The FIFTH answer: ``rc is None`` → ``None`` (``_tool_wrap.py:789``).
+
+    ⚠ Unpinned until 2026-09-22, and this file's own header called it "four
+    answers". Mutating that branch to ``"no-http-request"`` survived all 107
+    tests — handing out the one value SPEC §3.4 licenses a consumer to group a
+    process-wide fallback ``session_id`` on, for a context shape nobody has
+    observed. Caught by ``/code-review``, not by me.
+    """
+
+    class _NoRequestContext:
+        request_context = None
+
+    assert observe_transport(_NoRequestContext()) is None
+
+
 def test_read_failed_is_never_confused_with_absence() -> None:
     """The A6 direction: a failed read must not land on ``no-http-request``.
 
@@ -141,3 +175,86 @@ def test_read_failed_is_never_confused_with_absence() -> None:
     assert failed == "read-failed"
     assert absent == "no-http-request"
     assert failed != absent
+
+
+# ─── the WIRE ────────────────────────────────────────────────────────────────
+# Everything above asserts what the FUNCTION returns, on a hand-built context.
+# That is version-blind by construction: a fake behaves the same on mcp 1.20 and
+# on 2.0.0, so it gives `mcp-matrix` nothing it could not get from one leg. The
+# two tests below run the real library — so they move when the library moves,
+# which is the whole reason this file is in the matrix's run line.
+
+
+async def _emit(events_path: Path, *, programmatic: bool) -> list[dict[str, Any]]:
+    """Drive one tool call and return the envelopes the SDK actually wrote.
+
+    ``programmatic=True`` calls through ``mcp.call_tool(...)``, which is the
+    real source of the ``ValueError`` branch — the library's documented answer
+    to "is there a live request?" when nobody is on the other end. Otherwise a
+    real in-memory client session, via ``connected_session`` (``mcp`` + ``anyio``
+    only, no fastmcp — the same helper ``test_agent_runtime.py`` uses here).
+    """
+    mcp = FastMCP("transport-wire")
+
+    @mcp.tool()
+    def lookup(name: str) -> dict[str, Any]:
+        return {"found": True, "name": name}
+
+    handle = install_baton(
+        mcp,
+        VendorConfig(
+            vendor_id="tw",
+            vendor_display_name="Transport Wire",
+            consent_token="ct_tw",
+            sink=FileSink(str(events_path)),
+        ),
+    )
+    try:
+        if programmatic:
+            await mcp.call_tool("lookup", {"name": "alice"})
+        else:
+            async with connected_session(mcp) as client:
+                await client.call_tool("lookup", {"name": "alice"})
+    finally:
+        await handle.aclose()
+
+    with open(events_path) as f:
+        events = [json.loads(line) for line in f if line.strip()]
+    events = without_surface_snapshots(events)
+    assert events, "no events captured — the assertions below would be vacuous"
+    return events
+
+
+async def test_the_wire_carries_what_the_read_returned(tmp_path: Path) -> None:
+    """The envelope's ``transport_observed``, over a REAL session.
+
+    ⚠ **This is the one that pins the WIRE.** Every other test here pins
+    ``observe_transport`` in isolation, so severing it from the envelope —
+    ``call_transport = None`` in ``_tool_wrap.py`` — left the whole directory
+    green at 107 passed. Only this shape reds on that cut.
+
+    In-memory transport has no HTTP request behind a live MCP request, so the
+    answer is ``no-http-request`` — NOT ``None``, which would mean we were
+    handed nothing to look at, and not ``read-failed``, which would mean our own
+    instrument broke. Those three being distinct is the entire point of C3.
+    """
+    events = await _emit(tmp_path / "wire.jsonl", programmatic=False)
+    observed = {e.get("transport_observed") for e in events}
+    assert observed == {"no-http-request"}, f"expected one answer on the wire, got {observed}"
+
+
+async def test_a_real_programmatic_call_puts_none_on_the_wire(tmp_path: Path) -> None:
+    """``mcp.call_tool()`` → ``None``, asserted against the REAL exception.
+
+    ⚠ The ``ValueError`` answer is the most version-sensitive of the five: it is
+    keyed on the library's EXCEPTION TYPE, not on a value it returns. The fake
+    above hard-codes that type, so the matrix cannot see it move. This drives
+    the installed library instead, so if upstream ever raises something else,
+    the leg that resolved it reds — rather than every programmatic call quietly
+    becoming ``"read-failed"`` with this file still green.
+    """
+    events = await _emit(tmp_path / "programmatic.jsonl", programmatic=True)
+    observed = {e.get("transport_observed") for e in events}
+    assert observed == {None}, (
+        f"a programmatic call asserts nothing about transport, got {observed}"
+    )
