@@ -1,41 +1,22 @@
-"""``observe_transport`` — the official adapter's five answers, and the WIRE.
+"""``observe_transport`` — its five answers, and the wire that carries them.
 
-**Why this file sits in ``tests/integrations/official/`` and not beside the
-parity test.** ``mcp-matrix`` in ``ci.yml`` is the only job that pins an ``mcp``
-version — 1.20, 1.25, 1.27.2, 2.0.0 — and its last step runs
-``pytest tests/integrations/official/`` and nothing else. Until this file
-existed that directory held **no assertion about the transport read at all**,
-so none of those four legs exercised it.
+``observe_transport``'s own docstring owns WHY each answer is what it is; this
+file only pins them. Two things about its placement are not stated there:
 
-⚠ **It was not that the read never RAN there.** ``_fake_context`` attaches a
-real request object, so ``observe_transport`` was already being called through
-the install tests on every leg — and nothing looked at what it returned.
-Measured 2026-09-22: inverting the terminal return in ``_tool_wrap.py`` left
-``tests/integrations/official/`` at 97 passed, exit 0, while
-``tests/functional/test_transport_observed_parity.py`` reddened. A fixture that
-exercises a read without asserting on it is indistinguishable from no coverage.
+**It lives here because ``mcp-matrix`` can run nothing else.** That job is the
+only one pinning an ``mcp`` version (1.20 / 1.25 / 1.27.2 / 2.0.0) and its last
+step runs ``pytest tests/integrations/official/`` alone. The equivalent
+assertions in ``tests/functional/test_transport_observed_parity.py`` cover both
+adapters, so every file there imports ``fastmcp`` — and this job resolves
+``[mcp,test]`` and fails on purpose if fastmcp is present. Pointing the job at
+that directory would break it, not widen it. Hence the duplication.
 
-⚠ **The parity test cannot be moved or pointed at.** ``tests/functional/``
-covers BOTH adapters, so every file in it needs ``fastmcp`` — and this job
-resolves ``[mcp,test]`` and **fails on purpose if fastmcp is installed**
-(``ci.yml``: "must not have it", and the leg prints ``no fastmcp``). Adding that
-directory to the job's run line would break the job rather than close the gap.
-
-⚠ **Fakes alone are NOT enough, and the first cut of this file was fakes
-alone.** Every assertion below the unit block runs on a hand-built context, so
-it behaves identically on all four ``mcp`` legs — which gives the version-churn
-job it was written for no version-specific signal at all. Worse, it pins the
-FUNCTION and not the WIRE: measured 2026-09-22, cutting ``call_transport =
-observe_transport(context)`` to ``None`` in ``_tool_wrap.py`` severs the field
-from the envelope entirely and leaves this directory at **107 passed, exit 0**.
-``test_the_wire_carries_what_the_read_returned`` closes that, over a REAL
-in-memory session through ``connected_session`` — which needs only ``mcp`` and
-``anyio``, no fastmcp, and which ``test_agent_runtime.py`` in this same
-directory already uses. The fakes stay: they are the only way to reach the
-``read-failed`` branches, which no real session produces.
-
-The five answers are ``SPEC §11.4``'s and the function's docstring states the
-reasoning for each; this file pins them, it does not restate them.
+**The fakes cannot carry it alone.** A hand-built context behaves the same on
+all four legs, so fake-only tests give a version matrix no version signal — and
+they pin the function while leaving the WIRE free to be disconnected. The two
+``connected_session`` tests at the bottom are what close that; the fakes stay
+because they are the only route to the ``read-failed`` branches, which no real
+session produces.
 """
 
 from __future__ import annotations
@@ -85,33 +66,19 @@ class _RequestRaises:
 def test_a_live_request_reads_as_http(ctx_class: Any) -> None:
     """A request object is there → ``"http"``.
 
-    Both context shapes, because mcp 1.x has no ``.headers`` on ``Context`` and
-    2.x does — the read must key on the REQUEST either way, never on headers.
+    ⚠ **``_FakeContextV1`` is not decoration — measured.** It has no
+    ``.headers`` at all, which is mcp 1.x. Rewriting the read to consult
+    ``context.headers`` — the shortcut ``observe_transport``'s docstring rejects
+    by name, register A7 — reds the V1 leg and PASSES the V2 leg. V1 is the only
+    fixture in this file that can tell that rewrite apart from a correct one.
     """
     assert observe_transport(ctx_class({"x-forwarded-for": "203.0.113.7"})) == "http"
 
 
 @pytest.mark.parametrize("ctx_class", [_FakeContextV2, _FakeContextV1])
 def test_no_request_behind_a_live_call_reads_as_no_http_request(ctx_class: Any) -> None:
-    """``rc.request is None`` → ``"no-http-request"``. Stdio or in-memory.
-
-    ⚠ This is the value SPEC §3.4 licenses a consumer to group a process-wide
-    fallback ``session_id`` on. It must never be the answer to a FAILED read.
-    """
+    """``rc.request is None`` → ``"no-http-request"``. Stdio or in-memory."""
     assert observe_transport(ctx_class(None)) == "no-http-request"
-
-
-def test_http_and_no_http_request_are_not_interchangeable() -> None:
-    """The two live answers must differ.
-
-    Without this, inverting the terminal return is invisible to this directory
-    — which is exactly what was measured on 2026-09-22.
-    """
-    with_request = observe_transport(_FakeContextV2({"host": "example.test"}))
-    without_request = observe_transport(_FakeContextV2(None))
-    assert with_request == "http"
-    assert without_request == "no-http-request"
-    assert with_request != without_request
 
 
 def test_no_context_at_all_reads_as_none() -> None:
@@ -120,21 +87,12 @@ def test_no_context_at_all_reads_as_none() -> None:
 
 
 def test_a_programmatic_call_reads_as_none_not_no_http_request() -> None:
-    """``request_context`` raising ``ValueError`` is ``mcp.call_tool()``.
-
-    Deliberately NOT ``no-http-request``: there is no live MCP request, so
-    saying so would assert a fact about a deployment that is not running. And
-    NOT ``read-failed``: nothing failed.
-    """
+    """``request_context`` raising ``ValueError`` is ``mcp.call_tool()``."""
     assert observe_transport(_RequestContextRaises(ValueError("no active request"))) is None
 
 
 def test_an_unexpected_context_failure_reads_as_read_failed() -> None:
-    """Any other raise from ``request_context`` → ``"read-failed"``.
-
-    The whole point of the value: our own instrument failing must be countable,
-    and must not be dressed up as a fact about the customer's transport.
-    """
+    """Any other raise from ``request_context`` → ``"read-failed"``."""
     assert (
         observe_transport(_RequestContextRaises(AttributeError("no such attribute")))
         == "read-failed"
@@ -147,13 +105,12 @@ def test_a_failing_request_read_reads_as_read_failed() -> None:
 
 
 def test_a_context_with_no_request_context_object_reads_as_none() -> None:
-    """The FIFTH answer: ``rc is None`` → ``None`` (``_tool_wrap.py:789``).
+    """The fifth answer: the ``rc is None`` guard → ``None``.
 
-    ⚠ Unpinned until 2026-09-22, and this file's own header called it "four
-    answers". Mutating that branch to ``"no-http-request"`` survived all 107
-    tests — handing out the one value SPEC §3.4 licenses a consumer to group a
+    ⚠ Mutating that guard to ``"no-http-request"`` survived every other test
+    here — handing out the one value SPEC §3.4 licenses a consumer to group a
     process-wide fallback ``session_id`` on, for a context shape nobody has
-    observed. Caught by ``/code-review``, not by me.
+    observed.
     """
 
     class _NoRequestContext:
@@ -162,27 +119,7 @@ def test_a_context_with_no_request_context_object_reads_as_none() -> None:
     assert observe_transport(_NoRequestContext()) is None
 
 
-def test_read_failed_is_never_confused_with_absence() -> None:
-    """The A6 direction: a failed read must not land on ``no-http-request``.
-
-    ``_extract_headers_from_context`` folds ``AttributeError`` into the same
-    ``None`` a genuine absence returns, and register A6 records that as a live
-    defect. ``observe_transport`` must not inherit it — this is the assertion
-    that would red if someone rebuilt it on that helper.
-    """
-    failed = observe_transport(_RequestContextRaises(AttributeError("boom")))
-    absent = observe_transport(_FakeContextV2(None))
-    assert failed == "read-failed"
-    assert absent == "no-http-request"
-    assert failed != absent
-
-
-# ─── the WIRE ────────────────────────────────────────────────────────────────
-# Everything above asserts what the FUNCTION returns, on a hand-built context.
-# That is version-blind by construction: a fake behaves the same on mcp 1.20 and
-# on 2.0.0, so it gives `mcp-matrix` nothing it could not get from one leg. The
-# two tests below run the real library — so they move when the library moves,
-# which is the whole reason this file is in the matrix's run line.
+# ─── the WIRE: the two tests below run the real library ─────────────────────
 
 
 async def _emit(events_path: Path, *, programmatic: bool) -> list[dict[str, Any]]:

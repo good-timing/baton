@@ -761,9 +761,13 @@ def observe_transport(context: Any) -> str | None:
     from* ``request_context.request.headers``, so it adds no information and one
     more way to disagree.
 
-    The four outcomes, keyed on the request object exactly as SPEC §11.4 requires:
+    The five outcomes, keyed on the request object exactly as SPEC §11.4 requires:
 
     - no context at all → ``None``. We were handed nothing to look at.
+    - ``request_context`` is itself ``None`` → ``None``. Same answer and same
+      reason as the line above. Spelled out because omitting it is how it went
+      unpinned: this list said "four outcomes" over five bullets until
+      2026-09-22, and a test written from it inherited the miscount.
     - ``request_context`` raises ``ValueError`` → ``None``. The library's
       deliberate, documented answer to "is there a live request?" when a tool is
       called programmatically (``mcp.call_tool()``). **Not** ``no-http-request``,
