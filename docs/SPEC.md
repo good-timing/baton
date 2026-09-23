@@ -1009,15 +1009,33 @@ library version, not on the producer.** Measured 2026-09-22 across eight
 | standalone `fastmcp` 2.14.7 | **no flag exists** — `ToolResult` has no such field |
 | standalone `fastmcp` 3.x / 4.x | `is_error` |
 
-**Producer rule.** Detection MUST duck-type both spellings and MUST probe
-`is_error` **before** `isError`: `fastmcp` answers a camelCase attribute through
-a compatibility shim that emits a deprecation warning, so probing camel-first
-warns on every error result a `fastmcp` server produces, while an official
-`mcp` 1.x result — which has only the camel name — still falls through to it.
-Detection MUST additionally require a list-valued `content`, so an unrelated
-object carrying an `is_error` attribute is not misread as a tool result. A
-version on which the flag does not exist emits `tool_call_end` as before; that
-is correct, not a gap.
+**Producer rule.** Detection MUST duck-type both spellings and SHOULD probe
+`is_error` **before** `isError`, because that is the current generation's
+spelling and therefore the common case; an `mcp` 1.x result, which has only the
+camel name, still falls through to the second probe. Probing camel-first is not
+wrong, only worse: in a process that has imported `fastmcp`, `CallToolResult`
+carries a camelCase compatibility property that raises a deprecation warning
+(once per process) and that the library has announced it will remove.
+
+⚠ **An earlier revision of this paragraph justified the order differently and
+was wrong in three ways** — it named `fastmcp`'s own `ToolResult` (whose
+`.isError` raises plainly and warns nothing), implied the standalone producer
+was the one affected (it is the official one, and only alongside `fastmcp`),
+and said "every error result" where the warning is once per process. The order
+stands; the reason is restated because two sibling producers implement from it.
+
+Detection MUST additionally require a list-valued `content`. The case this
+excludes is a caller that receives the vendor's return value **unconverted**
+(`Tool.run(convert_result=False)`), where an object carrying an `is_error`
+attribute for its own reasons would otherwise read as a failed tool call. ⚠ It
+is **not** what excludes a vendor dict spelling `{"isError": true, …}`: under
+the conversion the server normally applies, that dict becomes a real
+`CallToolResult` whose flag is `false`, and the flag is what settles it. This
+example was stated the other way here until code review mutated the guard away
+and found nothing reddened.
+
+A version on which the flag does not exist emits `tool_call_end` as before;
+that is correct, not a gap.
 
 **Consumer rule.** A consumer MUST key on `event_type`, not on the flag. The
 flag's spelling inside `result` is **era-native** — producers record what the
@@ -1159,7 +1177,9 @@ Defined error codes:
 
 - **Unreleased (2026-09-22)** — **A returned result carrying MCP's error flag now emits `tool_call_error`, and `tool_call_error` gains an optional `result`.** New subsection §11.4.3; §6.1 gains a second SDK-emitted condition; §11.4's payload table row and source column both change. **Version deliberately undecided**, riding the same undecided number as the 09-17 entry below — the producer work spans the same four repos.
 
-  **(1) ADDED: `result` on `ToolCallErrorPayload`, optional, defaulting to null.** It carries the full result envelope for the RETURN shape, PII-scrubbed and NOT unwrapped (unlike `tool_call_end.result`, which unwraps to the developer's return). Absent on the RAISE shape, where no result object exists. **This is a payload field, not an envelope field, and the distinction is load-bearing for ordering:** `baton-console`'s ingest is `extra="forbid"` at the *envelope* level only and types `payload` as an opaque dict, so unlike `call_id`, `principal` and `transport_observed`, this field does NOT have to be accepted by the collector before a producer emits it. A producer may land first.
+  **(1) ADDED: `result` on `ToolCallErrorPayload`, optional, defaulting to null.** It carries the full result envelope for the RETURN shape, PII-scrubbed and NOT unwrapped (unlike `tool_call_end.result`, which unwraps to the developer's return). Absent on the RAISE shape, where no result object exists. **This is a payload field, not an envelope field, and the distinction changes the ordering constraint — but only for the collector.** `baton-console`'s ingest is `extra="forbid"` at the *envelope* level only and types `payload` as an opaque dict, so unlike `call_id`, `principal` and `transport_observed`, this field does not have to reach the collector before a producer emits it.
+
+⚠ **It is NOT unconstrained, and this entry claimed it was.** `baton-ts` mirrors `extra="forbid"` down to the **payload** (`ToolCallErrorPayloadSchema` is `.strict()`), and its conformance suite parses every `baton-spec` vector, so the vectors carrying `result` — including the raise-shape one, which now carries `result: null` — are rejected outright. **`baton-ts` must accept the field before it consumes a `baton-spec` bump, and cannot emit it until then.** Found by code review after this entry was written; the generalisation from one consumer to all of them is the error, and a consumer with a strict *payload* schema is exactly the case the envelope/payload distinction does not cover.
 
   **(2) CHANGED: what `tool_call_error` means.** It was "the handler raised". It is now "the call failed", which MCP expresses two ways — see §11.4.3. `error_type` is the registered value `"tool_error"` for the returned shape, matching what `baton-extmcp` has emitted since 0.1.0; the raise shape keeps the exception class name.
 

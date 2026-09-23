@@ -41,19 +41,35 @@ TOOL_ERROR_TYPE = "tool_error"
 def is_error_result(value: Any) -> bool:
     """True if ``value`` is a tool result carrying MCP's error flag.
 
-    ⚠ **``is_error`` is probed BEFORE ``isError``, and the order is
-    load-bearing rather than cosmetic.** ``fastmcp`` answers a camelCase
-    attribute through a compatibility shim that emits a deprecation warning, so
-    asking for ``isError`` first would warn on every error result any
-    ``fastmcp`` server produces. Asking for ``is_error`` first short-circuits
-    before the shim is ever reached, and an ``mcp`` 1.x ``CallToolResult`` —
-    which has only the camelCase name — still falls through to it.
+    **``is_error`` is probed BEFORE ``isError``.** Primary reason: it is the
+    spelling of the current generation (``mcp`` 2.x, ``fastmcp`` 3.x/4.x), so
+    it is the common case, and ``mcp`` 1.x — which has only the camelCase name
+    — still falls through to the second probe.
 
-    ⚠ **A list-valued ``content`` is required, and that is the NEGATIVE
-    control's rule.** Without it, any object that happens to carry an
-    ``is_error`` attribute reads as a failed tool call. A vendor returning its
-    own dict that merely spells the flag (``{"isError": True, ...}``) is
-    returning domain data: neither library marks it, so neither may we.
+    ⚠ **A second reason was written here and was WRONG in three ways; it is
+    corrected rather than deleted, because both sibling producers are meant to
+    implement this order from the rule.** The claim was that ``fastmcp``
+    answers a camelCase attribute through a shim that warns "on every error
+    result any fastmcp server produces". Probed: the shim is on
+    ``mcp_types.CallToolResult``, not on ``fastmcp``'s own ``ToolResult``
+    (whose ``.isError`` raises a plain ``AttributeError`` and warns nothing);
+    it exists only in a process that has imported ``fastmcp``, so it is the
+    OFFICIAL adapter that can meet it, not the standalone one; and it is
+    **warn-once per process**, not per result. So the real cost of probing
+    camel-first is one spurious deprecation warning in a mixed install, plus a
+    read that depends on a shim the library has announced it will remove. Small
+    — which is why the first reason above carries the order.
+
+    ⚠ **A list-valued ``content`` is required.** The case it excludes is a
+    caller of ``Tool.run(convert_result=False)``: the library then hands back
+    the vendor's own return value unconverted, so an object carrying an
+    ``is_error`` attribute for its own reasons — a vendor model, a wrapper —
+    would read as a failed tool call. It is NOT what excludes a vendor dict
+    spelling ``{"isError": True, ...}``: under the ``convert_result=True`` the
+    lowlevel server actually passes, the library converts that dict into a real
+    ``CallToolResult`` whose flag is False, and the False is what settles it.
+    That example stood here and in SPEC §11.4.3 until code review mutated the
+    guard away and found the suite still green.
 
     The whole predicate is guarded, because ``content`` may be a property on a
     lazily-proxied result that raises something other than ``AttributeError``,
@@ -113,14 +129,28 @@ def envelope_to_jsonable(result: Any) -> Any:
     installed library calls them. Normalizing the spelling here would rewrite
     the meaning of data already stored, and SPEC §11.4.3 makes era-native the
     consumer's contract instead.
+
+    ⚠ **The fallback is None, never ``str(result)``.** A repr
+    (``<CallToolResult object at 0x…>``) carries a memory address that changes
+    every run and the tool's actual output nowhere — the exact shape that
+    shipped once already on the fastmcp floor path and is recorded in the
+    CHANGELOG. ``None`` says "the body could not be serialized", which is
+    honest and which a consumer already handles, since a raise produces None
+    here too. ``error_body`` still carries the reason either way.
+
+    Guarded throughout for the reason ``is_error_result`` is: this runs on the
+    vendor's tool-call path, and SPEC §11.2 says capture must never break it.
     """
     if result is None:
         return None
-    if hasattr(result, "model_dump"):
-        try:
-            return result.model_dump(mode="json")
-        except Exception:
-            pass
-    if isinstance(result, (str, int, float, bool, list, dict)):
-        return result
-    return str(result)
+    try:
+        if hasattr(result, "model_dump"):
+            try:
+                return result.model_dump(mode="json")
+            except Exception:
+                return None
+        if isinstance(result, (str, int, float, bool, list, dict)):
+            return result
+    except Exception:  # pragma: no cover - defensive; see is_error_result
+        return None
+    return None

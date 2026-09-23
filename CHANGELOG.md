@@ -19,11 +19,21 @@ alone, so every failure a vendor returned rather than raised was emitted as
 `tool_call_end`. SPEC §6.1 said "on exception" and §11.4's table said it again,
 so the code was obeying the spec; the text moved first (new SPEC §11.4.3).
 
-⚠ **Deploy order is NOT a constraint here, unlike the principal change below,
-and the difference is worth naming.** `result` is a *payload* field.
-`baton-console`'s ingest is `extra="forbid"` at the **envelope** level only and
-types `payload` as an opaque dict, so a producer may land before the collector
-reads it. The 422-on-the-whole-envelope trap applies to envelope fields.
+⚠ **Deploy order against the COLLECTOR is not a constraint here, unlike the
+principal change below.** `result` is a *payload* field, and `baton-console`'s
+ingest is `extra="forbid"` at the **envelope** level only, typing `payload` as
+an opaque dict — so a producer may land before the collector reads it. The
+422-on-the-whole-envelope trap applies to envelope fields.
+
+⚠ **But `baton-ts` IS blocked, and this section said otherwise until code
+review caught it.** It mirrors `extra="forbid"` down to the payload
+(`ToolCallErrorPayloadSchema` is `.strict()`) and its conformance suite parses
+every `baton-spec` vector — so **both** error vectors are rejected, the
+raise-shape one included, because it now carries `result: null`. `baton-ts`
+must accept the field before it takes a `baton-spec` bump. The error was
+generalising from one consumer to all of them; "payload fields are
+unconstrained" is a statement about `baton-console`'s schema, not about the
+distinction.
 
 ### Changed
 

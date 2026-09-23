@@ -170,6 +170,97 @@ async def test_returned_error_type_is_tool_error(events: list[dict[str, Any]]) -
     assert _error_payload(events, "soft_fail")["error_type"] == "tool_error"
 
 
+def test_a_flagged_object_without_list_content_is_not_a_tool_result() -> None:
+    """⚠ Pins the list-``content`` guard, which was DEAD CODE until this test.
+
+    Code review mutated the guard away and the whole suite stayed green: the
+    negative control in ``_drive`` never reached it, because under
+    ``convert_result=True`` the library converts a vendor's dict into a real
+    ``CallToolResult`` whose flag is False, and the False is what settles it.
+
+    The case the guard actually excludes is a caller of
+    ``Tool.run(convert_result=False)``, which gets the vendor's own return
+    value unconverted. An object carrying ``is_error`` for its own reasons
+    would then read as a failed tool call. Driven directly, because the
+    scenario is a different caller rather than a different tool.
+    """
+    from baton.integrations._error_result import is_error_result
+
+    class _VendorModel:
+        """Not a tool result. Flag-shaped by coincidence."""
+
+        is_error = True
+        content = "a string, not the MCP content list"
+
+    class _RealResult:
+        is_error = True
+
+        def __init__(self) -> None:
+            self.content = [object()]
+
+    assert is_error_result(_VendorModel()) is False
+    # Paired positive: without it, a guard that rejected EVERYTHING would pass.
+    assert is_error_result(_RealResult()) is True
+
+
+def test_snake_case_is_probed_before_camel() -> None:
+    """⚠ Pins the probe ORDER, which was unpinned: reversing it left all tests
+    green and moved only an unasserted warning count.
+
+    ``fastmcp`` patches ``mcp_types.CallToolResult`` with a camelCase
+    compatibility property that raises ``FastMCPDeprecationWarning``. Probing
+    camel-first reads through that shim; probing snake-first never touches it.
+    The warning is warn-once per process, so this asserts on the READ rather
+    than on a warning count a previous test may already have consumed.
+    """
+    import mcp.types as mcp_types
+
+    from baton.integrations._error_result import is_error_result
+
+    # Instance, not class: these are pydantic models, whose fields are not
+    # class attributes — checking the class skipped this test on every
+    # version, silently, which is how it first ran.
+    if not hasattr(_error_result("x"), "is_error"):
+        pytest.skip("mcp 1.x exposes only the camelCase name; no order to pin")
+
+    seen: list[str] = []
+
+    class _Recorder:
+        """Records which spelling was asked for first."""
+
+        def __init__(self) -> None:
+            self.content = [mcp_types.TextContent(type="text", text="x")]
+
+        def __getattr__(self, name: str) -> Any:
+            if name in ("is_error", "isError"):
+                seen.append(name)
+                return True
+            raise AttributeError(name)
+
+    assert is_error_result(_Recorder()) is True
+    assert seen[0] == "is_error", f"probed {seen[0]} first — see SPEC §11.4.3"
+
+
+def test_an_unserializable_envelope_becomes_none_not_a_repr() -> None:
+    """⚠ The fallback must not be ``str(result)``.
+
+    A repr puts ``<X object at 0x…>`` — a memory address that changes every
+    run, with the tool's output nowhere — into ``payload.result``. That exact
+    shape shipped once before on the fastmcp floor path. ``None`` is the
+    honest answer, and a consumer already handles it because a raise produces
+    None here too.
+    """
+    from baton.integrations._error_result import envelope_to_jsonable
+
+    class _Unserializable:
+        def model_dump(self, mode: str = "python") -> Any:
+            raise TypeError("circular reference")
+
+    out = envelope_to_jsonable(_Unserializable())
+    assert out is None
+    assert not isinstance(out, str)
+
+
 def test_error_text_does_not_truncate_before_the_scrubber() -> None:
     """⚠ SCRUB happens BEFORE the cut, on both failure shapes.
 
