@@ -4,7 +4,9 @@ transport boundary.
 Per SPEC §11.2 SDK conformance + CHARTER ADR-4 (thin-emit; never block
 vendor's hot path): the middleware wraps every ``on_call_tool`` invocation,
 emits ``tool_call_start`` before the vendor handler runs, then either
-``tool_call_end`` on success or ``tool_call_error`` on exception.
+``tool_call_end`` on success or ``tool_call_error`` on FAILURE — which MCP
+expresses two ways (SPEC §11.4.3): the handler raises, or it returns a result
+carrying MCP's error flag on a 200.
 
 State managed here is minimal — a per-session sequence-number counter. No
 correlation, no detection, no policy (all worker-side per ADR-4). The
@@ -42,6 +44,12 @@ from baton.events import (
     ToolCallStartPayload,
 )
 from baton.integrations._config import SessionResolutionContext
+from baton.integrations._error_result import (
+    TOOL_ERROR_TYPE,
+    envelope_to_jsonable,
+    error_text,
+    is_error_result,
+)
 from baton.integrations._llm_text import (
     EXPECTED_RESULT_PARAM_NAME,
     INTENT_SOURCE_PARAM,
@@ -613,6 +621,49 @@ class BatonMiddleware(Middleware):
             return result
 
         duration_ms = int((monotonic() - called_at) * 1000)
+
+        # SPEC §11.4.3: a returned result carrying MCP's error flag is a
+        # FAILURE. MCP files it as a 200, so it arrives here and not through
+        # the ``except`` above — this adapter sits INSIDE fastmcp's own
+        # exception-to-flag conversion for a raise, and OUTSIDE it for a
+        # vendor's explicit return. Checked after the MRTR pause: a paused
+        # round has not finished, so it is neither an end nor an error yet.
+        #
+        # ⚠ On fastmcp 2.14.7 ``ToolResult`` has no such field at all, so
+        # ``is_error_result`` answers False and this leg emits an end exactly
+        # as before. That is correct — there is no flag to misread — and it is
+        # pinned positively by ``test_floor_has_no_flag_to_read``.
+        if is_error_result(result):
+            seq_err = await self._next_seq(session_id)
+            await safe_write(
+                self._sink,
+                ToolCallErrorEvent(
+                    tenant_id=self._tenant_id,
+                    vendor_id=self._vendor_id,
+                    consent_token=self._consent_token,
+                    session_id=session_id,
+                    sequence_number=seq_err,
+                    captured_at=datetime.now(UTC),
+                    agent_runtime=runtime,
+                    principal=call_principal,
+                    transport_observed=call_transport,
+                    call_id=call_id,
+                    runtime_meta=scrubbed_meta,
+                    payload=ToolCallErrorPayload(
+                        tool_name=tool_name,
+                        error_type=TOOL_ERROR_TYPE,
+                        error_body=str(self._scrubber(error_text(result)))[:2000],
+                        duration_ms=duration_ms,
+                        # The ENVELOPE, not ``_result_to_jsonable``'s unwrapped
+                        # developer return: the flag and the reason both live
+                        # on the envelope.
+                        result=self._scrubber(envelope_to_jsonable(result)),
+                    ),
+                ),
+                logger,
+            )
+            return result
+
         seq_end = await self._next_seq(session_id)
         await safe_write(
             self._sink,

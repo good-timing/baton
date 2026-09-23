@@ -611,6 +611,7 @@ Signal classification splits responsibilities between the SDK and the collector'
 The SDK emits, and the worker classifies on assembly:
 
 1. **Explicit error / timeout** — when a tool raises or times out, the SDK emits a `tool_call_error` event. The worker classifies the resulting SignalPayload as `signal_type=failure`.
+2. **A returned result carrying MCP's error flag** — the same event, for the same reason. MCP files a failed `tools/call` as a **successful** JSON-RPC response whose body sets `isError`; a JSON-RPC error is for protocol faults, not tool failures. A producer that classifies on exceptions alone therefore files those failures as successes. See §11.4.3 for the flag's spellings and the producer rule.
 
 The SDK does NOT do state-dependent detection (retry-loop, dead-end pattern matching, latency-threshold-based slow_performance, etc.). Those are worker-side per §11.3.
 
@@ -909,7 +910,7 @@ Event types and their payload shapes:
 |---|---|---|
 | `tool_call_start` | `{tool_name, params, call_intent?, call_expected?, call_workflow?, intent_source?}` (params PII-scrubbed; the optional fields carry the injected per-call params when present — §13 changelog) | SDK middleware before vendor handler |
 | `tool_call_end` | `{tool_name, result, duration_ms}` (result PII-scrubbed) | SDK middleware after vendor handler returns |
-| `tool_call_error` | `{tool_name, error_type, error_body, duration_ms}` | SDK middleware on exception |
+| `tool_call_error` | `{tool_name, error_type, error_body, duration_ms, result?}` (`result` PII-scrubbed; present only for the returned-flag shape — §11.4.3) | SDK middleware **on exception, or on a returned result whose MCP error flag is set** |
 | `annotation` | `{intent?, expected_outcome?, signal_type?, workflow?, suggested_improvement?, context?}` (all nullable; agent populates what it has) | SDK annotation tool handler / library `client.annotate(...)` / `trace.annotate(...)` |
 | `surface_snapshot` | `{surface_hash, server_info?, capabilities?, instructions?, tools, seam_augmentations}` — top-level fields mirror baton-proxy's `enqueue_surface_snapshot`; `seam_augmentations.intent_param` shape differs (§11.4.2) | SDK middleware/wrap layer, once per observed `surface_hash` per process; see §11.4.2 |
 
@@ -972,6 +973,69 @@ Mirrors baton-proxy's `MessageProcessor._capture_surface` / `Emitter.enqueue_sur
 - `baton.integrations.official` (official SDK) exposes no such hook. The snapshot is built from data already captured during tool registration (install-time scan + the patched `add_tool` for later registrations) and lazily hashed + emitted on the next tool call — the first point every install is guaranteed to reach an async context. A server that's listed but never has a tool called on it won't get a snapshot.
 
 `session_id` on this event is the process-level fallback session, not a per-call resolved session (mirrors proxy, which omits `session_id` on this call entirely) — the Console's `vendor_surfaces` materialization is keyed on `(tenant_id, vendor_id, surface_hash)`, not session.
+
+#### 11.4.3 `tool_call_error` — the two failure shapes, and the flag's spellings
+
+**A failed MCP tool call is a 200.** The protocol files it as a successful
+JSON-RPC response whose `CallToolResult` body sets the error flag; a JSON-RPC
+error means a protocol fault, not a tool failure. So a tool call fails in two
+shapes, and a producer MUST emit `tool_call_error` for both:
+
+1. **RAISE** — the vendor handler raises. The producer holds a live exception.
+   `error_type` is the exception class name, `error_body` its message, and
+   `result` is **absent**: there is no result object to record.
+2. **RETURN** — the handler returns normally, and the result carries the error
+   flag. `error_type` is the registered value **`"tool_error"`**, `error_body`
+   is the human-readable reason unwrapped from the result's `content` text
+   parts, and `result` carries **the full result envelope**, PII-scrubbed and
+   **not unwrapped** to the developer's return value the way `tool_call_end`
+   unwraps it. The envelope is what holds the flag and the reason; on an error
+   result `structured_content` is typically `null` and the text lives in
+   `content`.
+
+**`result` on this event is the reason it can be added at all**: reclassifying
+the RETURN shape out of `tool_call_end` would otherwise move a structured body
+into a flat truncated string. A consumer that reads bodies MUST read `result`
+on `tool_call_error` as well as on `tool_call_end`.
+
+**⚠ The flag has two spellings, and which one appears depends on the producer's
+library version, not on the producer.** Measured 2026-09-22 across eight
+(library, version) cells:
+
+| producer library | spelling |
+|---|---|
+| official `mcp` 1.20 – 1.27.x | `isError` |
+| official `mcp` 2.x (the `mcp_types` rewrite) | `is_error` |
+| standalone `fastmcp` 2.14.7 | **no flag exists** — `ToolResult` has no such field |
+| standalone `fastmcp` 3.x / 4.x | `is_error` |
+
+**Producer rule.** Detection MUST duck-type both spellings and MUST probe
+`is_error` **before** `isError`: `fastmcp` answers a camelCase attribute through
+a compatibility shim that emits a deprecation warning, so probing camel-first
+warns on every error result a `fastmcp` server produces, while an official
+`mcp` 1.x result — which has only the camel name — still falls through to it.
+Detection MUST additionally require a list-valued `content`, so an unrelated
+object carrying an `is_error` attribute is not misread as a tool result. A
+version on which the flag does not exist emits `tool_call_end` as before; that
+is correct, not a gap.
+
+**Consumer rule.** A consumer MUST key on `event_type`, not on the flag. The
+flag's spelling inside `result` is **era-native** — producers record what the
+library called it and MUST NOT normalize it, because normalizing rewrites the
+meaning of data already stored. A consumer that reads the flag directly (from
+`tool_call_end` bodies emitted before this change, for instance) MUST accept
+both spellings.
+
+**⚠ Not retroactive for every producer.** A consumer reclassifying stored
+`tool_call_end` rows can recover the official-1.x and fastmcp-3/4 populations,
+whose bodies carry a flag. It cannot recover official-2.x rows: those bodies
+never carried one, because `baton-sdk`'s own serializer unwrapped the envelope
+away before emission. Nothing on the envelope names the producing library or
+its version, so that population is not merely unrecoverable but **uncountable**.
+
+**⚠ Bearing on §11.5.** Per-event mode (§11.5.3) derives `observed_outcomes`
+from a `tool_call_error` and currently reads no body off it; a worker that
+nulls `result` on this event type drops the body this change exists to keep.
 
 ### 11.5 Annotation correlation rules (worker-side)
 
@@ -1092,6 +1156,20 @@ Defined error codes:
 
 > ⚠ **Entries below dated before 2026-09-09 still read "Unreleased" and are not.** They shipped across **0.4.0–0.7.2** — the undated one at the bottom of this list is the intent-param entry, and `call_intent` / `intent_source` shipped in 0.4.0 — and the version stamp this list used through `0.2.8` stopped being applied after it. Restamping means mapping **ten** entries to the releases that actually carried them: archaeology, easy to get wrong, and not a thing to do inside a release. (This note said "fifteen" and "0.5.x–0.7.2" until 2026-09-11; both were wrong, in a note whose whole job is to stop a later reader mis-reading the list.) Recorded here so the word "Unreleased" below is read as a stale label rather than a claim.
 
+
+- **Unreleased (2026-09-22)** — **A returned result carrying MCP's error flag now emits `tool_call_error`, and `tool_call_error` gains an optional `result`.** New subsection §11.4.3; §6.1 gains a second SDK-emitted condition; §11.4's payload table row and source column both change. **Version deliberately undecided**, riding the same undecided number as the 09-17 entry below — the producer work spans the same four repos.
+
+  **(1) ADDED: `result` on `ToolCallErrorPayload`, optional, defaulting to null.** It carries the full result envelope for the RETURN shape, PII-scrubbed and NOT unwrapped (unlike `tool_call_end.result`, which unwraps to the developer's return). Absent on the RAISE shape, where no result object exists. **This is a payload field, not an envelope field, and the distinction is load-bearing for ordering:** `baton-console`'s ingest is `extra="forbid"` at the *envelope* level only and types `payload` as an opaque dict, so unlike `call_id`, `principal` and `transport_observed`, this field does NOT have to be accepted by the collector before a producer emits it. A producer may land first.
+
+  **(2) CHANGED: what `tool_call_error` means.** It was "the handler raised". It is now "the call failed", which MCP expresses two ways — see §11.4.3. `error_type` is the registered value `"tool_error"` for the returned shape, matching what `baton-extmcp` has emitted since 0.1.0; the raise shape keeps the exception class name.
+
+  **⚠ (3) The semantic half, stated plainly: a consumer counting `tool_call_end` sees FEWER after this, and a consumer counting `tool_call_error` sees MORE.** No underlying behaviour changed. Calls that were always failures stop being filed as successes. A consumer comparing success rates across a producer's upgrade must treat this as the removal of a miscount, not as a regression in reliability — the same shape as the 09-17 entry's point (5) about attestation.
+
+  **⚠ (4) A consumer's error classification may move buckets for the same failure.** `baton-console`'s `classify_error` prefers prose and falls back to the code, keeping an unrecognised non-numeric label verbatim. A returned failure whose prose matches no pattern lands `unclassified` while it rides a `tool_call_end`, and lands `tool_error` once it rides a `tool_call_error` carrying that `error_type`. Accepted deliberately: `tool_error` is not less honest than `unclassified`, and both preserve the body. Recorded so it is read as an intended consequence rather than found in a query.
+
+  **(5) NOT retroactive for every producer, and one population is uncountable.** See §11.4.3's closing note. `baton-sdk`'s official adapter unwrapped the envelope away on `mcp` 2.x before emission, so those stored bodies carry no flag under any spelling, and no envelope field names the producing library or its version.
+
+  **Why the wire changes now.** There are no customers on this format. The alternative — leaving `tool_call_error` alone and making every consumer read the flag off a `tool_call_end` body — keeps `event_type` saying "end" for a call that failed, and spreads a version-dependent spelling check across every downstream reader instead of resolving it once at the sensor. Prior art in the category was read rather than assumed, and independently reaches the same two conclusions this entry does — carry the body on a failure, and probe both spellings snake-first. §11.4.3 states the reason for each on its own terms, so neither rests on the precedent.
 
 - **Unreleased (2026-09-17)** — **BREAKING: the flat field `principal_id` becomes the object `principal`, carrying `id` + `source` + `form`; the scheme tag `v1:` is RETIRED and §11.4's pseudonym discriminator is REPLACED.** **Version deliberately undecided** — the latest release is 0.8.9 and the producer work spans four repos, so this entry carries no number until one is chosen. The input to that choice: a required-shape change on an existing field, plus a value change and a replaced consumer rule.
 

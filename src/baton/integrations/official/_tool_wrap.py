@@ -26,7 +26,10 @@ Strategy:
    ``install_baton`` are also injected + wrapped automatically.
 
 The wrapped run emits ``tool_call_start`` before invocation,
-``tool_call_end`` on success, ``tool_call_error`` on exception. Re-raises
+``tool_call_end`` on success, ``tool_call_error`` on FAILURE — which MCP
+expresses two ways (SPEC §11.4.3): the handler raises, or it returns a result
+carrying MCP's error flag on a 200. Reading only the first is what this
+adapter did, and what §6.1's own wording told it to. Re-raises
 the exception so the caller's error path is unchanged. When ``Tool.run``
 wraps the original exception in ``ToolError`` (which it does), the event
 records the unwrapped ``__cause__`` so ``error_type`` reflects the real
@@ -87,6 +90,12 @@ from baton.events import (
 )
 from baton.integrations._config import (
     SessionResolutionContext,
+)
+from baton.integrations._error_result import (
+    TOOL_ERROR_TYPE,
+    envelope_to_jsonable,
+    error_text,
+    is_error_result,
 )
 from baton.integrations._llm_text import (
     EXPECTED_RESULT_PARAM_NAME,
@@ -446,17 +455,25 @@ _EmitAfter = Callable[
     Awaitable[None],
 ]
 
+# ⚠ ``result`` is positional and has NO default, though the emitter could
+# carry one. A default would let the raise site inherit ``None`` silently; as
+# written, each of the two failure shapes (SPEC §11.4.3) has to say which it
+# is. ``exc`` is gone from this signature for the same reason the event stopped
+# meaning "the handler raised": only the caller knows whether it holds a live
+# exception or a returned result whose error flag is set.
 _EmitError = Callable[
     [
         str,  # session_id
         str,  # tool name
-        BaseException,  # exc
+        str,  # error_type
+        str,  # error_body
         float,  # duration_s
         dict[str, Any] | None,  # runtime_meta
         str,  # agent_runtime
         PrincipalWire | None,  # principal
         str,  # call_id
         str | None,  # transport_observed
+        Any,  # result — the envelope on a returned error, None on a raise
     ],
     Awaitable[None],
 ]
@@ -711,13 +728,17 @@ def _wrap_tool_run(
             await emit_error(
                 call_session_id,
                 name,
-                original_exc,
+                type(original_exc).__name__,
+                str(scrubber(str(original_exc)))[:2000],
                 monotonic() - called_at,
                 scrubbed_meta,
                 call_agent_runtime,
                 call_principal,
                 call_id,
                 call_transport,
+                # No result object exists on a raise — a populated one here
+                # would be fabricated.
+                None,
             )
             raise
         # MRTR (mcp>=2.0): an InputRequiredResult means the call paused mid-flight
@@ -725,17 +746,39 @@ def _wrap_tool_run(
         # tool_call_end. Whichever round eventually returns something else
         # (or errors) is the one that gets the real end/error event.
         if not _is_mrtr_pause(result):
-            await emit_after(
-                call_session_id,
-                name,
-                result,
-                monotonic() - called_at,
-                scrubbed_meta,
-                call_agent_runtime,
-                call_principal,
-                call_id,
-                call_transport,
-            )
+            # SPEC §11.4.3: a returned result carrying MCP's error flag is a
+            # FAILURE — MCP files it as a 200, so it arrives here rather than
+            # through the except above. Checked AFTER the MRTR pause: a paused
+            # round has not finished, so it is neither an end nor an error yet.
+            if is_error_result(result):
+                await emit_error(
+                    call_session_id,
+                    name,
+                    TOOL_ERROR_TYPE,
+                    str(scrubber(error_text(result)))[:2000],
+                    monotonic() - called_at,
+                    scrubbed_meta,
+                    call_agent_runtime,
+                    call_principal,
+                    call_id,
+                    call_transport,
+                    # The ENVELOPE, not the unwrapped developer return that
+                    # emit_after records: the flag and the reason both live on
+                    # the envelope, and unwrapping is what dropped them.
+                    scrubber(envelope_to_jsonable(result)),
+                )
+            else:
+                await emit_after(
+                    call_session_id,
+                    name,
+                    result,
+                    monotonic() - called_at,
+                    scrubbed_meta,
+                    call_agent_runtime,
+                    call_principal,
+                    call_id,
+                    call_transport,
+                )
         return result
 
     setattr(wrapper, _WRAPPED_SENTINEL, True)
@@ -1080,14 +1123,22 @@ def _make_emitters(
     async def emit_error(
         session_id: str,
         name: str,
-        exc: BaseException,
+        error_type: str,
+        error_body: str,
         duration_s: float,
         runtime_meta: dict[str, Any] | None,
         agent_runtime: str,
         principal: PrincipalWire | None,
         call_id: str,
         transport_observed: str | None,
+        result: Any,
     ) -> None:
+        """One emitter for BOTH failure shapes (SPEC §11.4.3).
+
+        The caller resolves ``error_type`` / ``error_body`` / ``result``,
+        because only it knows whether it holds a live exception (``result``
+        stays None — there is no result object to record) or a returned
+        result whose error flag is set (``result`` carries the envelope)."""
         await safe_write(
             sink,
             ToolCallErrorEvent(
@@ -1104,9 +1155,10 @@ def _make_emitters(
                 runtime_meta=runtime_meta,
                 payload=ToolCallErrorPayload(
                     tool_name=name,
-                    error_type=type(exc).__name__,
-                    error_body=str(scrubber(str(exc)))[:2000],
+                    error_type=error_type,
+                    error_body=error_body,
                     duration_ms=int(duration_s * 1000),
+                    result=result,
                 ),
             ),
             logger,

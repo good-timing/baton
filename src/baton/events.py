@@ -75,8 +75,23 @@ class ToolCallEndPayload(BaseModel):
 
 
 class ToolCallErrorPayload(BaseModel):
-    """Emitted when the vendor handler raises. ``error_type`` is the exception
-    class name; ``error_body`` is the exception message (PII-scrubbed)."""
+    """Emitted when the call FAILED, which MCP expresses two ways (SPEC §11.4.3).
+
+    **RAISE** — the vendor handler raised. ``error_type`` is the exception class
+    name, ``error_body`` its message (PII-scrubbed), and ``result`` is None:
+    there is no result object to record.
+
+    **RETURN** — the handler returned normally and the result carried MCP's
+    error flag, which rides a 200 response rather than a JSON-RPC error.
+    ``error_type`` is ``"tool_error"``, ``error_body`` is the reason unwrapped
+    from the result's ``content`` text parts, and ``result`` carries the full
+    envelope, PII-scrubbed and NOT unwrapped the way ``tool_call_end.result``
+    unwraps to the developer's return — the envelope is what holds the flag and
+    the reason.
+
+    ``result`` exists so reclassifying the RETURN shape off ``tool_call_end``
+    does not move a structured body into a flat truncated string.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -84,6 +99,7 @@ class ToolCallErrorPayload(BaseModel):
     error_type: str
     error_body: str
     duration_ms: int | None = None
+    result: Any | None = None
 
 
 class AnnotationPayload(BaseModel):

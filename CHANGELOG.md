@@ -8,6 +8,72 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased: a failure a tool RETURNED stops being filed as a success
+
+**Version deliberately undecided**, riding the same undecided number as the
+principal change below — same four repos.
+
+**MCP files a failed `tools/call` as a 200** whose body sets the error flag; a
+JSON-RPC error means a protocol fault. Both adapters classified on exceptions
+alone, so every failure a vendor returned rather than raised was emitted as
+`tool_call_end`. SPEC §6.1 said "on exception" and §11.4's table said it again,
+so the code was obeying the spec; the text moved first (new SPEC §11.4.3).
+
+⚠ **Deploy order is NOT a constraint here, unlike the principal change below,
+and the difference is worth naming.** `result` is a *payload* field.
+`baton-console`'s ingest is `extra="forbid"` at the **envelope** level only and
+types `payload` as an opaque dict, so a producer may land before the collector
+reads it. The 422-on-the-whole-envelope trap applies to envelope fields.
+
+### Changed
+
+- **A returned result carrying MCP's error flag now emits `tool_call_error`**,
+  in both the official-`mcp` and standalone-`fastmcp` adapters. `error_type` is
+  `"tool_error"` — what `baton-extmcp` has emitted since 0.1.0, which is the
+  parity this closes. A raise is unchanged and still carries the exception's
+  class name.
+- ⚠ **A consumer counting `tool_call_end` sees FEWER after upgrading, and one
+  counting `tool_call_error` sees MORE.** No underlying behaviour changed —
+  calls that were always failures stop being filed as successes. This is the
+  removal of a miscount, not a reliability regression.
+
+### Added
+
+- **`result` on `ToolCallErrorPayload`**, optional, defaulting to null. Carries
+  the full result envelope for the returned shape — PII-scrubbed and
+  deliberately NOT unwrapped the way `tool_call_end.result` unwraps to the
+  developer's return, because on a failure the envelope is what holds the flag
+  and the reason. Null on a raise, where no result object exists. Without it,
+  reclassifying would have moved a structured body into the flat `error_body`
+  string.
+
+### Fixed
+
+- ⚠ **On `mcp` 2.x the error flag never reached the wire at all, and that was
+  ours.** `_result_to_jsonable` unwrapped a `CallToolResult` to its content
+  list, dropping the envelope and the flag. On `mcp` 1.x the same function kept
+  it by accident — a returned `CallToolResult` is not the 2-tuple it unwraps.
+  **Consequence for anyone reprocessing stored events:** rows produced by this
+  adapter on `mcp` 2.x carry no flag under any spelling and cannot be
+  reclassified retroactively, and since no envelope field names the producing
+  library or its version, that population cannot even be counted.
+
+### Notes
+
+- **The flag's spelling depends on the library VERSION, not the producer.**
+  Measured across eight (library, version) cells: `mcp` 1.20 to 1.27.x publish
+  `isError`; `mcp` 2.x and `fastmcp` 3.x/4.x publish `is_error`; `fastmcp`
+  2.14.7 has no such field, so that version emits `tool_call_end` as before —
+  correct, since there is no flag to misread. Detection probes `is_error`
+  first: `fastmcp` answers a camelCase attribute through a shim that emits a
+  deprecation warning, so probing camel-first would warn on every error result
+  a `fastmcp` server produces.
+- **The stored spelling is era-native and is not normalized.** Producers record
+  what the library called it; SPEC §11.4.3 makes accepting both the consumer's
+  contract. Normalizing would rewrite the meaning of data already stored.
+
+---
+
 ## Unreleased: the principal stops being a string with a prefix on it
 
 **Version deliberately undecided.** The latest release is 0.8.9 and this change
