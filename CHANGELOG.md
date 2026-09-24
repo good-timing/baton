@@ -8,10 +8,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased: a failure a tool RETURNED stops being filed as a success
+## Unreleased
 
-**Version deliberately undecided**, riding the same undecided number as the
-principal change below — same four repos.
+
+## 0.8.10: a failure a tool RETURNED stops being a success, and the principal becomes an object
+
+Two breaking wire changes under one number, because they are one cut: the same
+four repos produce both, and `sdk_version` carries a single version per event,
+so shipping them apart would leave a consumer unable to date either.
 
 **MCP files a failed `tools/call` as a 200** whose body sets the error flag; a
 JSON-RPC error means a protocol fault. Both adapters classified on exceptions
@@ -20,8 +24,9 @@ alone, so every failure a vendor returned rather than raised was emitted as
 so the code was obeying the spec; the text moved first (new SPEC §11.4.3).
 
 ⚠ **Deploy order against the COLLECTOR is not a constraint here, unlike the
-principal change below.** `result` is a *payload* field, and `baton-console`'s
-ingest is `extra="forbid"` at the **envelope** level only, typing `payload` as
+principal change below.** `result` is a *payload* field, and the collector this
+is developed against forbids unknown members at the **envelope** level only,
+typing `payload` as
 an opaque dict — so a producer may land before the collector reads it. The
 422-on-the-whole-envelope trap applies to envelope fields.
 
@@ -35,6 +40,16 @@ generalising from one consumer to all of them; "payload fields are
 unconstrained" is a statement about `baton-console`'s schema, not about the
 distinction.
 
+⚠ **Deploy order is collector → SDK, and it is not negotiable.** A collector
+whose event schema forbids unknown envelope members answers an SDK emitting
+`principal` with a 422 on the WHOLE envelope, so the call's `call_id`,
+`runtime_meta` and payload are lost with the identity — upgrade the collector
+first. ⚠ **The refusal is no longer silent, as of this same release** (see
+Fixed): the sink logs the status and the collector's own message, so a collector
+that has not taken the object now says so in the vendor's log instead of
+discarding every envelope without a word. The event is still dropped; what
+changed is that you can see it.
+
 ### Changed
 
 - **A returned result carrying MCP's error flag now emits `tool_call_error`**,
@@ -47,58 +62,6 @@ distinction.
   calls that were always failures stop being filed as successes. This is the
   removal of a miscount, not a reliability regression.
 
-### Added
-
-- **`result` on `ToolCallErrorPayload`**, optional, defaulting to null. Carries
-  the full result envelope for the returned shape — PII-scrubbed and
-  deliberately NOT unwrapped the way `tool_call_end.result` unwraps to the
-  developer's return, because on a failure the envelope is what holds the flag
-  and the reason. Null on a raise, where no result object exists. Without it,
-  reclassifying would have moved a structured body into the flat `error_body`
-  string.
-
-### Fixed
-
-- ⚠ **On `mcp` 2.x the error flag never reached the wire at all, and that was
-  ours.** `_result_to_jsonable` unwrapped a `CallToolResult` to its content
-  list, dropping the envelope and the flag. On `mcp` 1.x the same function kept
-  it by accident — a returned `CallToolResult` is not the 2-tuple it unwraps.
-  **Consequence for anyone reprocessing stored events:** rows produced by this
-  adapter on `mcp` 2.x carry no flag under any spelling and cannot be
-  reclassified retroactively, and since no envelope field names the producing
-  library or its version, that population cannot even be counted.
-
-### Notes
-
-- **The flag's spelling depends on the library VERSION, not the producer.**
-  Measured across eight (library, version) cells: `mcp` 1.20 to 1.27.x publish
-  `isError`; `mcp` 2.x and `fastmcp` 3.x/4.x publish `is_error`; `fastmcp`
-  2.14.7 has no such field, so that version emits `tool_call_end` as before —
-  correct, since there is no flag to misread. Detection probes `is_error`
-  first: `fastmcp` answers a camelCase attribute through a shim that emits a
-  deprecation warning, so probing camel-first would warn on every error result
-  a `fastmcp` server produces.
-- **The stored spelling is era-native and is not normalized.** Producers record
-  what the library called it; SPEC §11.4.3 makes accepting both the consumer's
-  contract. Normalizing would rewrite the meaning of data already stored.
-
----
-
-## Unreleased: the principal stops being a string with a prefix on it
-
-**Version deliberately undecided.** The latest release is 0.8.9 and this change
-spans four repos; SPEC §13 carries no number for it either. The input to that
-choice: a required-shape change on an existing field, plus a value change and a
-replaced consumer rule.
-
-⚠ **Deploy order is collector → SDK, and it is not negotiable.** The collector's
-event schema is `extra="forbid"`, so an SDK emitting `principal` at an ingest
-that has not accepted it gets a 422 on the WHOLE envelope — and the sink drops a
-non-429 4xx without reading the body, so the call's `call_id`, `runtime_meta`
-and payload go with the identity. `baton-console` has taken the object; nothing
-here may reach a collector that has not.
-
-### Changed
 
 - **BREAKING: the flat envelope field `principal_id` becomes the object
   `principal`, carrying `id` + `source` + `form`** (`SPEC §11.4`). `source`
@@ -147,12 +110,57 @@ here may reach a collector that has not.
   field breaks every existing deployment for no consumer benefit. `mode` now
   selects `principal.form`; the knob's name says what it has always said.
 
+### Added
+
+- **`result` on `ToolCallErrorPayload`**, optional, defaulting to null. Carries
+  the full result envelope for the returned shape — PII-scrubbed and
+  deliberately NOT unwrapped the way `tool_call_end.result` unwraps to the
+  developer's return, because on a failure the envelope is what holds the flag
+  and the reason. Null on a raise, where no result object exists. Without it,
+  reclassifying would have moved a structured body into the flat `error_body`
+  string.
+
 ### Fixed
+
+- **A collector's refusal is no longer dropped in total silence.** `HttpSink`
+  popped the event, recorded a circuit SUCCESS and logged nothing — no status,
+  no body, no warning — so from inside a vendor's process a collector rejecting
+  EVERY envelope was indistinguishable from one accepting every envelope. A
+  producer emitting a shape the collector refuses lost one hundred percent of
+  its capture, and the first symptom was an empty dashboard days later. Both
+  paths that drop a permanent failure now log the status and the collector's own
+  message, capped at 500 characters: a bare `422` sends a reader to the
+  transport layer, while the body names the field that caused it. ⚠ This is what
+  makes the deploy-order warning above *audible* rather than merely true.
+
+- ⚠ **On `mcp` 2.x the error flag never reached the wire at all, and that was
+  ours.** `_result_to_jsonable` unwrapped a `CallToolResult` to its content
+  list, dropping the envelope and the flag. On `mcp` 1.x the same function kept
+  it by accident — a returned `CallToolResult` is not the 2-tuple it unwraps.
+  **Consequence for anyone reprocessing stored events:** rows produced by this
+  adapter on `mcp` 2.x carry no flag under any spelling and cannot be
+  reclassified retroactively, and since no envelope field names the producing
+  library or its version, that population cannot even be counted.
+
 
 - **`"raw"` mode no longer forfeits provenance.** It previously emitted the
   principal verbatim and untagged, so an attested subject and a vendor-asserted
   one reached the wire as indistinguishable bare strings — `SPEC §11.4`
   conceded this in its own derivation row. `source` now rides both modes.
+
+### Notes
+
+- **The flag's spelling depends on the library VERSION, not the producer.**
+  Measured across eight (library, version) cells: `mcp` 1.20 to 1.27.x publish
+  `isError`; `mcp` 2.x and `fastmcp` 3.x/4.x publish `is_error`; `fastmcp`
+  2.14.7 has no such field, so that version emits `tool_call_end` as before —
+  correct, since there is no flag to misread. Detection probes `is_error`
+  first: `fastmcp` answers a camelCase attribute through a shim that emits a
+  deprecation warning, so probing camel-first would warn on every error result
+  a `fastmcp` server produces.
+- **The stored spelling is era-native and is not normalized.** Producers record
+  what the library called it; SPEC §11.4.3 makes accepting both the consumer's
+  contract. Normalizing would rewrite the meaning of data already stored.
 
 ---
 
