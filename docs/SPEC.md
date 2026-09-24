@@ -983,7 +983,11 @@ shapes, and a producer MUST emit `tool_call_error` for both:
 
 1. **RAISE** — the vendor handler raises. The producer holds a live exception.
    `error_type` is the exception class name, `error_body` its message, and
-   `result` is **absent**: there is no result object to record.
+   `result` records that there is no result object to record. ⚠ **This said
+   "absent" until 2026-09-24, and both first-party producers emit `null`** —
+   `baton-sdk`'s payload model defaults the field and dumps it, `baton-ts`
+   declares it explicitly on this leg so its key set matches Python's vector.
+   A consumer MUST test the VALUE and MUST NOT test for the key's presence.
 2. **RETURN** — the handler returns normally, and the result carries the error
    flag. `error_type` is the registered value **`"tool_error"`**, `error_body`
    is the human-readable reason unwrapped from the result's `content` text
@@ -998,9 +1002,9 @@ the RETURN shape out of `tool_call_end` would otherwise move a structured body
 into a flat truncated string. A consumer that reads bodies MUST read `result`
 on `tool_call_error` as well as on `tool_call_end`.
 
-**⚠ The flag has two spellings, and which one appears depends on the producer's
-library version, not on the producer.** Measured 2026-09-22 across eight
-(library, version) cells:
+**⚠ In PYTHON the flag has two spellings, and which one appears depends on the
+producer's library version, not on the producer.** Measured 2026-09-22 across
+eight (library, version) cells:
 
 | producer library | spelling |
 |---|---|
@@ -1009,8 +1013,16 @@ library version, not on the producer.** Measured 2026-09-22 across eight
 | standalone `fastmcp` 2.14.7 | **no flag exists** — `ToolResult` has no such field |
 | standalone `fastmcp` 3.x / 4.x | `is_error` |
 
-**Producer rule.** Detection MUST duck-type both spellings and SHOULD probe
-`is_error` **before** `isError`, because that is the current generation's
+**⚠ In TYPESCRIPT there is ONE spelling, `isError`, on every version.**
+Measured 2026-09-24 on `@modelcontextprotocol/sdk` 1.x and
+`@modelcontextprotocol/server` 2.x. `is_error` is a PYTHON attribute name that
+`mcp` 2.x's `mcp_types` rewrite introduced; MCP's own JSON-RPC schema is
+camelCase, and the TypeScript SDKs have no snake_case era to inherit. A
+TypeScript producer that also probed `is_error` would be reading for a shape no
+version of either library produces.
+
+**Producer rule (Python).** Detection MUST duck-type both spellings and SHOULD
+probe `is_error` **before** `isError`, because that is the current generation's
 spelling and therefore the common case; an `mcp` 1.x result, which has only the
 camel name, still falls through to the second probe. Probing camel-first is not
 wrong, only worse: in a process that has imported `fastmcp`, `CallToolResult`
@@ -1024,7 +1036,11 @@ was the one affected (it is the official one, and only alongside `fastmcp`),
 and said "every error result" where the warning is once per process. The order
 stands; the reason is restated because two sibling producers implement from it.
 
-Detection MUST additionally require a list-valued `content`. The case this
+**⚠ The `content` guard is scoped by VANTAGE POINT, and this paragraph
+required it of everyone until 2026-09-24.**
+
+A producer that receives a **library-CONVERTED result** — `baton-sdk`'s two
+adapters — MUST additionally require a list-valued `content`. The case this
 excludes is a caller that receives the vendor's return value **unconverted**
 (`Tool.run(convert_result=False)`), where an object carrying an `is_error`
 attribute for its own reasons would otherwise read as a failed tool call. ⚠ It
@@ -1034,8 +1050,44 @@ the conversion the server normally applies, that dict becomes a real
 example was stated the other way here until code review mutated the guard away
 and found nothing reddened.
 
+A producer that receives the **vendor's LITERAL return** — `baton-ts`, which
+wraps the tool executor — MUST NOT require `content`, and the guard is a defect
+there rather than a safeguard. Measured 2026-09-24 on both TypeScript majors: a
+tool returning `{isError: true, rows: 0}`, with no `content` at all, reaches the
+CLIENT as `{content: [], isError: true}`. The SDK merges the literal into the
+wire result, so spelling the flag at the top level of a tool's return IS how a
+TypeScript tool reports failure, and there is no "object that merely carries the
+attribute" to exclude. Requiring `content` would make the sensor file a failure
+its own caller can see as a success — the exact miscount this subsection exists
+to remove. The invariant that holds at this vantage point is stronger and is
+the one to implement: **for a failure the handler itself reports, the predicate
+agrees with what the client received.**
+
+A **wire sensor** — `baton-proxy`, `baton-extmcp` — reads `isError` off the JSON
+result and needs neither rule: one spelling, no attribute, no envelope object.
+
 A version on which the flag does not exist emits `tool_call_end` as before;
 that is correct, not a gap.
+
+**⚠ A handler-level sensor cannot see a failure the SDK manufactures ABOVE it,
+and that IS a gap — recorded, not closed.** Measured 2026-09-24 on both
+TypeScript majors: output-schema validation runs after the tool executor, so a
+handler returning `content` and no `structuredContent` against an `outputSchema`
+hands the sensor a success-shaped object (correctly classified) while the SDK
+sends the client `{isError: true, content: [{text: "Output validation error:
+…"}]}`. The same class covers an unknown or disabled tool and an
+input-validation failure. A producer wrapping the executor MUST NOT claim to
+agree with the client in general; only for failures the handler itself reports.
+
+**Moving a sensor up to the request handler does not simply close it.** Both
+TypeScript majors convert a thrown handler error into a returned `isError`
+INSIDE that handler, so above that seam the two shapes of this subsection are
+the same object and `error_type` collapses to `"tool_error"` for both — the
+RAISE shape's exception class name is not recoverable there. The throw/return
+distinction exists only BELOW the request handler. A producer that wants both
+must compose two seams, not move one; until one does, **the wire sensors are
+where this class is visible**, which is the same asymmetry the wire probe
+recorded the other way round for `fastmcp` 2.14.7.
 
 **Consumer rule.** A consumer MUST key on `event_type`, not on the flag. The
 flag's spelling inside `result` is **era-native** — producers record what the
@@ -1175,7 +1227,25 @@ Defined error codes:
 > ⚠ **Entries below dated before 2026-09-09 still read "Unreleased" and are not.** They shipped across **0.4.0–0.7.2** — the undated one at the bottom of this list is the intent-param entry, and `call_intent` / `intent_source` shipped in 0.4.0 — and the version stamp this list used through `0.2.8` stopped being applied after it. Restamping means mapping **ten** entries to the releases that actually carried them: archaeology, easy to get wrong, and not a thing to do inside a release. (This note said "fifteen" and "0.5.x–0.7.2" until 2026-09-11; both were wrong, in a note whose whole job is to stop a later reader mis-reading the list.) Recorded here so the word "Unreleased" below is read as a stale label rather than a claim.
 
 
+- **ts-0.3.8 (2026-09-24)** — **`baton-ts` emits the RETURN shape, and §11.4.3's producer rules are RESCOPED BY VANTAGE POINT rather than stated for everyone.** No Python code changes; this is a spec rule change plus the fourth producer catching up. All four SDK-side sensors now read the flag on main; `baton-ts` is the only one not yet in a published version.
+
+  **⚠ (1) The `content` guard is no longer a universal MUST.** §11.4.3 said detection "MUST additionally require a list-valued `content`", and the case it named to justify that — `Tool.run(convert_result=False)` — is a Python library concept. The rule is right for a producer that receives a **library-converted** result and wrong for one that receives the **vendor's literal return**. Measured on both TypeScript majors: a tool returning `{isError: true, rows: 0}`, no `content`, reaches the client as `{content: [], isError: true}`. Under the old wording a conformant TypeScript producer would file that as `tool_call_end` — a failure the caller can see, recorded as a success, which is the miscount §11.4.3 exists to remove. The MUST now attaches to the vantage point that needs it, and the literal-return vantage point gets the stronger invariant instead.
+
+  **(2) The spelling rule is scoped to Python, and TypeScript gets its own row.** `is_error` is an attribute name `mcp` 2.x introduced; MCP's wire schema is camelCase and the TypeScript SDKs have no snake_case era. Measured on both majors: one spelling, `isError`. A TypeScript producer probing snake-first would be reading for a shape no version produces. The snake-first ordering rule stands **for Python**, unchanged.
+
+  **⚠ (3) `result` on the RAISE shape is `null`, not absent.** §11.4.3 said "absent" while both producers' own vectors carried `result: null` — `baton-sdk` because its payload model defaults and dumps the field, `baton-ts` because its cross-SDK key-set comparison reds otherwise. A consumer testing `"result" in payload` would have read every raise as a returned failure. Corrected to a rule about the VALUE.
+
+  **⚠ (4) A NEW limit is recorded, and it is a gap rather than a nuance.** A sensor wrapping the tool executor cannot see a failure the SDK manufactures above it — output-schema validation, unknown tool, input-validation failure. Measured on both TypeScript majors: the client receives `isError: true` and the producer emits `tool_call_end`. **A consumer counting failures from an SDK-side producer is counting failures the HANDLER reported, not failures the caller saw.** Moving the sensor up does not simply fix it: both majors convert a throw into a returned `isError` inside the request handler, so above that seam `error_type` collapses to `"tool_error"` for both shapes and the exception class name is unrecoverable. The wire sensors are where this class is visible today.
+
+  **Not a wire change.** No field is added, removed or retyped, and no stored event's meaning moves. What changes is which producers may conformantly emit which shape, and one factual correction a consumer could have acted on.
+
 - **0.8.10 / proxy 0.6.11 (2026-09-22)** — **A returned result carrying MCP's error flag now emits `tool_call_error`, and `tool_call_error` gains an optional `result`.** New subsection §11.4.3; §6.1 gains a second SDK-emitted condition; §11.4's payload table row and source column both change. Carried by `baton-sdk` 0.8.10 and `baton-proxy` 0.6.11, cut together. ⚠ **`baton-ts` does NOT carry the producer half** — it accepts `result` on a `tool_call_error` on main at `67453eb`, which is in NO published version (`v0.3.7` predates it), and it still classifies on throw/no-throw either way, so a returned error result from a TypeScript server is still emitted as `tool_call_end`. `baton-extmcp` has emitted the RETURN form since 0.1.0 and needed no change.
+
+⚠ **`baton-ts` carries the producer half as of 2026-09-24** (main, still in no
+published version — `v0.3.7` predates it), so the sentence above is now a
+statement about this release rather than about that package. See the 2026-09-24
+entry, which also rescopes two producer rules this entry's §11.4.3 stated
+unconditionally.
 
   **(1) ADDED: `result` on `ToolCallErrorPayload`, optional, defaulting to null.** It carries the full result envelope for the RETURN shape, PII-scrubbed and NOT unwrapped (unlike `tool_call_end.result`, which unwraps to the developer's return). Absent on the RAISE shape, where no result object exists. **This is a payload field, not an envelope field, and the distinction changes the ordering constraint — but only for the collector.** the collector this is developed against forbids unknown members at the *envelope* level only and types `payload` as an opaque dict, so unlike `call_id`, `principal` and `transport_observed`, this field does not have to reach the collector before a producer emits it.
 
