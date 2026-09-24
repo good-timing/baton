@@ -13,9 +13,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## 0.8.10: a failure a tool RETURNED stops being a success, and the principal becomes an object
 
-Two breaking wire changes under one number, because they are one cut: the same
-four repos produce both, and `sdk_version` carries a single version per event,
-so shipping them apart would leave a consumer unable to date either.
+Two breaking wire changes under one number, because they are already inside one
+artifact: the same ten commits carry both, so a single `sdk_version` dates them
+jointly whatever the notes say. Two headings would have claimed a separation the
+wire cannot express.
 
 **MCP files a failed `tools/call` as a 200** whose body sets the error flag; a
 JSON-RPC error means a protocol fault. Both adapters classified on exceptions
@@ -23,8 +24,8 @@ alone, so every failure a vendor returned rather than raised was emitted as
 `tool_call_end`. SPEC §6.1 said "on exception" and §11.4's table said it again,
 so the code was obeying the spec; the text moved first (new SPEC §11.4.3).
 
-⚠ **Deploy order against the COLLECTOR is not a constraint here, unlike the
-principal change below.** `result` is a *payload* field, and the collector this
+⚠ **For `result` — deploy order against the COLLECTOR is not a constraint,
+unlike the `principal` change further down.** `result` is a *payload* field, and the collector this
 is developed against forbids unknown members at the **envelope** level only,
 typing `payload` as
 an opaque dict — so a producer may land before the collector reads it. The
@@ -40,11 +41,14 @@ generalising from one consumer to all of them; "payload fields are
 unconstrained" is a statement about `baton-console`'s schema, not about the
 distinction.
 
-⚠ **Deploy order is collector → SDK, and it is not negotiable.** A collector
+⚠ **For `principal` — deploy order is collector → SDK, and it is not
+negotiable.** A collector
 whose event schema forbids unknown envelope members answers an SDK emitting
 `principal` with a 422 on the WHOLE envelope, so the call's `call_id`,
 `runtime_meta` and payload are lost with the identity — upgrade the collector
-first. ⚠ **The refusal is no longer silent, as of this same release** (see
+first. The collector this is developed against has already accepted the object,
+so that precondition is met; what must not happen is this reaching one that has
+not. ⚠ **The refusal is no longer silent, as of this same release** (see
 Fixed): the sink logs the status and the collector's own message, so a collector
 that has not taken the object now says so in the vendor's log instead of
 discarding every envelope without a word. The event is still dropped; what
