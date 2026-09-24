@@ -155,9 +155,15 @@ changed is that you can see it.
   `isError`; `mcp` 2.x and `fastmcp` 3.x/4.x publish `is_error`; `fastmcp`
   2.14.7 has no such field, so that version emits `tool_call_end` as before —
   correct, since there is no flag to misread. Detection probes `is_error`
-  first: `fastmcp` answers a camelCase attribute through a shim that emits a
-  deprecation warning, so probing camel-first would warn on every error result
-  a `fastmcp` server produces.
+  first because it is the spelling of the current generation and therefore the
+  common case; `mcp` 1.x, which has only the camelCase name, falls through to
+  the second probe. ⚠ **A second justification was published here and is
+  withdrawn** — that probing camel-first would emit a deprecation warning on
+  every error result a `fastmcp` server produces. Probed since: the shim is on
+  `mcp_types.CallToolResult`, not on `fastmcp`'s own `ToolResult`, so it is the
+  official adapter that can meet it rather than the standalone one, and it warns
+  once per process rather than once per result. The order is unchanged; only the
+  reason for it was wrong.
 - **The stored spelling is era-native and is not normalized.** Producers record
   what the library called it; SPEC §11.4.3 makes accepting both the consumer's
   contract. Normalizing would rewrite the meaning of data already stored.
