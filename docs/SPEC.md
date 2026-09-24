@@ -1117,9 +1117,14 @@ sends the client `{isError: true, content: [{text: "Output validation error:
 …"}]}`. The same class covers an unknown or disabled tool and an
 input-validation failure. A producer wrapping the executor MUST NOT claim to
 agree with the client in general; only for failures the handler itself reports.
-⚠ **Measured on TypeScript only.** `baton-sdk`'s adapters wrap `Tool.run`,
-which also sits below the lowlevel server, so the same class is PLAUSIBLE there
-and nobody has run it. Stated as unmeasured rather than generalised.
+⚠ **This is a TypeScript-specific asymmetry, not a general one**, and the
+first draft of this paragraph said the opposite. `baton-sdk`'s adapters wrap
+`Tool.run`, and on `mcp` 2.x both argument validation and output conversion
+happen INSIDE that method — a conversion failure raises `UnexpectedToolError`
+from the same `try` the tool body runs in, so it reaches the Python adapter as
+a RAISE and is filed as `tool_call_error` correctly. Read in the installed
+2.x source, not run; `mcp` 1.x is unread. The gap above is a property of where
+the TypeScript SDKs put validation, not of executor-wrapping as a technique.
 
 **Moving a sensor up to the request handler does not simply close it — measured
 on TypeScript.** Both TypeScript majors convert a thrown handler error into a returned `isError`
@@ -1277,7 +1282,7 @@ Defined error codes:
 
   **⚠ (3) `result` is a BODY and never a discriminator — and the first attempt at this correction was wrong too.** §11.4.3 said `result` is “absent” on the RAISE shape while `baton-sdk`'s and `baton-ts`'s vectors carry `result: null`; the fix said “null, test the VALUE”, which `/code-review` then showed is wrong in BOTH directions. `baton-proxy` deliberately OMITS the key (`emitter.py:442`) and `baton-extmcp` calls it that way, so a consumer obeying “MUST NOT test for presence” hits a `KeyError`; and `baton-sdk`'s envelope serializer answers `None` when an envelope will not serialize, so a RETURN-shape failure can carry `result: null` legitimately. **Absent and null are equivalent and say nothing about the shape. `error_type` is the discriminator**, which this subsection already stated for the producer.
 
-  **⚠ (4) A NEW limit is recorded, and it is a gap rather than a nuance.** A sensor wrapping the tool executor cannot see a failure the SDK manufactures above it — output-schema validation, unknown tool, input-validation failure. Measured on both TypeScript majors: the client receives `isError: true` and the producer emits `tool_call_end`. **A consumer counting failures from `baton-ts` is counting failures the HANDLER reported, not failures the caller saw.** ⚠ Scoped to `baton-ts` deliberately: the Python adapters wrap `Tool.run`, which sits below the lowlevel server's own output validation, so the same class is PLAUSIBLE there and is UNMEASURED. Measured only on the two TypeScript majors. Moving the sensor up does not simply fix it: both majors convert a throw into a returned `isError` inside the request handler, so above that seam `error_type` collapses to `"tool_error"` for both shapes and the exception class name is unrecoverable. The wire sensors are where this class is visible today.
+  **⚠ (4) A NEW limit is recorded, and it is a gap rather than a nuance.** A sensor wrapping the tool executor cannot see a failure the SDK manufactures above it — output-schema validation, unknown tool, input-validation failure. Measured on both TypeScript majors: the client receives `isError: true` and the producer emits `tool_call_end`. **A consumer counting failures from `baton-ts` is counting failures the HANDLER reported, not failures the caller saw.** ⚠ Scoped to `baton-ts`, and the scope is a FINDING rather than caution: on `mcp` 2.x, argument validation and output conversion both happen inside `Tool.run`, which `baton-sdk`'s adapters wrap from OUTSIDE — so a conversion failure raises through to them and is filed correctly. Read in the installed 2.x source; `mcp` 1.x unread. The first draft of this entry called the same class “plausible” in Python, which was a hedge standing in for a five-minute read. Moving the sensor up does not simply fix it: both majors convert a throw into a returned `isError` inside the request handler, so above that seam `error_type` collapses to `"tool_error"` for both shapes and the exception class name is unrecoverable. The wire sensors are where this class is visible today.
 
   **Not a wire change.** No field is added, removed or retyped, and no stored event's meaning moves. What changes is which producers may conformantly emit which shape, and one factual correction a consumer could have acted on.
 
