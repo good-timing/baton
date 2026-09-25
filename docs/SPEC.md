@@ -1094,16 +1094,17 @@ the one to implement: **for a failure the handler itself reports, the predicate
 agrees with what the client received.**
 
 A **wire sensor** — `baton-proxy`, `baton-extmcp` — reads `isError` off the JSON
-result: one spelling (W1), no attribute, no envelope object, so the spelling
-rule does not reach it. ⚠ **Whether the `content` clause should reach it is
-OPEN, and is not settled here.** `baton-proxy`'s `is_error_result`
-(`mcp_error.py:47`) requires a list-valued `content` today and cites this
-subsection's former universal MUST as its authority. On the wire the clause
-excludes nothing a conversion has not already excluded, and a non-SDK server
-answering `{"isError": true}` with no `content` key is invisible to the proxy
-because of it. Dropping it is a producer change with its own measurement to do;
-until someone does it, the code and this paragraph disagree deliberately rather
-than by oversight.
+result: one spelling (W1), no attribute, no envelope object, so neither rule
+reaches it. ⚠ **The `content` clause MUST NOT be applied here, and that was
+settled by measurement on 2026-09-24 after standing open.** `CallToolResult`'s
+own JSON schema lists `content` as REQUIRED with no default, so the clause
+cannot fire for a conformant server — while a server that omits it has its
+failures read as successes. It excludes nothing and loses something.
+`baton-proxy` applied it until `1df1d68` and now tests the flag alone, which is
+what `baton-extmcp` (`servicer.py:324`) always did; the two wire sensors agree.
+⚠ **What refuses a vendor's own `isError` key at this vantage point is the
+message kind, not the body shape**: a producer here MUST read the flag only on
+a `tools/call` result, because resource and prompt bodies are vendor data.
 
 A version on which the flag does not exist emits `tool_call_end` as before;
 that is correct, not a gap.
@@ -1283,6 +1284,8 @@ Defined error codes:
   **⚠ (3) `result` is a BODY and never a discriminator — and the first attempt at this correction was wrong too.** §11.4.3 said `result` is “absent” on the RAISE shape while `baton-sdk`'s and `baton-ts`'s vectors carry `result: null`; the fix said “null, test the VALUE”, which `/code-review` then showed is wrong in BOTH directions. `baton-proxy` deliberately OMITS the key (`emitter.py:442`) and `baton-extmcp` calls it that way, so a consumer obeying “MUST NOT test for presence” hits a `KeyError`; and `baton-sdk`'s envelope serializer answers `None` when an envelope will not serialize, so a RETURN-shape failure can carry `result: null` legitimately. **Absent and null are equivalent and say nothing about the shape. `error_type` is the discriminator**, which this subsection already stated for the producer.
 
   **⚠ (4) A NEW limit is recorded, and it is a gap rather than a nuance.** A sensor wrapping the tool executor cannot see a failure the SDK manufactures above it — output-schema validation, unknown tool, input-validation failure. Measured on both TypeScript majors: the client receives `isError: true` and the producer emits `tool_call_end`. **A consumer counting failures from `baton-ts` is counting failures the HANDLER reported, not failures the caller saw.** ⚠ Scoped to `baton-ts`, and the scope is a FINDING rather than caution: on `mcp` 2.x, argument validation and output conversion both happen inside `Tool.run`, which `baton-sdk`'s adapters wrap from OUTSIDE — so a conversion failure raises through to them and is filed correctly. Read in the installed 2.x source; `mcp` 1.x unread. The first draft of this entry called the same class “plausible” in Python, which was a hedge standing in for a five-minute read. Moving the sensor up does not simply fix it: both majors convert a throw into a returned `isError` inside the request handler, so above that seam `error_type` collapses to `"tool_error"` for both shapes and the exception class name is unrecoverable. The wire sensors are where this class is visible today.
+
+  **⚠ (5) Settled later the same day: the `content` clause MUST NOT reach a WIRE sensor either.** This entry first left that open, with `baton-proxy` applying the clause and this section saying it should not — a deliberate disagreement pending a measurement. The measurement is one read: `CallToolResult`'s JSON schema makes `content` REQUIRED with no default, so the clause cannot fire for a conformant server and only loses failures from a non-conformant one. `baton-proxy` `1df1d68` drops it and now matches `baton-extmcp`, which never had it. **A consumer sees strictly MORE `tool_call_error` from the proxy after that commit**, for the same reason as point (3) of the 09-22 entry: a miscount removed, not a reliability regression.
 
   **Not a wire change.** No field is added, removed or retyped, and no stored event's meaning moves. What changes is which producers may conformantly emit which shape, and one factual correction a consumer could have acted on.
 
