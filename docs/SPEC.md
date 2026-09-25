@@ -921,21 +921,20 @@ Event types and their payload shapes:
 
 Worker dispatches on `signal_type`'s presence per §11.5 (`Annotation correlation rules`). The wire format is intentionally unified — both flavors share the same envelope so order-preserving stream processors handle them identically — but the semantic split is load-bearing for Console-side correlation and egress routing.
 
-#### 11.4.1 `runtime_meta` (optional) — for worker-side cycle correlation
+#### 11.4.1 `runtime_meta` (optional) — for worker-side correlation
 
-`session_id` is a process-lifetime identifier (the SDK's fallback UUID, generated at `install_baton(...)` time), NOT a conversation-turn identifier. A single MCP server process across multiple user prompts produces one `session_id`. To recover finer-grained "logical turn" or "cycle" boundaries, the worker MUST read `runtime_meta` when populated.
+`session_id` is a process-lifetime identifier (the SDK's fallback UUID, generated at `install_baton(...)` time), NOT a conversation-turn identifier. A single MCP server process across multiple user prompts produces one `session_id`. To recover finer-grained turn and conversation boundaries, the worker MUST read `runtime_meta` when populated.
 
-The SDK populates `runtime_meta` with the raw `_meta` dict from the MCP request, with the vendor's PII scrubber applied. Examples of meaningful keys observed in the wild:
+The SDK populates `runtime_meta` with the raw `_meta` dict from the MCP request, with the vendor's PII scrubber applied. Examples of keys, by the level each identifies. Codex and ChatGPT keys were observed on the wire; VS Code's are read from its source and have not been observed:
 
-- `claudecode/toolUseId` — per-tool-use identifier from Claude Code (changes per call)
-- `claudecode/sessionId` — Claude Code conversation session (stable across many tool calls in one conversation)
-- `cursor/conversationId` — Cursor's equivalent (when present)
-- `progressToken` — MCP-protocol-standard, every well-formed request includes it
+- **Conversation** — `openai/session` (ChatGPT), `threadId` (Codex CLI), `vscode.conversationId` (VS Code)
+- **Turn** (one user request) — `turn_id` inside `x-codex-turn-metadata` (Codex CLI), `vscode.requestId` (VS Code)
+- **One tool call** — `claudecode/toolUseId` (Claude Code). Data only; the SDK's `call_id` remains the sole pairing key
+- `progressToken` — an MCP per-request counter. It labels no conversation, turn or person
 
-Worker-side correlation hierarchy (most authoritative first):
-1. `runtime_meta.claudecode/sessionId` (or equivalent runtime-supplied conversation id) — definitive turn-group identifier
-2. Proactive-annotation boundaries per §5.1.2 — agent-declared "I'm starting a new intent"
-3. `captured_at` time gaps — heuristic; brittle to long-running tools
+Clients are not consistent about names. Codex CLI's `sessionId` carries the same value as its `threadId`, a conversation, while Baton's `session_id` is a process lifetime. A worker MUST level a key by what it was observed to identify, never by its name. A key that identifies a CONVERSATION MUST NOT be used as `session_id`, including through §3.4 rung 3's adapter table, which is for session-scoped keys only and has no entries today.
+
+The worker's correlation hierarchy is §11.5.1. It is stated there once.
 
 The SDK does NOT interpret `runtime_meta` beyond capture; it remains "what the runtime supplied," verbatim. See §11.5 for how the worker derives cycle boundaries from these primitives.
 
@@ -1163,17 +1162,23 @@ nulls `result` on this event type drops the body this change exists to keep.
 
 The worker derives cycle boundaries using this hierarchy (most-authoritative first):
 
-1. **`runtime_meta` runtime-supplied identifiers** (§11.4.1). When present, these are definitive:
-   - `runtime_meta["claudecode/sessionId"]` (Claude Code conversation, stable across many tool calls in one conversation)
-   - `runtime_meta["cursor/conversationId"]` (Cursor equivalent, when present)
-   - Any other runtime-namespaced "conversation" or "turn" identifier — workers SHOULD apply known-runtime adapters before falling back to generic rules.
-   - The worker MAY use a finer-grained per-call identifier (e.g., `claudecode/toolUseId`) to group multi-tool sequences within a turn.
+0. **A change of CONVERSATION identifier** (§11.4.1) opens a new cycle: when the event's conversation identifier differs from the running cycle's, the worker MUST cut, whatever the gap or turn identifier. One turn never spans two conversations. This only splits. The same identifier never holds events in one cycle, and an identifier on one side only decides nothing. A conversation identifier otherwise spans many turns and is consumed one level up (below).
 
-2. **Proactive-annotation boundaries** (§5.1.2). When `runtime_meta` is absent or lacks a known runtime-conversation field, each proactive annotation (`signal_type` null, `intent` populated) marks the start of a new cycle. The cycle extends until the next proactive annotation or end-of-session, whichever comes first.
+1. **A runtime-supplied TURN identifier** (§11.4.1, e.g. `vscode.requestId`), on both the event and the running cycle, is definitive both ways: a different id opens a new cycle, the same id keeps the event in the cycle.
+
+2. **Proactive-annotation boundaries** (§5.1.2). When no runtime turn identifier applies, each proactive annotation (`signal_type` null, `intent` populated) marks the start of a new cycle. The cycle extends until the next proactive annotation or end-of-session, whichever comes first.
 
 3. **Time-gap heuristic.** When neither of the above applies, a contiguous run of events with `captured_at` deltas under N seconds (default N=120) is one cycle; a gap ≥ N seconds breaks into a new cycle. Workers SHOULD make N configurable per tenant and document it. This rule is brittle (long-running tools, human-in-loop pauses) and is the last resort.
 
 Cycles are assembled at correlation time, not at emit time — the SDK does not invent cycle IDs. The worker MUST recompute cycle assignment on event replay so reprocessing remains deterministic.
+
+**Grouping cycles into tasks.** The worker groups contiguous cycles of one session into tasks: one task is one thing the user was trying to get done. The technique is implementation-defined and MUST be deterministic on replay. A runtime-supplied CONVERSATION identifier (§11.4.1), on two adjacent cycles, constrains it:
+
+- **Different identifiers MUST split.** Two conversations are never one task.
+- **The same identifier bounds the task but does not decide it.** A conversation can hold several tasks: a thread resumed hours later is usually a new piece of work. The worker MAY split on the same identifier; a gap-based split SHOULD use a threshold of hours, not minutes (the reference worker uses 6 hours). Within that threshold, the same identifier SHOULD keep the cycles in one task.
+- **An identifier present on only one side decides nothing by itself.** An event with no `_meta`, such as a `surface_snapshot`, can sit inside a tagged conversation.
+- **Grouping only splits a session; it never joins two.** Two stored sessions that carry the same identifier stay separate. A client's identifier is asserted, never attested, and a join made on it would be invented.
+- A conversation identifier MUST NOT be used to pair a tool call's start with its end. `call_id` is the only pairing key.
 
 #### 11.5.2 Annotation correlation within a cycle
 
@@ -1274,6 +1279,8 @@ Defined error codes:
 
 > ⚠ **Entries below dated before 2026-09-09 still read "Unreleased" and are not.** They shipped across **0.4.0–0.7.2** — the undated one at the bottom of this list is the intent-param entry, and `call_intent` / `intent_source` shipped in 0.4.0 — and the version stamp this list used through `0.2.8` stopped being applied after it. Restamping means mapping **ten** entries to the releases that actually carried them: archaeology, easy to get wrong, and not a thing to do inside a release. (This note said "fifteen" and "0.5.x–0.7.2" until 2026-09-11; both were wrong, in a note whose whole job is to stop a later reader mis-reading the list.) Recorded here so the word "Unreleased" below is read as a stale label rather than a claim.
 
+
+- **Unreleased — worker rule change (2026-09-25)** — **A runtime conversation identifier is a TASK bound, not a cycle boundary, and it no longer decides the task alone.** No envelope, field or shape change, and no producer changes: SDKs forward `_meta` verbatim as before. §11.5.1 previously listed conversation identifiers as "definitive" CYCLE boundaries. That was wrong on level: a conversation spans many turns, so the rule collapsed a whole conversation into one cycle. The reference worker already treated them one level up, as a deliberate and recorded drift. §11.5.1 now states the task rules, and §11.4.1 points to it instead of repeating a second list. The rule also changes strength. A worker previously kept every cycle carrying the same conversation identifier in one task, across any gap. Now the same identifier bounds the task without deciding it, and a gap of hours MAY split it. **Consumer consequence:** a conversation resumed after a long gap can become two tasks where it was one. Different identifiers still always split, and grouping still never joins two sessions. **And a change of conversation identifier now cuts a cycle** (§11.5.1 tier 0): without it, two conversations on one process within the gap threshold shared a cycle and could not be told apart. It only splits, so a consumer sees more cycles, never fewer. Also removed from §11.4.1's examples: `claudecode/sessionId`, which Claude Code has not been observed to send, and `cursor/conversationId`, for which no evidence exists. Added: `threadId` and the nested `turn_id` (Codex CLI), `vscode.requestId`, a rule that a key is levelled by what it identifies, not by its name, and a rule that a conversation-level key is never used as `session_id`.
 
 - **Unreleased — spec rule change (2026-09-24)** — **`baton-ts` emits the RETURN shape on main, and §11.4.3's producer rules are RESCOPED BY VANTAGE POINT rather than stated for everyone.** No Python code changes, and **no version is claimed** — `baton-ts` is at `0.3.7`, which predates even its accept half. This is a spec rule change plus the last producer catching up: all FIVE producers now read the flag on main — three SDK-side (`baton-sdk`'s two adapters, `baton-ts`) and two wire sensors (`baton-proxy`, `baton-extmcp`) — and `baton-ts` is the only one whose fix is in no published artifact.
 
