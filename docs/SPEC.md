@@ -443,7 +443,7 @@ For `session_id` and `runtime_metadata` fields, the SDK SHOULD read from the MCP
 
 | `_meta` key | Maps to signal payload field |
 |---|---|
-| `_meta.traceparent` | `runtime_metadata.trace_context.traceparent`; trace-id portion is the preferred `session_id` source per §3.4 |
+| `_meta.traceparent` | `runtime_metadata.trace_context.traceparent`. Carried as data only, **never a `session_id` source**: §3.4 rung 1 was retired 2026-09-09, because a trace spans one turn, not one conversation |
 | `_meta.tracestate` | `runtime_metadata.trace_context.tracestate` |
 | `_meta.baggage` | `runtime_metadata.trace_context.baggage` |
 
