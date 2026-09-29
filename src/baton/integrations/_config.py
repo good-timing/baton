@@ -451,9 +451,13 @@ class VendorConfig:
     could dictionary-attack the column. A weak key is not a weaker pseudonym,
     it is none.
 
-    Rotation seam: cut to a new key and new hashes carry a new scheme prefix
-    while historical ones keep ``h1:``. The discontinuity is accepted and
-    documented — the raw value was never stored, so nothing can be re-hashed."""
+    ⚠ **Rotation is a HARD discontinuity and is no longer marked anywhere.**
+    Cut to a new key and every principal under this tenant gets a new value,
+    with nothing on the wire saying a rotation happened — the scheme prefix that
+    used to say so came off the value at 0.8.11 (SPEC §11.4, §13). The raw value
+    was never stored, so nothing can be re-hashed and no consumer can match the
+    new digests to the old ones. Accepted, and the cost of rotating: a reader
+    sees that tenant's whole population replaced."""
 
     resolve_principal: ResolvePrincipalHook | None = None
     """Optional vendor-supplied identity resolver, checked BEFORE the verified

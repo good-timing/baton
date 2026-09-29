@@ -68,7 +68,8 @@ if TYPE_CHECKING:
     # is also why ``resolve_call_principal`` takes one rather than making one.
     from baton.integrations._config import SessionResolutionContext
 
-#: Emit the HMAC of the principal. The console sees ``h1:<hex>`` and never the
+#: Emit the HMAC of the principal. The console sees the bare ``<hex>`` (``h1:``
+#: -tagged before 0.8.11) and never the
 #: raw identity — the residency contract (the console DB is metadata-only) and
 #: the default.
 PRINCIPAL_ID_MODE_HASHED = "hashed"
@@ -312,9 +313,9 @@ def _finish_principal(
     claim it is holding.
 
     ⚠ **``source`` used to be ``scheme``**, selecting a tag glued onto the
-    digest. Both rungs now hash under ``HASH_SCHEME`` — the KEY GENERATION,
-    not a provenance marker — and provenance is a member that survives every
-    mode; see ``hash_principal_id``.
+    digest. Both rungs now produce the SAME bare digest for the same inputs —
+    at 0.8.11 the last tag came off the value entirely — and provenance is a
+    member that survives every mode; see ``hash_principal_id``.
 
     **All three members or nothing**, and structurally so: there is exactly
     ONE ``PrincipalWire(...)`` in this function, at the bottom, and every

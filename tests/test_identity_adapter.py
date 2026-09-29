@@ -194,10 +194,21 @@ def test_the_tenant_is_still_folded_in() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_hashed_mode_emits_the_key_generation_tag_and_never_the_principal() -> None:
+def test_hashed_mode_emits_a_BARE_digest_and_never_the_principal() -> None:
+    """SPEC 0.8.11: no tag, no prefix, no scheme — 64 hex characters and nothing
+    else. ⚠ This test asserted ``startswith("h1:")`` until 0.8.11; it is
+    inverted rather than deleted, because the property it guards is the same one
+    (what may appear in ``id``) read the other way round.
+
+    **The colon check is the durable half.** Testing "not ``h1:``" would pass a
+    value tagged ``h2:``, ``v1:`` or anything a future edit invents; a value
+    carrying no colon at all cannot carry a scheme of any shape. ``form`` is
+    what says it is a pseudonym now, and the value says nothing about itself.
+    """
     got = _resolve(_Token(claims={"sub": "alice@acme.com", "iss": "https://idp"}))
     assert got is not None
-    assert got.id.startswith("h1:")
+    assert ":" not in got.id, "a tag came back onto the value"
+    assert len(got.id) == 64 and all(c in "0123456789abcdef" for c in got.id)
     assert got.form == "hashed"
     assert got.source == "attested"
     # The whole object, serialised — a member that leaked the subject would
@@ -420,14 +431,22 @@ def test_a_token_accessor_that_raises_cannot_reach_the_tool_call() -> None:
 # is a divergence in the hash.
 #
 # If one of these ever fails, the answer is NOT to update the literal. It means
-# the two sensors have stopped agreeing about what `h1:` denotes, and every
-# stored `principal_id` was written under the other definition.
+# the two sensors have stopped agreeing about the derivation, and every stored
+# `principal_id` was written under the other definition.
+#
+# ⚠ **The HEX was edited ONCE, at 0.8.11, and only by DELETING the `h1:` in
+# front of it.** That release took the tag off the value (SPEC §11.4, §13) and
+# the tag was never part of the HMAC message, so the 64 hex characters below are
+# byte-for-byte what they were when frozen on 2026-09-10 — the guard still pins
+# exactly what it was written to pin. **That is the only edit this comment
+# permits: removing a prefix.** A change to any hex digit means the derivation
+# moved, and the answer is still to revert the code, not the literal.
 _VECTOR_PRINCIPAL = "Alice@Example.COM "
 _VECTOR_TENANT = "ten_abc"
 _VECTOR_KEY = b"shared-key-bytes"
 _VECTOR_ISSUER = "https://idp.example.com"
-_VECTOR_ISSUERLESS = "h1:b8556c3cd4564b06af433259553eadee690754318e27ca392deabba8aac7843b"
-_VECTOR_WITH_ISSUER = "h1:9fc18f492b9dfe9092acf9d330d710b648d29b4aa131ecf702938df9409f0e78"
+_VECTOR_ISSUERLESS = "b8556c3cd4564b06af433259553eadee690754318e27ca392deabba8aac7843b"
+_VECTOR_WITH_ISSUER = "9fc18f492b9dfe9092acf9d330d710b648d29b4aa131ecf702938df9409f0e78"
 
 
 def test_the_shared_cross_repo_vector_issuerless() -> None:

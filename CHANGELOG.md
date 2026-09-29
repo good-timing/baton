@@ -11,6 +11,52 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ## Unreleased
 
 
+## 0.8.11: a hashed principal is the bare hash
+
+`principal.id` stops carrying a tag. A hashed value was `h1:<hex>` and is now
+`<hex>`; `source` and `form` are unchanged and still REQUIRED, so the object
+keeps its three members. SPEC §11.4 + §13.
+
+**Why, and it is not a grouping fix.** Nothing groups better: the tag only ever
+changed when the digest changed, so keying on the whole string and keying on the
+bare hash gave the same answer in every case the contract permitted — a
+production sweep on 2026-09-29 found zero principals split by a tag. It went for
+two other reasons. The object exists because a fact *about* a value must not ride
+*inside* it, and this tag was the last survivor of the encoding 0.8.10
+dismantled. And a consumer's correctness rested on three producers honouring a
+comment saying not to repurpose the tag; there is now no tag to repurpose.
+
+⚠ **Consumer consequence — a value change on an existing member.** A consumer
+comparing whole `principal.id` strings across this upgrade sees one actor become
+two, for **every** hashed principal (0.8.10's `v1:`→`h1:` relabel hit only the
+vendor-asserted ones). Stripping a leading `h<n>:` before comparing is
+unaffected. **No backfill**: stored events keep their tag, so both spellings of
+one digest coexist in a collector permanently and must not read as two people.
+
+⚠ **No ordering constraint, unlike 0.8.6 / 0.8.9 / 0.8.10.** Nothing is added to
+the envelope, so a collector with a closed schema has nothing new to reject and
+does not have to be deployed first.
+
+⚠ **`hash_principal_id`'s `scheme=` keyword and the `HASH_SCHEME` constant are
+GONE**, not deprecated. A vendor recomputing a pseudonym with its own copy of the
+function gets a tagged value from the old one and a bare value from this one.
+
+⚠ **Rotation is now an unmarked discontinuity, and this is the deliberate cost.**
+Nothing records which key produced a digest, so cutting the HMAC secret replaces
+a tenant's whole population with no marker anywhere. A `principal.key_generation`
+member was built and then dropped: it could not have re-joined a person across
+the boundary — the raw value is never stored and no consumer can match new
+digests to old — so it would have labelled a discontinuity it could not repair,
+and nothing read it. If rotation awareness is wanted it returns as an optional
+member, which is additive.
+
+⚠ **And `identity.py`'s "do not change the message layout" rule got stricter for
+the same reason.** A layout change used to be survivable by cutting a new
+generation, because the tag said which derivation produced a digest. Two layouts
+now produce two indistinguishable populations of hex, in a column nobody can
+reverse.
+
+
 ## 0.8.10: a failure a tool RETURNED stops being a success, and the principal becomes an object
 
 Two breaking wire changes under one number, because they are already inside one

@@ -299,9 +299,10 @@ async def test_the_hook_supplies_identity_where_no_token_exists(
     from baton.identity import Principal, hash_principal_id
 
     expected = hash_principal_id(HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=HOOK_ISS)
-    assert expected.startswith("h1:"), (
-        "`v1:` is RETIRED — an asserted principal hashes under the key-generation "
-        "tag like any other, and its provenance rides `principal.source`"
+    assert ":" not in expected, (
+        "no tag rides a hashed value from 0.8.11 — an asserted principal hashes "
+        "to the same bare digest as any other, and its provenance rides "
+        "`principal.source`"
     )
 
     hook = _hook(Principal(principal_id=HOOK_SUB, issuer=HOOK_ISS))

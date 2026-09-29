@@ -417,20 +417,37 @@ def test_a_non_callable_resolve_principal_is_refused_at_install() -> None:
         )
 
 
-def test_the_vendor_scheme_tag_STAYS_retired() -> None:
-    """``VENDOR_HASH_SCHEME`` (``v1:``) is gone and must not come back.
+def test_NO_scheme_tag_comes_back_and_neither_constant_returns() -> None:
+    """Both retired tags stay retired, and so does the machinery for one.
 
-    The old version of this test guarded the opposite — that the vendor tag sat
-    outside the ``h*`` rotation family, so it could not eat a letter rotation
-    might want. That constraint is satisfied more simply now: there is only one
-    family, and the prefix means only the key generation. A tag cannot carry
-    provenance through ``"raw"`` mode, which is why reintroducing one would
-    reopen the defect rather than restore a guarantee.
+    This test has been rewritten twice, each time narrowing what may appear in
+    a hashed value, and the history is the point:
+
+    * originally it guarded that the vendor tag ``v1:`` sat OUTSIDE the ``h*``
+      family, so a key rotation could not eat its letter;
+    * at 0.8.10 ``v1:`` was retired — provenance became ``principal.source``,
+      which survives ``"raw"`` mode where a tag cannot — and this asserted that
+      one family remained and meant only the key generation;
+    * at 0.8.11 that family went too, so **nothing may prefix the digest**.
+
+    ⚠ **The assertions are written NEGATIVELY and generically on purpose.**
+    Naming ``h1:`` would let ``h2:`` or a newly invented letter through, which
+    is exactly how the thing being guarded came back the first time. No colon,
+    and no constant to select one.
     """
     import baton.identity
 
     assert not hasattr(baton.identity, "VENDOR_HASH_SCHEME")
-    assert hash_principal_id("x", tenant_id=TENANT, key=KEY).startswith("h1:")
+    assert not hasattr(baton.identity, "HASH_SCHEME")
+    digest = hash_principal_id("x", tenant_id=TENANT, key=KEY)
+    assert ":" not in digest
+    assert len(digest) == 64 and digest == digest.lower()
+
+    # And the parameter that selected a tag is gone from the signature, not
+    # merely unused: a keyword left in place is an invitation to pass one.
+    import inspect
+
+    assert "scheme" not in inspect.signature(hash_principal_id).parameters
 
 
 # =============================================================================

@@ -29,14 +29,10 @@ today — are unique to this copy. Adopting the same signature in
 the message layout again, because a second divergence would not have a
 compatible default to hide behind.
 
-⚠ **A SECOND signature divergence landed 2026-09-11: ``scheme``.** Same
-discipline and the same reason it is safe — ``scheme`` defaults to
-``HASH_SCHEME``, so the proxy's issuer-less, scheme-less calls and this
-copy's produce the identical string. It does NOT touch the HMAC message, so
-it cannot move a digest the way a layout change would; only the tag in front
-of it differs. Both divergences are additive keyword-only parameters with
-pre-existing behaviour as their default, and that is the only form a
-divergence here may take.
+⚠ **A ``scheme`` parameter existed here from 2026-09-11 to 0.8.11 and is GONE**,
+together with the tag it selected. Both copies now return the bare digest, so
+this is the one change that CLOSED a divergence instead of opening one. The
+``issuer`` divergence above still stands.
 """
 
 from __future__ import annotations
@@ -47,19 +43,23 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Protocol
 
-# Scheme tag prefixed onto every hash. This is the ROTATION seam: rotate the
-# HMAC key by cutting new hashes to ``h2:`` while historical events stay under
-# ``h1:``. A single principal produces different hashes across the rotation
-# boundary — an accepted, documented discontinuity (the raw value was never
-# stored, so it can't be re-hashed).
-HASH_SCHEME = "h1"
-
-# ⚠ ``VENDOR_HASH_SCHEME = "v1"`` lived here and is RETIRED (SPEC §13) — the
-# tag carried provenance, and provenance is ``principal.source`` now. Why, and
-# why it was safe: ``hash_principal_id`` below, which is the one account.
+# ⚠ **No tag is prefixed onto a hash, and none may be reintroduced** — not for
+# provenance, not for a key generation, not for anything (SPEC §11.4, §13
+# 0.8.11). ``hash_principal_id`` returns the bare digest.
 #
-# ⚠ **Do not reintroduce a provenance tag here.** The remaining ``h<n>:`` says
-# which HMAC KEY GENERATION produced the digest and nothing else.
+# Two constants lived here and both are RETIRED. ``VENDOR_HASH_SCHEME = "v1"``
+# went at 0.8.10: it carried provenance, which is ``principal.source`` now.
+# ``HASH_SCHEME = "h1"`` went at 0.8.11: it named the HMAC key generation, and
+# a fact about a value must not ride inside the value — that is the whole rule
+# ``principal``'s three members exist to make structural.
+#
+# ⚠ **What 0.8.11 gave up, stated so nobody rediscovers it as a bug:** nothing
+# now records WHICH key produced a digest, so rotating the secret replaces a
+# tenant's whole population with no marker anywhere. That is accepted — the
+# generation could not have re-joined a person across the boundary anyway, since
+# the raw value was never stored and no consumer can match new digests to old.
+# If rotation awareness is ever wanted it is an OPTIONAL wire member, never a
+# tag on this string.
 
 
 @dataclass(frozen=True)
@@ -126,13 +126,14 @@ def hash_principal_id(
     tenant_id: str,
     key: bytes,
     issuer: str | None = None,
-    scheme: str = HASH_SCHEME,
 ) -> str:
     """HMAC-SHA256 a raw principal into a console-safe, per-tenant ``principal.id``.
 
     ``tenant_id`` is folded into the HMAC MESSAGE (not just the key) so the same
     principal under two tenants can never collide or be cross-tenant-correlated.
-    Returns ``"<scheme>:<hex>"`` (e.g. ``"h1:9f2c…"``).
+    Returns the BARE lowercase hex digest (e.g. ``"9f2c…"``) — no tag, no
+    prefix, no scheme. ⚠ It returned ``"h1:<hex>"`` until 0.8.11; see the
+    retired constants above.
 
     ``issuer`` — the OIDC ``iss`` claim — is folded in the same way when
     supplied, because a ``sub`` is unique only within the provider that minted
@@ -142,46 +143,40 @@ def hash_principal_id(
     people hash to one ``principal.id`` — a silent merge of exactly the kind this
     project keeps finding.
 
-    ``scheme`` names the HMAC KEY GENERATION, and only the tag changes — the
-    digest for a given ``(tenant_id, principal, issuer)`` is identical under
-    every scheme, because the tag is not part of the HMAC message. It exists
-    for ROTATION: cutting the secret moves new hashes to ``h2:`` while
-    historical ones keep ``h1:``, so a consumer comparing two values knows they
-    are incomparable rather than two people.
+    **The digest has NEVER depended on the tag**, and that is why taking it off
+    was a relabel rather than a recomputation: the tag was not part of the HMAC
+    message, so the hex for a given ``(tenant_id, principal, issuer)`` is
+    byte-identical before and after 0.8.11. Only the three characters in front
+    of it disappear.
 
-    ⚠ **It is not a provenance marker and not a classifier** (SPEC §11.4), and
-    this is the one place that account lives — everywhere else points here.
+    ⚠ **SPEC §13 still records that as a VALUE change**, because a consumer
+    comparing whole id strings across the upgrade sees one actor become two —
+    every hashed principal, not just the vendor-asserted ones ``v1:`` covered.
+    Stored events are not rewritten, so both spellings of one digest coexist in
+    a collector permanently and §11.4 tells a consumer to strip a leading
+    ``h<n>:`` before comparing.
 
-    It was both until ``v1:`` was retired. That tag said a principal was
-    VENDOR-ASSERTED rather than IdP-attested, and the job was real; the carrier
-    was wrong. A tag can only speak in ``"hashed"`` mode, because ``"raw"``
-    emits none — so the one mode that puts a REAL identity on the wire was the
-    one that dropped its provenance, with nothing for a consumer to recover.
-    Provenance is ``principal.source`` and pseudonymity is ``principal.form``;
-    both ride every derivation mode, which a tag cannot do.
-
-    **Retiring it was a RELABEL, not a recomputation**, and the line below is
-    why: the tag is not in the HMAC message, so an asserted principal's digest
-    was always byte-identical to an attested one's for the same inputs. Only
-    the three characters in front of the hex move — which SPEC §13 still
-    records as a value change, because a consumer comparing whole id strings
-    across the upgrade sees one actor become two for every vendor that had
-    configured ``resolve_principal``.
-
-    Every caller in this repo now takes the default; a second value here would
-    have to be a new key generation.
+    ⚠ **The facts a tag used to carry now travel as members**, and that is the
+    rule to keep: provenance is ``principal.source``, pseudonymity is
+    ``principal.form``, and both ride every derivation mode — which a tag could
+    not do, since ``"raw"`` mode emits no tag and so dropped its provenance
+    entirely. Nothing here encodes a fact about the value into the value.
 
     ⚠ **``issuer=None`` MUST hash byte-identically to the pre-issuer form**, and
     the append-only message layout below is what guarantees it. Every hash
     baton-proxy and baton-extmcp have produced since 0.5.0 was issuer-less, and
-    they share this function's contract as parity mirrors — so a format change
-    under the same ``h1:`` tag would leave one derivation tag naming two
-    different derivations across the family, which is precisely what the scheme
-    prefix exists to prevent. Issuer-bearing hashes are new values that never
-    existed before; nothing needs migrating.
+    they share this function's contract as parity mirrors. Issuer-bearing hashes
+    are new values that never existed before; nothing needs migrating.
+
+    ⚠ **This rule got STRICTER at 0.8.11, and the reason is the tag's removal.**
+    A layout change used to be survivable by cutting a new generation — the tag
+    would have said which derivation produced a digest. There is no tag now, so
+    two layouts produce two indistinguishable populations of hex with nothing
+    anywhere recording the difference, in a column nobody can reverse. **Do not
+    change the message layout.** If it ever must change, the marker has to go on
+    the wire as a member first, because the value can no longer carry one.
     """
     message = f"{tenant_id}\x00{_canonicalize(raw_principal)}"
     if issuer is not None:
         message += f"\x00{_canonicalize(issuer)}"
-    digest = hmac.new(key, message.encode(), sha256).hexdigest()
-    return f"{scheme}:{digest}"
+    return hmac.new(key, message.encode(), sha256).hexdigest()

@@ -132,7 +132,7 @@ async def test_a_str_hmac_key_does_not_break_the_call(
     events = [json.loads(x) for x in events_path.read_text().splitlines() if x.strip()]
     principals = [e.get("principal") for e in events if e["event_type"].startswith("tool_call")]
     assert principals and all(
-        p is not None and p["id"].startswith("h1:") and p["form"] == "hashed" for p in principals
+        p is not None and ":" not in p["id"] and p["form"] == "hashed" for p in principals
     ), principals
 
 

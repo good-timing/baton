@@ -142,7 +142,7 @@ async def test_every_event_of_a_call_carries_the_same_principal_id(
     assert "tool_call_start" in by_type, f"no tool_call_start, got {sorted(by_type)}"
 
     if _CLAIMS_SUPPORTED:
-        assert all(v is not None and v.startswith("h1:") for v in by_type.values()), by_type
+        assert all(v is not None and ":" not in v for v in by_type.values()), by_type
         assert len(set(by_type.values())) == 1, f"one caller, two principal_ids: {by_type}"
     else:
         # mcp < 1.27: the field cannot be carried, so it is absent everywhere.
@@ -172,7 +172,7 @@ async def test_a_vendor_subclass_carries_identity_on_every_version(
     )
     principal_ids = {_pid(ev) for ev in events}
     assert principal_ids != {None}, "a vendor-declared claims field was not read"
-    assert all(v is not None and v.startswith("h1:") for v in principal_ids), principal_ids
+    assert all(v is not None and ":" not in v for v in principal_ids), principal_ids
 
 
 async def test_an_unauthenticated_call_emits_without_the_field(
@@ -318,9 +318,11 @@ async def test_a_hook_carries_identity_on_every_leg_including_the_claimless_ones
     )
     got = {_pid(ev) for ev in events}
     assert got == {expected}, got
-    # `v1:` is RETIRED: an asserted principal hashes under the key-generation
-    # tag, and `source` is what carries the provenance the tag used to.
-    assert expected.startswith("h1:")
+    # No tag rides the value from 0.8.11: an asserted principal hashes to the
+    # same bare digest as an attested one, and `source` carries the provenance
+    # the tag used to. Asserted negatively so a reintroduced tag of ANY letter
+    # reds here.
+    assert ":" not in expected
     assert {_member(ev, "source") for ev in events} == {"asserted"}
 
 
