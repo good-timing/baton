@@ -1020,6 +1020,21 @@ can rely on. (`baton-spec/scripts/generate.py` names its two vectors on the
 `result is not None` test instead — sound for that ONE scenario, whose envelope
 serializes, and not a rule to copy.)
 
+**⚠ It separates the two SHAPES; it is not a closed set of VALUES, and a
+consumer MUST NOT treat it as one.** `error_type` on this event is an
+unconstrained string — `baton-spec`'s `events.schema.json` types
+`ToolCallErrorPayload.error_type` as `{"type": "string"}` with no enum, and §3.2
+describes the analogous signal-side field as free-form. A wire sensor
+legitimately emits values outside both shapes, for failures neither shape covers
+(see the wire-sensor rule below). Measured 2026-09-28 in `baton-proxy`: one lane
+emits `"tool_error"`, and four emit a JSON-RPC code as a string (`"-32601"`),
+`"proxy_pending_evicted"`, `"proxy_upstream_unreachable"` or
+`"proxy_upstream_closed"`. A consumer reading the rule as exhaustive misreads
+all four as exception class names. The reference collector's `classify_error`
+already handles this correctly — prose first, then a known JSON-RPC number, then an
+unrecognised label kept verbatim — so this clause reconciles the rule with the
+consumer that already exists, and adds no requirement.
+
 **⚠ In PYTHON the flag has two spellings, and which one appears depends on the
 producer's library version, not on the producer.** Measured 2026-09-22 across
 eight (library, version) cells:
@@ -1104,6 +1119,33 @@ what `baton-extmcp` (`servicer.py:324`) always did; the two wire sensors agree.
 ⚠ **What refuses a vendor's own `isError` key at this vantage point is the
 message kind, not the body shape**: a producer here MUST read the flag only on
 a `tools/call` result, because resource and prompt bodies are vendor data.
+
+**⚠ Which SHAPE a wire sensor emits, measured 2026-09-28 — and it is not
+"always the RETURN form".** An earlier draft of this paragraph's companion note
+prescribed exactly that, generalising from the one lane a probe had exercised.
+Two rules, because a wire sensor observes two disjoint classes of failure:
+
+1. **For a failure the TOOL itself reported**, a wire sensor MUST emit the
+   RETURN form. It cannot do otherwise and MUST NOT try: the server converts a
+   raised handler exception into a 200 carrying the flag before the bytes leave
+   the process, so both shapes of this subsection arrive as one object and the
+   exception class name is not recoverable at this vantage point. This is the
+   mirror of the TypeScript request-handler asymmetry recorded below.
+2. **A wire sensor ALSO observes failures neither shape covers**, and no
+   in-process sensor can see them at all: a JSON-RPC `error` response (a
+   protocol fault, as this subsection opens by saying), a request the upstream
+   never answered, and a transport that died mid-call. For these a producer MUST
+   NOT emit `error_type: "tool_error"` — that would assert the vendor's tool
+   reported a failure about a call it never answered — and MUST NOT synthesise a
+   `result`, there being no envelope to record (omitted or null, which this
+   subsection already treats as equivalent). It names the class in `error_type`,
+   which the schema leaves unconstrained; `baton-proxy` uses the JSON-RPC code,
+   `"proxy_pending_evicted"`, `"proxy_upstream_unreachable"` and
+   `"proxy_upstream_closed"`. ⚠ Producer names are deliberately NOT registered
+   here: freezing one producer's internal vocabulary into a cross-producer
+   document would make every new lane a spec change, and the consumer contract
+   needs only a stable label, which the schema's plain `string` already admits
+   and no rule here narrows.
 
 A version on which the flag does not exist emits `tool_call_end` as before;
 that is correct, not a gap.
