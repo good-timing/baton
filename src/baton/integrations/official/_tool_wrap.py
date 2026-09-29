@@ -693,7 +693,7 @@ def _wrap_tool_run(
         # stealing a neighbour's. It is also not fixable here — the two rounds
         # of a distributed MRTR call reach different processes with different
         # fallback session ids, so they never reach the pairer in one list at
-        # all. See baton-internal workplan §N2.
+        # all. Tracked internally; nothing here can close it.
         call_id = str(uuid7())
 
         # MRTR (mcp>=2.0): a continuation carries input_responses/request_state

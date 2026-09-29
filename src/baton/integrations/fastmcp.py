@@ -33,8 +33,8 @@ commit: these two shims, the sentence in ``integrations/__init__.py`` announcing
 them, and ``tests/test_import_path_aliases.py``. Anything else is a blocker.
 Delete the shims when the check is clean by that rule in:
 ``baton`` (this repo — INCLUDING the vendored ``baton-spec/`` submodule, which
-is on the old paths at the pinned pointer), ``baton-spec``, ``baton-internal``
-(the toybox fixture and the identity_probe spike are live; several spikes and
+is on the old paths at the pinned pointer), ``baton-spec``, the internal
+research repo (a fixture and a probe are live there; several experiments and
 two READMEs that tell a reader to paste the old path are also hits), and
 ``baton-proxy`` / ``baton-extmcp`` / ``baton-ts``, each of which vendors
 ``baton-spec`` at a pointer whose ``scripts/generate.py`` still uses the old

@@ -23,7 +23,7 @@ as a ``session_id`` QUERY PARAM and the literal string ``mcp-session-id`` does
 not appear in that module. Reading only the header therefore regressed SSE from
 a real per-client id to the process-wide fallback — measured with two concurrent
 clients on one server, which shared one id and mis-attributed 2 of 8 call pairs
-(``baton-internal`` `mcp_integration_seams.md` §Validation V2). That direction is
+(measured in an internal transport study). That direction is
 the worse one: the bug this ladder fixes SPLIT one client into many and cost
 joins; the fallback MERGES many clients into one and manufactures joins between
 strangers.

@@ -145,8 +145,8 @@ class SurfaceSnapshotPayload(BaseModel):
     ``expected_result``, ``overall_task``) since baton-proxy gained the third.
     Older events still carry the shapes this field has had before — two names,
     or proxy's original singular ``name: str`` — so console-side consumers MUST
-    keep handling all of them; see
-    ``baton_console.dashboard.queries.build_surface_view``. The list is DATA,
+    keep handling all of them — a consumer building a surface view reads every
+    shape, not just the current one. The list is DATA,
     not shape: it must never feed ``surface_hash``, or adding a param would
     invalidate every recipe pinned to the vendor's real surface.
     """

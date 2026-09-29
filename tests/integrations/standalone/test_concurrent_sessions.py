@@ -2,8 +2,8 @@
 
 The absence of this test is why the SSE regression in ``67c8eb2`` reached review:
 every existing session test drives ONE client, and a merge is invisible with one
-client — the id is stable and plausible either way. Measured 2026-09-07 (see
-``baton-internal`` `mcp_integration_seams.md` §Validation V2): two clients, one
+client — the id is stable and plausible either way. Measured 2026-09-07 in an
+internal transport study: two clients, one
 server, and 2 of 8 call pairs were attributed to the wrong caller.
 
 Two properties this file is built around, both learned the hard way:

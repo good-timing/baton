@@ -220,7 +220,7 @@ _EXPECTED_RESULT_PARAM_DESCRIPTION = (
 #
 # Granularity is a KNOWN, MEASURED weakness of this text, kept anyway because
 # the obvious fix is worse. Do not reword without scoring against both corpora
-# in baton-internal `spikes/overall_task_a5/` (40 paired live-agent sessions,
+# in a scored internal experiment (40 paired live-agent sessions,
 # 2026-08-11, one build per run).
 #
 # What this text gets wrong: when the user switches topic WITHOUT announcing it,

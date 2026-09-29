@@ -2,8 +2,7 @@
 
 ``vendor_id`` is an opaque ``srv-<8 hex>`` the console mints, so the old
 default composed ``srv-…_annotate`` — what every agent listing the vendor's
-tools reads. Design note:
-``baton-internal/docs/design-notes/annotation_tool_name_from_the_server_object.md``.
+tools reads.
 
 Two properties carry the whole feature and each has a negative control here:
 
