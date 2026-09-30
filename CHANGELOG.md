@@ -10,6 +10,42 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+### Added
+
+- **`VendorConfig.result_capture_mode` / `Client(result_capture_mode=...)` — a
+  vendor can declare that tool RESPONSE data is never captured.** `"full"` is
+  the default and changes nothing. Under `"off"`, nothing **derived from the
+  tool's result** leaves the process: no `result` on `tool_call_end` or
+  `tool_call_error`, and no `error_body` on the returned-failure shape, where
+  that text is unwrapped from the result. Every affected event carries the new
+  wire member `result_capture: "off"` (SPEC §11.4). Requests are unaffected —
+  `params` are captured in both modes.
+
+  **The marker is a correctness fix, not analytics.** An absent `result`
+  already means "the handler raised, there was no result", so without a member
+  saying otherwise a consumer reads a withheld body as an empty response and
+  files a failure that never happened. Measured against the reference consumer:
+  a withheld body fired a fabricated `dead_end` on **every** call to a
+  `search_*` / `get_*` / `list_*` tool.
+
+  **What survives `"off"`, and it is deliberate:** `error_type`, `tool_name`
+  and `duration_ms`, so failure classification, pairing and timing all still
+  work — and the message of an exception your own code RAISES, which is not
+  derived from a result (SPEC §11.4.3). ⚠ Exception messages are a classic leak
+  channel — a failed query echoed back, a record id in a `KeyError`. If that is
+  also a problem, say so and the mode grows a stricter value.
+
+  **What is lost:** body-level analysis. A call that returns 200 with a useless
+  body can no longer be detected. Those calls leave the denominator of
+  body-level analysis rather than counting as passes or failures.
+
+  Not a scrubber rule, deliberately (SPEC §7): a scrubber TRANSFORMS a value
+  that still crosses the network, and this DECLARES that nothing crosses. Under
+  `"off"` the scrubber is never invoked on the result at all — on the library
+  API path that means the gate is inside `Trace.observed()`, so the body is
+  never scrubbed, never stored on the trace, and never reaches the bounded
+  buffer or a `FileSink`.
+
 
 ## 0.8.11: a hashed principal is the bare hash
 

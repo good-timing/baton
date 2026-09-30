@@ -46,8 +46,6 @@ from baton.events import (
 from baton.integrations._config import SessionResolutionContext
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
-    envelope_to_jsonable,
-    error_text,
     is_error_result,
 )
 from baton.integrations._llm_text import (
@@ -59,6 +57,7 @@ from baton.integrations._llm_text import (
     build_overall_task_param_description,
     build_user_goal_param_description,
 )
+from baton.integrations._result_capture import end_result_fields, returned_error_fields
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
@@ -97,6 +96,7 @@ class BatonMiddleware(Middleware):
         fallback_session_id: str | None = None,
         annotation_tool_name: str | None = None,
         intent_param_mode: str = "required",
+        result_capture_mode: str = "full",
         proactive_tracker: ProactiveTracker | None = None,
         server_meta: dict[str, Any] | None = None,
         principal_id_mode: str = PRINCIPAL_ID_MODE_HASHED,
@@ -113,6 +113,7 @@ class BatonMiddleware(Middleware):
         self._fallback_session_id = fallback_session_id or f"sdk-{uuid7()}"
         self._annotation_tool_name = annotation_tool_name
         self._intent_param_mode = intent_param_mode
+        self._result_capture_mode = result_capture_mode
         self._proactive = proactive_tracker or ProactiveTracker()
         self._server_meta = server_meta or {}
         self._principal_id_mode = principal_id_mode
@@ -652,12 +653,16 @@ class BatonMiddleware(Middleware):
                     payload=ToolCallErrorPayload(
                         tool_name=tool_name,
                         error_type=TOOL_ERROR_TYPE,
-                        error_body=str(self._scrubber(error_text(result)))[:2000],
                         duration_ms=duration_ms,
-                        # The ENVELOPE, not ``_result_to_jsonable``'s unwrapped
-                        # developer return: the flag and the reason both live
-                        # on the envelope.
-                        result=self._scrubber(envelope_to_jsonable(result)),
+                        # BOTH remaining members are result-derived on this
+                        # shape, so both are the mode's to decide; the helper
+                        # owns the scrubber call so ``"off"`` never runs it.
+                        # ``error_type`` is NOT — the classification stands.
+                        **returned_error_fields(
+                            mode=self._result_capture_mode,
+                            scrubber=self._scrubber,
+                            result=result,
+                        ),
                     ),
                 ),
                 logger,
@@ -681,8 +686,13 @@ class BatonMiddleware(Middleware):
                 runtime_meta=scrubbed_meta,
                 payload=ToolCallEndPayload(
                     tool_name=tool_name,
-                    result=self._scrubber(self._result_to_jsonable(result)),
                     duration_ms=duration_ms,
+                    **end_result_fields(
+                        mode=self._result_capture_mode,
+                        scrubber=self._scrubber,
+                        to_jsonable=self._result_to_jsonable,
+                        result=result,
+                    ),
                 ),
             ),
             logger,

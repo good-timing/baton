@@ -176,6 +176,7 @@ def install_baton(
         scrubber=scrubber,
         annotation_tool_name=annotation_tool_name,
         intent_param_mode=config.intent_param_mode,
+        result_capture_mode=config.result_capture_mode,
         proactive_tracker=proactive_tracker,
         principal_id_mode=config.principal_id_mode,
         principal_id_hmac_key=principal_id_hmac_key,

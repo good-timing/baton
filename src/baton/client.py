@@ -101,6 +101,7 @@ from typing import Any, Self, TypeVar
 
 from baton._dsn import parse_dsn, select_dsn
 from baton._optout import DisabledSink, capture_disabled, log_disabled
+from baton._result_capture import RESULT_CAPTURE_MODES, WITHHELD, withholding
 from baton._uuid import uuid7
 from baton.events import (
     DEFAULT_CONSENT_TOKEN,
@@ -133,6 +134,34 @@ __all__ = [
 # Defined at module top so Trace and AsyncTrace can use it as a default param
 # value (default-param evaluation happens at class-creation time).
 _UNSET: Any = object()
+
+# Sentinel for "observed() WAS called, and we deliberately did not keep the
+# result" — SPEC §11.4's withheld state, on the library API path.
+#
+# ⚠ DISTINCT from ``_UNSET`` on purpose, and the distinction is load-bearing
+# twice. The "exited without observed()" UserWarning branches on ``_UNSET``,
+# and a vendor who withheld a body DID observe their call — warning them would
+# be telling them to do the thing they just did. And the end payload has to
+# emit ``result_capture`` for this state and not for the other: absence of a
+# result already means "the handler raised" (SPEC §11.4.3), which is exactly
+# the confusion the marker exists to end.
+_WITHHELD: Any = object()
+
+
+def _end_result_fields(observed: Any) -> dict[str, Any]:
+    """The ``tool_call_end`` payload kwargs carrying the result, or its absence.
+
+    Three states, not two, which is why this is a function and not a
+    conditional expression: a withheld body emits the marker and NO ``result``
+    key; a trace that never called ``observed()`` emits ``result=None`` (the
+    pre-existing behaviour, warned about at the call site); and a normal one
+    emits the scrubbed value. Collapsing the first two would publish a
+    fabricated "the tool returned nothing" for a call whose body the vendor
+    deliberately withheld — the defect SPEC §11.4 exists to prevent.
+    """
+    if observed is _WITHHELD:
+        return {"result_capture": WITHHELD}
+    return {"result": observed if observed is not _UNSET else None}
 
 
 # =============================================================================
@@ -617,6 +646,16 @@ class Trace:
         if error_type is not None or error_body is not None:
             self._observed_error = (error_type or "Error", error_body or "")
             self._observed_result = _UNSET
+        elif withholding(self._client._result_capture_mode):
+            # SPEC §7: under ``"off"`` the scrubber MUST NOT be invoked on the
+            # result. This is the whole reason the gate is HERE and not at
+            # payload construction — by then the vendor's scrubber has already
+            # run on the body, and a guard after the write undoes nothing. The
+            # value is not merely unsent, it is never held: not scrubbed, not
+            # stored on the trace, so it cannot reach the bounded buffer, a
+            # ``FileSink`` on disk, or a traceback on the way there.
+            self._observed_result = _WITHHELD
+            self._observed_error = None
         else:
             self._observed_result = self._client._scrubber(result)
             self._observed_error = None
@@ -756,8 +795,8 @@ class Trace:
                 call_id=self._call_id,
                 payload=ToolCallEndPayload(
                     tool_name=self._tool_name,
-                    result=(self._observed_result if self._observed_result is not _UNSET else None),
                     duration_ms=duration_ms,
+                    **_end_result_fields(self._observed_result),
                 ),
             )
             self._client._emit_sync(end_event)
@@ -788,6 +827,7 @@ class Client:
         consent_token: str | None = None,
         agent_runtime: str = "python-library",
         scrubber: Any = None,
+        result_capture_mode: str = "full",
     ) -> None:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
@@ -812,6 +852,18 @@ class Client:
         # processes via a class-level singleton). Pass identity_scrub
         # explicitly to opt out of scrubbing.
         self._scrubber = scrubber if scrubber is not None else Scrubber()
+        # SPEC §11.4. Validated at construction rather than at emit: an
+        # unregistered value would otherwise read as "not off" and capture
+        # bodies a vendor believed they had switched off — failing silently,
+        # in the one direction that cannot be undone once the events are sent.
+        if result_capture_mode not in RESULT_CAPTURE_MODES:
+            raise ValueError(
+                f"result_capture_mode {result_capture_mode!r} must be one of "
+                f"{sorted(RESULT_CAPTURE_MODES)} — 'full' captures the result "
+                f"passed to observed(), 'off' never scrubs or stores it and "
+                f"marks each event result_capture='off'."
+            )
+        self._result_capture_mode = result_capture_mode
 
         # Sync mode uses a background thread + persistent loop bridge so the
         # sink's async primitives (locks, background drain tasks, httpx
@@ -1105,6 +1157,16 @@ class AsyncTrace:
         if error_type is not None or error_body is not None:
             self._observed_error = (error_type or "Error", error_body or "")
             self._observed_result = _UNSET
+        elif withholding(self._client._result_capture_mode):
+            # SPEC §7: under ``"off"`` the scrubber MUST NOT be invoked on the
+            # result. This is the whole reason the gate is HERE and not at
+            # payload construction — by then the vendor's scrubber has already
+            # run on the body, and a guard after the write undoes nothing. The
+            # value is not merely unsent, it is never held: not scrubbed, not
+            # stored on the trace, so it cannot reach the bounded buffer, a
+            # ``FileSink`` on disk, or a traceback on the way there.
+            self._observed_result = _WITHHELD
+            self._observed_error = None
         else:
             self._observed_result = self._client._scrubber(result)
             self._observed_error = None
@@ -1245,8 +1307,8 @@ class AsyncTrace:
                 call_id=self._call_id,
                 payload=ToolCallEndPayload(
                     tool_name=self._tool_name,
-                    result=(self._observed_result if self._observed_result is not _UNSET else None),
                     duration_ms=duration_ms,
+                    **_end_result_fields(self._observed_result),
                 ),
             )
             await self._client._emit(end_event)
@@ -1272,6 +1334,7 @@ class AsyncClient:
         consent_token: str | None = None,
         agent_runtime: str = "python-library",
         scrubber: Any = None,
+        result_capture_mode: str = "full",
     ) -> None:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
@@ -1296,6 +1359,18 @@ class AsyncClient:
         # cross-process sharing). Pass identity_scrub explicitly to opt
         # out.
         self._scrubber = scrubber if scrubber is not None else Scrubber()
+        # SPEC §11.4. Validated at construction rather than at emit: an
+        # unregistered value would otherwise read as "not off" and capture
+        # bodies a vendor believed they had switched off — failing silently,
+        # in the one direction that cannot be undone once the events are sent.
+        if result_capture_mode not in RESULT_CAPTURE_MODES:
+            raise ValueError(
+                f"result_capture_mode {result_capture_mode!r} must be one of "
+                f"{sorted(RESULT_CAPTURE_MODES)} — 'full' captures the result "
+                f"passed to observed(), 'off' never scrubs or stores it and "
+                f"marks each event result_capture='off'."
+            )
+        self._result_capture_mode = result_capture_mode
 
         self._sink: Sink = resolved.sink
         self._seq_counters: dict[str, int] = {}

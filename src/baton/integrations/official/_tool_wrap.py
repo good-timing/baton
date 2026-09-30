@@ -93,8 +93,6 @@ from baton.integrations._config import (
 )
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
-    envelope_to_jsonable,
-    error_text,
     is_error_result,
 )
 from baton.integrations._llm_text import (
@@ -106,6 +104,7 @@ from baton.integrations._llm_text import (
     build_overall_task_param_description,
     build_user_goal_param_description,
 )
+from baton.integrations._result_capture import end_result_fields, returned_error_fields
 from baton.integrations._session import (
     session_id_from_headers,
 )
@@ -182,6 +181,7 @@ def install_wraps(
     scrubber: Callable[[Any], Any] = identity_scrub,
     annotation_tool_name: str | None = None,
     intent_param_mode: str = "required",
+    result_capture_mode: str = "full",
     proactive_tracker: ProactiveTracker | None = None,
     server_meta: dict[str, Any] | None = None,
     principal_id_mode: str = PRINCIPAL_ID_MODE_HASHED,
@@ -208,6 +208,7 @@ def install_wraps(
         sink=sink,
         counter=counter,
         scrubber=scrubber,
+        result_capture_mode=result_capture_mode,
     )
 
     def _maybe_wrap_entry(name: str, tool: Any) -> None:
@@ -260,6 +261,7 @@ def install_wraps(
                 emit_proactive,
                 scrubber,
                 intent_param_mode=intent_param_mode,
+                result_capture_mode=result_capture_mode,
                 param_registry=param_registry,
                 tracker=tracker,
                 fallback_session_id=fallback_session_id,
@@ -474,6 +476,12 @@ _EmitError = Callable[
         str,  # call_id
         str | None,  # transport_observed
         Any,  # result — the envelope on a returned error, None on a raise
+        # SPEC §11.4. Positional and undefaulted for the same reason ``result``
+        # above is: the two failure shapes answer this DIFFERENTLY — the raise
+        # leg withholds nothing (its ``error_body`` is the vendor's exception,
+        # not result-derived), so a default would let one leg inherit the
+        # other's answer silently.
+        str | None,  # result_capture
     ],
     Awaitable[None],
 ]
@@ -506,6 +514,7 @@ def _wrap_tool_run(
     scrubber: Callable[[Any], Any],
     *,
     intent_param_mode: str,
+    result_capture_mode: str,
     param_registry: dict[str, dict[str, str]],
     tracker: ProactiveTracker,
     fallback_session_id: str,
@@ -739,6 +748,11 @@ def _wrap_tool_run(
                 # No result object exists on a raise — a populated one here
                 # would be fabricated.
                 None,
+                # ...and for the same reason nothing was WITHHELD from this
+                # event: SPEC §11.4.3 says the raise shape is unchanged under
+                # ``"off"``, because an exception message is the vendor's own
+                # code speaking about a call that never returned.
+                None,
             )
             raise
         # MRTR (mcp>=2.0): an InputRequiredResult means the call paused mid-flight
@@ -751,11 +765,22 @@ def _wrap_tool_run(
             # through the except above. Checked AFTER the MRTR pause: a paused
             # round has not finished, so it is neither an end nor an error yet.
             if is_error_result(result):
+                # Both remaining members are unwrapped FROM the result on this
+                # shape, so the helper decides them together and owns the
+                # scrubber call — under ``"off"`` neither ``error_text`` nor
+                # ``envelope_to_jsonable`` runs. ``TOOL_ERROR_TYPE`` is not
+                # result-derived and is passed regardless: the call still
+                # failed, and SPEC §11.2.6 keeps the classification.
+                withheld = returned_error_fields(
+                    mode=result_capture_mode,
+                    scrubber=scrubber,
+                    result=result,
+                )
                 await emit_error(
                     call_session_id,
                     name,
                     TOOL_ERROR_TYPE,
-                    str(scrubber(error_text(result)))[:2000],
+                    withheld["error_body"],
                     monotonic() - called_at,
                     scrubbed_meta,
                     call_agent_runtime,
@@ -765,7 +790,8 @@ def _wrap_tool_run(
                     # The ENVELOPE, not the unwrapped developer return that
                     # emit_after records: the flag and the reason both live on
                     # the envelope, and unwrapping is what dropped them.
-                    scrubber(envelope_to_jsonable(result)),
+                    withheld.get("result"),
+                    withheld.get("result_capture"),
                 )
             else:
                 await emit_after(
@@ -991,6 +1017,7 @@ def _make_emitters(
     sink: Sink,
     counter: SessionCounter,
     scrubber: Callable[[Any], Any],
+    result_capture_mode: str,
 ) -> tuple[
     _EmitBefore,
     _EmitAfter,
@@ -1113,8 +1140,13 @@ def _make_emitters(
                 runtime_meta=runtime_meta,
                 payload=ToolCallEndPayload(
                     tool_name=name,
-                    result=scrubber(_result_to_jsonable(result)),
                     duration_ms=int(duration_s * 1000),
+                    **end_result_fields(
+                        mode=result_capture_mode,
+                        scrubber=scrubber,
+                        to_jsonable=_result_to_jsonable,
+                        result=result,
+                    ),
                 ),
             ),
             logger,
@@ -1132,6 +1164,7 @@ def _make_emitters(
         call_id: str,
         transport_observed: str | None,
         result: Any,
+        result_capture: str | None,
     ) -> None:
         """One emitter for BOTH failure shapes (SPEC §11.4.3).
 
@@ -1159,6 +1192,7 @@ def _make_emitters(
                     error_body=error_body,
                     duration_ms=int(duration_s * 1000),
                     result=result,
+                    result_capture=result_capture,
                 ),
             ),
             logger,
