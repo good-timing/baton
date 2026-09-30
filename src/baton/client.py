@@ -101,7 +101,13 @@ from typing import Any, Self, TypeVar
 
 from baton._dsn import parse_dsn, select_dsn
 from baton._optout import DisabledSink, capture_disabled, log_disabled
-from baton._result_capture import WITHHELD, validate_mode, withholding
+from baton._result_capture import (
+    WITHHELD,
+    ResultCaptureMode,
+    ResultFields,
+    validate_mode,
+    withholding,
+)
 from baton._uuid import uuid7
 from baton.events import (
     DEFAULT_CONSENT_TOKEN,
@@ -148,20 +154,22 @@ _UNSET: Any = object()
 _WITHHELD: Any = object()
 
 
-def _end_result_fields(observed: Any) -> dict[str, Any]:
-    """The ``tool_call_end`` payload kwargs carrying the result, or its absence.
+def _end_result_fields(observed: Any) -> ResultFields:
+    """What the library path's stored result becomes on ``tool_call_end``.
 
-    Three states, not two, which is why this is a function and not a
-    conditional expression: a withheld body emits the marker and NO ``result``
-    key; a trace that never called ``observed()`` emits ``result=None`` (the
-    pre-existing behaviour, warned about at the call site); and a normal one
-    emits the scrubbed value. Collapsing the first two would publish a
-    fabricated "the tool returned nothing" for a call whose body the vendor
+    THREE states, not two, which is the whole reason this is a function: a
+    withheld body carries the marker, a trace that never called ``observed()``
+    carries ``result=None`` (pre-existing, and warned about at the call site),
+    and a normal one carries the scrubbed value. Collapsing the first two would
+    publish a fabricated "the tool returned nothing" about a body the vendor
     deliberately withheld — the defect SPEC §11.4 exists to prevent.
+
+    Shared by ``Trace`` and ``AsyncTrace``, which are otherwise twins by
+    copy.
     """
     if observed is _WITHHELD:
-        return {"result_capture": WITHHELD}
-    return {"result": observed if observed is not _UNSET else None}
+        return ResultFields(result_capture=WITHHELD)
+    return ResultFields(result=observed if observed is not _UNSET else None)
 
 
 # =============================================================================
@@ -219,9 +227,12 @@ class _ClientConfig:
     vendor_id: str
     tenant_id: str
     consent_token: str
+    result_capture_mode: ResultCaptureMode
 
 
-def _disabled_client_config(switch: str, surface: str, sink: Sink | None) -> _ClientConfig:
+def _disabled_client_config(
+    switch: str, surface: str, sink: Sink | None, result_capture_mode: str
+) -> _ClientConfig:
     """What a client resolves to when the off switch is set.
 
     Nothing is read and nothing is validated — not the dsn, not ``vendor_id``,
@@ -244,6 +255,10 @@ def _disabled_client_config(switch: str, surface: str, sink: Sink | None) -> _Cl
         sink=sink if sink is not None else DisabledSink(),
         vendor_id="",
         tenant_id="",
+        # Unvalidated, like every other field here, and it costs nothing to be:
+        # no event is emitted under the switch, so the mode cannot be wrong in
+        # any way that reaches a consumer.
+        result_capture_mode=result_capture_mode,
         consent_token=DEFAULT_CONSENT_TOKEN,
     )
 
@@ -299,6 +314,7 @@ def _resolve_client_config(
     vendor_id: str | None,
     tenant_id: str | None,
     consent_token: str | None,
+    result_capture_mode: str,
 ) -> _ClientConfig:
     """The library API's config resolution — the twin of ``install_baton``'s.
 
@@ -312,6 +328,13 @@ def _resolve_client_config(
     stale ``BATON_VENDOR_ID`` from an earlier install must not redirect a
     client whose source states where it belongs.
     """
+    # The one place the library door validates the mode. It belongs HERE and
+    # not in ``__init__`` because ``_optout`` promises a disabled Baton never
+    # throws: the disabled twin is a DIFFERENT FUNCTION that validates nothing,
+    # so the invariant holds structurally instead of being re-tested against a
+    # flag in each constructor. That is the same shape ``install_baton`` has,
+    # where the switch returns ``disabled_handle`` before validation is reached.
+    mode = validate_mode(result_capture_mode, field="result_capture_mode")
     dsn_string = select_dsn(
         dsn,
         {
@@ -341,6 +364,7 @@ def _resolve_client_config(
             vendor_id=parsed.vendor_id,
             tenant_id=parsed.tenant_id,
             consent_token=consent,
+            result_capture_mode=mode,
         )
 
     if sink is None:
@@ -367,6 +391,7 @@ def _resolve_client_config(
         vendor_id=vendor_id_resolved,
         tenant_id=tenant_id_resolved or vendor_id_resolved,
         consent_token=_resolve_consent_token(consent_token),
+        result_capture_mode=mode,
     )
 
 
@@ -647,13 +672,10 @@ class Trace:
             self._observed_error = (error_type or "Error", error_body or "")
             self._observed_result = _UNSET
         elif withholding(self._client._result_capture_mode):
-            # SPEC §7: under ``"off"`` the scrubber MUST NOT be invoked on the
-            # result. This is the whole reason the gate is HERE and not at
-            # payload construction — by then the vendor's scrubber has already
-            # run on the body, and a guard after the write undoes nothing. The
-            # value is not merely unsent, it is never held: not scrubbed, not
-            # stored on the trace, so it cannot reach the bounded buffer, a
-            # ``FileSink`` on disk, or a traceback on the way there.
+            # The gate is HERE, not at payload construction: SPEC §7 forbids
+            # invoking the scrubber on a withheld result, and by payload time
+            # it has already run. So the body is never held at all — not
+            # scrubbed, not stored on the trace, never in the buffer or a sink.
             self._observed_result = _WITHHELD
             self._observed_error = None
         else:
@@ -784,6 +806,7 @@ class Trace:
             )
             self._client._emit_sync(error_event)
         else:
+            end_fields = _end_result_fields(self._observed_result)
             end_event = ToolCallEndEvent(
                 tenant_id=self._client._tenant_id,
                 vendor_id=self._client._vendor_id,
@@ -796,7 +819,8 @@ class Trace:
                 payload=ToolCallEndPayload(
                     tool_name=self._tool_name,
                     duration_ms=duration_ms,
-                    **_end_result_fields(self._observed_result),
+                    result=end_fields.result,
+                    result_capture=end_fields.result_capture,
                 ),
             )
             self._client._emit_sync(end_event)
@@ -832,7 +856,7 @@ class Client:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
         resolved = (
-            _disabled_client_config(switch, "Client", sink)
+            _disabled_client_config(switch, "Client", sink, result_capture_mode)
             if switch is not None
             else _resolve_client_config(
                 sink=sink,
@@ -840,6 +864,7 @@ class Client:
                 vendor_id=vendor_id,
                 tenant_id=tenant_id,
                 consent_token=consent_token,
+                result_capture_mode=result_capture_mode,
             )
         )
 
@@ -852,24 +877,7 @@ class Client:
         # processes via a class-level singleton). Pass identity_scrub
         # explicitly to opt out of scrubbing.
         self._scrubber = scrubber if scrubber is not None else Scrubber()
-        # SPEC §11.4. Validated at construction rather than at emit: an
-        # unregistered value would otherwise read as "not off" and capture
-        # bodies a vendor believed they had switched off — failing silently,
-        # in the one direction that cannot be undone once the events are sent.
-        #
-        # ⚠ ...but NOT under the opt-out switch, and that exception is the
-        # whole point of the switch. ``_optout`` promises that a disabled
-        # Baton never throws, because a client that refuses to construct is
-        # the switch breaking the vendor's process by another route — and both
-        # install paths honour it by returning ``disabled_handle`` BEFORE
-        # ``_validate_vendor_config``. This validation is the first raise
-        # ``__init__`` could produce while disabled, so it would have made the
-        # library path the one surface where ``BATON_DISABLED`` aborts a boot
-        # it used to survive. Nothing is emitted under the switch, so the mode
-        # cannot be wrong in any way that reaches a consumer.
-        if not self._disabled:
-            validate_mode(result_capture_mode, field="result_capture_mode")
-        self._result_capture_mode = result_capture_mode
+        self._result_capture_mode = resolved.result_capture_mode
 
         # Sync mode uses a background thread + persistent loop bridge so the
         # sink's async primitives (locks, background drain tasks, httpx
@@ -1164,13 +1172,10 @@ class AsyncTrace:
             self._observed_error = (error_type or "Error", error_body or "")
             self._observed_result = _UNSET
         elif withholding(self._client._result_capture_mode):
-            # SPEC §7: under ``"off"`` the scrubber MUST NOT be invoked on the
-            # result. This is the whole reason the gate is HERE and not at
-            # payload construction — by then the vendor's scrubber has already
-            # run on the body, and a guard after the write undoes nothing. The
-            # value is not merely unsent, it is never held: not scrubbed, not
-            # stored on the trace, so it cannot reach the bounded buffer, a
-            # ``FileSink`` on disk, or a traceback on the way there.
+            # The gate is HERE, not at payload construction: SPEC §7 forbids
+            # invoking the scrubber on a withheld result, and by payload time
+            # it has already run. So the body is never held at all — not
+            # scrubbed, not stored on the trace, never in the buffer or a sink.
             self._observed_result = _WITHHELD
             self._observed_error = None
         else:
@@ -1302,6 +1307,7 @@ class AsyncTrace:
             )
             await self._client._emit(error_event)
         else:
+            end_fields = _end_result_fields(self._observed_result)
             end_event = ToolCallEndEvent(
                 tenant_id=self._client._tenant_id,
                 vendor_id=self._client._vendor_id,
@@ -1314,7 +1320,8 @@ class AsyncTrace:
                 payload=ToolCallEndPayload(
                     tool_name=self._tool_name,
                     duration_ms=duration_ms,
-                    **_end_result_fields(self._observed_result),
+                    result=end_fields.result,
+                    result_capture=end_fields.result_capture,
                 ),
             )
             await self._client._emit(end_event)
@@ -1345,7 +1352,7 @@ class AsyncClient:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
         resolved = (
-            _disabled_client_config(switch, "AsyncClient", sink)
+            _disabled_client_config(switch, "AsyncClient", sink, result_capture_mode)
             if switch is not None
             else _resolve_client_config(
                 sink=sink,
@@ -1353,6 +1360,7 @@ class AsyncClient:
                 vendor_id=vendor_id,
                 tenant_id=tenant_id,
                 consent_token=consent_token,
+                result_capture_mode=result_capture_mode,
             )
         )
 
@@ -1365,24 +1373,7 @@ class AsyncClient:
         # cross-process sharing). Pass identity_scrub explicitly to opt
         # out.
         self._scrubber = scrubber if scrubber is not None else Scrubber()
-        # SPEC §11.4. Validated at construction rather than at emit: an
-        # unregistered value would otherwise read as "not off" and capture
-        # bodies a vendor believed they had switched off — failing silently,
-        # in the one direction that cannot be undone once the events are sent.
-        #
-        # ⚠ ...but NOT under the opt-out switch, and that exception is the
-        # whole point of the switch. ``_optout`` promises that a disabled
-        # Baton never throws, because a client that refuses to construct is
-        # the switch breaking the vendor's process by another route — and both
-        # install paths honour it by returning ``disabled_handle`` BEFORE
-        # ``_validate_vendor_config``. This validation is the first raise
-        # ``__init__`` could produce while disabled, so it would have made the
-        # library path the one surface where ``BATON_DISABLED`` aborts a boot
-        # it used to survive. Nothing is emitted under the switch, so the mode
-        # cannot be wrong in any way that reaches a consumer.
-        if not self._disabled:
-            validate_mode(result_capture_mode, field="result_capture_mode")
-        self._result_capture_mode = result_capture_mode
+        self._result_capture_mode = resolved.result_capture_mode
 
         self._sink: Sink = resolved.sink
         self._seq_counters: dict[str, int] = {}

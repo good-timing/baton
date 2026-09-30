@@ -29,7 +29,7 @@ from mcp.types import CallToolRequestParams, ListToolsRequest
 from pydantic_core import to_jsonable_python
 
 from baton._meta_coords import round_meta_coordinates
-from baton._result_capture import validate_mode
+from baton._result_capture import ResultCaptureMode, end_result_fields
 from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
 from baton.events import (
@@ -48,6 +48,7 @@ from baton.integrations._config import SessionResolutionContext
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
     is_error_result,
+    returned_error_fields,
 )
 from baton.integrations._llm_text import (
     EXPECTED_RESULT_PARAM_NAME,
@@ -58,7 +59,6 @@ from baton.integrations._llm_text import (
     build_overall_task_param_description,
     build_user_goal_param_description,
 )
-from baton.integrations._result_capture import end_result_fields, returned_error_fields
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
@@ -97,7 +97,7 @@ class BatonMiddleware(Middleware):
         fallback_session_id: str | None = None,
         annotation_tool_name: str | None = None,
         intent_param_mode: str = "required",
-        result_capture_mode: str = "full",
+        result_capture_mode: ResultCaptureMode = "full",
         proactive_tracker: ProactiveTracker | None = None,
         server_meta: dict[str, Any] | None = None,
         principal_id_mode: str = PRINCIPAL_ID_MODE_HASHED,
@@ -114,7 +114,7 @@ class BatonMiddleware(Middleware):
         self._fallback_session_id = fallback_session_id or f"sdk-{uuid7()}"
         self._annotation_tool_name = annotation_tool_name
         self._intent_param_mode = intent_param_mode
-        self._result_capture_mode = validate_mode(result_capture_mode, field="result_capture_mode")
+        self._result_capture_mode = result_capture_mode
         self._proactive = proactive_tracker or ProactiveTracker()
         self._server_meta = server_meta or {}
         self._principal_id_mode = principal_id_mode
@@ -636,6 +636,12 @@ class BatonMiddleware(Middleware):
         # as before. That is correct — there is no flag to misread — and it is
         # pinned positively by ``test_floor_has_no_flag_to_read``.
         if is_error_result(result):
+            # SPEC §11.4.3(2): both result-derived members, decided together.
+            err = returned_error_fields(
+                mode=self._result_capture_mode,
+                scrubber=self._scrubber,
+                result=result,
+            )
             seq_err = await self._next_seq(session_id)
             await safe_write(
                 self._sink,
@@ -655,21 +661,21 @@ class BatonMiddleware(Middleware):
                         tool_name=tool_name,
                         error_type=TOOL_ERROR_TYPE,
                         duration_ms=duration_ms,
-                        # BOTH remaining members are result-derived on this
-                        # shape, so both are the mode's to decide; the helper
-                        # owns the scrubber call so ``"off"`` never runs it.
-                        # ``error_type`` is NOT — the classification stands.
-                        **returned_error_fields(
-                            mode=self._result_capture_mode,
-                            scrubber=self._scrubber,
-                            result=result,
-                        ),
+                        error_body=err.error_body,
+                        result=err.result,
+                        result_capture=err.result_capture,
                     ),
                 ),
                 logger,
             )
             return result
 
+        end = end_result_fields(
+            mode=self._result_capture_mode,
+            scrubber=self._scrubber,
+            to_jsonable=self._result_to_jsonable,
+            result=result,
+        )
         seq_end = await self._next_seq(session_id)
         await safe_write(
             self._sink,
@@ -688,12 +694,8 @@ class BatonMiddleware(Middleware):
                 payload=ToolCallEndPayload(
                     tool_name=tool_name,
                     duration_ms=duration_ms,
-                    **end_result_fields(
-                        mode=self._result_capture_mode,
-                        scrubber=self._scrubber,
-                        to_jsonable=self._result_to_jsonable,
-                        result=result,
-                    ),
+                    result=end.result,
+                    result_capture=end.result_capture,
                 ),
             ),
             logger,

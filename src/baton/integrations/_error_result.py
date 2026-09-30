@@ -22,7 +22,10 @@ this inert on the other adapter and untestable on whichever venv is installed.
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import Any, NamedTuple
+
+from baton._result_capture import WITHHELD, withholding
 
 #: ``error_type`` for a returned error, as opposed to a raised exception whose
 #: class name is used. Matches what ``baton-extmcp`` has emitted since 0.1.0 —
@@ -154,3 +157,45 @@ def envelope_to_jsonable(result: Any) -> Any:
     except Exception:  # pragma: no cover - defensive; see is_error_result
         return None
     return None
+
+
+class ErrorResultFields(NamedTuple):
+    """The `tool_call_error` payload members the capture mode decides.
+
+    `error_type` is NOT among them: a call that failed still failed, and the
+    classification is not derived from the result (SPEC §11.2.6).
+    """
+
+    error_body: str
+    result: Any = None
+    result_capture: str | None = None
+
+
+def returned_error_fields(
+    *,
+    mode: str,
+    scrubber: Callable[[Any], Any],
+    result: Any,
+) -> ErrorResultFields:
+    """The RETURN failure shape's result-derived members (SPEC §11.4.3(2)).
+
+    Both are unwrapped FROM the result — ``error_body`` from its ``content``
+    text parts, ``result`` as the full envelope — so ``"off"`` withholds both,
+    and neither ``error_text`` nor ``envelope_to_jsonable`` is called.
+
+    ⚠ ``error_body`` is emitted as ``""`` rather than dropped: it is in
+    ``ToolCallErrorPayload``'s ``required`` set, and widening that array is a
+    conformance change every producer would have to follow. An empty
+    ``error_body`` is genuinely ambiguous with "the failure carried no
+    message", and ``result_capture`` is what tells the two apart.
+
+    The RAISE shape has no projection and needs none — its ``error_body`` is
+    the vendor's own exception text, not result-derived, so it is unchanged
+    under every mode (SPEC §11.4.3(1)).
+    """
+    if withholding(mode):
+        return ErrorResultFields(error_body="", result_capture=WITHHELD)
+    return ErrorResultFields(
+        error_body=str(scrubber(error_text(result)))[:2000],
+        result=scrubber(envelope_to_jsonable(result)),
+    )

@@ -10,7 +10,7 @@ from typing import Any
 
 from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
 from baton._dsn import parse_dsn, resolve_dsn, select_dsn
-from baton._result_capture import validate_mode
+from baton._result_capture import ResultCaptureMode, validate_mode
 from baton.events import DEFAULT_CONSENT_TOKEN
 from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
@@ -356,7 +356,7 @@ class VendorConfig:
     patterns + field-name overrides on by default. Pass
     ``baton.scrub.identity_scrub`` to opt out, or supply your own."""
 
-    result_capture_mode: str = "full"
+    result_capture_mode: ResultCaptureMode = "full"
     """Whether tool RESPONSE data is captured at all (SPEC §11.4).
 
     ``"full"`` (default) captures as it always has. ``"off"`` means nothing

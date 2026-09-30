@@ -35,6 +35,8 @@ from typing import Any
 
 import pytest
 
+from tests._event_helpers import read_events
+
 pytestmark = pytest.mark.functional
 
 TENANT = "tenant-withhold"
@@ -60,13 +62,8 @@ class _Recorder:
         return any(needle in json.dumps(c, default=str) for c in self.calls)
 
 
-def _read(path: Path) -> list[dict[str, Any]]:
-    with open(path) as f:
-        return [json.loads(line) for line in f if line.strip()]
-
-
 def _payloads(path: Path, event_type: str) -> list[dict[str, Any]]:
-    return [e["payload"] for e in _read(path) if e["event_type"] == event_type]
+    return [e["payload"] for e in read_events(path) if e["event_type"] == event_type]
 
 
 # =============================================================================
@@ -333,7 +330,7 @@ def test_the_RETURN_shape_withholds_BOTH_members(tmp_path: Path) -> None:
     """
     from types import SimpleNamespace
 
-    from baton.integrations._result_capture import returned_error_fields
+    from baton.integrations._error_result import returned_error_fields
 
     rec = _Recorder()
     # ⚠ ATTRIBUTES, not a dict. ``error_text`` reads ``result.content[i].text``
@@ -346,14 +343,26 @@ def test_the_RETURN_shape_withholds_BOTH_members(tmp_path: Path) -> None:
     )
 
     withheld = returned_error_fields(mode="off", scrubber=rec, result=result)
-    assert withheld == {"error_body": "", "result_capture": "off"}
-    assert "result" not in withheld
+    assert withheld.error_body == ""
+    assert withheld.result_capture == "off"
+    # The VALUE, not the key set: SPEC §11.4 says absent and null are the same
+    # answer on the wire, so asserting "no result key" would pin a distinction
+    # the wire does not have — and the one consumers are told never to test.
+    assert withheld.result is None
     assert not rec.saw(SECRET), "neither error_text nor envelope_to_jsonable may run"
 
     kept = returned_error_fields(mode="full", scrubber=rec, result=result)
-    assert kept["error_body"], "the control: this shape normally carries the reason"
-    assert "result" in kept
-    assert rec.saw(SECRET)
+    assert kept.error_body == SECRET, "the control: this shape carries the reason"
+    assert kept.result_capture is None
+    assert rec.saw(SECRET), "and the scrubber IS invoked on the capturing path"
+    # ⚠ NOT `kept.result is not None`: `envelope_to_jsonable` answers None for
+    # anything it cannot make JSON-safe, and a `SimpleNamespace` has no
+    # `model_dump`. SPEC §11.4.3 names that explicitly — "baton-sdk's envelope
+    # serializer answers None when an envelope cannot be made JSON-safe, so a
+    # RETURN-shape failure can legitimately carry result: null" — which is also
+    # why `result` is not a discriminator. The mode's effect on this member is
+    # covered end-to-end by the live-server tests above.
+    assert kept.result is None
 
 
 # =============================================================================
@@ -398,53 +407,54 @@ def test_client_refuses_an_unregistered_mode(tmp_path: Path) -> None:
             )
 
 
-def test_the_ADAPTER_INTERNAL_seams_refuse_it_too() -> None:
-    """`VendorConfig` is not the only door, so it cannot be the only guard.
+def test_the_mode_is_validated_at_the_DOORS_and_not_re_checked_inside() -> None:
+    """Two doors, two checks — and deliberately no third or fourth.
 
-    `BatonMiddleware` and `install_wraps` take the mode directly and this
-    repo's own tests construct both. The failure through an unguarded door is
-    silent in the one direction that cannot be undone — `withholding("OFF")`
-    is `False`, so a vendor who meant to withhold captures every body and sees
-    no error at all. Case and stray whitespace are the realistic near-misses,
-    which is why they are what is asserted.
+    ⚠ This test replaced one that asserted `BatonMiddleware` and
+    `install_wraps` ALSO refuse an unregistered mode. They did, for one commit,
+    and the justification was circular: the seams were guarded because the test
+    suite constructs them directly, which is not a vendor. The two sibling
+    modes (`intent_param_mode`, `principal_id_mode`) are threaded through those
+    same seams and validated at the config door only; adding seam checks here
+    made the official path validate twice on every real install, and would have
+    made the reserved partial rung a four-place edit. mypy-strict over
+    `src/baton` covers the chain between the door and the seam.
+
+    So what is pinned is the DOOR count: a vendor cannot reach the mode except
+    through `VendorConfig` or `Client`/`AsyncClient`, and both refuse.
     """
-    from baton.integrations.official._tool_wrap import install_wraps
+    from fastmcp import FastMCP
+
+    from baton.integrations.standalone import VendorConfig, install_baton
     from baton.integrations.standalone.middleware import BatonMiddleware
     from baton.sinks import StdoutSink
 
-    for wrong in ("OFF", "Off", "off ", "none"):
-        with pytest.raises(ValueError, match="result_capture_mode"):
-            BatonMiddleware(
-                tenant_id=TENANT,
-                vendor_id="withhold",
-                consent_token="ct_withhold",
-                sink=StdoutSink(),
-                result_capture_mode=wrong,
-            )
-
-    # The control for the loop above: the registered values still construct.
-    for right in ("full", "off"):
-        assert BatonMiddleware(
-            tenant_id=TENANT,
-            vendor_id="withhold",
-            consent_token="ct_withhold",
-            sink=StdoutSink(),
-            result_capture_mode=right,
-        )
-
-    from baton._state import SessionCounter
-
+    mcp: Any = FastMCP("withhold-doors")
     with pytest.raises(ValueError, match="result_capture_mode"):
-        install_wraps(
-            object(),
+        install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="withhold",
+                vendor_display_name="Withhold Vendor",
+                consent_token="ct_withhold",
+                tenant_id=TENANT,
+                result_capture_mode="OFF",
+            ),
+        )
+
+    # The adapter-internal seam takes it unchecked, and that is the intended
+    # shape — not an oversight. Pinned positively so a future reader does not
+    # "fix" it back into a four-place invariant.
+    assert (
+        BatonMiddleware(
             tenant_id=TENANT,
             vendor_id="withhold",
             consent_token="ct_withhold",
             sink=StdoutSink(),
-            counter=SessionCounter(),
-            fallback_session_id="sdk-test",
             result_capture_mode="OFF",
-        )
+        )._result_capture_mode
+        == "OFF"
+    )
 
 
 # =============================================================================
@@ -453,7 +463,9 @@ def test_the_ADAPTER_INTERNAL_seams_refuse_it_too() -> None:
 
 
 @pytest.mark.anyio
-async def test_withheld_events_conform_to_the_shared_schema(tmp_path: Path) -> None:
+async def test_withheld_events_conform_to_the_shared_schema(
+    event_schema: dict[str, Any], tmp_path: Path
+) -> None:
     """The reason the schema was pushed BEFORE any producer could emit this.
 
     Both tool-call payload definitions are ``additionalProperties: false``, so a
@@ -462,14 +474,9 @@ async def test_withheld_events_conform_to_the_shared_schema(tmp_path: Path) -> N
     """
     import jsonschema
 
-    schema_path = Path(__file__).resolve().parents[2] / "baton-spec" / "events.schema.json"
-    if not schema_path.exists():
-        pytest.skip(f"baton-spec submodule not checked out ({schema_path} missing)")
-    schema = json.loads(schema_path.read_text())
-
     p = tmp_path / "off.jsonl"
     await _run_standalone(p, "off", _Recorder(), fail=False)
-    events = _read(p)
+    events = read_events(p)
     assert events
     for event in events:
-        jsonschema.validate(event, schema)
+        jsonschema.validate(event, event_schema)
