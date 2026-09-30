@@ -73,6 +73,7 @@ from time import monotonic
 from typing import Any
 
 from baton._meta_coords import round_meta_coordinates
+from baton._result_capture import validate_mode
 from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
 from baton.events import (
@@ -190,6 +191,7 @@ def install_wraps(
     identity_warned: set[str] | None = None,
 ) -> None:
     """Inject + wrap all currently-registered tools AND future registrations."""
+    result_capture_mode = validate_mode(result_capture_mode, field="result_capture_mode")
     tracker = proactive_tracker or ProactiveTracker()
     # Warn-once state for identity resolution — SHARED with the annotation
     # path via install.py, so "logged once per install" is once, not once per

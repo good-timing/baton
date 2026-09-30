@@ -29,6 +29,7 @@ from mcp.types import CallToolRequestParams, ListToolsRequest
 from pydantic_core import to_jsonable_python
 
 from baton._meta_coords import round_meta_coordinates
+from baton._result_capture import validate_mode
 from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
 from baton.events import (
@@ -113,7 +114,7 @@ class BatonMiddleware(Middleware):
         self._fallback_session_id = fallback_session_id or f"sdk-{uuid7()}"
         self._annotation_tool_name = annotation_tool_name
         self._intent_param_mode = intent_param_mode
-        self._result_capture_mode = result_capture_mode
+        self._result_capture_mode = validate_mode(result_capture_mode, field="result_capture_mode")
         self._proactive = proactive_tracker or ProactiveTracker()
         self._server_meta = server_meta or {}
         self._principal_id_mode = principal_id_mode

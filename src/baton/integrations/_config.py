@@ -10,7 +10,7 @@ from typing import Any
 
 from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
 from baton._dsn import parse_dsn, resolve_dsn, select_dsn
-from baton._result_capture import RESULT_CAPTURE_MODES
+from baton._result_capture import validate_mode
 from baton.events import DEFAULT_CONSENT_TOKEN
 from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
@@ -751,15 +751,7 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             f"{sorted(PRINCIPAL_ID_MODES)} — 'hashed' emits an HMAC pseudonym, "
             f"'raw' emits the principal verbatim to the collector."
         )
-    if config.result_capture_mode not in RESULT_CAPTURE_MODES:
-        raise ValueError(
-            f"VendorConfig.result_capture_mode {config.result_capture_mode!r} must be "
-            f"one of {sorted(RESULT_CAPTURE_MODES)} — 'full' captures tool results, "
-            f"'off' withholds everything derived from them and marks each event "
-            f"result_capture='off'. Validated here rather than at emit: an "
-            f"unregistered value would otherwise be read as 'not off' and capture "
-            f"bodies a vendor believed they had switched off."
-        )
+    validate_mode(config.result_capture_mode, field="VendorConfig.result_capture_mode")
     if config.intent_param_mode not in _INTENT_PARAM_MODES:
         raise ValueError(
             f"VendorConfig.intent_param_mode {config.intent_param_mode!r} must be "

@@ -398,6 +398,55 @@ def test_client_refuses_an_unregistered_mode(tmp_path: Path) -> None:
             )
 
 
+def test_the_ADAPTER_INTERNAL_seams_refuse_it_too() -> None:
+    """`VendorConfig` is not the only door, so it cannot be the only guard.
+
+    `BatonMiddleware` and `install_wraps` take the mode directly and this
+    repo's own tests construct both. The failure through an unguarded door is
+    silent in the one direction that cannot be undone — `withholding("OFF")`
+    is `False`, so a vendor who meant to withhold captures every body and sees
+    no error at all. Case and stray whitespace are the realistic near-misses,
+    which is why they are what is asserted.
+    """
+    from baton.integrations.official._tool_wrap import install_wraps
+    from baton.integrations.standalone.middleware import BatonMiddleware
+    from baton.sinks import StdoutSink
+
+    for wrong in ("OFF", "Off", "off ", "none"):
+        with pytest.raises(ValueError, match="result_capture_mode"):
+            BatonMiddleware(
+                tenant_id=TENANT,
+                vendor_id="withhold",
+                consent_token="ct_withhold",
+                sink=StdoutSink(),
+                result_capture_mode=wrong,
+            )
+
+    # The control for the loop above: the registered values still construct.
+    for right in ("full", "off"):
+        assert BatonMiddleware(
+            tenant_id=TENANT,
+            vendor_id="withhold",
+            consent_token="ct_withhold",
+            sink=StdoutSink(),
+            result_capture_mode=right,
+        )
+
+    from baton._state import SessionCounter
+
+    with pytest.raises(ValueError, match="result_capture_mode"):
+        install_wraps(
+            object(),
+            tenant_id=TENANT,
+            vendor_id="withhold",
+            consent_token="ct_withhold",
+            sink=StdoutSink(),
+            counter=SessionCounter(),
+            fallback_session_id="sdk-test",
+            result_capture_mode="OFF",
+        )
+
+
 # =============================================================================
 # 6 · A withheld event still conforms to the published schema
 # =============================================================================

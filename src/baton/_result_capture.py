@@ -14,7 +14,7 @@ MCP in it.
 
 from __future__ import annotations
 
-__all__ = ["RESULT_CAPTURE_MODES", "WITHHELD", "withholding"]
+__all__ = ["RESULT_CAPTURE_MODES", "WITHHELD", "validate_mode", "withholding"]
 
 WITHHELD = "off"
 """The one registered non-default value, on the wire and in the config alike.
@@ -39,3 +39,29 @@ def withholding(mode: str) -> bool:
     here to be read as "capture everything".
     """
     return mode == WITHHELD
+
+
+def validate_mode(mode: str, *, field: str) -> str:
+    """Refuse an unregistered mode, naming the field the caller set.
+
+    Every seam that accepts the mode calls this, and there are four: two public
+    (`VendorConfig`, `Client`/`AsyncClient`) and two adapter-internal
+    (`BatonMiddleware`, `install_wraps`), which this repo's own tests construct
+    directly. Guarding only the public pair would leave the invariant with a
+    door in it — and the failure through that door is silent in the one
+    direction that cannot be undone: `withholding("OFF")` is `False`, so a
+    vendor who meant to withhold captures every body and sees no error.
+
+    ⚠ NOT called under the opt-out switch. `baton._optout` promises a disabled
+    Baton never throws, and nothing is emitted then, so the mode cannot be
+    wrong in any way that reaches a consumer.
+    """
+    if mode not in RESULT_CAPTURE_MODES:
+        raise ValueError(
+            f"{field} {mode!r} must be one of {sorted(RESULT_CAPTURE_MODES)} — "
+            f"'full' captures tool results, 'off' withholds everything derived "
+            f"from them and marks each event result_capture='off'. Refused here "
+            f"rather than at emit: an unregistered value reads as 'not off' and "
+            f"would capture bodies you believed were switched off."
+        )
+    return mode

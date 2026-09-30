@@ -101,7 +101,7 @@ from typing import Any, Self, TypeVar
 
 from baton._dsn import parse_dsn, select_dsn
 from baton._optout import DisabledSink, capture_disabled, log_disabled
-from baton._result_capture import RESULT_CAPTURE_MODES, WITHHELD, withholding
+from baton._result_capture import WITHHELD, validate_mode, withholding
 from baton._uuid import uuid7
 from baton.events import (
     DEFAULT_CONSENT_TOKEN,
@@ -856,13 +856,19 @@ class Client:
         # unregistered value would otherwise read as "not off" and capture
         # bodies a vendor believed they had switched off — failing silently,
         # in the one direction that cannot be undone once the events are sent.
-        if result_capture_mode not in RESULT_CAPTURE_MODES:
-            raise ValueError(
-                f"result_capture_mode {result_capture_mode!r} must be one of "
-                f"{sorted(RESULT_CAPTURE_MODES)} — 'full' captures the result "
-                f"passed to observed(), 'off' never scrubs or stores it and "
-                f"marks each event result_capture='off'."
-            )
+        #
+        # ⚠ ...but NOT under the opt-out switch, and that exception is the
+        # whole point of the switch. ``_optout`` promises that a disabled
+        # Baton never throws, because a client that refuses to construct is
+        # the switch breaking the vendor's process by another route — and both
+        # install paths honour it by returning ``disabled_handle`` BEFORE
+        # ``_validate_vendor_config``. This validation is the first raise
+        # ``__init__`` could produce while disabled, so it would have made the
+        # library path the one surface where ``BATON_DISABLED`` aborts a boot
+        # it used to survive. Nothing is emitted under the switch, so the mode
+        # cannot be wrong in any way that reaches a consumer.
+        if not self._disabled:
+            validate_mode(result_capture_mode, field="result_capture_mode")
         self._result_capture_mode = result_capture_mode
 
         # Sync mode uses a background thread + persistent loop bridge so the
@@ -1363,13 +1369,19 @@ class AsyncClient:
         # unregistered value would otherwise read as "not off" and capture
         # bodies a vendor believed they had switched off — failing silently,
         # in the one direction that cannot be undone once the events are sent.
-        if result_capture_mode not in RESULT_CAPTURE_MODES:
-            raise ValueError(
-                f"result_capture_mode {result_capture_mode!r} must be one of "
-                f"{sorted(RESULT_CAPTURE_MODES)} — 'full' captures the result "
-                f"passed to observed(), 'off' never scrubs or stores it and "
-                f"marks each event result_capture='off'."
-            )
+        #
+        # ⚠ ...but NOT under the opt-out switch, and that exception is the
+        # whole point of the switch. ``_optout`` promises that a disabled
+        # Baton never throws, because a client that refuses to construct is
+        # the switch breaking the vendor's process by another route — and both
+        # install paths honour it by returning ``disabled_handle`` BEFORE
+        # ``_validate_vendor_config``. This validation is the first raise
+        # ``__init__`` could produce while disabled, so it would have made the
+        # library path the one surface where ``BATON_DISABLED`` aborts a boot
+        # it used to survive. Nothing is emitted under the switch, so the mode
+        # cannot be wrong in any way that reaches a consumer.
+        if not self._disabled:
+            validate_mode(result_capture_mode, field="result_capture_mode")
         self._result_capture_mode = result_capture_mode
 
         self._sink: Sink = resolved.sink
