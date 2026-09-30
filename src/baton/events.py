@@ -72,6 +72,23 @@ class ToolCallEndPayload(BaseModel):
     tool_name: str
     result: Any | None = None
     duration_ms: int | None = None
+    result_capture: str | None = None
+    """SPEC §11.4: the producer declares it WITHHELD result-derived data.
+
+    Absent means captured, so no consumer needs a version table to read
+    events that predate the member. Registered value: ``"off"``.
+
+    ``str``, not ``Literal["off"]``, and not a bool: SPEC reserves a second
+    registered value for the content ladder's partial rung, and a ``Literal``
+    would make this producer unable to emit a value SPEC registers later —
+    turning a forward-compatible envelope into a ``ValidationError`` on a path
+    §11.2 requires to fail open. Same rule ``principal.source`` follows.
+
+    Declared here, unused here: the config knob and the withholding itself
+    are a separate change. This is only the wire schema PERMITTING the member,
+    which has to be published before any producer emits it — ``extra="forbid"``
+    above is why.
+    """
 
 
 class ToolCallErrorPayload(BaseModel):
@@ -100,6 +117,17 @@ class ToolCallErrorPayload(BaseModel):
     error_body: str
     duration_ms: int | None = None
     result: Any | None = None
+    result_capture: str | None = None
+    """SPEC §11.4, and it rides this payload too because the RETURN shape
+    withholds ``result`` as well.
+
+    ⚠ On that shape ``error_body`` is unwrapped FROM the result, so it is
+    withheld — but it is a REQUIRED member here and cannot be dropped, so it
+    is emitted as ``""``. An empty ``error_body`` is therefore ambiguous on
+    its own, and this member is what tells "withheld by policy" from "the
+    failure carried no message". See ``ToolCallEndPayload.result_capture``
+    for why it is a string.
+    """
 
 
 class AnnotationPayload(BaseModel):

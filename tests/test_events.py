@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -503,6 +504,35 @@ class TestPrincipalObject:
     def test_an_extra_member_is_refused(self) -> None:
         with pytest.raises(ValidationError):
             PrincipalWire(id="x", source="attested", form="hashed", issuer="nope")  # type: ignore[call-arg]
+
+    def test_the_PUBLISHED_schema_file_is_not_stale(self) -> None:
+        """The checked-in artifact, byte for byte against its generator.
+
+        ⚠ Nothing asserted this before, and the gap is invisible by
+        construction: ``test_spec_conformance`` validates emitted events
+        AGAINST the file, so a field the model gained and the file did not is
+        only caught once some producer actually emits it — in a DIFFERENT
+        repo, as a conformance failure, with the cause two commits back here.
+        A regeneration nobody ran looks exactly like a regeneration that was
+        not needed.
+
+        This is the gate ``baton-spec/scripts/generate.py`` should have had.
+        It reds on "you changed a payload model and did not regenerate", which
+        is what the 09-29 vector regeneration found the slow way — the version
+        default had been two releases behind.
+
+        Skips rather than fails when the submodule is not checked out; the
+        conformance suite already treats that as a skip.
+        """
+        import json
+
+        schema_path = Path(__file__).resolve().parents[1] / "baton-spec" / "events.schema.json"
+        if not schema_path.exists():
+            pytest.skip(f"baton-spec submodule not checked out ({schema_path} missing)")
+        assert json.loads(schema_path.read_text()) == TypeAdapter(Event).json_schema(), (
+            "events.schema.json is stale — regenerate it:\n"
+            "  cd baton && .venv/bin/python baton-spec/scripts/generate.py"
+        )
 
     def test_the_GENERATED_schema_says_what_the_model_says(self) -> None:
         """The published contract, read off the artifact rather than the class.
