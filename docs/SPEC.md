@@ -1043,13 +1043,24 @@ This subsection said "absent" on the RAISE shape until 2026-09-24 and then said
 "null" until later the same day; **both were wrong, in both directions**:
 
 - **Absence does not mean RAISE.** The field is optional, and a conformant
-  producer may omit it or send `null`. `baton-sdk` and `baton-ts` send `null`
-  (a defaulted-and-dumped model field, and an explicit declaration so the key
-  set matches Python's vector); `baton-proxy` deliberately OMITS it, on the
-  grounds that an explicit null asserts a body that never existed, and
-  `baton-extmcp` calls that emitter without one. So a consumer MUST treat an
-  absent `result` and a null `result` identically, and MUST NOT `KeyError` on
-  the first.
+  producer may omit it or send `null`. `baton-sdk` and `baton-ts` send `null`;
+  `baton-proxy` deliberately OMITS it, on the grounds that an explicit null
+  asserts a body that never existed, and `baton-extmcp` calls that emitter
+  without one. So a consumer MUST treat an absent `result` and a null `result`
+  identically, and MUST NOT `KeyError` on the first.
+
+  ⚠ **Why the two SDKs send it was stated here as "an explicit declaration so
+  the key set matches Python's vector", and that reason is VOID** — removed
+  rather than left standing, because two sibling producers implement from this
+  paragraph and an implementer reading it would add a cross-SDK key-set
+  comparison that the rule above has already made unenforceable. `baton-ts`'s own
+  conformance suite stopped comparing key sets for exactly this reason (§11.4:
+  absent ≡ null, and a consumer MUST NOT test for the KEY), so nothing can
+  observe the declaration. What remains is per-producer and not normative:
+  `baton-sdk`'s is a defaulted-and-dumped model field, and on `tool_call_end`
+  `baton-ts`'s is its schema default too — measured, dropping the explicit
+  literal there changes no byte on the wire. A conforming producer picks either,
+  and a consumer cannot tell.
 - **Null does not mean RAISE either.** `baton-sdk`'s envelope serializer answers
   `None` when an envelope cannot be made JSON-safe, so a RETURN-shape failure
   can legitimately carry `result: null`.
