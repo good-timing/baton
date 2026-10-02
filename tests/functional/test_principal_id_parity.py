@@ -323,16 +323,15 @@ async def test_a_verified_token_with_NO_hook_yields_no_principal_on_either_adapt
 async def test_the_email_hook_reads_the_token_on_both_adapters_and_both_emit_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``SessionResolutionContext.access_token`` is filled by four call sites
+    """``SessionResolutionContext.claims`` is filled by four call sites
     (two adapters x tool call and annotation). ``_one_principal`` collapses
     every event of a run to one value, so a site that forgot the token yields
     a second, ``None``, entry and fails here."""
     from baton.identity import hash_principal_id
 
     claims = {"sub": "opaque-123", "email": "alice@acme.example", "iss": CLAIMS["iss"]}
-    expected = hash_principal_id(
-        claims["email"], tenant_id=TENANT, key=HMAC_KEY, issuer=claims["iss"]
-    )
+    # No issuer: an address is unique on its own (see the hook's docstring).
+    expected = hash_principal_id(claims["email"], tenant_id=TENANT, key=HMAC_KEY)
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
     await _run_official_path(

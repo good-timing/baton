@@ -75,7 +75,7 @@ install_baton(mcp, VendorConfig(
 
 ## Who is calling
 
-**Nothing is captured about the person behind a call unless you say how to find them.** Pass a `resolve_principal` hook: it receives the call's headers, `_meta`, tool name, arguments and verified OAuth access token, and returns a `Principal` or `None`. Two ready-made hooks cover OAuth:
+**Nothing is captured about the person behind a call unless you say how to find them.** Pass a `resolve_principal` hook: it receives the call's headers, `_meta`, tool name, arguments and verified OAuth token claims, and returns a `Principal` or `None`. Two ready-made hooks cover OAuth:
 
 ```python
 from baton import install_baton, VendorConfig, principal_from_oauth_email
@@ -86,7 +86,7 @@ install_baton(mcp, VendorConfig(
 ))
 ```
 
-`principal_from_oauth_email` keys on the token's `email` claim; `principal_from_oauth_sub` on its subject. Each returns `None` when the claim is missing, so they compose: `lambda ctx: principal_from_oauth_email(ctx) or principal_from_oauth_sub(ctx)`. A token exists only on HTTP with auth configured; on stdio, write a hook that names the user from whatever you authenticated them with.
+`principal_from_oauth_email` keys on the token's `email` claim (the whole address); `principal_from_oauth_sub` on its subject and issuer. Each returns `None` when the claim is missing, so they compose: `lambda ctx: principal_from_oauth_email(ctx) or principal_from_oauth_sub(ctx)`. A token exists only on HTTP with auth configured; on stdio, write a hook that names the user from whatever you authenticated them with.
 
 The value is HMAC-hashed in your process before it is sent, keyed with `BATON_PRINCIPAL_ID_HMAC_KEY`; without a key, nothing is attached.
 

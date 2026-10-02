@@ -32,6 +32,7 @@ from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
     ResolvePrincipalHook,
     resolve_call_principal,
+    token_claims,
 )
 from baton.integrations.runtime_adapter import (
     UNKNOWN_AGENT_RUNTIME,
@@ -153,7 +154,7 @@ def register_annotation_tool(
                 meta=meta_dict,
                 tool_name=name,
                 arguments={},
-                access_token=_auth.current_access_token(),
+                claims=token_claims(_auth.current_access_token()),
             )
             if resolve_principal_hook is not None
             else None

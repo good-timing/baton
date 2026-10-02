@@ -115,6 +115,7 @@ from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
     ResolvePrincipalHook,
     resolve_call_principal,
+    token_claims,
 )
 from baton.integrations.official import _auth
 from baton.integrations.official._registry import get_tool_manager, get_tool_registry
@@ -645,7 +646,7 @@ def _wrap_tool_run(
                 meta=meta_dict,
                 tool_name=name,
                 arguments=params,
-                access_token=_auth.current_access_token(),
+                claims=token_claims(_auth.current_access_token()),
             )
             if resolve_principal_hook is not None
             else None

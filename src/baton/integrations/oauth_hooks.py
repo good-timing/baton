@@ -1,7 +1,7 @@
 """Ready-made ``resolve_principal`` hooks for a vendor whose server runs OAuth.
 
-Pass one as ``VendorConfig(resolve_principal=...)``. Each reads a claim off the
-verified access token the adapter put on ``SessionResolutionContext`` and
+Pass one as ``VendorConfig(resolve_principal=...)``. Each reads a claim from
+``SessionResolutionContext.claims`` — the verified access token's claims — and
 returns a ``Principal``, or ``None`` when the claim is not there — so a vendor
 can also call them from a hook of their own and fall back to something else::
 
@@ -26,40 +26,35 @@ combination measured (2026-09-07), while ``subject`` is ``None`` for every user
 across the whole fastmcp 2.x/3.x band and is DROPPED by fastmcp 3.4.2's own
 ``AccessToken`` rebuild.
 
-⚠ **``claims`` does not exist on ``mcp < 1.27``.** On 1.20 and 1.25 the model
-carries only ``token``/``client_id``/``scopes``/``expires_at``/``resource``, and
-Pydantic's default ``extra="ignore"`` SILENTLY DROPS a ``claims=…`` a verifier
-passes (measured, not read). Hence ``getattr``: on that band these hooks return
-``None``, while a vendor who declares ``claims`` on an ``AccessToken`` SUBCLASS
-is read correctly on every version.
+⚠ **Nothing on ``mcp < 1.27``**, whose ``AccessToken`` has no ``claims``:
+``context.claims`` is ``None`` there and both hooks return ``None``. See
+``identity_adapter.token_claims`` for the vendor-subclass escape hatch.
+
+Both run inline rather than on a worker thread (``_baton_runs_inline``): they
+are a dict lookup, and cannot block.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from baton.identity import Principal
 
 if TYPE_CHECKING:
     from baton.integrations._config import SessionResolutionContext
 
-
-def _claims(context: SessionResolutionContext) -> dict[str, Any] | None:
-    """The verified token's claims, or ``None``. Never raises.
-
-    Broad on purpose: this reads attributes off an object a VENDOR's verifier
-    constructed, and a hook that raises costs the event its principal. The
-    hook runner would catch it, but logging a stack trace on every call of a
-    server whose verifier builds a slightly odd token is noise, not a signal.
-    """
-    try:
-        claims = getattr(context.access_token, "claims", None)
-    except Exception:
-        return None
-    return claims if isinstance(claims, dict) else None
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 
-def _issuer(claims: dict[str, Any]) -> str | None:
+def _inline(fn: _F) -> _F:
+    """Mark an SDK-owned hook as safe to run on the event loop — see
+    ``run_vendor_hook``'s fast path. Never applied to a vendor's callable."""
+    fn._baton_runs_inline = True  # type: ignore[attr-defined]
+    return fn
+
+
+def _issuer(claims: Mapping[str, Any]) -> str | None:
     """``iss`` when it is a non-empty string, else ``None``.
 
     ``""`` and ``None`` hash DIFFERENTLY (the issuer is folded into the HMAC
@@ -70,13 +65,14 @@ def _issuer(claims: dict[str, Any]) -> str | None:
     return issuer if isinstance(issuer, str) and issuer else None
 
 
+@_inline
 def principal_from_oauth_sub(context: SessionResolutionContext) -> Principal | None:
     """The token's ``sub``, keyed with its ``iss``.
 
     ``sub`` is unique only per issuer, which is why ``iss`` rides along: two
     identity providers can hand two different people the same subject.
     """
-    claims = _claims(context)
+    claims = context.claims
     if claims is None:
         return None
     sub = claims.get("sub")
@@ -88,13 +84,20 @@ def principal_from_oauth_sub(context: SessionResolutionContext) -> Principal | N
     return Principal(principal_id=sub, issuer=_issuer(claims))
 
 
+@_inline
 def principal_from_oauth_email(context: SessionResolutionContext) -> Principal | None:
-    """The token's ``email`` claim, keyed with its ``iss``.
+    """The token's ``email`` claim, as the WHOLE address and with no issuer.
 
-    ``principal_id`` is the WHOLE address and ``user_name`` is the part before
-    the last ``@``. The local part alone is not an id — ``alice@acme.com`` and
-    ``alice@contoso.com`` are two people — so it rides as the name, which is
-    PII confined to the payload tier and never reaches the console.
+    The local part alone is not an id — ``alice@acme.com`` and
+    ``alice@contoso.com`` are two people. It is returned as ``user_name``,
+    which is what the hook HANDS BACK and nothing more: nothing in the SDK
+    reads it and it is sent nowhere.
+
+    **No issuer**, unlike the ``sub`` hook. A subject is unique only per
+    issuer; an address is unique on its own. Folding ``iss`` in would give one
+    person a new pseudonym the day their identity provider changes its issuer
+    URL (a v1 → v2 endpoint, a custom domain) or they sign in through a second
+    one — the actor split keying on email exists to avoid.
 
     ⚠ **``email`` is not a standard ACCESS-token claim.** OIDC puts it in the ID
     token; it is in ``claims`` only if the vendor's identity provider adds it
@@ -104,15 +107,11 @@ def principal_from_oauth_email(context: SessionResolutionContext) -> Principal |
     enough to group a person by is the vendor's call, and a vendor who says no
     writes a three-line hook that checks it.
     """
-    claims = _claims(context)
+    claims = context.claims
     if claims is None:
         return None
     email = claims.get("email")
     if not isinstance(email, str) or not email.strip():
         return None
     local, at, _domain = email.rpartition("@")
-    return Principal(
-        principal_id=email,
-        user_name=local if at and local else None,
-        issuer=_issuer(claims),
-    )
+    return Principal(principal_id=email, user_name=local if at and local else None)

@@ -28,16 +28,18 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ### Added
 
 - **`principal_from_oauth_sub` and `principal_from_oauth_email` — ready-made
-  `resolve_principal` hooks.** Both read the verified token the adapter now puts
-  on `SessionResolutionContext.access_token`, and return `None` when their claim
-  is absent, so they compose with `or`. The email hook keys on the WHOLE address
-  (`alice@acme.com` and `alice@contoso.com` are two people) and carries the part
-  before the last `@` as `Principal.user_name`, which stays in the payload tier
-  and never reaches the collector. Neither consults `email_verified`.
-- **`SessionResolutionContext.access_token`** — the verified token for the
-  request, or `None` (stdio, unauthenticated HTTP), so any hook can read claims
-  without importing an adapter's auth module. Defaulted, so hand-built contexts
-  in your own tests keep working.
+  `resolve_principal` hooks.** Both read `SessionResolutionContext.claims` and
+  return `None` when their claim is absent, so they compose with `or`. The sub
+  hook keys on `(sub, iss)`, exactly as the deleted rung did. The email hook keys
+  on the WHOLE address with no issuer — an address is unique on its own, and an
+  issuer URL change must not split a person — and returns the part before the
+  last `@` as `Principal.user_name`, which nothing sends anywhere. Neither
+  consults `email_verified`. Both run inline, not on a hook thread.
+- **`SessionResolutionContext.claims`** — the verified token's claims, or `None`
+  (stdio, unauthenticated HTTP, `mcp < 1.27`), extracted the same way on both
+  adapters so a hook never touches the adapter-specific token object. Kept out
+  of the context's `repr`. Defaulted, so hand-built contexts in your own tests
+  keep working.
 
 - **`VendorConfig.result_capture_mode` / `Client(result_capture_mode=...)` — a
   vendor can declare that tool RESPONSE data is never captured.** `"full"` is

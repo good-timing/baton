@@ -255,6 +255,15 @@ async def run_vendor_hook(
     # the budget tells a vendor to tune a knob that is not the problem, and
     # ``from None`` would erase the real cause from the ``exc_info`` their logs
     # are about to print.
+    # SDK-owned hooks that cannot block (a dict lookup) run inline: a thread
+    # hop costs ~40x the call, takes a limiter slot and counts toward the
+    # ceiling, all to guard against blocking that cannot happen. Only
+    # functions this package marks; a vendor's own callable never is.
+    if getattr(fn, "_baton_runs_inline", False):
+        try:
+            return fn(*args)
+        except Exception as exc:
+            raise HookFailed(f"{hook_name} hook raised {type(exc).__name__}: {exc}") from exc
     deadline = asyncio.timeout(budget)
     try:
         async with deadline:

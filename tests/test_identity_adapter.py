@@ -35,6 +35,7 @@ from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_RAW,
     RAW_PRINCIPAL_ID_MAX_LEN,
     resolve_call_principal,
+    token_claims,
 )
 
 KEY = b"unit-test-key"
@@ -63,8 +64,10 @@ class _OldBandToken:
 
 
 def _ctx(token: Any) -> SessionResolutionContext:
+    """Built as the adapters build it: the token's claims via ``token_claims``,
+    so every token-shape trap below runs through the real extraction."""
     return SessionResolutionContext(
-        headers=None, meta=None, tool_name="lookup", arguments={}, access_token=token
+        headers=None, meta=None, tool_name="lookup", arguments={}, claims=token_claims(token)
     )
 
 
@@ -440,7 +443,24 @@ def test_the_email_hook_keys_on_the_WHOLE_address_and_names_the_local_part() -> 
     ``alice@contoso.com`` are two people. It rides as ``user_name``, which never
     leaves the payload tier."""
     got = _email(_Token(claims={"email": "alice@acme.com", "sub": "x", "iss": "https://idp"}))
-    assert got == Principal(principal_id="alice@acme.com", user_name="alice", issuer="https://idp")
+    assert got == Principal(principal_id="alice@acme.com", user_name="alice", issuer=None)
+
+
+def test_the_email_hook_keeps_one_pseudonym_across_issuers() -> None:
+    """An address is unique on its own, so the issuer is NOT folded in: an
+    identity provider moving its issuer URL, or a second one, must not split
+    one person into two actors."""
+    a = _resolve(
+        _Token(claims={"email": "alice@acme.com", "iss": "https://sts.windows.net/x/"}),
+        hook=principal_from_oauth_email,
+    )
+    b = _resolve(
+        _Token(
+            claims={"email": "alice@acme.com", "iss": "https://login.microsoftonline.com/x/v2.0"}
+        ),
+        hook=principal_from_oauth_email,
+    )
+    assert a is not None and a == b
 
 
 def test_the_same_local_part_at_two_domains_is_two_people() -> None:
@@ -451,8 +471,9 @@ def test_the_same_local_part_at_two_domains_is_two_people() -> None:
 
 
 def test_the_local_part_never_reaches_the_wire() -> None:
-    """``user_name`` is PII confined to the payload tier. In hashed mode the
-    wire object must carry neither half of the address."""
+    """``user_name`` is sent nowhere today. This is the guard for the day
+    someone wires it somewhere: in hashed mode the wire object must carry
+    neither half of the address."""
     got = _resolve(_Token(claims={"email": "alice@acme.com"}), hook=principal_from_oauth_email)
     assert got is not None
     blob = got.model_dump_json()
@@ -498,6 +519,24 @@ def test_email_verified_is_not_consulted() -> None:
     """Whether an unverified address is good enough is the vendor's call."""
     got = _email(_Token(claims={"email": "alice@acme.com", "email_verified": False}))
     assert got is not None and got.principal_id == "alice@acme.com"
+
+
+def test_the_hooks_run_inline_and_a_vendor_callable_does_not() -> None:
+    """The fast path in ``run_vendor_hook`` keys on this mark; a vendor's own
+    callable — even one composing the two — must still go to a thread."""
+    assert principal_from_oauth_sub._baton_runs_inline is True  # type: ignore[attr-defined]
+    assert principal_from_oauth_email._baton_runs_inline is True  # type: ignore[attr-defined]
+
+    def composed(ctx: Any) -> Any:
+        return principal_from_oauth_email(ctx) or principal_from_oauth_sub(ctx)
+
+    assert not getattr(composed, "_baton_runs_inline", False)
+
+
+def test_the_claims_never_appear_in_the_contexts_repr() -> None:
+    """A hook that logs its context must not write the email out."""
+    ctx = _ctx(_Token(claims={"email": "alice@acme.com"}))
+    assert "alice" not in repr(ctx)
 
 
 def test_the_hooks_never_raise_on_a_hostile_token() -> None:

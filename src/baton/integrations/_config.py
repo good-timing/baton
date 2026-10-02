@@ -163,7 +163,8 @@ class SessionResolutionContext:
     each adapter's extractor.** Of the four fields, ``headers`` is the only one
     declared abstractly, and it is the only one that diverged — the other three
     are concrete types mypy forces every adapter to normalize before it can
-    construct this object. The abstract annotation WAS the hole, so a fix that
+    construct this object (``claims``, added later, is a plain ``Mapping``
+    for the same reason — see its own note). The abstract annotation WAS the hole, so a fix that
     lived in one adapter's extractor would leave the class promising something
     only a convention upheld: a fifth construction site, a third extractor or
     the planned ``claude_code`` adapter would re-open A8 with no type error and
@@ -173,13 +174,13 @@ class SessionResolutionContext:
     ``{"X-Forwarded-User": ...}`` would otherwise behave unlike production in
     whichever direction they happened to spell it.
 
-    ⚠ **The symptom differs by deployment and the worse one is not the obvious
-    one.** Where no token exists (stdio, or HTTP with no OAuth) the miss yields
-    no ``principal`` on any event. But where a token DOES exist — HTTP +
-    OAuth, the shape ``X-Forwarded-User`` actually lives in — the hook is rung 0
-    and a raise falls through to rung 1, so events carried the TOKEN's
-    principal instead of the hook's — a different person, silently, depending
-    on which adapter the vendor shipped. A plain dict is folded below, in
+    ⚠ **The symptom differed by deployment, and the worse one was not the
+    obvious one.** Where no token existed the miss yielded no ``principal``.
+    But where one DID — HTTP + OAuth, the shape ``X-Forwarded-User`` actually
+    lives in — a raise fell through to the SDK's own token rung, so events
+    carried the TOKEN's principal instead of the hook's: a different person,
+    silently, depending on which adapter the vendor shipped. That rung is gone
+    (SPEC §13), so today the miss is an absent ``principal`` either way. A plain dict is folded below, in
     ``__post_init__``; see ``CaseInsensitiveHeaders`` for the direction rule.
 
     ⚠ **The name is a fossil.** This was built for
@@ -194,20 +195,24 @@ class SessionResolutionContext:
     meta: dict[str, Any] | None
     tool_name: str
     arguments: dict[str, Any]
-    access_token: Any | None = None
-    """The verified OAuth access token for this request, or ``None``.
+    claims: Mapping[str, Any] | None = field(default=None, repr=False)
+    """The verified OAuth access token's claims for this request, or ``None``.
 
-    Whatever the adapter's own ``get_access_token()`` returned — an
-    ``AccessToken`` the vendor's ``TokenVerifier`` already validated. The SDK
-    does not verify signatures and never has; it hands over what the verifier
-    produced. ``None`` on stdio (MCP auth is ASGI middleware, so no token can
-    exist there) and on any unauthenticated HTTP request, which is most of them.
+    Read off whatever the adapter's own ``get_access_token()`` returned — a
+    token the vendor's ``TokenVerifier`` already validated; the SDK does not
+    verify signatures and never has. ``None`` on stdio (MCP auth is ASGI
+    middleware, so no token can exist there), on any unauthenticated HTTP
+    request, and on ``mcp < 1.27``, whose ``AccessToken`` has no ``claims``.
 
-    Carried so a hook can read claims without importing either adapter's auth
-    module: ``baton.principal_from_oauth_sub`` and
-    ``baton.principal_from_oauth_email`` read it, and so can a vendor's own.
-    Defaulted, so a vendor hand-building this object in their own unit tests
-    keeps working."""
+    **Claims, not the token object, because the token object is the A8 hole
+    again.** It is an mcp ``AccessToken`` on one adapter and a fastmcp one on
+    the other, with ``subject`` populated on one and ``None`` on the other —
+    so a hook reading the object would answer differently by adapter. The
+    dict is what both agree on, extracted once by ``token_claims``.
+
+    ``repr=False`` because it carries PII (an ``email`` claim) and a hook that
+    logs its context would otherwise write it out. Defaulted, so a vendor
+    hand-building this object in their own unit tests keeps working."""
 
     def __post_init__(self) -> None:
         """Fold a plain ``dict`` of headers; pass anything else through.
@@ -519,7 +524,7 @@ class VendorConfig:
     ``principal`` (SPEC §11.4). Unset, no event carries one.
 
     Takes a ``SessionResolutionContext`` — headers, meta, tool name, arguments
-    and the verified ``access_token`` — and returns ``Principal | None``.
+    and the verified token's ``claims`` — and returns ``Principal | None``.
     ``None``, a wrong type, or a raised exception (logged, never propagated)
     means the event ships without a ``principal``. Sync or async. Import the
     return type as ``from baton import Principal``.

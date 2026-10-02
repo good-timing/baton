@@ -26,11 +26,14 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from baton.events import PrincipalWire
 from baton.identity import Principal, hash_principal_id
 from baton.integrations._hooks import run_vendor_hook
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 if TYPE_CHECKING:
     # Type-only, and it has to be: ``_config`` imports ``ResolvePrincipalHook`` and
@@ -86,7 +89,8 @@ RAW_PRINCIPAL_ID_MAX_LEN = 128
 
 
 #: A vendor's per-request identity resolver. Takes the adapter-neutral
-#: ``SessionResolutionContext`` — headers, meta, tool name and arguments — so
+#: ``SessionResolutionContext`` — headers, meta, tool name, arguments and the
+#: verified token's claims — so
 #: it is not coupled to either library's ``Context`` type. The shape and its
 #: name are inherited from ``resolve_session_id``, which shared it until that
 #: hook was removed 2026-09-12; this is now its only caller.
@@ -167,6 +171,33 @@ async def resolve_principal_via_hook(
     if not isinstance(result.issuer, str) or not result.issuer:
         result = replace(result, issuer=None)
     return result
+
+
+def token_claims(token: Any) -> Mapping[str, Any] | None:
+    """The verified token's claims, or ``None``. Never raises.
+
+    ``token`` is whatever the adapter's ``get_access_token()`` returned —
+    ``None`` on most requests and every stdio one. Called by all four context
+    construction sites, so both adapters hand a hook the same dict.
+
+    ⚠ **``getattr``, because ``claims`` does not exist on ``mcp < 1.27``.** On
+    1.20 and 1.25 the model carries only ``token``/``client_id``/``scopes``/
+    ``expires_at``/``resource``, and Pydantic's default ``extra="ignore"``
+    SILENTLY DROPS a ``claims=…`` a verifier passes (measured, not read). A
+    vendor whose verifier returns an ``AccessToken`` SUBCLASS declaring
+    ``claims`` is read correctly on every version.
+
+    Broad ``except``: this reads attributes off an object a VENDOR's verifier
+    built, outside the hook runner's boundary, and an identity read may not
+    fail a tool call.
+    """
+    if token is None:
+        return None
+    try:
+        claims = getattr(token, "claims", None)
+    except Exception:
+        return None
+    return claims if isinstance(claims, dict) else None
 
 
 def _finish_principal(
@@ -297,7 +328,7 @@ async def resolve_call_principal(
     ⚠ **There is no fallback, and that is the decision rather than a gap.**
     This used to fall through to the verified token's ``sub``. A vendor who
     wants that passes ``baton.principal_from_oauth_sub`` as the hook, which reads
-    the same claim off ``context.access_token`` — so the only thing that
+    the same claim off ``context.claims`` — so the only thing that
     changed is who chose it.
 
     ⚠ **The hook is not consulted when it is not configured, and that path must

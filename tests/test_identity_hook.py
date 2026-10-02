@@ -55,11 +55,11 @@ class _Token:
     )
 
 
-#: The context every miss below runs under: it CARRIES a usable token, so a
-#: miss that came back non-``None`` would mean something read it behind the
-#: hook's back — the deleted fallback returning.
+#: The context every miss below runs under: it CARRIES a usable token's
+#: claims, so a miss that came back non-``None`` would mean something read
+#: them behind the hook's back — the deleted fallback returning.
 CTX_WITH_TOKEN = SessionResolutionContext(
-    headers=None, meta=None, tool_name="lookup", arguments={}, access_token=_Token()
+    headers=None, meta=None, tool_name="lookup", arguments={}, claims=_Token().claims
 )
 
 
@@ -594,3 +594,25 @@ def test_a_starlette_headers_is_passed_through_untouched() -> None:
 
     assert ctx.headers is original
     assert ctx.headers.getlist("x-forwarded-user") == ["employee-4417"]  # type: ignore[union-attr]
+
+
+async def test_the_shipped_hooks_never_touch_the_hook_thread_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``run_vendor_hook``'s inline fast path, proven by taking the thread pool
+    away: a shipped hook still resolves, and a vendor's sync hook — which must
+    still go to a thread — now cannot."""
+    import anyio.to_thread
+
+    from baton import principal_from_oauth_sub
+
+    async def no_threads(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("a hook went to a worker thread")
+
+    monkeypatch.setattr(anyio.to_thread, "run_sync", no_threads)
+
+    got = await _resolve(principal_from_oauth_sub)
+    assert got is not None and got.source == "asserted"
+    # The control: without it, a pool that was never consulted at all would
+    # pass the line above for the wrong reason.
+    assert await _resolve(lambda _c: Principal(principal_id="employee-1")) is None

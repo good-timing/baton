@@ -28,6 +28,7 @@ from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
     ResolvePrincipalHook,
     resolve_call_principal,
+    token_claims,
 )
 from baton.integrations.official import _auth
 from baton.integrations.official._compat import ContextClass as Context
@@ -187,10 +188,10 @@ def register_annotation_tool(
         # Identity takes the SAME ladder the tool-call path takes, hook
         # included, and carries the finished wire value — the raw principal
         # never travels past the resolver. Wiring only the tool-call path
-        # would give one session a DIFFERENT PERSON on its annotations than on
-        # its calls, since the hook sits above the token and the two rungs
-        # generally name different subjects: the split this field exists to
-        # prevent, arriving through the door built to fix it.
+        # would leave the annotations with NO person while the calls they
+        # describe carry one — a hook resolves per request, so each path must
+        # consult it: the split this field exists to prevent, arriving through
+        # the door built to fix it.
         #
         # Unlike ``runtime_meta`` just above there is no asymmetry argument
         # against emitting it — ``principal`` carries no session identity, so
@@ -201,7 +202,7 @@ def register_annotation_tool(
                 meta=meta_dict,
                 tool_name=name,
                 arguments={},
-                access_token=_auth.current_access_token(),
+                claims=token_claims(_auth.current_access_token()),
             )
             if resolve_principal_hook is not None
             else None
