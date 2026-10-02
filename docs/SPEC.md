@@ -1452,6 +1452,36 @@ Defined error codes:
 
   **⚠ (4) A NEW limit is recorded, and it is a gap rather than a nuance.** A sensor wrapping the tool executor cannot see a failure the SDK manufactures above it — output-schema validation, unknown tool, input-validation failure. Measured on both TypeScript majors: the client receives `isError: true` and the producer emits `tool_call_end`. **A consumer counting failures from `baton-ts` is counting failures the HANDLER reported, not failures the caller saw.** ⚠ Scoped to `baton-ts`, and the scope is a FINDING rather than caution: on `mcp` 2.x, argument validation and output conversion both happen inside `Tool.run`, which `baton-sdk`'s adapters wrap from OUTSIDE — so a conversion failure raises through to them and is filed correctly. Read in the installed 2.x source; `mcp` 1.x unread. The first draft of this entry called the same class “plausible” in Python, which was a hedge standing in for a five-minute read. Moving the sensor up does not simply fix it: both majors convert a throw into a returned `isError` inside the request handler, so above that seam `error_type` collapses to `"tool_error"` for both shapes and the exception class name is unrecoverable. The wire sensors are where this class is visible today.
 
+  **⚠ Re-measured 2026-09-30, and the paragraph above is wrong twice.** Driven
+  through real in-memory sessions on `mcp` 2.2.0, `fastmcp` 4.0.3 and both
+  TypeScript majors, the three cases are NOT one class and no producer files all
+  three:
+
+  | case | `baton-ts` | official adapter | FastMCP middleware |
+  |---|---|---|---|
+  | unknown tool | no event | no event | `tool_call_error` |
+  | input validation | no event | `tool_call_error` | `tool_call_error` |
+  | output-schema / structured-content conversion | `tool_call_end` | `tool_call_error` | **`tool_call_end`** |
+
+  **(a) "the producer emits `tool_call_end`" holds for ONE of the three cases.**
+  An unknown tool and a rejected argument emit NOTHING from `baton-ts`, which is
+  a blind spot rather than a miscount: a consumer does not see those calls as
+  passes, it does not see them at all. The distinction matters because the two
+  have opposite remedies — one is data to add, the other is data to correct.
+
+  **(b) The false success is NOT TypeScript-specific.** `Tool.run` is the
+  OFFICIAL adapter's seam and the reasoning above is right about it. The FastMCP
+  path is a middleware in that framework's own chain, and its structured-content
+  conversion runs AFTER the chain returns — so that surface emits
+  `tool_call_end` for a call the caller saw fail. Two of the three SDK-side
+  surfaces carry this shape, not one.
+
+  ⚠ Scope of the measurement, stated so it is not over-read: `mcp` 1.x and other
+  `fastmcp` 4.x patches are unmeasured. And on `@modelcontextprotocol/sdk` 1.x
+  the output-schema case produced NO caller-visible failure either (empty
+  content, no flag), so `baton-ts`'s false success in that row is `2.x`-only;
+  the 1.x cell is a success both sides agree on.
+
   **⚠ (5) Settled later the same day: the `content` clause MUST NOT reach a WIRE sensor either.** This entry first left that open, with `baton-proxy` applying the clause and this section saying it should not — a deliberate disagreement pending a measurement. The measurement is one read: `CallToolResult`'s JSON schema makes `content` REQUIRED with no default, so the clause cannot fire for a conformant server and only loses failures from a non-conformant one. `baton-proxy` `a8e02bf` drops it and now matches `baton-extmcp` on that clause — though not on the flag's FORM, which `servicer.py:324` reads truthily while the proxy requires the boolean `true`; MCP types it as a boolean and a truthy read lets a server's own string `"false"` become a fabricated failure. **A consumer sees strictly MORE `tool_call_error` from the proxy after that commit**, for the same reason as point (3) of the 09-22 entry: a miscount removed, not a reliability regression.
 
   **Not a wire change.** No field is added, removed or retyped, and no stored event's meaning moves. What changes is which producers may conformantly emit which shape, and one factual correction a consumer could have acted on.
