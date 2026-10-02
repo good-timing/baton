@@ -521,22 +521,72 @@ def test_email_verified_is_not_consulted() -> None:
     assert got is not None and got.principal_id == "alice@acme.com"
 
 
-def test_the_hooks_run_inline_and_a_vendor_callable_does_not() -> None:
-    """The fast path in ``run_vendor_hook`` keys on this mark; a vendor's own
-    callable — even one composing the two — must still go to a thread."""
-    assert principal_from_oauth_sub._baton_runs_inline is True  # type: ignore[attr-defined]
-    assert principal_from_oauth_email._baton_runs_inline is True  # type: ignore[attr-defined]
+def test_only_the_shipped_hooks_run_inline_and_nothing_inherits_it() -> None:
+    """The fast path keys on IDENTITY. A ``functools.wraps`` wrapper copies a
+    function's ``__dict__``, and a ``Mock`` answers truthy for any attribute —
+    both took the inline path while it read an attribute (review, 2026-10-02)."""
+    import functools
+    from unittest.mock import AsyncMock
+
+    from baton.integrations._hooks import _INLINE_HOOKS
+
+    assert principal_from_oauth_sub in _INLINE_HOOKS
+    assert principal_from_oauth_email in _INLINE_HOOKS
+
+    @functools.wraps(principal_from_oauth_sub)
+    def wrapped(ctx: Any) -> Any:
+        return principal_from_oauth_sub(ctx)
 
     def composed(ctx: Any) -> Any:
         return principal_from_oauth_email(ctx) or principal_from_oauth_sub(ctx)
 
-    assert not getattr(composed, "_baton_runs_inline", False)
+    for vendor_callable in (wrapped, composed, AsyncMock()):
+        assert vendor_callable not in _INLINE_HOOKS
 
 
-def test_the_claims_never_appear_in_the_contexts_repr() -> None:
-    """A hook that logs its context must not write the email out."""
-    ctx = _ctx(_Token(claims={"email": "alice@acme.com"}))
-    assert "alice" not in repr(ctx)
+def test_an_AsyncMock_hook_is_awaited_not_returned_raw() -> None:
+    """The observable half of the Mock case: a vendor testing with an
+    ``AsyncMock`` hook gets its principal, not an unawaited coroutine."""
+    from unittest.mock import AsyncMock
+
+    got = _resolve(None, hook=AsyncMock(return_value=Principal(principal_id="u1")))
+    assert got is not None and got.source == "asserted"
+
+
+def test_the_context_repr_carries_neither_the_claims_nor_the_bearer() -> None:
+    """A hook that logs its context must not write out the email or a live
+    credential — the standalone adapter delivers ``Authorization`` among the
+    headers."""
+    ctx = SessionResolutionContext(
+        headers={"authorization": "Bearer eyJSECRET"},
+        meta=None,
+        tool_name="lookup",
+        arguments={},
+        claims=token_claims(_Token(claims={"email": "alice@acme.com"})),
+    )
+    text = repr(ctx)
+    assert "alice" not in text
+    assert "eyJSECRET" not in text
+
+
+def test_token_claims_is_a_read_only_copy() -> None:
+    """Shipped hooks run inline on the request; a hook normalizing in place
+    must not rewrite the claims the vendor's own handler reads next."""
+    original = {"email": "Alice@Acme.com"}
+    claims = token_claims(_Token(claims=original))
+    assert claims == original
+    with pytest.raises(TypeError):
+        claims["email"] = "x"  # type: ignore[index]
+    assert claims is not original
+
+
+def test_token_claims_accepts_any_mapping_not_only_dict() -> None:
+    """The field is typed ``Mapping``; a verifier storing a ``MappingProxyType``
+    must not be silently read as no claims at all."""
+    from types import MappingProxyType
+
+    claims = token_claims(_Token(claims=MappingProxyType({"sub": "alice"})))  # type: ignore[arg-type]
+    assert claims is not None and claims["sub"] == "alice"
 
 
 def test_the_hooks_never_raise_on_a_hostile_token() -> None:

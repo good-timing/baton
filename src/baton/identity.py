@@ -67,10 +67,10 @@ class Principal:
     """A resolved principal, RAW (pre-hash) — a person, a service account or an
     organisation, whichever the resolver can honestly name.
 
-    Only ``principal_id`` is hashed onto the wire today. ``user_name`` / ``user_data``
-    are PII confined to the customer-owned payload tier — they are NOT emitted
-    to the console path today and are force-scrubbed out of payloads (see
-    scrub ``REDACT_FIELD_NAMES``).
+    Only ``principal_id`` reaches the wire. ``user_name`` / ``user_data`` are
+    what a hook HANDS BACK and nothing more: no code path reads them, so they
+    are sent nowhere. If one ever is, it is PII, and the scrubber already
+    force-redacts a field named ``user_name`` (``REDACT_FIELD_NAMES``).
     """
 
     principal_id: str

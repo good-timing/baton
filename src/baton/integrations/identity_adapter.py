@@ -24,16 +24,14 @@ and this is who the vendor says the person is. They answer different questions.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from baton.events import PrincipalWire
 from baton.identity import Principal, hash_principal_id
 from baton.integrations._hooks import run_vendor_hook
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 if TYPE_CHECKING:
     # Type-only, and it has to be: ``_config`` imports ``ResolvePrincipalHook`` and
@@ -190,14 +188,20 @@ def token_claims(token: Any) -> Mapping[str, Any] | None:
     Broad ``except``: this reads attributes off an object a VENDOR's verifier
     built, outside the hook runner's boundary, and an identity read may not
     fail a tool call.
+
+    **A read-only COPY**, not the token's own dict: shipped hooks run inline
+    on the request, and a hook normalizing in place would otherwise rewrite
+    the claims the vendor's tool handler reads next.
     """
     if token is None:
         return None
     try:
         claims = getattr(token, "claims", None)
+        if not isinstance(claims, Mapping):
+            return None
+        return MappingProxyType(dict(claims))
     except Exception:
         return None
-    return claims if isinstance(claims, dict) else None
 
 
 def _finish_principal(

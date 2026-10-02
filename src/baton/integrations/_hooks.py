@@ -72,7 +72,8 @@ import asyncio
 import inspect
 import logging
 import threading
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 # ⚠ ``anyio`` is a CORE dependency, and this import is why. ``baton/__init__``
 # imports ``VendorConfig``, which imports this module, on EVERY ``import
@@ -206,6 +207,20 @@ class HookFailed(Exception):
     """
 
 
+#: The SDK's own hooks that run inline in ``run_vendor_hook``. Filled by
+#: ``runs_inline`` and by nothing else.
+_INLINE_HOOKS: set[Any] = set()
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def runs_inline(fn: _F) -> _F:
+    """Register an SDK-owned hook that cannot block as safe to call on the
+    event loop. Never apply this to a vendor's callable."""
+    _INLINE_HOOKS.add(fn)
+    return fn
+
+
 async def run_vendor_hook(
     fn: Any,
     *args: Any,
@@ -229,6 +244,21 @@ async def run_vendor_hook(
     # there and patching the constant — which is how the timeout is tested,
     # and how a future knob would reach it — would silently do nothing.
     budget = HOOK_TIMEOUT_SECONDS if timeout is None else timeout
+    # SDK-owned hooks that cannot block (a dict lookup) run inline: a thread
+    # hop costs ~40x the call, takes a limiter slot and counts toward the
+    # ceiling, all to guard against blocking that cannot happen.
+    #
+    # ⚠ **Membership by IDENTITY, never an attribute.** An attribute mark is
+    # copied by ``functools.wraps`` onto a vendor's blocking wrapper, and a
+    # ``Mock`` answers truthy for any attribute name — both measured to take
+    # the inline path, one stalling the loop, the other returning an
+    # unawaited coroutine. Only the function objects this package registered
+    # are in the set.
+    if fn in _INLINE_HOOKS:
+        try:
+            return fn(*args)
+        except Exception as exc:
+            raise HookFailed(f"{hook_name} hook raised {type(exc).__name__}: {exc}") from exc
     # ⚠ **``asyncio.timeout``, NOT ``anyio.fail_after``, and this was tried the
     # other way.** Pairing anyio's threads with anyio's cancellation looks more
     # coherent and makes ``abandon_on_cancel`` load-bearing — measured, under
@@ -255,15 +285,6 @@ async def run_vendor_hook(
     # the budget tells a vendor to tune a knob that is not the problem, and
     # ``from None`` would erase the real cause from the ``exc_info`` their logs
     # are about to print.
-    # SDK-owned hooks that cannot block (a dict lookup) run inline: a thread
-    # hop costs ~40x the call, takes a limiter slot and counts toward the
-    # ceiling, all to guard against blocking that cannot happen. Only
-    # functions this package marks; a vendor's own callable never is.
-    if getattr(fn, "_baton_runs_inline", False):
-        try:
-            return fn(*args)
-        except Exception as exc:
-            raise HookFailed(f"{hook_name} hook raised {type(exc).__name__}: {exc}") from exc
     deadline = asyncio.timeout(budget)
     try:
         async with deadline:

@@ -160,7 +160,7 @@ class SessionResolutionContext:
     this path is fail-open throughout.
 
     **The guarantee is now enforced HERE, in ``__post_init__``, rather than in
-    each adapter's extractor.** Of the four fields, ``headers`` is the only one
+    each adapter's extractor.** Of the original four fields, ``headers`` is the only one
     declared abstractly, and it is the only one that diverged — the other three
     are concrete types mypy forces every adapter to normalize before it can
     construct this object (``claims``, added later, is a plain ``Mapping``
@@ -191,7 +191,10 @@ class SessionResolutionContext:
     a second breaking change for a cosmetic gain.
     """
 
-    headers: Mapping[str, str] | None
+    headers: Mapping[str, str] | None = field(repr=False)
+    """``repr=False`` like ``claims``: the standalone adapter delivers every
+    header, ``Authorization: Bearer …`` included, and a hook that logs its
+    context would otherwise write a live credential out."""
     meta: dict[str, Any] | None
     tool_name: str
     arguments: dict[str, Any]

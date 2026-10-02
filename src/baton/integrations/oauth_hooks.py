@@ -30,28 +30,20 @@ across the whole fastmcp 2.x/3.x band and is DROPPED by fastmcp 3.4.2's own
 ``context.claims`` is ``None`` there and both hooks return ``None``. See
 ``identity_adapter.token_claims`` for the vendor-subclass escape hatch.
 
-Both run inline rather than on a worker thread (``_baton_runs_inline``): they
+Both run inline rather than on a worker thread (``_hooks.runs_inline``): they
 are a dict lookup, and cannot block.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any, TypeVar
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 from baton.identity import Principal
+from baton.integrations._hooks import runs_inline
 
 if TYPE_CHECKING:
     from baton.integrations._config import SessionResolutionContext
-
-_F = TypeVar("_F", bound=Callable[..., Any])
-
-
-def _inline(fn: _F) -> _F:
-    """Mark an SDK-owned hook as safe to run on the event loop — see
-    ``run_vendor_hook``'s fast path. Never applied to a vendor's callable."""
-    fn._baton_runs_inline = True  # type: ignore[attr-defined]
-    return fn
 
 
 def _issuer(claims: Mapping[str, Any]) -> str | None:
@@ -65,7 +57,7 @@ def _issuer(claims: Mapping[str, Any]) -> str | None:
     return issuer if isinstance(issuer, str) and issuer else None
 
 
-@_inline
+@runs_inline
 def principal_from_oauth_sub(context: SessionResolutionContext) -> Principal | None:
     """The token's ``sub``, keyed with its ``iss``.
 
@@ -84,7 +76,7 @@ def principal_from_oauth_sub(context: SessionResolutionContext) -> Principal | N
     return Principal(principal_id=sub, issuer=_issuer(claims))
 
 
-@_inline
+@runs_inline
 def principal_from_oauth_email(context: SessionResolutionContext) -> Principal | None:
     """The token's ``email`` claim, as the WHOLE address and with no issuer.
 
