@@ -36,25 +36,13 @@ are a dict lookup, and cannot block.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from baton.identity import Principal
 from baton.integrations._hooks import runs_inline
 
 if TYPE_CHECKING:
     from baton.integrations._config import SessionResolutionContext
-
-
-def _issuer(claims: Mapping[str, Any]) -> str | None:
-    """``iss`` when it is a non-empty string, else ``None``.
-
-    ``""`` and ``None`` hash DIFFERENTLY (the issuer is folded into the HMAC
-    only when it is not ``None``), so passing an empty one through would give
-    the same person a second pseudonym the day the verifier starts omitting it.
-    """
-    issuer = claims.get("iss")
-    return issuer if isinstance(issuer, str) and issuer else None
 
 
 @runs_inline
@@ -73,7 +61,9 @@ def principal_from_oauth_sub(context: SessionResolutionContext) -> Principal | N
     # caller merges into.
     if not isinstance(sub, str) or not sub.strip():
         return None
-    return Principal(principal_id=sub, issuer=_issuer(claims))
+    # ``iss`` raw: the hook runner coerces a non-string or empty issuer to
+    # ``None`` for every hook (``resolve_principal_via_hook``).
+    return Principal(principal_id=sub, issuer=claims.get("iss"))
 
 
 @runs_inline

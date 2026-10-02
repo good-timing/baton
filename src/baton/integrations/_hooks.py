@@ -214,6 +214,11 @@ _INLINE_HOOKS: set[Any] = set()
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
+def _raised(hook_name: str, exc: Exception) -> HookFailed:
+    """The one wording for "the hook raised", shared by both execution paths."""
+    return HookFailed(f"{hook_name} hook raised {type(exc).__name__}: {exc}")
+
+
 def runs_inline(fn: _F) -> _F:
     """Register an SDK-owned hook that cannot block as safe to call on the
     event loop. Never apply this to a vendor's callable."""
@@ -258,7 +263,7 @@ async def run_vendor_hook(
         try:
             return fn(*args)
         except Exception as exc:
-            raise HookFailed(f"{hook_name} hook raised {type(exc).__name__}: {exc}") from exc
+            raise _raised(hook_name, exc) from exc
     # ⚠ **``asyncio.timeout``, NOT ``anyio.fail_after``, and this was tried the
     # other way.** Pairing anyio's threads with anyio's cancellation looks more
     # coherent and makes ``abandon_on_cancel`` load-bearing — measured, under
@@ -342,4 +347,4 @@ async def run_vendor_hook(
             raise HookFailed(f"{hook_name} hook raised CancelledError spontaneously") from None
         raise
     except Exception as exc:
-        raise HookFailed(f"{hook_name} hook raised {type(exc).__name__}: {exc}") from exc
+        raise _raised(hook_name, exc) from exc

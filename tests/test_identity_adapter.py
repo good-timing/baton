@@ -569,7 +569,7 @@ def test_the_context_repr_carries_neither_the_claims_nor_the_bearer() -> None:
     assert "eyJSECRET" not in text
 
 
-def test_token_claims_is_a_read_only_copy() -> None:
+def test_token_claims_is_a_read_only_view() -> None:
     """Shipped hooks run inline on the request; a hook normalizing in place
     must not rewrite the claims the vendor's own handler reads next."""
     original = {"email": "Alice@Acme.com"}

@@ -64,7 +64,7 @@ PRINCIPAL_ID_MODE_RAW = "raw"
 #: ⚠ The two vocabularies overlapping is a coincidence of spelling, not a
 #: derivation. SPEC §11.4 requires ``source`` and ``form`` to stay independent
 #: ("every combination occurs"); ``form`` is the mode's OUTCOME and ``source``
-#: is which rung resolved the principal.
+#: is the provenance, fixed at ``"asserted"`` for this producer.
 _FORM_BY_MODE = {
     PRINCIPAL_ID_MODE_HASHED: "hashed",
     PRINCIPAL_ID_MODE_RAW: "raw",
@@ -152,8 +152,9 @@ async def resolve_principal_via_hook(
             "non-string principal_id — ignoring it."
         )
         return None
-    # ``issuer`` gets the SAME coercion ``oauth_hooks`` applies to
-    # ``claims["iss"]``, and for two reasons that are both bugs without it.
+    # ``issuer`` is coerced HERE, for every hook including the shipped OAuth
+    # ones (which pass ``claims["iss"]`` through raw), for two reasons that are
+    # both bugs without it.
     #
     # (1) It is folded into the HMAC message only when it is not ``None``, so
     #     ``issuer=""`` and ``issuer=None`` produce DIFFERENT digests for one
@@ -189,9 +190,10 @@ def token_claims(token: Any) -> Mapping[str, Any] | None:
     built, outside the hook runner's boundary, and an identity read may not
     fail a tool call.
 
-    **A read-only COPY**, not the token's own dict: shipped hooks run inline
+    **A read-only VIEW**, not the token's own dict: shipped hooks run inline
     on the request, and a hook normalizing in place would otherwise rewrite
-    the claims the vendor's tool handler reads next.
+    the claims the vendor's tool handler reads next. A proxy, not a copy —
+    it blocks the write without allocating per call.
     """
     if token is None:
         return None
@@ -199,7 +201,7 @@ def token_claims(token: Any) -> Mapping[str, Any] | None:
         claims = getattr(token, "claims", None)
         if not isinstance(claims, Mapping):
             return None
-        return MappingProxyType(dict(claims))
+        return MappingProxyType(claims)
     except Exception:
         return None
 
@@ -219,10 +221,6 @@ def _finish_principal(
     here and no caller downstream ever holds it, mirroring baton-proxy's
     ``Emitter._enqueue`` discipline — the rule that keeps raw identity from
     reaching a console-bound sink by some path nobody audited.
-
-    ⚠ **It took a ``source`` argument until the token rung was deleted**, when
-    two provenances ended here. One remains, so the member is a constant; it is
-    still emitted because SPEC §11.4 makes it REQUIRED within the object.
 
     **All three members or nothing**, and structurally so: there is exactly
     ONE ``PrincipalWire(...)`` in this function, at the bottom, and every
