@@ -73,6 +73,23 @@ install_baton(mcp, VendorConfig(
 
 **It is pattern matching, not a guarantee.** `{"name": "Jane Doe", "address": "12 Elm St"}` passes through untouched, and a card number is redacted when its digits are contiguous but **not** when they are spaced or hyphenated. Decide what your server puts in tool params and results on that basis. Do not tell your users "PII is scrubbed" on the strength of it. [What it does and does not catch](https://goodtiming.ai/docs.html#pii).
 
+## Who is calling
+
+**Nothing is captured about the person behind a call unless you say how to find them.** Pass a `resolve_principal` hook: it receives the call's headers, `_meta`, tool name, arguments and verified OAuth access token, and returns a `Principal` or `None`. Two ready-made hooks cover OAuth:
+
+```python
+from baton import install_baton, VendorConfig, principal_from_oauth_email
+
+install_baton(mcp, VendorConfig(
+    dsn="https://baton_pk_...@baton.goodtiming.ai/ten_.../echo-server",
+    resolve_principal=principal_from_oauth_email,   # or principal_from_oauth_sub
+))
+```
+
+`principal_from_oauth_email` keys on the token's `email` claim; `principal_from_oauth_sub` on its subject. Each returns `None` when the claim is missing, so they compose: `lambda ctx: principal_from_oauth_email(ctx) or principal_from_oauth_sub(ctx)`. A token exists only on HTTP with auth configured; on stdio, write a hook that names the user from whatever you authenticated them with.
+
+The value is HMAC-hashed in your process before it is sent, keyed with `BATON_PRINCIPAL_ID_HMAC_KEY`; without a key, nothing is attached.
+
 ## Turning capture off
 
 `BATON_DISABLED=1` in the environment of the process running the server, and the SDK installs nothing at all: no wrapped tools, no annotation tool, no instructions rewrite, no collector connection, no background thread.

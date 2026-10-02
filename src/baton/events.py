@@ -325,10 +325,10 @@ class PrincipalWire(BaseModel):
     "letters then a colon"."""
 
     source: str
-    """WHERE it came from: ``"attested"`` (a verified token's ``sub``) or
-    ``"asserted"`` (a vendor's own resolver, which nothing in the protocol
-    checks). Both are legitimate and asserted is not a degraded attested —
-    it is the only identity mechanism that exists on stdio."""
+    """WHERE it came from. This producer emits ``"asserted"`` only — a
+    vendor's own ``resolve_principal`` hook, which nothing in the protocol
+    checks. ``"attested"`` stays registered in SPEC §11.4 for stored events and
+    is produced by nobody since the SDK stopped reading the token itself."""
 
     form: str
     """WHAT it is: ``"hashed"`` or ``"raw"``. The privacy classification, and

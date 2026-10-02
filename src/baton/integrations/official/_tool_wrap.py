@@ -621,7 +621,7 @@ def _wrap_tool_run(
         # ``resolve_call_principal`` returns the FINISHED wire value — a hash or
         # a deliberate raw principal — so the raw identity never travels past
         # this line into the emitters, mirroring baton-proxy's edge-hash
-        # chokepoint. ``None`` when neither provenance resolves.
+        # chokepoint. ``None`` when no hook is set or it has no answer.
         #
         # ⚠ This comment used to read "Unauthenticated calls (every stdio one)
         # get ``None``". That stopped being true when ``resolve_principal`` landed:
@@ -645,12 +645,12 @@ def _wrap_tool_run(
                 meta=meta_dict,
                 tool_name=name,
                 arguments=params,
+                access_token=_auth.current_access_token(),
             )
             if resolve_principal_hook is not None
             else None
         )
         call_principal = await resolve_call_principal(
-            _auth.current_access_token(),
             hook=resolve_principal_hook,
             hook_context=identity_hook_context,
             mode=principal_id_mode,

@@ -11,6 +11,9 @@ Core (always installed):
   agent code (see the "Library API" section in ``README.md``)
 - ``Principal`` — the return type of a ``VendorConfig.resolve_principal`` hook.
   Exported because that hook cannot be written without constructing one.
+- ``principal_from_oauth_sub``, ``principal_from_oauth_email`` — ready-made
+  ``resolve_principal`` hooks reading the verified OAuth token's ``sub`` or
+  ``email`` claim. Nothing resolves a principal unless a hook is configured.
 
 Integrations (optional, opt-in via pip extras):
 
@@ -56,6 +59,8 @@ __all__ = [
     "VendorConfig",
     "__version__",
     "install_baton",
+    "principal_from_oauth_email",
+    "principal_from_oauth_sub",
 ]
 
 
@@ -71,3 +76,4 @@ from baton.identity import Principal
 # the call, so neither optional extra is required to import ``baton``.
 from baton.install import install_baton
 from baton.integrations._config import VendorConfig
+from baton.integrations.oauth_hooks import principal_from_oauth_email, principal_from_oauth_sub

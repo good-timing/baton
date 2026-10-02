@@ -81,7 +81,9 @@ async def test_identity_failures_cannot_fail_the_call_either(
 ) -> None:
     """Same contract, the identity seam. A token accessor that raises, and a
     token object whose attribute access raises, must both cost the FIELD and
-    not the call."""
+    not the call. The OAuth hook is configured because the accessor runs only
+    when a hook is — without one this would pass having exercised nothing."""
+    from baton import principal_from_oauth_sub
     from baton.integrations.standalone import _auth
 
     class _Exploding:
@@ -95,7 +97,12 @@ async def test_identity_failures_cannot_fail_the_call_either(
     ):
         events_path = tmp_path / f"e{id(getter)}.jsonl"
         monkeypatch.setattr(_auth, "get_access_token_or_none", getter)
-        mcp, handle = _install(events_path, principal_id_hmac_key=b"k", tenant_id="t")
+        mcp, handle = _install(
+            events_path,
+            principal_id_hmac_key=b"k",
+            tenant_id="t",
+            resolve_principal=principal_from_oauth_sub,
+        )
         try:
             async with Client(mcp) as client:
                 assert await client.call_tool("lookup", {"name": "alice"}) is not None
@@ -115,6 +122,7 @@ async def test_a_str_hmac_key_does_not_break_the_call(
     taken a string, so this is the natural mistake."""
     from dataclasses import dataclass
 
+    from baton import principal_from_oauth_sub
     from baton.integrations.standalone import _auth
 
     @dataclass
@@ -123,7 +131,12 @@ async def test_a_str_hmac_key_does_not_break_the_call(
 
     monkeypatch.setattr(_auth, "get_access_token_or_none", lambda: _Tok({"sub": "alice"}))
     events_path = tmp_path / "e.jsonl"
-    mcp, handle = _install(events_path, principal_id_hmac_key="a-string-secret", tenant_id="t")
+    mcp, handle = _install(
+        events_path,
+        principal_id_hmac_key="a-string-secret",
+        tenant_id="t",
+        resolve_principal=principal_from_oauth_sub,
+    )
     try:
         async with Client(mcp) as client:
             assert await client.call_tool("lookup", {"name": "alice"}) is not None
@@ -146,6 +159,7 @@ async def test_the_missing_key_warning_fires_once_per_install(
     """
     from dataclasses import dataclass
 
+    from baton import principal_from_oauth_sub
     from baton.integrations.standalone import _auth
 
     @dataclass
@@ -153,7 +167,9 @@ async def test_the_missing_key_warning_fires_once_per_install(
         claims: dict[str, Any] | None = None
 
     monkeypatch.setattr(_auth, "get_access_token_or_none", lambda: _Tok({"sub": "alice"}))
-    mcp, handle = _install(tmp_path / "e.jsonl", tenant_id="t")  # no key
+    mcp, handle = _install(
+        tmp_path / "e.jsonl", tenant_id="t", resolve_principal=principal_from_oauth_sub
+    )  # no key
     with caplog.at_level(logging.WARNING):
         try:
             async with Client(mcp) as client:

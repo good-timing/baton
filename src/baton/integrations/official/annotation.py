@@ -201,12 +201,12 @@ def register_annotation_tool(
                 meta=meta_dict,
                 tool_name=name,
                 arguments={},
+                access_token=_auth.current_access_token(),
             )
             if resolve_principal_hook is not None
             else None
         )
         annotation_principal = await resolve_call_principal(
-            _auth.current_access_token(),
             hook=resolve_principal_hook,
             hook_context=identity_hook_context,
             mode=principal_id_mode,

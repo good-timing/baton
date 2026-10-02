@@ -1,4 +1,9 @@
-"""Both MCP adapters must produce the SAME ``principal`` from the same token.
+"""Both MCP adapters must produce the SAME ``principal`` from the same token,
+read through the same ready-made hook.
+
+⚠ Since the SDK's own token rung was deleted, nothing reads the token unless a
+hook does, so every token test here passes ``principal_from_oauth_sub`` — and
+one test pins that a token with NO hook yields nothing on either adapter.
 
 The companion to ``test_agent_runtime_parity.py``, and it exists for the same
 recorded reason: ``detect_agent_runtime`` lived under one adapter's package,
@@ -31,6 +36,7 @@ from typing import Any
 
 import pytest
 
+from baton import principal_from_oauth_email, principal_from_oauth_sub
 from baton.events import PrincipalWire
 from tests._asgi import fake_http_request, starlette_headers
 from tests._event_helpers import principal_of, without_surface_snapshots
@@ -47,18 +53,18 @@ def _read_events(path: Path) -> list[dict[str, Any]]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def _official_token() -> Any:
+def _official_token(claims: dict[str, Any] = CLAIMS) -> Any:
     from mcp.server.auth.provider import AccessToken
 
     if "claims" not in AccessToken.model_fields:
         pytest.skip("mcp < 1.27 cannot carry claims; parity is asserted on 1.27+ only")
-    return AccessToken(token="jwt", client_id="acme-app", scopes=[], claims=CLAIMS)
+    return AccessToken(token="jwt", client_id="acme-app", scopes=[], claims=claims)
 
 
-def _standalone_token() -> Any:
+def _standalone_token(claims: dict[str, Any] = CLAIMS) -> Any:
     from fastmcp.server.dependencies import AccessToken
 
-    return AccessToken(token="jwt", client_id="acme-app", scopes=[], claims=CLAIMS)
+    return AccessToken(token="jwt", client_id="acme-app", scopes=[], claims=claims)
 
 
 async def _run_official_path(
@@ -200,8 +206,20 @@ async def test_both_adapters_hash_one_principal_identically(
 
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(official_path, _official_token(), "hashed", monkeypatch)
-    await _run_standalone_path(standalone_path, _standalone_token(), "hashed", monkeypatch)
+    await _run_official_path(
+        official_path,
+        _official_token(),
+        "hashed",
+        monkeypatch,
+        resolve_principal=principal_from_oauth_sub,
+    )
+    await _run_standalone_path(
+        standalone_path,
+        _standalone_token(),
+        "hashed",
+        monkeypatch,
+        resolve_principal=principal_from_oauth_sub,
+    )
 
     official = _principal_ids(official_path)
     standalone = _principal_ids(standalone_path)
@@ -221,8 +239,20 @@ async def test_neither_adapter_leaks_the_principal_in_hashed_mode(
     """
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(official_path, _official_token(), "hashed", monkeypatch)
-    await _run_standalone_path(standalone_path, _standalone_token(), "hashed", monkeypatch)
+    await _run_official_path(
+        official_path,
+        _official_token(),
+        "hashed",
+        monkeypatch,
+        resolve_principal=principal_from_oauth_sub,
+    )
+    await _run_standalone_path(
+        standalone_path,
+        _standalone_token(),
+        "hashed",
+        monkeypatch,
+        resolve_principal=principal_from_oauth_sub,
+    )
 
     for path in (official_path, standalone_path):
         blob = path.read_text()
@@ -237,8 +267,20 @@ async def test_both_adapters_agree_in_raw_mode_too(
     client must not disagree about who it is, whichever mode is configured."""
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(official_path, _official_token(), "raw", monkeypatch)
-    await _run_standalone_path(standalone_path, _standalone_token(), "raw", monkeypatch)
+    await _run_official_path(
+        official_path,
+        _official_token(),
+        "raw",
+        monkeypatch,
+        resolve_principal=principal_from_oauth_sub,
+    )
+    await _run_standalone_path(
+        standalone_path,
+        _standalone_token(),
+        "raw",
+        monkeypatch,
+        resolve_principal=principal_from_oauth_sub,
+    )
 
     assert _principal_ids(official_path) == {CLAIMS["sub"]}
     assert _principal_ids(standalone_path) == {CLAIMS["sub"]}
@@ -261,6 +303,61 @@ async def test_both_adapters_drop_the_WHOLE_object_when_unauthenticated(
 
     assert _principals(official_path) == {None}
     assert _principals(standalone_path) == {None}
+
+
+async def test_a_verified_token_with_NO_hook_yields_no_principal_on_either_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deletion, end to end. Until this release both adapters read the
+    token's ``sub`` themselves whenever no hook answered; identity is now the
+    vendor's choice, so a usable token on its own puts nothing on the wire."""
+    official_path = tmp_path / "official.jsonl"
+    standalone_path = tmp_path / "standalone.jsonl"
+    await _run_official_path(official_path, _official_token(), "hashed", monkeypatch)
+    await _run_standalone_path(standalone_path, _standalone_token(), "hashed", monkeypatch)
+
+    assert _principals(official_path) == {None}
+    assert _principals(standalone_path) == {None}
+
+
+async def test_the_email_hook_reads_the_token_on_both_adapters_and_both_emit_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``SessionResolutionContext.access_token`` is filled by four call sites
+    (two adapters x tool call and annotation). ``_one_principal`` collapses
+    every event of a run to one value, so a site that forgot the token yields
+    a second, ``None``, entry and fails here."""
+    from baton.identity import hash_principal_id
+
+    claims = {"sub": "opaque-123", "email": "alice@acme.example", "iss": CLAIMS["iss"]}
+    expected = hash_principal_id(
+        claims["email"], tenant_id=TENANT, key=HMAC_KEY, issuer=claims["iss"]
+    )
+    official_path = tmp_path / "official.jsonl"
+    standalone_path = tmp_path / "standalone.jsonl"
+    await _run_official_path(
+        official_path,
+        _official_token(claims),
+        "hashed",
+        monkeypatch,
+        resolve_principal=principal_from_oauth_email,
+    )
+    await _run_standalone_path(
+        standalone_path,
+        _standalone_token(claims),
+        "hashed",
+        monkeypatch,
+        resolve_principal=principal_from_oauth_email,
+    )
+    for path in (official_path, standalone_path):
+        assert _one_principal(path) == {
+            "id": expected,
+            "source": "asserted",
+            "form": "hashed",
+        }, path.name
+        blob = path.read_text()
+        # The tool's own argument is ``"alice"``, so the check is on the address.
+        assert "@acme.example" not in blob, f"the address leaked in {path.name}"
 
 
 # ---------------------------------------------------------------------------
@@ -319,25 +416,20 @@ async def test_the_hook_supplies_identity_where_no_token_exists(
         }, path.name
 
 
-async def test_the_hook_wins_over_a_verified_token_and_says_so_in_the_source(
+async def test_a_hook_that_ignores_the_token_is_never_overridden_by_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Precedence, and the member that keeps it honest.
-
-    The token here is the SAME one every other test in this file uses, so the
-    attested value is known: if precedence were the other way round, these runs
-    would emit the hash of ``CLAIMS["sub"]``. Asserting ``source`` as well as
-    the value is what distinguishes "the hook won" from "the hook happened to
-    produce the same string" — the job the ``v1:`` tag used to do, moved to a
-    member that survives ``"raw"`` mode.
+    """The token here is the SAME one every other test in this file uses, so its
+    value is known: a producer still reading it behind the hook would emit the
+    hash of ``CLAIMS["sub"]`` somewhere on these runs.
     """
     from baton.identity import Principal, hash_principal_id
 
     asserted = hash_principal_id(HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=HOOK_ISS)
-    attested = hash_principal_id(
+    from_token = hash_principal_id(
         CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"]
     )
-    assert asserted != attested
+    assert asserted != from_token
 
     hook = _hook(Principal(principal_id=HOOK_SUB, issuer=HOOK_ISS))
     official_path = tmp_path / "official.jsonl"
@@ -352,23 +444,18 @@ async def test_the_hook_wins_over_a_verified_token_and_says_so_in_the_source(
     for path in (official_path, standalone_path):
         got = _one_principal(path)
         assert got == {"id": asserted, "source": "asserted", "form": "hashed"}, path.name
-        assert got["id"] != attested, f"{path.name} used the token despite a hook"
+        assert got["id"] != from_token, f"{path.name} used the token despite a hook"
 
 
-async def test_a_hook_that_raises_falls_back_to_the_token_and_events_still_emit(
+async def test_a_hook_that_raises_costs_the_principal_and_events_still_emit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A vendor's bug in their own resolver may not cost them their capture.
 
-    Asserting the ATTESTED value, not merely "not None": a fallback that
-    produced nothing would also survive a looser check, and "the hook broke so
-    identity vanished" is the failure this guard exists to prevent.
+    ``_principals`` fails on a run with no events, so ``{None}`` here means the
+    events shipped without a principal — and that the usable token beside the
+    broken hook was NOT substituted for it.
     """
-    from baton.identity import hash_principal_id
-
-    attested = hash_principal_id(
-        CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"]
-    )
 
     def boom(_ctx: Any) -> Any:
         raise RuntimeError("the vendor's directory service is down")
@@ -382,8 +469,8 @@ async def test_a_hook_that_raises_falls_back_to_the_token_and_events_still_emit(
         standalone_path, _standalone_token(), "hashed", monkeypatch, resolve_principal=boom
     )
 
-    assert _principal_ids(official_path) == {attested}
-    assert _principal_ids(standalone_path) == {attested}
+    assert _principals(official_path) == {None}
+    assert _principals(standalone_path) == {None}
 
 
 async def test_an_async_hook_works_on_both_adapters(
@@ -474,60 +561,52 @@ async def test_raw_mode_KEEPS_the_provenance_it_used_to_forfeit(
         }, path.name
 
 
-async def test_the_two_provenances_are_BYTE_IDENTICAL_and_differ_only_in_source(
+async def test_the_sub_hook_emits_the_SAME_digest_the_deleted_token_rung_did(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """**The discriminating case the old suite could not hold.**
+    """**The migration claim in SPEC §13, asserted.** A vendor who relied on
+    the deleted rung restores it by passing ``principal_from_oauth_sub``, and
+    their users keep their pseudonyms: one ``(tenant, sub, iss)`` hashes to the
+    same digest it always did, and only ``source`` changes. The expected value
+    is computed exactly as the deleted rung computed it.
 
-    While ``v1:``/``h1:`` existed, "the hook won" and "the token won" were
-    distinguishable by the value's first three bytes, so every precedence test
-    in this file could pass by reading a prefix. Retiring ``v1:`` removes that
-    crutch: the tag was never part of the HMAC message, so one
-    ``(tenant, principal, issuer)`` resolved through the HOOK and through the
-    TOKEN now produces the same digest, character for character, and ``source``
-    is the ONLY thing that tells them apart.
-
-    That is the property SPEC §13 calls a relabel rather than a recomputation,
-    and it is what makes the retirement safe. A producer that quietly kept
-    tagging the asserted path differently passes every other test here and
-    fails this one.
+    Also the hook-vs-hand-written agreement: a vendor hook returning the same
+    ``Principal`` by hand must land on the same digest, or the ready-made hook
+    is doing something a vendor's own cannot reproduce.
     """
-    from baton.identity import Principal
+    from baton.identity import Principal, hash_principal_id
 
-    # One identity, reached two ways. The hook returns exactly what the token
-    # carries, so any difference in the emitted `id` is the producer's doing.
-    same = Principal(principal_id=CLAIMS["sub"], issuer=CLAIMS["iss"])
-
-    via_hook = tmp_path / "hook.jsonl"
-    via_token = tmp_path / "token.jsonl"
-    await _run_official_path(via_hook, None, "hashed", monkeypatch, resolve_principal=_hook(same))
-    await _run_official_path(via_token, _official_token(), "hashed", monkeypatch)
-
-    hook_principal = _one_principal(via_hook)
-    token_principal = _one_principal(via_token)
-
-    assert hook_principal["id"] == token_principal["id"], (
-        "the two provenances produced different digests for one identity — "
-        "the scheme tag is back in the HMAC message, or the asserted path is "
-        "still tagging itself"
+    rung_digest = hash_principal_id(
+        CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"]
     )
-    assert hook_principal["source"] == "asserted"
-    assert token_principal["source"] == "attested"
-    assert hook_principal["form"] == token_principal["form"] == "hashed"
+    by_hand = tmp_path / "hand.jsonl"
+    via_hook = tmp_path / "hook.jsonl"
+    same = Principal(principal_id=CLAIMS["sub"], issuer=CLAIMS["iss"])
+    await _run_official_path(by_hand, None, "hashed", monkeypatch, resolve_principal=_hook(same))
+    await _run_official_path(
+        via_hook,
+        _official_token(),
+        "hashed",
+        monkeypatch,
+        resolve_principal=principal_from_oauth_sub,
+    )
+
+    for path in (by_hand, via_hook):
+        assert _one_principal(path) == {
+            "id": rung_digest,
+            "source": "asserted",
+            "form": "hashed",
+        }, path.name
 
 
-async def test_every_combination_of_source_and_form_occurs(
+async def test_source_stays_asserted_in_every_form(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """SPEC §11.4: "the two members are independent, and every combination
-    occurs" — ``form`` says nothing about trust and ``source`` says nothing
-    about privacy.
-
-    The 2x2, on one adapter, because the cross-adapter agreement is pinned
-    above and what is at stake here is that neither member is quietly derived
-    from the other. A producer computing ``source`` from ``mode`` — the exact
-    joining this change undid — passes the four single-cell tests and fails
-    this one on the off-diagonal.
+    """SPEC §11.4: ``form`` says nothing about trust and ``source`` says nothing
+    about privacy. With one live source, what remains to pin is that neither
+    the mode nor the KIND of hook (a fixed value, or the token read) moves
+    ``source`` — a producer that still stamped a token read ``"attested"``
+    fails the token rows.
     """
     from baton.identity import Principal
 
@@ -535,23 +614,18 @@ async def test_every_combination_of_source_and_form_occurs(
     cells = 0
     for mode, form in (("hashed", "hashed"), ("raw", "raw")):
         for label, token, resolver in (
-            ("attested", _official_token(), None),
-            ("asserted", None, hook),
+            ("token", _official_token(), principal_from_oauth_sub),
+            ("fixed", None, hook),
         ):
             path = tmp_path / f"{label}-{mode}.jsonl"
             await _run_official_path(path, token, mode, monkeypatch, resolve_principal=resolver)
             got = _one_principal(path)
-            # The off-diagonal cells are the work: a producer deriving either
-            # member from the other passes both diagonal cells and fails here.
-            assert got["source"] == label, got
+            assert got["source"] == "asserted", got
             assert got["form"] == form, got
             cells += 1
 
-    # Guards against a vacuous pass — a loop that ran zero times, or a fixture
-    # change that dropped a row, would otherwise report green having asserted
-    # nothing. It is NOT a claim that the four cells were distinct; the
-    # per-cell assertions above are what establish that.
-    assert cells == 4, f"the 2x2 ran {cells} cells"
+    # Guards against a vacuous pass — a loop that ran zero times.
+    assert cells == 4, f"the matrix ran {cells} cells"
 
 
 # ---------------------------------------------------------------------------

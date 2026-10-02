@@ -10,7 +10,34 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+### Changed
+
+- **BREAKING: the SDK no longer reads the OAuth access token on its own.
+  `principal` comes ONLY from `VendorConfig.resolve_principal`** (SPEC §11.4,
+  §13). Until now, with no hook configured (or a hook that returned nothing), the
+  SDK read `claims["sub"]` off the verified token and emitted it as
+  `source: "attested"`. Which claim names the person — or whether the token names
+  a person at all rather than a gateway's service account — is the vendor's call,
+  so that default is gone. **If you relied on it, pass
+  `resolve_principal=principal_from_oauth_sub`**: one `(tenant, sub, iss)` hashes
+  to the same digest it always did, so your users keep their pseudonyms; only
+  `source` changes, to `"asserted"`. A hook that raises or returns something
+  unusable now costs the event its `principal` rather than falling back to the
+  token. `"attested"` is no longer emitted.
+
 ### Added
+
+- **`principal_from_oauth_sub` and `principal_from_oauth_email` — ready-made
+  `resolve_principal` hooks.** Both read the verified token the adapter now puts
+  on `SessionResolutionContext.access_token`, and return `None` when their claim
+  is absent, so they compose with `or`. The email hook keys on the WHOLE address
+  (`alice@acme.com` and `alice@contoso.com` are two people) and carries the part
+  before the last `@` as `Principal.user_name`, which stays in the payload tier
+  and never reaches the collector. Neither consults `email_verified`.
+- **`SessionResolutionContext.access_token`** — the verified token for the
+  request, or `None` (stdio, unauthenticated HTTP), so any hook can read claims
+  without importing an adapter's auth module. Defaulted, so hand-built contexts
+  in your own tests keep working.
 
 - **`VendorConfig.result_capture_mode` / `Client(result_capture_mode=...)` — a
   vendor can declare that tool RESPONSE data is never captured.** `"full"` is

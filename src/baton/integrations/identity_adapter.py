@@ -1,53 +1,24 @@
-"""End-user identity off the MCP auth seam — resolve the principal, hash it
-at the edge.
+"""End-user identity off a vendor's hook — resolve the principal, hash it at
+the edge.
 
 Shared by BOTH adapters, beside ``runtime_adapter.py`` and for the same reason:
 the last capture signal that lived under one adapter's package was the one the
 other adapter never called, and it shipped ``unknown`` on every event for two
 releases before anybody noticed.
 
-**This is the attested half of identity.** ``agent_runtime`` is what a client
-says it is — self-reported, never verified, and a client may call itself
-anything. A principal resolved here from a bearer token the VENDOR's own
-verifier already validated is the one identity claim on the envelope that
-something checked — and it is marked ``principal.source == "attested"`` so a
-consumer can tell. ⚠ **The field as a whole is NOT attested identity.** This
-module resolves both provenances, and the other one — a vendor's
-``resolve_principal`` hook — is checked by nothing; SPEC §11.4 forbids
-presenting it as verified. Keep all of it apart from ``agent_runtime``: they
-answer different questions and they are trustworthy to different degrees.
+**Identity comes from the vendor's ``resolve_principal`` hook and from nowhere
+else.** Until this release the SDK also read ``claims["sub"]`` off the verified
+OAuth access token on its own whenever no hook answered, and stamped it
+``principal.source == "attested"``. That rung is GONE (SPEC §11.4, §13): who
+the person behind a call is, and which claim names them, is the vendor's
+decision, and a default the vendor never chose was making it for them — a
+gateway's token frequently names a service account, and the SDK cannot tell.
+A vendor who wants the token's subject or email passes one of the ready-made
+hooks in ``oauth_hooks.py``; one who wants anything else writes their own.
+Every principal this module emits is therefore ``source: "asserted"``.
 
-**Transport reality: this is HTTP-only, on every supported version.** MCP auth
-is ASGI middleware (``mcp.server.auth.middleware.bearer_auth`` operates on a
-Starlette ``Scope``), and ``get_access_token()`` reads a contextvar that
-middleware sets. On stdio nothing sets it, so there is no token, no principal
-and no attested ``principal`` — not a failure, just the shape of the transport. A vendor
-on stdio who wants identity needs a different carrier entirely.
-
-⚠ **``claims`` does not exist on ``mcp < 1.27``.** ``AccessToken`` gained
-``claims`` and ``subject`` somewhere in (1.25, 1.27]; on 1.20 and 1.25 — two of
-the four legs ``mcp-matrix`` runs — the model carries only
-``token``/``client_id``/``scopes``/``expires_at``/``resource``. Pydantic's
-default ``extra`` is *ignore*, so a vendor verifier that passes ``claims=…`` on
-that band has it **silently dropped** (measured, not read). Hence ``getattr``
-rather than attribute access: on the old band this resolves to ``None`` and the
-field is simply absent, while a vendor who declares ``claims`` on an
-``AccessToken`` SUBCLASS is read correctly on every version. Raising the floor
-was considered and rejected — 1.20/1.25 are green, and they lack only an
-optional field on a feature that needs HTTP plus OAuth to do anything at all.
-
-⚠ **Never ``client_id``.** It names the OAuth APPLICATION, not the person —
-measured identical (``acme-desktop-app``) for two different users across every
-version tested. Keying identity on it merges every user of one app, which is
-the exact merge this field exists to resolve. It looks user-shaped in a naive
-test only because ``JWTVerifier`` falls back ``client_id ?? azp ?? sub``.
-
-``subject`` is not read either, and that is deliberate rather than an omission:
-``claims["sub"]`` was populated on every combination measured (2026-09-07),
-including everywhere ``subject`` was, while ``subject`` is ``None`` for every
-user across the whole fastmcp 2.x/3.x band and is *dropped* by fastmcp 3.4.2's
-own ``AccessToken`` rebuild. One read of the field that always works beats two
-reads where the shortcut is the buggier path.
+Keep all of it apart from ``agent_runtime``: that is what a client says it is,
+and this is who the vendor says the person is. They answer different questions.
 """
 
 from __future__ import annotations
@@ -55,7 +26,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from baton.events import PrincipalWire
 from baton.identity import Principal, hash_principal_id
@@ -100,13 +71,11 @@ _FORM_BY_MODE = {
 
 PRINCIPAL_ID_MODES = frozenset(_FORM_BY_MODE)
 
-#: ``principal.source`` — a verified token's ``sub``. An identity provider
-#: checked this. HTTP-only, on every supported version.
-PRINCIPAL_SOURCE_ATTESTED = "attested"
-
 #: ``principal.source`` — a vendor's own per-request resolver. The vendor
-#: states who this is and nothing in the protocol checked the claim. The only
-#: identity mechanism that exists on stdio, and NOT a degraded ``attested``.
+#: states who this is and nothing in the protocol checked the claim, including
+#: when the hook read it off a verified token: the SDK cannot see what the hook
+#: did. The only value this SDK emits (SPEC §11.4); ``"attested"`` stays
+#: registered for stored events and is produced by nobody.
 PRINCIPAL_SOURCE_ASSERTED = "asserted"
 
 #: Cap on a RAW principal. Same posture and same number as the declared
@@ -134,9 +103,8 @@ async def resolve_principal_via_hook(
 ) -> Principal | None:
     """Call a vendor's ``resolve_principal`` hook and normalize its result.
 
-    Never raises. An exception is logged and treated as a miss, so identity
-    falls through to the verified-token path exactly as if no hook were
-    configured — ``principal`` is additive analytics and a vendor's own bug in
+    Never raises. An exception is logged and treated as a miss, so the event
+    ships without a ``principal`` exactly as if no hook were configured — ``principal`` is additive analytics and a vendor's own bug in
     their resolver may not fail their tool call (SPEC §11.2 fail-open).
 
     Accepts sync or async hooks, mirroring ``VendorConfig.scrubber``.
@@ -152,14 +120,17 @@ async def resolve_principal_via_hook(
     try:
         result = await run_vendor_hook(hook, context, hook_name="resolve_principal", logger=logger)
     except Exception:
-        logger.warning("baton: resolve_principal hook raised; falling through", exc_info=True)
+        logger.warning(
+            "baton: resolve_principal hook raised; the event ships without a principal",
+            exc_info=True,
+        )
         return None
     if result is None:
         return None
     if not isinstance(result, Principal):
         logger.warning(
             "baton: resolve_principal hook returned %s, not a baton.Principal — "
-            "ignoring it and falling through to the verified token. Return "
+            "ignoring it; the event ships without a principal. Return "
             "Principal(principal_id=...) or None.",
             type(result).__name__,
         )
@@ -176,10 +147,10 @@ async def resolve_principal_via_hook(
         # through into exactly the merge the sentence above claims to stop.
         logger.warning(
             "baton: resolve_principal hook returned a Principal with an empty or "
-            "non-string principal_id — ignoring it and falling through."
+            "non-string principal_id — ignoring it."
         )
         return None
-    # ``issuer`` gets the SAME coercion the attested path applies to
+    # ``issuer`` gets the SAME coercion ``oauth_hooks`` applies to
     # ``claims["iss"]``, and for two reasons that are both bugs without it.
     #
     # (1) It is folded into the HMAC message only when it is not ``None``, so
@@ -191,105 +162,11 @@ async def resolve_principal_via_hook(
     #     field exists to prevent, introduced by the field itself.
     # (2) A non-string issuer — a UUID object, an int tenant id — reaches
     #     ``unicodedata.normalize`` and raises ``TypeError``. That is caught
-    #     downstream, but the cost is the whole event's ``principal``, including
-    #     the attested one the token could still have produced. Coercing here
-    #     means a junk issuer costs the issuer, not the identity.
+    #     downstream, but the cost is the whole event's ``principal``.
+    #     Coercing here means a junk issuer costs the issuer, not the identity.
     if not isinstance(result.issuer, str) or not result.issuer:
         result = replace(result, issuer=None)
     return result
-
-
-def principal_from_access_token(token: Any) -> Principal | None:
-    """Read ``(sub, iss)`` off a verified access token.
-
-    ``token`` is whatever the adapter's ``get_access_token()`` returned —
-    ``None`` when the request is unauthenticated, which is most requests and
-    every stdio one. Returns ``None`` whenever no usable subject is present;
-    never raises, because an identity read must not be able to fail a tool call
-    (SPEC §11.2 fail-open).
-
-    The token has ALREADY been validated by the vendor's own ``TokenVerifier``
-    — the SDK does not verify signatures and must never be read as if it had.
-    What arrives here is the verifier's own parsed output.
-    """
-    if token is None:
-        return None
-    try:
-        # getattr, not attribute access: absent on mcp < 1.27 entirely, and
-        # present-but-None whenever the vendor's verifier did not populate it.
-        claims = getattr(token, "claims", None)
-        if not isinstance(claims, dict):
-            return None
-        sub = claims.get("sub")
-        # ``.strip()`` for the same reason as the hook path's guard: the
-        # canonicalizer strips, so a whitespace-only subject is a phantom
-        # actor every such caller merges into. Far less reachable here — a
-        # verifier would have to mint one — but the two paths feed one hash
-        # and a guard that differs between them is a guard waiting to be
-        # copied wrong.
-        if not isinstance(sub, str) or not sub.strip():
-            return None
-        issuer = claims.get("iss")
-        if not isinstance(issuer, str) or not issuer:
-            issuer = None
-        return Principal(principal_id=sub, issuer=issuer)
-    except Exception:
-        # Broad on purpose, same reason ``runtime_adapter`` is: this reads
-        # attributes off an object a VENDOR's verifier constructed, and an
-        # identity read may not be able to fail a tool call. An enumerated
-        # tuple in the sibling module missed fastmcp's ``RuntimeError`` and
-        # shipped exactly that escape.
-        return None
-
-
-def resolve_attested_principal(
-    token: Any,
-    *,
-    mode: str,
-    tenant_id: str,
-    hmac_key: bytes | None,
-    logger: logging.Logger,
-    warned: set[str],
-) -> PrincipalWire | None:
-    """Resolve a verified token into the envelope's ``principal``, or ``None``.
-
-    **The ATTESTED path, and only that one.** It reads the token and hands the
-    principal to ``_finish_principal`` — the edge-hash chokepoint, where the
-    raw value becomes its final wire form and no caller downstream ever holds
-    the raw value. That mirrors baton-proxy's ``Emitter._enqueue`` discipline,
-    where the same rule is what keeps raw identity from reaching a
-    console-bound sink by some path nobody audited.
-
-    Callers on an emit path want ``resolve_call_principal``, which checks a
-    vendor's ``resolve_principal`` hook first and falls through to this. This
-    function remains the whole of identity for a deployment with no hook
-    configured, which is every deployment today.
-
-    ``warned`` is a caller-owned set used to log the missing-key and
-    unknown-mode cases exactly once per install rather than once per tool call.
-
-    Fail-open throughout — every branch that cannot produce a value returns
-    ``None`` and the event ships without the field:
-
-    - no auth on the request (or stdio, where there is none) → ``None``
-    - ``mcp < 1.27`` with no ``claims`` on the token → ``None``
-    - ``hashed`` with no HMAC key configured → ``None``, warned once
-    - a ``mode`` this module does not recognise → ``None``, warned once. It
-      has no truthful ``form``, and ``form`` is what a consumer classifies on
-    - ``raw`` → the subject verbatim, no key needed
-
-    ``principal`` is additive analytics. It is never a consent or authorization
-    gate, so nothing here may raise, and nothing here may stop an event.
-    """
-    return _finish_principal(
-        principal_from_access_token(token),
-        mode=mode,
-        tenant_id=tenant_id,
-        hmac_key=hmac_key,
-        source=PRINCIPAL_SOURCE_ATTESTED,
-        logger=logger,
-        warned=warned,
-    )
 
 
 def _finish_principal(
@@ -298,24 +175,19 @@ def _finish_principal(
     mode: str,
     tenant_id: str,
     hmac_key: bytes | None,
-    source: str,
     logger: logging.Logger,
     warned: set[str],
 ) -> PrincipalWire | None:
     """Turn a resolved principal into the finished wire object, or ``None``.
 
-    **The edge-hash chokepoint, and the single copy of it.** Both provenances
-    end here — the attested token read and the asserted ``resolve_principal`` hook —
-    so the cap, the raw-mode rules, the missing-key warning and the hashing
-    failure mode are the same for both by construction rather than by two
-    implementations agreeing. They differ in exactly one argument, ``source``,
-    which is the whole point: the member a consumer reads to know which kind of
-    claim it is holding.
+    **The edge-hash chokepoint.** The raw value becomes its final wire form
+    here and no caller downstream ever holds it, mirroring baton-proxy's
+    ``Emitter._enqueue`` discipline — the rule that keeps raw identity from
+    reaching a console-bound sink by some path nobody audited.
 
-    ⚠ **``source`` used to be ``scheme``**, selecting a tag glued onto the
-    digest. Both rungs now produce the SAME bare digest for the same inputs —
-    at 0.8.11 the last tag came off the value entirely — and provenance is a
-    member that survives every mode; see ``hash_principal_id``.
+    ⚠ **It took a ``source`` argument until the token rung was deleted**, when
+    two provenances ended here. One remains, so the member is a constant; it is
+    still emitted because SPEC §11.4 makes it REQUIRED within the object.
 
     **All three members or nothing**, and structurally so: there is exactly
     ONE ``PrincipalWire(...)`` in this function, at the bottom, and every
@@ -404,11 +276,10 @@ def _finish_principal(
     # returned ``None``, so "all three members or nothing" is a property of
     # the control flow rather than of two sites agreeing to pass the same
     # three arguments.
-    return PrincipalWire(id=value, source=source, form=form)
+    return PrincipalWire(id=value, source=PRINCIPAL_SOURCE_ASSERTED, form=form)
 
 
 async def resolve_call_principal(
-    token: Any,
     *,
     hook: ResolvePrincipalHook | None,
     hook_context: SessionResolutionContext | None,
@@ -418,66 +289,32 @@ async def resolve_call_principal(
     logger: logging.Logger,
     warned: set[str],
 ) -> PrincipalWire | None:
-    """The envelope's ``principal`` for one call — both provenances, in order.
+    """The envelope's ``principal`` for one call: the vendor's hook, or nothing.
 
-    **Rung 0: the vendor's ``resolve_principal`` hook.** ``source: "asserted"``.
-    **Rung 1: the verified access token.** ``source: "attested"``.
-    ``None`` when neither resolves, which is the common case and never an
-    error. SPEC §11.4 carries the same ladder and the consumer-side rules.
+    ``None`` when no hook is configured or it has no answer, which is the
+    common case and never an error. SPEC §11.4 carries the consumer-side rules.
 
-    **The hook sits ABOVE the token, and that is a decision rather than an
-    implementation detail.** Attested normally beats asserted — but a gateway's
-    token names whatever principal the gateway authenticated, which is
-    frequently a service account rather than the person, while a hook exists
-    only where a vendor deliberately wrote one for this purpose. The more
-    specific claim wins over the better-verified one, and ``source`` is what
-    keeps that honest downstream: a consumer is never told an assertion was
-    verified, it is told which it got and decides for itself.
-
-    ⚠ **The two rungs are BYTE-IDENTICAL for one ``(tenant_id, principal,
-    issuer)``**, so ``source`` is the only thing separating them — a consumer
-    still reading the prefix sees one actor where there are two claims of
-    different weight. Why that is so: ``hash_principal_id``.
+    ⚠ **There is no fallback, and that is the decision rather than a gap.**
+    This used to fall through to the verified token's ``sub``. A vendor who
+    wants that passes ``baton.principal_from_oauth_sub`` as the hook, which reads
+    the same claim off ``context.access_token`` — so the only thing that
+    changed is who chose it.
 
     ⚠ **The hook is not consulted when it is not configured, and that path must
     stay free.** ``hook_context`` is built by the caller only when ``hook`` is
-    not ``None`` — header extraction is not free on every tool call of every
-    server that will never set this field. A configured hook with a ``None``
-    context is treated as no hook rather than as an error, so a caller that
-    forgets the context degrades to today's behaviour instead of losing
-    identity outright.
+    not ``None`` — header extraction and the token read are not free on every
+    tool call of every server that will never set this field. A configured
+    hook with a ``None`` context is treated as no hook rather than as an error.
 
     Fail-open throughout, like everything on this path: a hook that raises,
-    returns the wrong type, or returns ``None`` falls through to the token
-    exactly as if it had not been configured.
-
-    ⚠ **One case deliberately does NOT fall through: a hook that returned a
-    usable principal the SDK then could not hash** (a ``principal_id`` carrying an
-    unpaired surrogate is the reachable shape; a non-string ``issuer`` is
-    coerced away before it gets here). That emits NO ``principal`` rather than
-    the token's. The difference from the cases above is what the hook said: a
-    hook returning ``None`` has no opinion about this request, so the token is
-    the best available answer — but a hook that named a person and failed to
-    render them has told us the token names somebody ELSE, which is the whole
-    reason it sits above the token. Substituting the gateway's service account
-    there would file the call under a plausible, wrong, and heavily-merged
-    actor. Losing the join beats inventing one (CHARTER, the D2 join rule),
-    and an absent ``principal`` is already the common, well-handled case.
+    returns the wrong type, or returns ``None`` costs the event its
+    ``principal`` and nothing else.
     """
-    if hook is not None and hook_context is not None:
-        principal = await resolve_principal_via_hook(hook, hook_context, logger=logger)
-        if principal is not None:
-            return _finish_principal(
-                principal,
-                mode=mode,
-                tenant_id=tenant_id,
-                hmac_key=hmac_key,
-                source=PRINCIPAL_SOURCE_ASSERTED,
-                logger=logger,
-                warned=warned,
-            )
-    return resolve_attested_principal(
-        token,
+    if hook is None or hook_context is None:
+        return None
+    principal = await resolve_principal_via_hook(hook, hook_context, logger=logger)
+    return _finish_principal(
+        principal,
         mode=mode,
         tenant_id=tenant_id,
         hmac_key=hmac_key,

@@ -7,6 +7,12 @@ and nothing else, and this field is version-sensitive in a way nothing else in
 the suite is — ``AccessToken`` gained ``claims`` and ``subject`` somewhere in
 (1.25, 1.27], so **two of those four legs cannot carry identity at all.**
 
+⚠ **Since the SDK's own token rung was deleted, nothing reads the token unless
+a hook does**, so ``_drive`` configures ``principal_from_oauth_sub`` by default:
+the version-sensitivity this file pins is now the ready-made hook's, which reads
+the same claim. One test passes ``resolve_principal=None`` to pin that a token
+alone yields nothing on every leg.
+
 That is the point of putting it here. On 1.20 and 1.25 these tests assert the
 documented degrade (no ``claims`` ⇒ no ``principal_id``, no crash) against the REAL
 ``AccessToken`` class rather than a stub of it, which is the only way to know
@@ -29,6 +35,7 @@ from typing import Any
 import pytest
 from mcp.server.auth.provider import AccessToken
 
+from baton import principal_from_oauth_sub
 from baton.integrations.official import VendorConfig, install_baton
 from baton.integrations.official._compat import MCPServerClass as FastMCP
 from baton.sinks import FileSink
@@ -66,7 +73,7 @@ async def _drive(
     *,
     mode: str = "hashed",
     hmac_key: bytes | None = HMAC_KEY,
-    resolve_principal: Any = None,
+    resolve_principal: Any = principal_from_oauth_sub,
     monkeypatch: pytest.MonkeyPatch,
 ) -> list[dict[str, Any]]:
     """One tool call + one annotation call, with ``token`` as the caller."""
@@ -173,6 +180,20 @@ async def test_a_vendor_subclass_carries_identity_on_every_version(
     principal_ids = {_pid(ev) for ev in events}
     assert principal_ids != {None}, "a vendor-declared claims field was not read"
     assert all(v is not None and ":" not in v for v in principal_ids), principal_ids
+
+
+async def test_a_token_with_no_hook_emits_without_the_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deleted rung, on every matrix leg: a usable token is not read unless
+    the vendor's hook reads it."""
+    events = await _drive(
+        tmp_path / "e.jsonl",
+        _token(claims={"sub": "alice", "iss": "https://idp"}),
+        resolve_principal=None,
+        monkeypatch=monkeypatch,
+    )
+    assert {_pid(ev) for ev in events} == {None}
 
 
 async def test_an_unauthenticated_call_emits_without_the_field(

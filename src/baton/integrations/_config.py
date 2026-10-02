@@ -194,6 +194,20 @@ class SessionResolutionContext:
     meta: dict[str, Any] | None
     tool_name: str
     arguments: dict[str, Any]
+    access_token: Any | None = None
+    """The verified OAuth access token for this request, or ``None``.
+
+    Whatever the adapter's own ``get_access_token()`` returned — an
+    ``AccessToken`` the vendor's ``TokenVerifier`` already validated. The SDK
+    does not verify signatures and never has; it hands over what the verifier
+    produced. ``None`` on stdio (MCP auth is ASGI middleware, so no token can
+    exist there) and on any unauthenticated HTTP request, which is most of them.
+
+    Carried so a hook can read claims without importing either adapter's auth
+    module: ``baton.principal_from_oauth_sub`` and
+    ``baton.principal_from_oauth_email`` read it, and so can a vendor's own.
+    Defaulted, so a vendor hand-building this object in their own unit tests
+    keeps working."""
 
     def __post_init__(self) -> None:
         """Fold a plain ``dict`` of headers; pass anything else through.
@@ -501,37 +515,29 @@ class VendorConfig:
     sees that tenant's whole population replaced."""
 
     resolve_principal: ResolvePrincipalHook | None = None
-    """Optional vendor-supplied identity resolver, checked BEFORE the verified
-    access token and winning outright when both resolve (SPEC §11.4).
+    """Optional vendor-supplied identity resolver — the ONLY source of
+    ``principal`` (SPEC §11.4). Unset, no event carries one.
 
-    **This is the only way a stdio vendor's principal can reach Baton.** The
-    token path reads a contextvar set by MCP's bearer-auth ASGI middleware, and
-    stdio has no ASGI — so ``principal`` is HTTP-only without this hook, on every
-    supported version. A vendor already authenticating stdio users out of band
-    knows exactly who the user is and previously had no way to say so.
+    Takes a ``SessionResolutionContext`` — headers, meta, tool name, arguments
+    and the verified ``access_token`` — and returns ``Principal | None``.
+    ``None``, a wrong type, or a raised exception (logged, never propagated)
+    means the event ships without a ``principal``. Sync or async. Import the
+    return type as ``from baton import Principal``.
 
-    Takes a ``SessionResolutionContext`` — headers, meta, tool name and
-    arguments — and returns ``Principal | None``; ``None``, a wrong type, or a raised exception
-    (logged, never propagated) falls through to the token path unchanged.
-    Sync or async. Import the return type as ``from baton import Principal``.
+    **Two ready-made hooks cover the OAuth case**: pass
+    ``baton.principal_from_oauth_sub`` to key on the token's subject, or
+    ``baton.principal_from_oauth_email`` to key on its ``email`` claim. Anything
+    else — a gateway header, an argument, an out-of-band stdio login — is a hook
+    the vendor writes.
 
-    ⚠ **A hook principal is ASSERTED, not attested.** The token path carries an
-    identity an IdP verified; this one carries whatever the vendor says, and the
-    SDK cannot check it. A consumer reads which it got from
-    ``principal.source`` — ``"asserted"`` here, ``"attested"`` for the token —
-    and MUST NOT present an asserted principal as a verified one. It is checked
-    ABOVE the token deliberately: a gateway's token frequently names a service
-    account rather than the end user, and this hook exists only where a vendor
-    opted in, which makes it the more specific claim even though it is the less
-    verified one.
+    ⚠ **Every principal is ASSERTED.** The SDK cannot see what a hook did, so
+    even one that read a verified token is the vendor's claim as far as the
+    wire is concerned, and ``principal.source`` is ``"asserted"`` on every
+    event. Until this release the SDK read the token's ``sub`` itself when no
+    hook answered and stamped it ``"attested"``; that fallback is gone, so a
+    vendor who relied on it passes ``principal_from_oauth_sub`` explicitly.
 
-    ⚠ **The digests are IDENTICAL; only ``source`` separates them.** A
-    consumer that told the two apart by reading a ``v1:`` prefix must stop and
-    read ``source`` — see ``baton.identity.hash_principal_id``.
-
-    ⚠ **``principal_id_mode="raw"`` keeps the distinction**, which is a change:
-    raw used to forfeit provenance along with pseudonymity, and no longer
-    does.
+    ⚠ **``principal_id_mode="raw"`` keeps ``source``**, as every mode does.
 
     ⚠ **It is not ``default_agent_runtime`` returning.** That was a static
     value set once at install, asserting over whatever a client declared per

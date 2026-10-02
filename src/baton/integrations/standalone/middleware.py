@@ -431,7 +431,7 @@ class BatonMiddleware(Middleware):
         # Identity resolves here, beside the runtime detect: one place per
         # call, producing the FINISHED wire value so the raw principal never
         # reaches the event constructions below. ``None`` on any call where
-        # neither provenance resolves, which is most of them.
+        # no hook is set or it has no answer, which is most of them.
         #
         # ⚠ This comment used to read "``None`` on stdio and on any
         # unauthenticated call". The stdio half stopped being true when
@@ -446,12 +446,12 @@ class BatonMiddleware(Middleware):
                 meta=meta_dict,
                 tool_name=tool_name,
                 arguments=params,
+                access_token=_auth.current_access_token(),
             )
             if self._resolve_principal_hook is not None
             else None
         )
         call_principal = await resolve_call_principal(
-            _auth.current_access_token(),
             hook=self._resolve_principal_hook,
             hook_context=identity_hook_context,
             mode=self._principal_id_mode,

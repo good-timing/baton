@@ -1,4 +1,10 @@
-"""``principal_id`` resolution — the field, the fail-open matrix, and the traps.
+"""``principal`` resolution through the ready-made OAuth hooks — the field, the
+fail-open matrix, and the traps.
+
+These tests pinned the SDK's own token rung until it was deleted; they now run
+the same tokens through ``principal_from_oauth_sub`` — the hook that reads the
+same claim — so every measured trap (``client_id``, ``subject``, the mcp < 1.27
+band) is still pinned, on the code a vendor actually opts into.
 
 Unit-level. The end-to-end halves live in
 ``tests/integrations/official/test_principal_id.py`` (which ``mcp-matrix`` runs
@@ -13,20 +19,22 @@ module's ``getattr`` exists for and a dict would not have it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 
+from baton import principal_from_oauth_email, principal_from_oauth_sub
 from baton.events import PrincipalWire
-from baton.identity import hash_principal_id
+from baton.identity import Principal, hash_principal_id
+from baton.integrations._config import SessionResolutionContext
 from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
     PRINCIPAL_ID_MODE_RAW,
     RAW_PRINCIPAL_ID_MAX_LEN,
-    principal_from_access_token,
-    resolve_attested_principal,
+    resolve_call_principal,
 )
 
 KEY = b"unit-test-key"
@@ -54,7 +62,18 @@ class _OldBandToken:
     scopes: list[str] = field(default_factory=list)
 
 
-def _resolve(token: Any, **kw: Any) -> PrincipalWire | None:
+def _ctx(token: Any) -> SessionResolutionContext:
+    return SessionResolutionContext(
+        headers=None, meta=None, tool_name="lookup", arguments={}, access_token=token
+    )
+
+
+def _sub(token: Any) -> Principal | None:
+    return principal_from_oauth_sub(_ctx(token))
+
+
+def _resolve(token: Any, hook: Any = principal_from_oauth_sub, **kw: Any) -> PrincipalWire | None:
+    """The whole call-level path a vendor gets by passing the hook."""
     params: dict[str, Any] = {
         "mode": PRINCIPAL_ID_MODE_HASHED,
         "tenant_id": TENANT,
@@ -63,7 +82,7 @@ def _resolve(token: Any, **kw: Any) -> PrincipalWire | None:
         "warned": set(),
     }
     params.update(kw)
-    return resolve_attested_principal(token, **params)
+    return asyncio.run(resolve_call_principal(hook=hook, hook_context=_ctx(token), **params))
 
 
 # --------------------------------------------------------------------------
@@ -72,7 +91,7 @@ def _resolve(token: Any, **kw: Any) -> PrincipalWire | None:
 
 
 def test_the_subject_claim_is_what_is_read() -> None:
-    principal = principal_from_access_token(_Token(claims={"sub": "alice", "iss": "https://idp"}))
+    principal = _sub(_Token(claims={"sub": "alice", "iss": "https://idp"}))
     assert principal is not None
     assert principal.principal_id == "alice"
     assert principal.issuer == "https://idp"
@@ -87,12 +106,12 @@ def test_client_id_is_never_the_identity() -> None:
     the exact bug ``principal_id`` exists to resolve — so it must not appear in the
     output even when it is the only identity-shaped field present.
     """
-    assert principal_from_access_token(_Token(client_id="acme-desktop-app")) is None
+    assert _sub(_Token(client_id="acme-desktop-app")) is None
 
     # And it must not leak in via the claims either: a token whose claims carry
     # a client_id but no sub yields nothing, not the app.
     token = _Token(claims={"client_id": "acme-desktop-app", "azp": "acme-desktop-app"})
-    assert principal_from_access_token(token) is None
+    assert _sub(token) is None
 
     # Two different users of ONE app must not collapse. This is the assertion
     # that would have failed on the naive reading.
@@ -111,7 +130,7 @@ def test_subject_is_not_read_even_when_populated() -> None:
     the two paths while adding a second one to maintain. ``claims["sub"]``
     worked on every combination measured.
     """
-    assert principal_from_access_token(_Token(subject="alice", claims=None)) is None
+    assert _sub(_Token(subject="alice", claims=None)) is None
 
 
 # --------------------------------------------------------------------------
@@ -125,7 +144,7 @@ def test_a_token_without_claims_degrades_rather_than_raising() -> None:
     The requirement is that this is a MISS, not a crash: a tool call must not
     fail because the vendor pinned an older mcp (SPEC §11.2 fail-open).
     """
-    assert principal_from_access_token(_OldBandToken()) is None
+    assert _sub(_OldBandToken()) is None
     assert _resolve(_OldBandToken()) is None
 
 
@@ -141,7 +160,7 @@ def test_a_vendor_subclass_declaring_claims_is_read_on_any_version() -> None:
     class _VendorToken(_OldBandToken):
         claims: dict[str, Any] | None = None
 
-    principal = principal_from_access_token(_VendorToken(claims={"sub": "carol"}))
+    principal = _sub(_VendorToken(claims={"sub": "carol"}))
     assert principal is not None
     assert principal.principal_id == "carol"
 
@@ -210,7 +229,7 @@ def test_hashed_mode_emits_a_BARE_digest_and_never_the_principal() -> None:
     assert ":" not in got.id, "a tag came back onto the value"
     assert len(got.id) == 64 and all(c in "0123456789abcdef" for c in got.id)
     assert got.form == "hashed"
-    assert got.source == "attested"
+    assert got.source == "asserted"
     # The whole object, serialised — a member that leaked the subject would
     # pass a check that only read `id`.
     blob = got.model_dump_json()
@@ -232,9 +251,9 @@ def test_raw_mode_emits_the_subject_verbatim() -> None:
     assert got is not None
     assert got.id == "Alice@Acme.COM"
     assert got.form == "raw"
-    # ⚠ The provenance SURVIVES raw mode now. It did not while the scheme tag
+    # ⚠ The provenance SURVIVES raw mode. It did not while the scheme tag
     # carried it, and that loss is what the object was built to end.
-    assert got.source == "attested"
+    assert got.source == "asserted"
 
 
 def test_raw_mode_is_capped() -> None:
@@ -268,10 +287,8 @@ def test_hashed_mode_without_a_key_drops_the_field_and_warns_once(
     logger = logging.getLogger("baton.test.identity")
     with caplog.at_level(logging.WARNING, logger=logger.name):
         for _ in range(5):
-            got = resolve_attested_principal(
+            got = _resolve(
                 _Token(claims={"sub": "alice@acme.com"}),
-                mode=PRINCIPAL_ID_MODE_HASHED,
-                tenant_id=TENANT,
                 hmac_key=None,
                 logger=logger,
                 warned=warned,
@@ -296,17 +313,17 @@ def test_a_whitespace_only_subject_is_a_miss(blank_sub: str) -> None:
 
     A truthiness guard passes them, and the result is a real, stable
     pseudonym naming nobody that every such caller merges into. Far less
-    reachable than on the hook path (a verifier would have to mint one), but
-    both paths feed one hash and a guard that differs between them is a guard
-    waiting to be copied wrong.
+    reachable than from a vendor's own hook (a verifier would have to mint
+    one), but both feed one hash and a guard that differs between them is a
+    guard waiting to be copied wrong.
     """
-    assert principal_from_access_token(_Token(claims={"sub": blank_sub})) is None
+    assert _sub(_Token(claims={"sub": blank_sub})) is None
 
 
 def test_an_empty_or_non_string_subject_is_a_miss() -> None:
-    assert principal_from_access_token(_Token(claims={"sub": ""})) is None
-    assert principal_from_access_token(_Token(claims={"sub": 12345})) is None
-    assert principal_from_access_token(_Token(claims="not-a-dict")) is None
+    assert _sub(_Token(claims={"sub": ""})) is None
+    assert _sub(_Token(claims={"sub": 12345})) is None
+    assert _sub(_Token(claims="not-a-dict")) is None
 
 
 def test_a_hostile_token_object_cannot_fail_a_tool_call() -> None:
@@ -318,7 +335,7 @@ def test_a_hostile_token_object_cannot_fail_a_tool_call() -> None:
         def claims(self) -> dict[str, Any]:
             raise ValueError("boom")
 
-    assert principal_from_access_token(_Exploding()) is None
+    assert _sub(_Exploding()) is None
     assert _resolve(_Exploding()) is None
 
 
@@ -394,8 +411,8 @@ def test_the_renamed_hmac_env_var_is_never_read_and_warned_about_only_when_it_ma
 def test_a_token_accessor_that_raises_cannot_reach_the_tool_call() -> None:
     """fastmcp's ``get_access_token()`` ends in an explicit ``raise TypeError``
     on its conversion path, reachable when a vendor's verifier returns a
-    non-fastmcp ``AccessToken``. Called in an argument expression it sat
-    OUTSIDE ``resolve_attested_principal``'s never-raise boundary."""
+    non-fastmcp ``AccessToken``. It is called while building the hook's
+    context, OUTSIDE the hook runner's never-raise boundary."""
     from baton.integrations.standalone import _auth
 
     def _boom() -> Any:
@@ -407,6 +424,90 @@ def test_a_token_accessor_that_raises_cannot_reach_the_tool_call() -> None:
         assert _auth.current_access_token() is None
     finally:
         _auth.get_access_token_or_none = original  # type: ignore[assignment]
+
+
+# --------------------------------------------------------------------------
+# ``principal_from_oauth_email``
+# --------------------------------------------------------------------------
+
+
+def _email(token: Any) -> Principal | None:
+    return principal_from_oauth_email(_ctx(token))
+
+
+def test_the_email_hook_keys_on_the_WHOLE_address_and_names_the_local_part() -> None:
+    """The local part alone is not an id: ``alice@acme.com`` and
+    ``alice@contoso.com`` are two people. It rides as ``user_name``, which never
+    leaves the payload tier."""
+    got = _email(_Token(claims={"email": "alice@acme.com", "sub": "x", "iss": "https://idp"}))
+    assert got == Principal(principal_id="alice@acme.com", user_name="alice", issuer="https://idp")
+
+
+def test_the_same_local_part_at_two_domains_is_two_people() -> None:
+    a = _resolve(_Token(claims={"email": "alice@acme.com"}), hook=principal_from_oauth_email)
+    b = _resolve(_Token(claims={"email": "alice@contoso.com"}), hook=principal_from_oauth_email)
+    assert a is not None and b is not None
+    assert a.id != b.id
+
+
+def test_the_local_part_never_reaches_the_wire() -> None:
+    """``user_name`` is PII confined to the payload tier. In hashed mode the
+    wire object must carry neither half of the address."""
+    got = _resolve(_Token(claims={"email": "alice@acme.com"}), hook=principal_from_oauth_email)
+    assert got is not None
+    blob = got.model_dump_json()
+    assert "alice" not in blob and "acme" not in blob
+
+
+def test_the_email_hook_does_not_fall_back_to_sub() -> None:
+    """No ``email`` claim is a miss, not a cue to read ``sub``: which claim
+    names the person is the vendor's choice, and composing the two is one line
+    of their own (the module docstring shows it)."""
+    assert _email(_Token(claims={"sub": "alice"})) is None
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        pytest.param(None, id="no-claims"),
+        pytest.param({"email": ""}, id="empty"),
+        pytest.param({"email": "  "}, id="whitespace"),
+        pytest.param({"email": 7}, id="non-string"),
+    ],
+)
+def test_an_unusable_email_is_a_miss(claims: Any) -> None:
+    assert _email(_Token(claims=claims)) is None
+    assert _email(_OldBandToken()) is None
+    assert _email(None) is None
+
+
+def test_an_address_with_no_at_sign_is_still_the_id_but_has_no_name() -> None:
+    """Not every IdP validates the claim's shape. The value is still a stable
+    identifier, so it keys the principal; there is just no local part to name."""
+    got = _email(_Token(claims={"email": "alice"}))
+    assert got == Principal(principal_id="alice", user_name=None, issuer=None)
+
+
+def test_the_local_part_splits_on_the_LAST_at_sign() -> None:
+    """RFC 5321 permits a quoted ``@`` in the local part; the domain never has one."""
+    got = _email(_Token(claims={"email": '"a@b"@acme.com'}))
+    assert got is not None and got.user_name == '"a@b"'
+
+
+def test_email_verified_is_not_consulted() -> None:
+    """Whether an unverified address is good enough is the vendor's call."""
+    got = _email(_Token(claims={"email": "alice@acme.com", "email_verified": False}))
+    assert got is not None and got.principal_id == "alice@acme.com"
+
+
+def test_the_hooks_never_raise_on_a_hostile_token() -> None:
+    class _Exploding:
+        @property
+        def claims(self) -> dict[str, Any]:
+            raise ValueError("boom")
+
+    assert _email(_Exploding()) is None
+    assert _sub(_Exploding()) is None
 
 
 # --------------------------------------------------------------------------

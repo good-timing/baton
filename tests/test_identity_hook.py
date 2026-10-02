@@ -6,8 +6,8 @@ through both emit paths and is where precedence and the ``v1:`` tag are
 pinned on real events.
 
 What this file covers is the normalizer: every way a vendor's hook can hand
-back something that is not a usable ``Principal``. Each of those is a MISS
-that falls through to the verified token, never a raise and never a
+back something that is not a usable ``Principal``. Each of those is a MISS —
+the event ships with no ``principal`` — never a raise and never a
 half-built principal — because the next thing that happens to a hook's return
 value is an HMAC over ``principal.principal_id``, and ``principal_id`` is additive
 analytics that may not fail a vendor's tool call (SPEC §11.2).
@@ -43,35 +43,27 @@ CTX = SessionResolutionContext(headers=None, meta=None, tool_name="lookup", argu
 
 @dataclass
 class _Token:
-    """An ``AccessToken`` carrying a usable subject — the attested fallback."""
+    """An ``AccessToken`` carrying a usable subject. Until the token rung was
+    deleted this was the fallback every miss below landed on; it now proves a
+    usable token is NOT used unless a hook reads it."""
 
     token: str = "jwt"
     client_id: str = "acme-app"
     scopes: list[str] = field(default_factory=list)
     claims: dict[str, str] = field(
-        default_factory=lambda: {"sub": "attested@acme.example", "iss": "https://idp.example"}
+        default_factory=lambda: {"sub": "token-sub@acme.example", "iss": "https://idp.example"}
     )
 
 
-def _attested() -> PrincipalWire:
-    """The token path's WHOLE object, not just its id.
-
-    Every fall-through test below compares against this, so each one now also
-    pins ``source`` and ``form`` for free — a fall-through that produced the
-    right digest under the wrong provenance used to compare equal.
-    """
-    return PrincipalWire(
-        id=hash_principal_id(
-            "attested@acme.example", tenant_id=TENANT, key=KEY, issuer="https://idp.example"
-        ),
-        source="attested",
-        form="hashed",
-    )
+#: The context every miss below runs under: it CARRIES a usable token, so a
+#: miss that came back non-``None`` would mean something read it behind the
+#: hook's back — the deleted fallback returning.
+CTX_WITH_TOKEN = SessionResolutionContext(
+    headers=None, meta=None, tool_name="lookup", arguments={}, access_token=_Token()
+)
 
 
-async def _resolve_with_timeout(
-    hook: Any, timeout: float, token: Any = None, **kw: Any
-) -> str | None:
+async def _resolve_with_timeout(hook: Any, timeout: float, **kw: Any) -> PrincipalWire | None:
     """``_resolve`` with the hook budget shortened, so the test does not have
     to wait out the real five-second default."""
     import baton.integrations._hooks as hooks_mod
@@ -79,15 +71,15 @@ async def _resolve_with_timeout(
     original = hooks_mod.HOOK_TIMEOUT_SECONDS
     hooks_mod.HOOK_TIMEOUT_SECONDS = timeout
     try:
-        return await _resolve(hook, token=token, **kw)
+        return await _resolve(hook, **kw)
     finally:
         hooks_mod.HOOK_TIMEOUT_SECONDS = original
 
 
-async def _resolve(hook: Any, token: Any = None, **kw: Any) -> PrincipalWire | None:
+async def _resolve(hook: Any, **kw: Any) -> PrincipalWire | None:
     params: dict[str, Any] = {
         "hook": hook,
-        "hook_context": CTX,
+        "hook_context": CTX_WITH_TOKEN,
         "mode": PRINCIPAL_ID_MODE_HASHED,
         "tenant_id": TENANT,
         "hmac_key": KEY,
@@ -95,12 +87,12 @@ async def _resolve(hook: Any, token: Any = None, **kw: Any) -> PrincipalWire | N
         "warned": set(),
     }
     params.update(kw)
-    return await resolve_call_principal(token, **params)
+    return await resolve_call_principal(**params)
 
 
 async def test_an_asserted_principal_hashes_under_the_KEY_GENERATION_tag() -> None:
-    """``v1:`` is retired: the hook's principal hashes under the same tag the
-    token's does, and ``source`` is what says which rung produced it."""
+    """``v1:`` is retired: the hook's principal is the bare digest, and
+    ``source`` is ``"asserted"`` — the only value this SDK emits."""
     got = await _resolve(lambda _c: Principal(principal_id="employee-1"))
     assert got == PrincipalWire(
         id=hash_principal_id("employee-1", tenant_id=TENANT, key=KEY),
@@ -109,42 +101,32 @@ async def test_an_asserted_principal_hashes_under_the_KEY_GENERATION_tag() -> No
     )
 
 
-async def test_SOURCE_is_now_the_only_difference_from_the_attested_derivation() -> None:
-    """One person reached by two provenances is one value, and ``source`` is
-    the only thing separating the two claims.
-
-    This used to read ``the same hex under two tags`` — the digests always
-    matched, because the scheme was never part of the HMAC message, and only
-    the three-character prefix differed. Retiring ``v1:`` collapses that last
-    difference into the member that can carry it in ``"raw"`` mode too. So the
-    assertion is now on the FULL id rather than on the hex after a colon.
-    """
-    asserted = await _resolve(lambda _c: Principal(principal_id="same-person"))
-    attested = hash_principal_id("same-person", tenant_id=TENANT, key=KEY)
-    assert asserted is not None
-    assert asserted.id == attested, "the tag is back in the HMAC message"
-    assert asserted.source == "asserted"
+async def test_a_usable_token_with_NO_hook_yields_no_principal() -> None:
+    """The deletion itself. Until this release the SDK read ``claims["sub"]``
+    off the verified token whenever no hook answered and stamped it
+    ``"attested"``. Identity is the vendor's choice now: no hook, no
+    ``principal``, however usable the token."""
+    assert await _resolve(None) is None
+    assert await _resolve(lambda _c: None) is None
 
 
-async def test_the_hook_beats_a_usable_token() -> None:
-    got = await _resolve(lambda _c: Principal(principal_id="employee-1"), token=_Token())
-    assert got != _attested()
-    assert got is not None and got.source == "asserted"
+async def test_attested_is_never_emitted() -> None:
+    """Even a hook that reads the verified token is the vendor's claim as far
+    as the wire can tell, so it is ``"asserted"``."""
+    from baton import principal_from_oauth_sub
+
+    got = await _resolve(principal_from_oauth_sub)
+    assert got is not None
+    assert got.source == "asserted"
+    import baton.integrations.identity_adapter as adapter
+
+    assert not hasattr(adapter, "PRINCIPAL_SOURCE_ATTESTED")
+    assert not hasattr(adapter, "resolve_attested_principal")
 
 
-async def test_returning_none_falls_through_to_the_token() -> None:
-    assert await _resolve(lambda _c: None, token=_Token()) == _attested()
-
-
-async def test_no_hook_configured_is_exactly_todays_behaviour() -> None:
-    assert await _resolve(None, token=_Token()) == _attested()
-    assert await _resolve(None, token=None) is None
-
-
-async def test_a_configured_hook_with_no_context_degrades_rather_than_dropping_identity() -> None:
-    """A caller that forgets to build the context gets today's behaviour, not
-    silence. The context is built only where a hook exists, so this is a
-    reachable wiring mistake rather than a hypothetical one."""
+async def test_a_configured_hook_with_no_context_is_treated_as_no_hook() -> None:
+    """The context is built only where a hook exists, so a caller that forgets
+    it is a reachable wiring mistake; it costs the principal, never a raise."""
     called = False
 
     def hook(_c: Any) -> Principal:
@@ -152,8 +134,7 @@ async def test_a_configured_hook_with_no_context_degrades_rather_than_dropping_i
         called = True
         return Principal(principal_id="employee-1")
 
-    got = await _resolve(hook, token=_Token(), hook_context=None)
-    assert got == _attested()
+    assert await _resolve(hook, hook_context=None) is None
     assert not called
 
 
@@ -181,7 +162,7 @@ async def test_a_wrong_return_type_is_a_miss_not_a_value(returned: Any) -> None:
     The namedtuple case is the one that matters: it has ``.principal_id`` and
     ``.issuer``, so ``getattr``-based code would accept it and hash it happily.
     """
-    assert await _resolve(lambda _c: returned, token=_Token()) == _attested()
+    assert await _resolve(lambda _c: returned) is None
 
 
 @pytest.mark.parametrize(
@@ -207,15 +188,15 @@ async def test_a_principal_with_no_usable_principal_id_is_a_miss(bad_principal_i
     reachable shapes, and they are what makes the phantom actor a real merge
     rather than a theoretical one.
     """
-    got = await _resolve(lambda _c: Principal(principal_id=bad_principal_id), token=_Token())
-    assert got == _attested()
+    got = await _resolve(lambda _c: Principal(principal_id=bad_principal_id))
+    assert got is None
 
 
 async def test_a_hook_that_raises_cannot_fail_the_call() -> None:
     def boom(_c: Any) -> Principal:
         raise RuntimeError("directory service down")
 
-    assert await _resolve(boom, token=_Token()) == _attested()
+    assert await _resolve(boom) is None
 
 
 @pytest.mark.parametrize(
@@ -236,7 +217,7 @@ async def test_the_except_is_broad_rather_than_an_enumerated_tuple(exc: Exceptio
     def boom(_c: Any) -> Principal:
         raise exc
 
-    assert await _resolve(boom, token=_Token()) == _attested()
+    assert await _resolve(boom) is None
 
 
 async def test_a_genuine_task_cancellation_propagates() -> None:
@@ -254,7 +235,7 @@ async def test_a_genuine_task_cancellation_propagates() -> None:
         time.sleep(5)
         return Principal(principal_id="employee-1")
 
-    task = asyncio.create_task(_resolve(blocks, token=_Token()))
+    task = asyncio.create_task(_resolve(blocks))
     await started.wait()
     await asyncio.sleep(0)
     task.cancel()
@@ -276,7 +257,7 @@ async def test_a_hook_cancelling_ITSELF_is_contained() -> None:
     async def self_cancel(_c: Any) -> Principal:
         raise asyncio.CancelledError
 
-    assert await _resolve(self_cancel, token=_Token()) == _attested()
+    assert await _resolve(self_cancel) is None
 
 
 async def test_a_slow_hook_loses_its_result_rather_than_the_loop() -> None:
@@ -285,7 +266,7 @@ async def test_a_slow_hook_loses_its_result_rather_than_the_loop() -> None:
     Measured before containment existed: an enclosing
     ``asyncio.wait_for(timeout=2)`` could NOT interrupt a 30-second sync hook,
     because the blocking call held the loop the timer needed. Here the hook
-    outlives its budget, the call falls through to the token, and the event
+    outlives its budget, the event ships without a ``principal``, and it
     still ships.
     """
 
@@ -294,8 +275,8 @@ async def test_a_slow_hook_loses_its_result_rather_than_the_loop() -> None:
         return Principal(principal_id="employee-1")
 
     t0 = time.monotonic()
-    got = await _resolve_with_timeout(slow, 0.2, token=_Token())
-    assert got == _attested()
+    got = await _resolve_with_timeout(slow, 0.2)
+    assert got is None
     assert time.monotonic() - t0 < 1.5, "the hook was not abandoned at its deadline"
 
 
@@ -317,7 +298,7 @@ async def test_a_blocking_hook_does_not_stall_concurrent_calls() -> None:
 
     beat = asyncio.create_task(heartbeat())
     await asyncio.sleep(0.02)
-    await _resolve(blocks, token=_Token())
+    await _resolve(blocks)
     stop.set()
     await beat
     assert ticks > 10, f"the event loop was blocked during the hook: {ticks} ticks"
@@ -346,31 +327,20 @@ async def test_an_empty_issuer_hashes_as_no_issuer() -> None:
 )
 async def test_a_junk_issuer_costs_the_issuer_not_the_identity(bad_issuer: Any) -> None:
     """A non-string issuer reaches ``unicodedata.normalize`` and raises. Caught
-    downstream — but the cost was the whole event's ``principal_id``, including the
-    attested one the token could still have produced, so a configured-but-buggy
-    hook was strictly worse than no hook. It is coerced before it gets there."""
-    got = await _resolve(
-        lambda _c: Principal(principal_id="employee-1", issuer=bad_issuer), token=_Token()
-    )
+    downstream — but the cost was the whole event's ``principal``. It is
+    coerced before it gets there, so a junk issuer costs the issuer only."""
+    got = await _resolve(lambda _c: Principal(principal_id="employee-1", issuer=bad_issuer))
     assert got == await _resolve(lambda _c: Principal(principal_id="employee-1"))
     assert got is not None and got.source == "asserted"
 
 
-async def test_a_principal_that_cannot_be_hashed_emits_nothing_rather_than_the_token() -> None:
-    """**The one case that deliberately does not fall through.**
-
-    A hook returning ``None`` has no opinion about the request, so the token is
-    the best available answer. A hook that NAMED a person and then failed to
-    render them has told us the token names somebody else — which is the whole
-    reason it sits above the token. Falling back would file the call under the
-    gateway's service account: plausible, wrong, and heavily merged. Losing the
-    join beats inventing one.
-
-    An unpaired surrogate is the reachable shape once ``issuer`` is coerced.
-    """
-    got = await _resolve(lambda _c: Principal(principal_id="a\ud800b"), token=_Token())
+async def test_a_principal_that_cannot_be_hashed_emits_nothing() -> None:
+    """An unpaired surrogate is the reachable shape once ``issuer`` is coerced.
+    The context carries a usable token, and it must not be substituted: a hook
+    that named a person and failed to render them has not asked for the
+    token's subject."""
+    got = await _resolve(lambda _c: Principal(principal_id="a\ud800b"))
     assert got is None, "a failed hash substituted a different actor"
-    assert got != _attested()
 
 
 async def test_the_hook_receives_the_context_it_was_given() -> None:
@@ -381,7 +351,7 @@ async def test_the_hook_receives_the_context_it_was_given() -> None:
         return Principal(principal_id="employee-1")
 
     await _resolve(hook)
-    assert seen == [CTX]
+    assert seen == [CTX_WITH_TOKEN]
     assert seen[0].tool_name == "lookup"
 
 
@@ -394,9 +364,7 @@ async def test_an_async_hook_is_awaited() -> None:
 
 
 async def test_hashed_mode_with_no_key_drops_the_field_rather_than_leaking_it() -> None:
-    """The asserted path goes through the same chokepoint as the attested one,
-    so it inherits the missing-key rule instead of restating it. The principal
-    must not appear in the output on that branch."""
+    """The principal must not appear in the output on the missing-key branch."""
     got = await _resolve(lambda _c: Principal(principal_id="employee-1"), hmac_key=None)
     assert got is None
 
