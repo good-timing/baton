@@ -530,8 +530,8 @@ def test_only_the_shipped_hooks_run_inline_and_nothing_inherits_it() -> None:
 
     from baton.integrations._hooks import _INLINE_HOOKS
 
-    assert principal_from_oauth_sub in _INLINE_HOOKS
-    assert principal_from_oauth_email in _INLINE_HOOKS
+    assert any(principal_from_oauth_sub is h for h in _INLINE_HOOKS)
+    assert any(principal_from_oauth_email is h for h in _INLINE_HOOKS)
 
     @functools.wraps(principal_from_oauth_sub)
     def wrapped(ctx: Any) -> Any:
@@ -541,7 +541,26 @@ def test_only_the_shipped_hooks_run_inline_and_nothing_inherits_it() -> None:
         return principal_from_oauth_email(ctx) or principal_from_oauth_sub(ctx)
 
     for vendor_callable in (wrapped, composed, AsyncMock()):
-        assert vendor_callable not in _INLINE_HOOKS
+        assert not any(vendor_callable is h for h in _INLINE_HOOKS)
+
+
+def test_an_unhashable_callable_hook_still_runs() -> None:
+    """A callable dataclass is unhashable; the inline check must not raise on it."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class Resolver:
+        def __call__(self, _ctx: Any) -> Principal:
+            return Principal(principal_id="u1")
+
+    got = _resolve(None, hook=Resolver())
+    assert got is not None and got.source == "asserted"
+
+
+def test_the_sub_hook_returns_a_clean_issuer_to_a_wrapping_vendor() -> None:
+    """Public export: a vendor reading ``.issuer`` gets a str or ``None``."""
+    assert _sub(_Token(claims={"sub": "a", "iss": 42})).issuer is None  # type: ignore[union-attr]
+    assert _sub(_Token(claims={"sub": "a", "iss": ""})).issuer is None  # type: ignore[union-attr]
 
 
 def test_an_AsyncMock_hook_is_awaited_not_returned_raw() -> None:

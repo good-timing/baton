@@ -61,9 +61,12 @@ def principal_from_oauth_sub(context: SessionResolutionContext) -> Principal | N
     # caller merges into.
     if not isinstance(sub, str) or not sub.strip():
         return None
-    # ``iss`` raw: the hook runner coerces a non-string or empty issuer to
-    # ``None`` for every hook (``resolve_principal_via_hook``).
-    return Principal(principal_id=sub, issuer=claims.get("iss"))
+    # Coerced HERE as well as in the runner: these are public exports, and a
+    # vendor wrapping one reads ``.issuer`` before the runner ever sees it.
+    issuer = claims.get("iss")
+    return Principal(
+        principal_id=sub, issuer=issuer if isinstance(issuer, str) and issuer else None
+    )
 
 
 @runs_inline

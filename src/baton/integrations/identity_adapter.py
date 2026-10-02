@@ -152,9 +152,9 @@ async def resolve_principal_via_hook(
             "non-string principal_id — ignoring it."
         )
         return None
-    # ``issuer`` is coerced HERE, for every hook including the shipped OAuth
-    # ones (which pass ``claims["iss"]`` through raw), for two reasons that are
-    # both bugs without it.
+    # ``issuer`` is coerced HERE, for every hook (the shipped OAuth ones also
+    # coerce their own output, being public), for two reasons that are both
+    # bugs without it.
     #
     # (1) It is folded into the HMAC message only when it is not ``None``, so
     #     ``issuer=""`` and ``issuer=None`` produce DIFFERENT digests for one

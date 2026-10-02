@@ -209,7 +209,7 @@ class HookFailed(Exception):
 
 #: The SDK's own hooks that run inline in ``run_vendor_hook``. Filled by
 #: ``runs_inline`` and by nothing else.
-_INLINE_HOOKS: set[Any] = set()
+_INLINE_HOOKS: list[Any] = []
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 
@@ -222,7 +222,7 @@ def _raised(hook_name: str, exc: Exception) -> HookFailed:
 def runs_inline(fn: _F) -> _F:
     """Register an SDK-owned hook that cannot block as safe to call on the
     event loop. Never apply this to a vendor's callable."""
-    _INLINE_HOOKS.add(fn)
+    _INLINE_HOOKS.append(fn)
     return fn
 
 
@@ -259,7 +259,10 @@ async def run_vendor_hook(
     # the inline path, one stalling the loop, the other returning an
     # unawaited coroutine. Only the function objects this package registered
     # are in the set.
-    if fn in _INLINE_HOOKS:
+    # ``is``, not ``in``: ``in`` hashes or calls ``__eq__``, and a vendor's
+    # callable dataclass is unhashable — a raise here, before any ``try``,
+    # would cost the principal while blaming the vendor's hook.
+    if any(fn is hook for hook in _INLINE_HOOKS):
         try:
             return fn(*args)
         except Exception as exc:
