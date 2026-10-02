@@ -924,6 +924,8 @@ Event types and their payload shapes:
 | `annotation` | `{intent?, expected_outcome?, signal_type?, workflow?, suggested_improvement?, context?}` (all nullable; agent populates what it has) | SDK annotation tool handler / library `client.annotate(...)` / `trace.annotate(...)` |
 | `surface_snapshot` | `{surface_hash, server_info?, capabilities?, instructions?, tools, seam_augmentations}` — top-level fields mirror baton-proxy's `enqueue_surface_snapshot`; `seam_augmentations.intent_param` shape differs (§11.4.2) | SDK middleware/wrap layer, once per observed `surface_hash` per process; see §11.4.2 |
 
+⚠ **These five are the TOOL-call and annotation types, and they are not the whole enum.** Twelve more — the resource and prompt lifecycles — are specified in **§11.4.4**, with one producer already emitting all of them. `EventType` has seventeen values; a consumer reading this table as exhaustive will reject conforming traffic, which §11.4.4 forbids outright.
+
 **`result_capture` — the producer declares that result-derived data was WITHHELD (OPTIONAL, on `tool_call_end` and `tool_call_error`).** A vendor may configure a producer to capture no tool-response data at all. When it does, the event says so, in its own member, rather than leaving a consumer to infer it from what is missing.
 
 - **Absent means captured.** There is no `"full"` on the wire. Absent is correct for a producer predating this member and for one configured to capture normally, and both of those genuinely captured — so a consumer needs no version table to read it.
@@ -1264,6 +1266,48 @@ its version, so that population is not merely unrecoverable but **uncountable**.
 from a `tool_call_error` and currently reads no body off it; a worker that
 nulls `result` on this event type drops the body this change exists to keep.
 
+#### 11.4.4 Resource and prompt lifecycle events — twelve types, one envelope
+
+**⚠ These twelve were SHIPPED BY A PRODUCER BEFORE they were specified, and this subsection records the shape rather than designing it.** `baton-proxy` has emitted all twelve in production since the resource/prompt work landed; the reference Console's ingest lists every one of them; and until this entry neither this document, `baton-spec/events.schema.json` nor `baton-sdk`'s models defined any of them. So where a choice below looks inconsistent, the inconsistency is **the producer's and is preserved**, flagged rather than corrected — correcting it here would make the schema of record disagree with the only producer there is.
+
+| `event_type` | Payload |
+|---|---|
+| `resource_list_start` | `{}` |
+| `resource_list_end` | `{count, duration_ms?}` |
+| `resource_list_error` | `{error_type, error_body, duration_ms?}` |
+| `resource_read_start` | `{uri, params?}` |
+| `resource_read_end` | `{uri, duration_ms?}` |
+| `resource_read_error` | `{uri, error_type, error_body, duration_ms?}` |
+| `prompt_list_start` | `{}` |
+| `prompt_list_end` | `{count, duration_ms?}` |
+| `prompt_list_error` | `{error_type, error_body, duration_ms?}` |
+| `prompt_get_start` | `{name, params?}` |
+| `prompt_get_end` | `{name, duration_ms?}` |
+| `prompt_get_error` | `{name, error_type, error_body, duration_ms?}` |
+
+**The envelope is §11.4's, unchanged.** That is what lets one collector endpoint accept all seventeen event types and one worker order them on `(session_id, sequence_number)`. A conforming producer MUST fill the same required envelope fields it fills on a tool call.
+
+**No payload here carries a BODY, and that is normative rather than an omission.**
+
+- A `resource_read` records its URI and its timing, never the content it fetched. A `prompt_get` records the prompt's name, never the messages it rendered.
+- **So `result_capture` (§11.4) does not appear on any of these payloads, and a producer MUST NOT add it.** The member declares that result-derived data was withheld; there is nothing on these payloads for a withhold to remove, so an SDK matching this shape needs no withhold extension. A producer that ever begins capturing a resource body MUST bring the rule with it in the same release.
+- **The `*_start` payloads DO carry caller data in `params`**, and it MUST be PII-scrubbed per §7 like any other payload. `result_capture` says nothing about it either way: §11.4 states outright that the member is not a statement about request data.
+
+**⚠ `params` is NOT built the same way on the two `*_start` payloads.** On `resource_read_start` it is the request's params with `_meta` removed and nothing else — **so `uri` appears twice**, once in its own member and once inside `params`. On `prompt_get_start` it is the request's `arguments` member alone, so `name` does **not** appear inside `params`. Measured in `baton_proxy.proxy`. A consumer MUST read the dedicated `uri` / `name` member and MUST NOT expect the subject inside `params`; a second producer SHOULD copy these shapes rather than infer a rule from one of them.
+
+**⚠ `count` on `resource_list_end` counts the `resources` array ALONE.** Resource TEMPLATES are a separate MCP method with their own result array and are not added in. A server exposing only templates therefore reports `count: 0`, which is correct, and a consumer MUST NOT read it as "this server has no resources".
+
+**⚠ There is no returned-flag shape here, so §11.4.3's `error_type` discriminator has no analogue.** `CallToolResult`'s error flag is a TOOL concept: a failing resource read or prompt get comes back as a JSON-RPC error, which §11.4.3 opens by calling a protocol fault. These six error payloads therefore carry **no `result`** and **no `failure_kind`**, and a producer MUST NOT synthesise either.
+
+**⚠ `error_type` is an unconstrained string and the producers do NOT agree on how to spell it.** A **wire sensor** holds the upstream's JSON-RPC error and files its numeric `code` as a string (`baton-proxy`); an **in-process SDK sensor** holds a live exception and files its class name, as §11.4.3's RAISE shape already does for tools. Both are conforming — the schema constrains neither, and §11.4.3 states that this member separates SHAPES and is not a closed set of values — and a consumer MUST NOT read one producer's spelling as the vocabulary. `error_body` is KEPT under every capture mode on all six: a failed FETCH's message is the producer's own diagnostic, not anything a resource returned, which is the same provenance ruling §11.4.3 gives the proxy's upstream-error analogue.
+
+**⚠ Leg pairing has only §11.5.4's FIFO floor here.** No producer sends `call_id` on any of these types, and the only one that exists sends no `call_id` on any event at all. A producer MAY mint one and the first that does needs no schema change; until then a consumer pairing a start with its end has nothing keyed on an identifier.
+
+**Consumer rules.**
+
+- **A consumer MUST NOT reject an event for carrying an unrecognised `event_type`**, here or anywhere. The reference Console accepts all twelve and reads none of them, which is conforming: these types are additive and a consumer adopts them when it has a use.
+- A consumer MUST NOT infer from a `*_list_end` `count` that it has seen the surface. `surface_snapshot` (§11.4.2) is what describes the surface; a count describes one call's answer.
+
 ### 11.5 Annotation correlation rules (worker-side)
 
 #### 11.5.1 Cycle-vs-session distinction
@@ -1392,6 +1436,8 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** the two entries immediately below are numbered `0.8.11` because that release ships them, per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **Unreleased — twelve resource and prompt lifecycle event types (§11.4.4).** `resource_list_{start,end,error}`, `resource_read_{start,end,error}`, `prompt_list_{start,end,error}`, `prompt_get_{start,end,error}`. ⚠ **Additive to the SPEC, not to the wire: `baton-proxy` has been emitting all twelve in production, and the reference Console's ingest has been accepting all twelve, against no schema definition anywhere.** This entry gives them one. No producer changes in it and no existing event changes shape. The shapes are transcribed from that producer field for field, two of its own inconsistencies included and flagged rather than fixed (`params` is built differently on the two `*_start` payloads; `uri` appears both in its own member and inside `params`). None of the twelve carries a body, so `result_capture` does not appear on any of them and a producer MUST NOT add it; none carries `result` or `failure_kind`, there being no returned-flag shape for a resource or a prompt. **Consumer consequence: none required.** A consumer that ignored these types was already conforming and still is — §11.4.4's own rule is that an unrecognised `event_type` is never a reason to reject an event.
 
 
 - **0.8.11 — worker rule change (2026-09-25)** — **A runtime conversation identifier is a TASK bound, not a cycle boundary, and it no longer decides the task alone.** No envelope, field or shape change, and no producer changes: SDKs forward `_meta` verbatim as before. §11.5.1 previously listed conversation identifiers as "definitive" CYCLE boundaries. That was wrong on level: a conversation spans many turns, so the rule collapsed a whole conversation into one cycle. The reference worker already treated them one level up, as a deliberate and recorded drift. §11.5.1 now states the task rules, and §11.4.1 points to it instead of repeating a second list. The rule also changes strength. A worker previously kept every cycle carrying the same conversation identifier in one task, across any gap. Now the same identifier bounds the task without deciding it, and a gap of hours MAY split it. **Consumer consequence:** a conversation resumed after a long gap can become two tasks where it was one. Different identifiers still always split, and grouping still never joins two sessions. **And a change of conversation identifier now cuts a cycle** (§11.5.1 tier 0): without it, two conversations on one process within the gap threshold shared a cycle and could not be told apart. It only splits, so a consumer sees more cycles, never fewer. Also removed from §11.4.1's examples: `claudecode/sessionId`, which Claude Code has not been observed to send, and `cursor/conversationId`, for which no evidence exists. Added: `threadId` and the nested `turn_id` (Codex CLI), `vscode.requestId`, a rule that a key is levelled by what it identifies, not by its name, and a rule that a conversation-level key is never used as `session_id`.
