@@ -46,6 +46,26 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   never scrubbed, never stored on the trace, and never reaches the bounded
   buffer or a `FileSink`.
 
+- **`failure_kind` on `ToolCallErrorPayload` — declared here, emitted by no
+  Python producer.** SPEC §11.4.3's optional member for a failure the SDK
+  manufactures ABOVE the vendor's handler: `unknown_tool`, `tool_disabled`,
+  `invalid_argument`, `output_schema_mismatch`. It is on the model because
+  `events.schema.json` is GENERATED from these models and every payload `$defs`
+  is `additionalProperties: false` — so the schema has to accept the member
+  before any producer emits it, or that producer fails its own conformance
+  suite. **`baton-ts` 0.5.0 is the first producer.** The Python follow-up is the
+  FastMCP middleware's structured-content conversion, which today files
+  `tool_call_end` for a call the caller saw fail; the official adapter already
+  reports two of the three cases correctly through `Tool.run`.
+
+- **Twelve resource and prompt lifecycle event payloads (SPEC §11.4.4) —
+  likewise declared, emitted by no Python producer.** `resource_list_*`,
+  `resource_read_*`, `prompt_list_*`, `prompt_get_*`. `baton-proxy` has emitted
+  all twelve in production for months against no schema at all; these models are
+  where they finally have one, transcribed from that producer field for field.
+  None carries a body, so none carries `result_capture` and a producer MUST NOT
+  add it.
+
 
 ## 0.8.11: a hashed principal is the bare hash
 
