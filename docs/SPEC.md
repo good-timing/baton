@@ -1450,7 +1450,7 @@ Defined error codes:
 
   **⚠ (3) `result` is a BODY and never a discriminator — and the first attempt at this correction was wrong too.** §11.4.3 said `result` is “absent” on the RAISE shape while `baton-sdk`'s and `baton-ts`'s vectors carry `result: null`; the fix said “null, test the VALUE”, which `/code-review` then showed is wrong in BOTH directions. `baton-proxy` deliberately OMITS the key (`emitter.py:442`) and `baton-extmcp` calls it that way, so a consumer obeying “MUST NOT test for presence” hits a `KeyError`; and `baton-sdk`'s envelope serializer answers `None` when an envelope will not serialize, so a RETURN-shape failure can carry `result: null` legitimately. **Absent and null are equivalent and say nothing about the shape. `error_type` is the discriminator**, which this subsection already stated for the producer.
 
-  **⚠ (4) A NEW limit is recorded, and it is a gap rather than a nuance.** A sensor wrapping the tool executor cannot see a failure the SDK manufactures above it — output-schema validation, unknown tool, input-validation failure. Measured on both TypeScript majors: the client receives `isError: true` and the producer emits `tool_call_end`. **A consumer counting failures from `baton-ts` is counting failures the HANDLER reported, not failures the caller saw.** ⚠ Scoped to `baton-ts`, and the scope is a FINDING rather than caution: on `mcp` 2.x, argument validation and output conversion both happen inside `Tool.run`, which `baton-sdk`'s adapters wrap from OUTSIDE — so a conversion failure raises through to them and is filed correctly. Read in the installed 2.x source; `mcp` 1.x unread. The first draft of this entry called the same class “plausible” in Python, which was a hedge standing in for a five-minute read. Moving the sensor up does not simply fix it: both majors convert a throw into a returned `isError` inside the request handler, so above that seam `error_type` collapses to `"tool_error"` for both shapes and the exception class name is unrecoverable. The wire sensors are where this class is visible today.
+  **⚠ (4) A NEW limit is recorded, and it is a gap rather than a nuance.** ⚠ **Superseded twice, 2026-09-30 and 2026-10-02: the limit is now CLOSED on `baton-ts` and still OPEN on both Python producers. The paragraph that follows is the original record and is wrong on two counts; the 09-30 correction under it is wrong on a third — read to the end of this point before acting on any of it.** A sensor wrapping the tool executor cannot see a failure the SDK manufactures above it — output-schema validation, unknown tool, input-validation failure. Measured on both TypeScript majors: the client receives `isError: true` and the producer emits `tool_call_end`. **A consumer counting failures from `baton-ts` is counting failures the HANDLER reported, not failures the caller saw.** ⚠ Scoped to `baton-ts`, and the scope is a FINDING rather than caution: on `mcp` 2.x, argument validation and output conversion both happen inside `Tool.run`, which `baton-sdk`'s adapters wrap from OUTSIDE — so a conversion failure raises through to them and is filed correctly. Read in the installed 2.x source; `mcp` 1.x unread. The first draft of this entry called the same class “plausible” in Python, which was a hedge standing in for a five-minute read. Moving the sensor up does not simply fix it: both majors convert a throw into a returned `isError` inside the request handler, so above that seam `error_type` collapses to `"tool_error"` for both shapes and the exception class name is unrecoverable. The wire sensors are where this class is visible today.
 
   **⚠ Re-measured 2026-09-30, and the paragraph above is wrong twice.** Driven
   through real in-memory sessions on `mcp` 2.2.0, `fastmcp` 4.0.3 and both
@@ -1480,61 +1480,96 @@ Defined error codes:
   `fastmcp` 4.x patches are unmeasured. And on `@modelcontextprotocol/sdk` 1.x
   the output-schema case produced NO caller-visible failure either (empty
   content, no flag), so `baton-ts`'s false success in that row is `2.x`-only;
-  the 1.x cell is a success both sides agree on.
+  the 1.x cell is a success both sides agree on. ⚠ **That last clause is wrong
+  — superseded 2026-10-02, immediately below.**
 
-  **⚠ Re-measured again 2026-10-02: the limit is CLOSED on `baton-ts`, and the
-  1.x cell just above is wrong.** Two corrections, both driven.
+  **⚠ Re-measured again 2026-10-02: the limit is CLOSED on `baton-ts` and still
+  OPEN on both Python producers, and the 1.x cell just above is wrong.** Two
+  corrections, both driven. The closure is `baton-ts` `6d4d2c8` — a second seam,
+  with `6aff64e` accepting the member in the schema ahead of it.
 
-  | case | `baton-ts` (both majors) | official adapter | FastMCP middleware |
-  |---|---|---|---|
-  | unknown tool | `tool_call_error` + `failure_kind: "unknown_tool"` | no event | `tool_call_error` |
-  | disabled tool | `tool_call_error` + `failure_kind: "tool_disabled"` | not measured | not measured |
-  | input validation | `tool_call_error` + `failure_kind: "invalid_argument"` | `tool_call_error` | `tool_call_error` |
-  | output-schema / structured-content conversion | `tool_call_error` + `failure_kind: "output_schema_mismatch"` | `tool_call_error` | **`tool_call_end`** |
+  | case | `baton-ts`, both majors |
+  |---|---|
+  | unknown tool | `tool_call_error` + `failure_kind: "unknown_tool"` |
+  | disabled tool | `tool_call_error` + `failure_kind: "tool_disabled"` |
+  | input validation | `tool_call_error` + `failure_kind: "invalid_argument"` |
+  | output-schema / structured-content conversion | `tool_call_error` + `failure_kind: "output_schema_mismatch"` |
 
-  ⚠ **Only the `baton-ts` column was re-driven; the limit is PARTIAL, not
-  closed.** The two Python columns are carried forward from 09-30 unchanged,
-  and the two cells that keep this open are both there: the FastMCP middleware
-  still files `tool_call_end` for a conversion failure — the false success
-  shape (b) names — and the official adapter still emits NOTHING for an unknown
-  tool. A fourth row also joins the table, a DISABLED tool: both TypeScript
-  majors answer it (1.x returns the flag, 2.x throws, both saying `Tool <name>
-  disabled`) and `baton-ts` emitted no event for it. It was absent from the
-  09-30 run rather than measured as fine, and the Console classified it
-  `unclassified` with the full text in hand — no text lane reaches it.
+  Rows 1-3 are pinned per major by `test/integrations/mcp/aboveTool.test.ts` and
+  row 4 by `errorResult.test.ts`, both under `describe.each(MAJORS)`, which is
+  what makes "both majors" checkable rather than asserted. ⚠ **Row 3 is not
+  unconditional**: that producer WITHDRAWS `invalid_argument` — emitting the
+  event and omitting the member — when the registered tool declares
+  `execution.taskSupport` of `"required"` or `"optional"`, because the pinned
+  1.x peer rejects those before it looks at any argument. §11.4.3's MUST-omit
+  rule permits exactly that, and it is a pin on one peer rather than a property
+  of the class.
 
-  **"Moving the sensor up does not simply fix it" holds, and the fix does not
-  move it.** `error_type` really does collapse to `"tool_error"` above the
-  request handler, which is why the remedy is a SECOND seam at the `tools/call`
-  handler rather than a relocated one: the inner seam stays, and one fact is
-  handed outward — whether the vendor's handler ran. The shape is then NAMED in
-  `failure_kind` instead of recovered from `error_type`. §11.4.3's rule that a
-  producer with only one seam MUST omit that member is this mechanism stated
-  normatively.
+  ⚠ **Both Python columns are unchanged from the 09-30 table above; only the
+  `baton-ts` column was re-driven.** The two cells that keep this limit open are
+  both there: the FastMCP middleware still files `tool_call_end` for a
+  conversion failure — the false success shape (b) names — and the official
+  adapter still emits NOTHING for an unknown tool. Neither was measured for a
+  disabled tool.
 
-  ⚠ **The 1.x cell is wrong, and a standing test in the target repo had said so
-  the whole time.** The scope paragraph above reads that on
-  `@modelcontextprotocol/sdk` 1.x the output-schema case produced NO
-  caller-visible failure, making `baton-ts`'s false success `2.x`-only. Driven
-  2026-10-02 on the pinned 1.30.0 with no Baton in the loop at all: the client
-  receives `isError: true` and a one-item content array reading `MCP error
-  -32602: Output validation error: Tool validated has an output schema but no
-  structured content was provided`. 1.x validates output too, so that false
-  success was never one major's and the limit was WIDER than recorded, not
-  narrower. `baton-ts`'s own `errorResult.test.ts` has asserted both of those
-  on BOTH majors since it was written and has been green in CI throughout; it
-  surfaced only when the new seam reddened the rest of that test. **The
-  mechanism is the part worth keeping:** the 09-30 probe's 1.x leg did not
-  fire, and the note carrying that result said outright that WHY it did not
-  fire was unmeasured. An unexplained negative was carried forward as a
-  property of the SDK instead of as a property of the rig.
+  **A fourth row joins the table, and it is the case that justifies the
+  member.** A DISABLED tool: 1.x throws inside its own handler's `try` and so
+  the client sees the returned flag, 2.x throws before that `try` and so it
+  escapes, both saying `Tool <name> disabled` (`mcp.js:101-108`,
+  `mcp-DXXb3Vv3.mjs:1394-1399`). It was absent from the 09-30 run rather than
+  measured as fine, and `baton-ts` emitted no event for it until the second seam
+  — an inference from the executor-wrapper vantage point, which never entered.
+  The reference Console answers `unclassified` for that text with or without the
+  JSON-RPC prefix, and only the named kind reaches the bucket
+  (`baton-console`'s `test_tool_disabled_is_reachable_ONLY_from_the_named_kind`).
 
-  **Release status, stated because this entry is numbered.** The closure is
-  `baton-ts` main; npm serves `0.4.1`, which carries the limit in full, and no
-  Python producer emits `failure_kind` at all. So a consumer reading this entry
-  today still counts handler-reported failures from every published artifact.
-  The release that carries the second seam is where this correction gets its
-  own number.
+  **"Moving the sensor up does not simply fix it" holds — so the remedy is a
+  SECOND seam at the `tools/call` handler rather than a relocated one:** the
+  inner seam stays, and one fact is handed outward, whether the vendor's handler
+  ran. §11.4.3's rule that a producer with only one seam MUST omit the member is
+  that mechanism stated normatively.
+
+  ⚠ **`error_type` is NOT `"tool_error"` for all of these, and the 09-24
+  paragraph's wording should not be read as saying so.** It says `error_type`
+  collapses above *the executor seam*, which is inside the vendor's handler, and
+  that holds. At the REQUEST handler it does not: 1.x converts all three
+  request-side cases into a returned `isError` inside its own `try`, so
+  `error_type` is `"tool_error"`, while 2.x THROWS for an unknown and a disabled
+  tool and returns only the rejected argument — so those two arrive as the class
+  name, `"ProtocolError"`. **One caller-visible failure, two spellings, by
+  major**, deliberately not special-cased: §11.4.3's discriminator is reporting
+  the SHAPE it was handed faithfully. ⚠ **Consumer consequence, and it is the
+  reason this member exists:** clause (1) of §11.4.3 reads a class-name
+  `error_type` as the vendor's handler having raised, and on 2.x these two did
+  not run the handler at all. A consumer MUST therefore read `failure_kind`
+  before concluding anything about the handler from `error_type`; it is what
+  makes the two majors comparable.
+
+  ⚠ **The 1.x cell is wrong, and the correction was reachable from a read.** The
+  scope paragraph above has 1.x producing no caller-visible failure here, making
+  `baton-ts`'s false success `2.x`-only. It validates output too:
+  `@modelcontextprotocol/sdk` raises `Output validation error: Tool <name> has an
+  output schema but no structured content was provided` from
+  `dist/esm/server/mcp.js:197`, with `McpError` adding the `MCP error -32602: `
+  prefix, so the client sees `isError: true` and that text. The false success was
+  never one major's and the limit was WIDER than recorded. `baton-ts`'s
+  `errorResult.test.ts` has asserted both on BOTH majors since `2c70d2a`
+  (2026-09-24) and been green in CI since; it surfaced only when the second seam
+  reddened the rest of that test.
+
+  **The mechanism is the part worth keeping:** both corrections were unmeasured
+  negatives read as measured facts. The run the `2.x`-only cell rests on is
+  `RESULTS_errortype_1001.md` (2026-10-01, `baton-ts` `d2b316c`), whose own text
+  says WHY its 1.x leg did not fire was unmeasured; the disabled case was absent
+  from the 09-30 run, not passed. An unexplained negative became a property of
+  the SDK instead of a property of the rig.
+
+  **Release status, stated because this entry is numbered.** npm serves `0.4.1`,
+  which predates `6d4d2c8` and carries the limit in full, and no Python producer
+  emits `failure_kind` at all — it is declared in `events.py` and emitted
+  nowhere. So a consumer reading this entry today still counts handler-reported
+  failures from every published artifact. The release that carries the second
+  seam is where this correction gets its own number.
 
   **⚠ (5) Settled later the same day: the `content` clause MUST NOT reach a WIRE sensor either.** This entry first left that open, with `baton-proxy` applying the clause and this section saying it should not — a deliberate disagreement pending a measurement. The measurement is one read: `CallToolResult`'s JSON schema makes `content` REQUIRED with no default, so the clause cannot fire for a conformant server and only loses failures from a non-conformant one. `baton-proxy` `a8e02bf` drops it and now matches `baton-extmcp` on that clause — though not on the flag's FORM, which `servicer.py:324` reads truthily while the proxy requires the boolean `true`; MCP types it as a boolean and a truthy read lets a server's own string `"false"` become a fabricated failure. **A consumer sees strictly MORE `tool_call_error` from the proxy after that commit**, for the same reason as point (3) of the 09-22 entry: a miscount removed, not a reliability regression.
 
