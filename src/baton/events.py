@@ -128,6 +128,58 @@ class ToolCallErrorPayload(BaseModel):
     failure carried no message". See ``ToolCallEndPayload.result_capture``
     for why it is a string.
     """
+    failure_kind: str | None = None
+    """SPEC §11.4.3: the producer NAMES a failure it manufactured ABOVE the
+    vendor's handler, instead of leaving a consumer to pattern-match prose.
+
+    Registered values, each declaring which of this subsection's two shapes it
+    belongs to — which is the whole reason the member exists, since
+    ``error_type`` is already the RAISE/RETURN discriminator and this class is
+    neither:
+
+    ===========================  ==========================================
+    value                        shape
+    ===========================  ==========================================
+    ``unknown_tool``             the handler never ran: no such tool
+    ``tool_disabled``            the handler never ran: the tool is off
+    ``invalid_argument``         the handler never ran: arguments rejected
+    ``output_schema_mismatch``   the handler RETURNED and our conversion of
+                                 its output rejected it
+    ===========================  ==========================================
+
+    **Absent means the vendor's handler ran and spoke for itself** — a tool
+    that returned an error, or raised one. Absent is therefore correct both for
+    a producer predating this member and for every failure the vendor's own
+    code produced, so no consumer needs a version table.
+
+    ⚠ **Absent and null are equivalent, and a consumer MUST NOT test for the
+    KEY.** Same mechanical reason ``result_capture`` carries the same rule:
+    ``model_dump(mode="json")`` with no ``exclude_none`` puts
+    ``"failure_kind": null`` on the wire. Read the VALUE.
+
+    ⚠ **This payload only.** The output-schema case files ``tool_call_end``
+    today, and that false success is what naming this corrects — so after the
+    fix nothing carries a ``failure_kind`` on a success payload. Unlike
+    ``result_capture``, which rides both.
+
+    ⚠ **The first three are NOT result-derived** — the handler never ran, so
+    nothing it returned exists. Their ``error_body`` STAYS under
+    ``result_capture: "off"`` (scrubbed: the argument-rejection message can
+    echo argument values). ``output_schema_mismatch``'s message describes what
+    the tool RETURNED, so it GOES. A producer sorts these by whether its inner
+    tool wrapper fired, not by inspecting the result object — all four arrive
+    as the same shape.
+
+    ``str``, not a ``Literal`` and not a closed enum in the generated schema,
+    for the reason ``result_capture`` is: a producer must stay able to emit a
+    value SPEC registers later rather than raise on a path §11.2 requires to
+    fail open.
+
+    Declared here, unused here: emitting it needs a second capture seam above
+    the executor, which is a separate change. This is the wire schema
+    PERMITTING the member, which has to be published before any producer emits
+    it — ``extra="forbid"`` above is why.
+    """
 
 
 class AnnotationPayload(BaseModel):

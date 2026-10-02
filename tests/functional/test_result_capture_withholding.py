@@ -480,3 +480,64 @@ async def test_withheld_events_conform_to_the_shared_schema(
     assert events
     for event in events:
         jsonschema.validate(event, event_schema)
+
+
+# =============================================================================
+# 6 · `failure_kind` — declared on the wire, not yet emitted (SPEC §11.4.3)
+# =============================================================================
+
+
+def test_failure_kind_is_PERMITTED_on_the_error_payload_and_absent_elsewhere() -> None:
+    """The schema half of F3, landing before any producer emits it.
+
+    `ToolCallErrorPayload` is ``extra="forbid"``, so a producer cannot send
+    this member until the model and the generated schema carry it — which is
+    why the declaration ships on its own, ahead of the capture seam that will
+    populate it. The mirror assertion matters as much: it is NOT on the success
+    payload, because a failure filed as ``tool_call_end`` is the false success
+    this member exists to correct.
+    """
+    from pydantic import ValidationError
+
+    from baton.events import ToolCallEndPayload, ToolCallErrorPayload
+
+    err = ToolCallErrorPayload(
+        tool_name="lookup", error_type="ProtocolError", error_body="Tool lookup not found"
+    )
+    assert err.failure_kind is None, "absent means the vendor's handler spoke for itself"
+
+    for value in ("unknown_tool", "tool_disabled", "invalid_argument", "output_schema_mismatch"):
+        assert (
+            ToolCallErrorPayload(
+                tool_name="lookup", error_type="ProtocolError", error_body="x", failure_kind=value
+            ).failure_kind
+            == value
+        )
+
+    # A str, not a Literal: a value SPEC registers LATER must not raise on a
+    # path §11.2 requires to fail open. Same rule `result_capture` follows.
+    assert (
+        ToolCallErrorPayload(
+            tool_name="t", error_type="E", error_body="x", failure_kind="not_yet_registered"
+        ).failure_kind
+        == "not_yet_registered"
+    )
+
+    with pytest.raises(ValidationError):
+        ToolCallEndPayload(tool_name="lookup", failure_kind="unknown_tool")  # type: ignore[call-arg]
+
+
+def test_failure_kind_reaches_the_wire_as_NULL_when_unset() -> None:
+    """Same trap as `result_capture`, one member over — see section 3.
+
+    No ``exclude_none``, so the key IS emitted with a null value. A consumer
+    testing ``"failure_kind" in payload`` would read every vendor-authored
+    failure as producer-manufactured.
+    """
+    from baton.events import ToolCallErrorPayload
+
+    wire = ToolCallErrorPayload(
+        tool_name="lookup", error_type="ValueError", error_body="boom"
+    ).model_dump(mode="json")
+    assert "failure_kind" in wire, "the key IS emitted — read the VALUE, never the key"
+    assert wire["failure_kind"] is None
