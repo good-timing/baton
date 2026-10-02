@@ -1517,8 +1517,10 @@ Defined error codes:
   what makes "both majors" checkable rather than asserted. ⚠ **Row 3 is not
   unconditional**: that producer WITHDRAWS `invalid_argument` — emitting the
   event and omitting the member — when the registered tool declares
-  `execution.taskSupport` of `"required"` or `"optional"`, because the pinned
-  1.x peer rejects those before it looks at any argument. §11.4.3's MUST-omit
+  `execution.taskSupport` of `"required"` or `"optional"`, because on the pinned
+  1.x peer such a tool has its own pre-argument rejection lanes (not registered
+  as a task tool; `"required"` called without task augmentation) that a sensor
+  cannot tell from a rejected argument. §11.4.3's MUST-omit
   rule permits exactly that, and it is a pin on one peer rather than a property
   of the class.
 
