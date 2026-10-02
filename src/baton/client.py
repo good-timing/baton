@@ -101,6 +101,13 @@ from typing import Any, Self, TypeVar
 
 from baton._dsn import parse_dsn, select_dsn
 from baton._optout import DisabledSink, capture_disabled, log_disabled
+from baton._result_capture import (
+    WITHHELD,
+    ResultCaptureMode,
+    ResultFields,
+    validate_mode,
+    withholding,
+)
 from baton._uuid import uuid7
 from baton.events import (
     DEFAULT_CONSENT_TOKEN,
@@ -133,6 +140,36 @@ __all__ = [
 # Defined at module top so Trace and AsyncTrace can use it as a default param
 # value (default-param evaluation happens at class-creation time).
 _UNSET: Any = object()
+
+# Sentinel for "observed() WAS called, and we deliberately did not keep the
+# result" — SPEC §11.4's withheld state, on the library API path.
+#
+# ⚠ DISTINCT from ``_UNSET`` on purpose, and the distinction is load-bearing
+# twice. The "exited without observed()" UserWarning branches on ``_UNSET``,
+# and a vendor who withheld a body DID observe their call — warning them would
+# be telling them to do the thing they just did. And the end payload has to
+# emit ``result_capture`` for this state and not for the other: absence of a
+# result already means "the handler raised" (SPEC §11.4.3), which is exactly
+# the confusion the marker exists to end.
+_WITHHELD: Any = object()
+
+
+def _end_result_fields(observed: Any) -> ResultFields:
+    """What the library path's stored result becomes on ``tool_call_end``.
+
+    THREE states, not two, which is the whole reason this is a function: a
+    withheld body carries the marker, a trace that never called ``observed()``
+    carries ``result=None`` (pre-existing, and warned about at the call site),
+    and a normal one carries the scrubbed value. Collapsing the first two would
+    publish a fabricated "the tool returned nothing" about a body the vendor
+    deliberately withheld — the defect SPEC §11.4 exists to prevent.
+
+    Shared by ``Trace`` and ``AsyncTrace``, which are otherwise twins by
+    copy.
+    """
+    if observed is _WITHHELD:
+        return ResultFields(result_capture=WITHHELD)
+    return ResultFields(result=observed if observed is not _UNSET else None)
 
 
 # =============================================================================
@@ -190,9 +227,12 @@ class _ClientConfig:
     vendor_id: str
     tenant_id: str
     consent_token: str
+    result_capture_mode: ResultCaptureMode
 
 
-def _disabled_client_config(switch: str, surface: str, sink: Sink | None) -> _ClientConfig:
+def _disabled_client_config(
+    switch: str, surface: str, sink: Sink | None, result_capture_mode: str
+) -> _ClientConfig:
     """What a client resolves to when the off switch is set.
 
     Nothing is read and nothing is validated — not the dsn, not ``vendor_id``,
@@ -215,6 +255,10 @@ def _disabled_client_config(switch: str, surface: str, sink: Sink | None) -> _Cl
         sink=sink if sink is not None else DisabledSink(),
         vendor_id="",
         tenant_id="",
+        # Unvalidated, like every other field here, and it costs nothing to be:
+        # no event is emitted under the switch, so the mode cannot be wrong in
+        # any way that reaches a consumer.
+        result_capture_mode=result_capture_mode,
         consent_token=DEFAULT_CONSENT_TOKEN,
     )
 
@@ -270,6 +314,7 @@ def _resolve_client_config(
     vendor_id: str | None,
     tenant_id: str | None,
     consent_token: str | None,
+    result_capture_mode: str,
 ) -> _ClientConfig:
     """The library API's config resolution — the twin of ``install_baton``'s.
 
@@ -283,6 +328,13 @@ def _resolve_client_config(
     stale ``BATON_VENDOR_ID`` from an earlier install must not redirect a
     client whose source states where it belongs.
     """
+    # The one place the library door validates the mode. It belongs HERE and
+    # not in ``__init__`` because ``_optout`` promises a disabled Baton never
+    # throws: the disabled twin is a DIFFERENT FUNCTION that validates nothing,
+    # so the invariant holds structurally instead of being re-tested against a
+    # flag in each constructor. That is the same shape ``install_baton`` has,
+    # where the switch returns ``disabled_handle`` before validation is reached.
+    mode = validate_mode(result_capture_mode, field="result_capture_mode")
     dsn_string = select_dsn(
         dsn,
         {
@@ -312,6 +364,7 @@ def _resolve_client_config(
             vendor_id=parsed.vendor_id,
             tenant_id=parsed.tenant_id,
             consent_token=consent,
+            result_capture_mode=mode,
         )
 
     if sink is None:
@@ -338,6 +391,7 @@ def _resolve_client_config(
         vendor_id=vendor_id_resolved,
         tenant_id=tenant_id_resolved or vendor_id_resolved,
         consent_token=_resolve_consent_token(consent_token),
+        result_capture_mode=mode,
     )
 
 
@@ -617,6 +671,13 @@ class Trace:
         if error_type is not None or error_body is not None:
             self._observed_error = (error_type or "Error", error_body or "")
             self._observed_result = _UNSET
+        elif withholding(self._client._result_capture_mode):
+            # The gate is HERE, not at payload construction: SPEC §7 forbids
+            # invoking the scrubber on a withheld result, and by payload time
+            # it has already run. So the body is never held at all — not
+            # scrubbed, not stored on the trace, never in the buffer or a sink.
+            self._observed_result = _WITHHELD
+            self._observed_error = None
         else:
             self._observed_result = self._client._scrubber(result)
             self._observed_error = None
@@ -745,6 +806,7 @@ class Trace:
             )
             self._client._emit_sync(error_event)
         else:
+            end_fields = _end_result_fields(self._observed_result)
             end_event = ToolCallEndEvent(
                 tenant_id=self._client._tenant_id,
                 vendor_id=self._client._vendor_id,
@@ -756,8 +818,9 @@ class Trace:
                 call_id=self._call_id,
                 payload=ToolCallEndPayload(
                     tool_name=self._tool_name,
-                    result=(self._observed_result if self._observed_result is not _UNSET else None),
                     duration_ms=duration_ms,
+                    result=end_fields.result,
+                    result_capture=end_fields.result_capture,
                 ),
             )
             self._client._emit_sync(end_event)
@@ -788,11 +851,12 @@ class Client:
         consent_token: str | None = None,
         agent_runtime: str = "python-library",
         scrubber: Any = None,
+        result_capture_mode: str = "full",
     ) -> None:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
         resolved = (
-            _disabled_client_config(switch, "Client", sink)
+            _disabled_client_config(switch, "Client", sink, result_capture_mode)
             if switch is not None
             else _resolve_client_config(
                 sink=sink,
@@ -800,6 +864,7 @@ class Client:
                 vendor_id=vendor_id,
                 tenant_id=tenant_id,
                 consent_token=consent_token,
+                result_capture_mode=result_capture_mode,
             )
         )
 
@@ -812,6 +877,7 @@ class Client:
         # processes via a class-level singleton). Pass identity_scrub
         # explicitly to opt out of scrubbing.
         self._scrubber = scrubber if scrubber is not None else Scrubber()
+        self._result_capture_mode = resolved.result_capture_mode
 
         # Sync mode uses a background thread + persistent loop bridge so the
         # sink's async primitives (locks, background drain tasks, httpx
@@ -1105,6 +1171,13 @@ class AsyncTrace:
         if error_type is not None or error_body is not None:
             self._observed_error = (error_type or "Error", error_body or "")
             self._observed_result = _UNSET
+        elif withholding(self._client._result_capture_mode):
+            # The gate is HERE, not at payload construction: SPEC §7 forbids
+            # invoking the scrubber on a withheld result, and by payload time
+            # it has already run. So the body is never held at all — not
+            # scrubbed, not stored on the trace, never in the buffer or a sink.
+            self._observed_result = _WITHHELD
+            self._observed_error = None
         else:
             self._observed_result = self._client._scrubber(result)
             self._observed_error = None
@@ -1234,6 +1307,7 @@ class AsyncTrace:
             )
             await self._client._emit(error_event)
         else:
+            end_fields = _end_result_fields(self._observed_result)
             end_event = ToolCallEndEvent(
                 tenant_id=self._client._tenant_id,
                 vendor_id=self._client._vendor_id,
@@ -1245,8 +1319,9 @@ class AsyncTrace:
                 call_id=self._call_id,
                 payload=ToolCallEndPayload(
                     tool_name=self._tool_name,
-                    result=(self._observed_result if self._observed_result is not _UNSET else None),
                     duration_ms=duration_ms,
+                    result=end_fields.result,
+                    result_capture=end_fields.result_capture,
                 ),
             )
             await self._client._emit(end_event)
@@ -1272,11 +1347,12 @@ class AsyncClient:
         consent_token: str | None = None,
         agent_runtime: str = "python-library",
         scrubber: Any = None,
+        result_capture_mode: str = "full",
     ) -> None:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
         resolved = (
-            _disabled_client_config(switch, "AsyncClient", sink)
+            _disabled_client_config(switch, "AsyncClient", sink, result_capture_mode)
             if switch is not None
             else _resolve_client_config(
                 sink=sink,
@@ -1284,6 +1360,7 @@ class AsyncClient:
                 vendor_id=vendor_id,
                 tenant_id=tenant_id,
                 consent_token=consent_token,
+                result_capture_mode=result_capture_mode,
             )
         )
 
@@ -1296,6 +1373,7 @@ class AsyncClient:
         # cross-process sharing). Pass identity_scrub explicitly to opt
         # out.
         self._scrubber = scrubber if scrubber is not None else Scrubber()
+        self._result_capture_mode = resolved.result_capture_mode
 
         self._sink: Sink = resolved.sink
         self._seq_counters: dict[str, int] = {}

@@ -240,6 +240,52 @@ class TestItCannotBreakABoot:
         monkeypatch.setenv(SWITCH, "1")
         assert install_baton(FastMCP("x"), VendorConfig()) is not None
 
+    def test_an_unregistered_result_capture_mode_does_not_raise_ON_THE_LIBRARY_PATH(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sibling of the two above, for the surface they do not cover.
+
+        Every other test in this class drives ``install_baton``, which returns
+        ``disabled_handle`` before it validates anything. ``Client`` has no
+        such early return — it validates inline — so a new refusal added there
+        is invisible to this class unless something asks. One was: SPEC §11.4's
+        ``result_capture_mode`` check raised under the switch for two commits,
+        green suite and all, because no test held the library path to the
+        contract the install path is held to.
+        """
+        from baton import AsyncClient, Client
+
+        monkeypatch.setenv(SWITCH, "1")
+        for cls in (Client, AsyncClient):
+            assert (
+                cls(
+                    vendor_id="v",
+                    tenant_id="t",
+                    consent_token="ct",
+                    result_capture_mode="none",
+                )
+                is not None
+            )
+
+    def test_an_unregistered_result_capture_mode_DOES_raise_without_the_switch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The control. Without it the test above passes against a client that
+        never validates at all, which is the opposite defect."""
+        from baton import AsyncClient, Client
+        from baton.sinks import StdoutSink
+
+        monkeypatch.delenv(SWITCH, raising=False)
+        for cls in (Client, AsyncClient):
+            with pytest.raises(ValueError, match="result_capture_mode"):
+                cls(
+                    sink=StdoutSink(),
+                    vendor_id="v",
+                    tenant_id="t",
+                    consent_token="ct",
+                    result_capture_mode="none",
+                )
+
     def test_an_unparseable_dsn_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from fastmcp import FastMCP
 

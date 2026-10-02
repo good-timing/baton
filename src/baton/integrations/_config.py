@@ -10,6 +10,7 @@ from typing import Any
 
 from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
 from baton._dsn import parse_dsn, resolve_dsn, select_dsn
+from baton._result_capture import ResultCaptureMode, validate_mode
 from baton.events import DEFAULT_CONSENT_TOKEN
 from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MODE_HASHED,
@@ -354,6 +355,46 @@ class VendorConfig:
     — recursive walker with email/Bearer/sk-*/AKIA*/JWT/CC-Luhn/phone
     patterns + field-name overrides on by default. Pass
     ``baton.scrub.identity_scrub`` to opt out, or supply your own."""
+
+    result_capture_mode: ResultCaptureMode = "full"
+    """Whether tool RESPONSE data is captured at all (SPEC §11.4).
+
+    ``"full"`` (default) captures as it always has. ``"off"`` means nothing
+    **derived from the tool's result** leaves this process: no ``result`` on
+    ``tool_call_end`` or ``tool_call_error``, and no ``error_body`` on the
+    returned-failure shape, where that text is unwrapped from the result. Every
+    affected event carries ``result_capture: "off"`` so a consumer reads a
+    FACT rather than inferring one from what is missing — without it the
+    Console files a fabricated ``dead_end`` on each call, because an absent
+    result already means "the handler raised".
+
+    **Requests are unaffected.** ``params`` are captured in both modes; this
+    field says nothing about them. Shaped so inputs COULD join later.
+
+    **What stays under ``"off"``, and say this to a reviewer unprompted:**
+    ``error_type``, ``tool_name`` and ``duration_ms``, so failure
+    classification, pairing and timing all still work — and the message of an
+    exception your own code RAISES, which is not derived from a result and is
+    the highest-value diagnostic the product has. Exception messages are a
+    classic leak channel (a failed query echoed back, a record id in a
+    ``KeyError``), so if that is also a problem the mode grows a stricter
+    value then.
+
+    **A mode string, not a boolean**, matching ``intent_param_mode`` /
+    ``proactive_mode`` / ``principal_id_mode``, and leaving room for the
+    content ladder's partial rung as a third value rather than a second field.
+
+    **Not a scrubber rule, deliberately** (SPEC §7). A scrubber TRANSFORMS a
+    value that still crosses the network; this DECLARES that nothing crosses.
+    A rule returning ``None`` is byte-identical to a tool that returned
+    nothing, and a guarantee cannot depend on the vendor's own function being
+    correct. Under ``"off"`` the scrubber is never invoked on the result —
+    calling vendor code to produce a value we discard is a path that can only
+    fail.
+
+    The lost signal is body-level: a call that returns 200 with a useless body
+    can no longer be detected. Those calls leave the denominator of body-level
+    analysis rather than counting as passes or failures."""
 
     intent_param_mode: str = "required"
     """Per-tool intent-param injection (mirrors baton-extmcp's vendor-neutral
@@ -710,6 +751,7 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             f"{sorted(PRINCIPAL_ID_MODES)} — 'hashed' emits an HMAC pseudonym, "
             f"'raw' emits the principal verbatim to the collector."
         )
+    validate_mode(config.result_capture_mode, field="VendorConfig.result_capture_mode")
     if config.intent_param_mode not in _INTENT_PARAM_MODES:
         raise ValueError(
             f"VendorConfig.intent_param_mode {config.intent_param_mode!r} must be "

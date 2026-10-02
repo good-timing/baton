@@ -652,6 +652,8 @@ The SDK runs on the vendor's side; the vendor is the data controller for what it
 
 A richer rule-based interface (declarative `scrub_rules` with `redact_key` / `mask_key` / `regex_mask` and sensible defaults for emails, API-key shapes, and common credential param names) is planned — see §14 open questions.
 
+**Withholding is not scrubbing, and it is a different promise.** A scrubber TRANSFORMS a value that still crosses the network; `result_capture` (§11.4) declares that result-derived data does not cross at all. Under `result_capture: "off"` the scrubber MUST NOT be invoked on `result` — there is nothing to transform, and calling vendor code to produce a value the producer discards can only fail. The two compose as a ladder: this section's rules are the mechanism for the rungs that transform, §11.4's declaration is the rung that does not.
+
 ---
 
 ## 8. Return channel — persistence model
@@ -744,7 +746,8 @@ A conforming SDK MUST:
 3. **Buffer events locally with bounded size.** Default bound: 1000 events. On overflow: drop oldest, emit `UserWarning(events_dropped)`. The buffer is in-process per SDK instance; it MUST NOT block the vendor's hot path on remote service availability.
 4. **POST events to Console ingest endpoint** (`POST /v0/events`) asynchronously with retry-and-backoff. Default timeout: 1s per request. Circuit-break after N consecutive failures.
 5. **Assign sequence numbers per session.** Monotonic per `session_id`. Worker uses (`session_id`, `sequence_number`) for reliable event ordering, not just timestamps.
-6. **MAY do cheap stateless classification.** E.g., set `signal_type=failure` on a tool-call-error event when the exception class matches a known failure pattern. State-dependent classification (retry_loop) MUST NOT happen in the SDK.
+6. **Withhold result-derived data on request, and say so on the wire.** When configured to withhold results (§11.4 `result_capture`), a conforming SDK MUST emit nothing **derived from the tool's result** — `result`, and an `error_body` unwrapped from the result — MUST set `result_capture` on every affected event, and MUST still classify and emit `error_type`, `tool_name` and `duration_ms`. The rule is keyed on PROVENANCE, not on a field name: `error_body` is fed from several sources and only the result-derived one is withheld (§11.4.3). A producer MUST NOT infer the withheld state from an absent value, and a consumer MUST NOT either.
+7. **MAY do cheap stateless classification.** E.g., set `signal_type=failure` on a tool-call-error event when the exception class matches a known failure pattern. State-dependent classification (retry_loop) MUST NOT happen in the SDK.
 
 A conforming SDK MUST NOT:
 - Maintain session state beyond the bounded local buffer
@@ -916,10 +919,29 @@ Event types and their payload shapes:
 | `event_type` | Payload | Source |
 |---|---|---|
 | `tool_call_start` | `{tool_name, params, call_intent?, call_expected?, call_workflow?, intent_source?}` (params PII-scrubbed; the optional fields carry the injected per-call params when present — §13 changelog) | SDK middleware before vendor handler |
-| `tool_call_end` | `{tool_name, result, duration_ms}` (result PII-scrubbed) | SDK middleware after vendor handler returns |
-| `tool_call_error` | `{tool_name, error_type, error_body, duration_ms, result?}` (`result` PII-scrubbed; present only for the returned-flag shape — §11.4.3) | SDK middleware **on exception, or on a returned result whose MCP error flag is set** |
+| `tool_call_end` | `{tool_name, result, duration_ms, result_capture?}` (result PII-scrubbed; `result_capture` present only when results are withheld — see below) | SDK middleware after vendor handler returns |
+| `tool_call_error` | `{tool_name, error_type, error_body, duration_ms, result?, result_capture?, failure_kind?}` (`result` PII-scrubbed; present only for the returned-flag shape — §11.4.3; `result_capture` present only when results are withheld — see below; `failure_kind` present only when the PRODUCER manufactured the failure above the vendor's handler — §11.4.3) | SDK middleware **on exception, or on a returned result whose MCP error flag is set** |
 | `annotation` | `{intent?, expected_outcome?, signal_type?, workflow?, suggested_improvement?, context?}` (all nullable; agent populates what it has) | SDK annotation tool handler / library `client.annotate(...)` / `trace.annotate(...)` |
 | `surface_snapshot` | `{surface_hash, server_info?, capabilities?, instructions?, tools, seam_augmentations}` — top-level fields mirror baton-proxy's `enqueue_surface_snapshot`; `seam_augmentations.intent_param` shape differs (§11.4.2) | SDK middleware/wrap layer, once per observed `surface_hash` per process; see §11.4.2 |
+
+⚠ **These five are the TOOL-call and annotation types, and they are not the whole enum.** Twelve more — the resource and prompt lifecycles — are specified in **§11.4.4**, with one producer already emitting all of them. `EventType` has seventeen values; a consumer reading this table as exhaustive will reject conforming traffic, which §11.4.4 forbids outright.
+
+**`result_capture` — the producer declares that result-derived data was WITHHELD (OPTIONAL, on `tool_call_end` and `tool_call_error`).** A vendor may configure a producer to capture no tool-response data at all. When it does, the event says so, in its own member, rather than leaving a consumer to infer it from what is missing.
+
+- **Absent means captured.** There is no `"full"` on the wire. Absent is correct for a producer predating this member and for one configured to capture normally, and both of those genuinely captured — so a consumer needs no version table to read it.
+- **Absent and null are equivalent, and a consumer MUST NOT test for the KEY.** Same ruling this section's `result` already carries (§11.4.3), for the same mechanical reason: `baton-sdk` serializes with `model_dump(mode="json")` and no `exclude_none`, so a defaulted member reaches the wire as `"result_capture": null` rather than being omitted. A consumer that reads `"result_capture" in payload` therefore marks EVERY captured call withheld against the reference SDK — the exact inversion of the member's meaning. Read the VALUE, and read `null` as absent. (Adding `exclude_none` instead was considered and rejected: it would change every optional member on every event, including the `result: null` that §11.4.3 documents as deliberate key-set parity with `baton-ts`.)
+- **Registered value: `"off"`** — nothing derived from the tool's result was emitted. A **string**, not a boolean, so a partial rung (shape or length without text) can be added as a second registered value rather than a second member.
+- **It rides BOTH payloads**, because the returned-failure shape withholds `result` too (§11.4.3).
+- **The config knob and this member are not the same name.** How a vendor configures it is a producer concern (`VendorConfig.result_capture_mode` in the reference SDK, an environment variable in `baton-proxy`); what reaches the wire is `result_capture`. Stated once here so a third producer does not invent a third spelling — the same separation `principal_id_mode` and `principal.form` already have.
+
+**Why a member and not an absent value.** A missing `result` already means "the handler raised, there was no result" (§11.4.3), so absence cannot also mean "withheld by policy" — the two are indistinguishable, and a consumer reading absence as "the tool returned nothing" will manufacture a failure that never happened. This is the same rule `principal` is built on: a fact ABOUT a value does not belong inside the value, and a consumer must never have to guess a classification.
+
+**Consumer rules.**
+
+- A consumer MUST NOT treat a withheld `result` as an empty, null or failed response. Any rule that reads the response body — emptiness, shape, thin-result or silent-failure detection — MUST be skipped for these events, not evaluated against nothing.
+- A consumer MUST NOT read `result_capture` as a statement about `params`. Request data is unaffected by it.
+- A consumer MAY report coverage from it: these events are outside the denominator of body-level analysis rather than passes or failures within it.
+- `error_type`, `tool_name` and `duration_ms` are unaffected, so failure classification, pairing and timing all still work. What is lost is body-level analysis, and that loss is the vendor's declared choice.
 
 **Annotation event sub-types.** A single `event_type=annotation` carries two semantically distinct flavors, discriminated by whether `payload.signal_type` is populated:
 
@@ -989,7 +1011,10 @@ shapes, and a producer MUST emit `tool_call_error` for both:
 
 1. **RAISE** — the vendor handler raises. The producer holds a live exception.
    `error_type` is the exception class name, `error_body` its message, and
-   there is no result object to record.
+   there is no result object to record. **Under `result_capture: "off"`
+   (§11.4) this shape is UNCHANGED**: the exception message is the vendor's own
+   code speaking, not anything the tool returned, so nothing here is
+   result-derived and nothing is withheld.
 2. **RETURN** — the handler returns normally, and the result carries the error
    flag. `error_type` is the registered value **`"tool_error"`**, `error_body`
    is the human-readable reason unwrapped from the result's `content` text
@@ -997,7 +1022,34 @@ shapes, and a producer MUST emit `tool_call_error` for both:
    **not unwrapped** to the developer's return value the way `tool_call_end`
    unwraps it. The envelope is what holds the flag and the reason; on an error
    result `structured_content` is typically `null` and the text lives in
-   `content`.
+   `content`. **Under `result_capture: "off"` (§11.4) BOTH
+   are withheld**: `result` is not emitted, and `error_body` — which on this
+   shape is unwrapped FROM the result — is emitted as the empty string, because
+   it is a required member of this payload and cannot be dropped. An empty
+   `error_body` is therefore ambiguous on its own; `result_capture` is what
+   distinguishes "withheld" from "the failure carried no message".
+
+**⚠ On the LIBRARY API path both members are vendor-supplied, so this subsection's shapes describe the middleware only.** `Client` / `AsyncClient`'s trace takes `observed(error_type=..., error_body=...)` from the vendor directly: nothing is unwrapped from a result, so under `result_capture: "off"` that `error_body` is KEPT — the vendor's own code speaking, the same standing as the RAISE shape's exception message. **Nothing on a library-path `tool_call_error` is result-derived, so it carries NO marker**, and a `"off"` error event there is byte-identical to a `"full"` one. That is §11.4's rule ("present only when results are withheld") applied, not an exemption from it: the reference SDK never sets `result` on this payload either, so there is nothing to withhold and nothing to declare. The marker on this path rides `tool_call_end` alone.
+
+`error_type` here is likewise whatever the vendor passed, so on the library path it is not evidence of which shape produced the event — a vendor may pass `"tool_error"` for a failure they classified themselves. That is not new; the member has always been vendor-supplied there. `result_capture` is simply the first rule whose reading depends on it, which is why it is stated rather than left to be re-derived.
+
+**`failure_kind` — the producer NAMES a failure it made ABOVE the vendor's handler (OPTIONAL, `tool_call_error` only).** The two shapes above are both the vendor's code speaking: it raised, or it returned a flag. A third class exists and is neither — the SDK rejected the call before the handler ran, or ran it and then rejected its output. `error_type` cannot carry this, because clauses (1) and (2) above make it the RAISE/RETURN discriminator — an exception class name or `"tool_error"` — and these are not a point on that axis. So the producer says what it did, in its own member, rather than leaving a consumer to pattern-match the message.
+
+| value | shape | `error_body` under `result_capture: "off"` |
+|---|---|---|
+| `unknown_tool` | the handler never ran — no tool by that name | **stays** |
+| `tool_disabled` | the handler never ran — the tool exists and is off | **stays** |
+| `invalid_argument` | the handler never ran — arguments rejected | **stays**, scrubbed: it can echo argument values |
+| `output_schema_mismatch` | the handler RETURNED and the producer's conversion of its output rejected it | **goes** — the message describes what the tool returned |
+
+- **Absent means the vendor's handler spoke for itself** — it raised, or it returned an error. Absent is therefore right both for a producer predating this member and for every failure the vendor's own code produced, so a consumer needs no version table.
+- **Absent and null are equivalent, and a consumer MUST NOT test for the KEY.** Same ruling, and the same mechanical reason, as `result_capture` (§11.4): `baton-sdk` serializes with `model_dump(mode="json")` and no `exclude_none`, so a defaulted member reaches the wire as `"failure_kind": null`. Read the VALUE.
+- **A string with registered values, not a closed enum**, for the reason `result_capture` is one: a later registered value must not turn a conforming producer into a `ValidationError` on a path §11.2 requires to fail open. Additive-only, like §11.6's action vocabulary.
+- **`tool_call_error` only.** A producer that files one of these as `tool_call_end` is reporting a success the caller never saw; correcting that is what this member is for, so it has no meaning on a success payload. This is the one difference from `result_capture`, which rides both.
+- **A producer MUST NOT sort these by inspecting the result object.** All four reach the producer as the same shape — a `CallToolResult` with the error flag set, or a thrown protocol error. The discriminator is whether the producer's own inner capture ran: it did not → the handler never ran → request-side; it did, and the failure was raised above it → the handler returned → result-side. A producer with only one seam cannot emit this member correctly and MUST omit it.
+- A consumer MAY keep classifying unnamed failures from `error_body` text, and MUST keep doing so: this member covers only what the producer manufactures. A tool that returns "you do not have access" is the vendor's own prose and carries no `failure_kind`.
+
+**`error_body` is fed from several provenances, and only the result-derived one is withheld.** The two shapes above are the SDK's; a middlebox producer has more. `baton-proxy` fills this member from four places — the upstream's JSON-RPC `error.message` (the wrapped server failed rather than returned, so it is the RAISE analogue and is KEPT), text unwrapped from a returned result (WITHHELD), strings the proxy itself authors for a dropped or unanswered call (KEPT — they describe the producer, not the customer), and an exception in the proxy's own process (KEPT, same reason). **So a rule stated as "drop `error_body`" is wrong**: it would delete a producer's own diagnostics. The rule is *nothing derived from the tool's result*, and each producer sorts its own sources by that test.
 
 **`result` on this event is the reason it can be added at all**: reclassifying
 the RETURN shape out of `tool_call_end` would otherwise move a structured body
@@ -1009,13 +1061,24 @@ This subsection said "absent" on the RAISE shape until 2026-09-24 and then said
 "null" until later the same day; **both were wrong, in both directions**:
 
 - **Absence does not mean RAISE.** The field is optional, and a conformant
-  producer may omit it or send `null`. `baton-sdk` and `baton-ts` send `null`
-  (a defaulted-and-dumped model field, and an explicit declaration so the key
-  set matches Python's vector); `baton-proxy` deliberately OMITS it, on the
-  grounds that an explicit null asserts a body that never existed, and
-  `baton-extmcp` calls that emitter without one. So a consumer MUST treat an
-  absent `result` and a null `result` identically, and MUST NOT `KeyError` on
-  the first.
+  producer may omit it or send `null`. `baton-sdk` and `baton-ts` send `null`;
+  `baton-proxy` deliberately OMITS it, on the grounds that an explicit null
+  asserts a body that never existed, and `baton-extmcp` calls that emitter
+  without one. So a consumer MUST treat an absent `result` and a null `result`
+  identically, and MUST NOT `KeyError` on the first.
+
+  ⚠ **Why the two SDKs send it was stated here as "an explicit declaration so
+  the key set matches Python's vector", and that reason is VOID** — removed
+  rather than left standing, because two sibling producers implement from this
+  paragraph and an implementer reading it would add a cross-SDK key-set
+  comparison that the rule above has already made unenforceable. `baton-ts`'s own
+  conformance suite stopped comparing key sets for exactly this reason (§11.4:
+  absent ≡ null, and a consumer MUST NOT test for the KEY), so nothing can
+  observe the declaration. What remains is per-producer and not normative:
+  `baton-sdk`'s is a defaulted-and-dumped model field, and on `tool_call_end`
+  `baton-ts`'s is its schema default too — measured, dropping the explicit
+  literal there changes no byte on the wire. A conforming producer picks either,
+  and a consumer cannot tell.
 - **Null does not mean RAISE either.** `baton-sdk`'s envelope serializer answers
   `None` when an envelope cannot be made JSON-safe, so a RETURN-shape failure
   can legitimately carry `result: null`.
@@ -1203,6 +1266,48 @@ its version, so that population is not merely unrecoverable but **uncountable**.
 from a `tool_call_error` and currently reads no body off it; a worker that
 nulls `result` on this event type drops the body this change exists to keep.
 
+#### 11.4.4 Resource and prompt lifecycle events — twelve types, one envelope
+
+**⚠ These twelve were SHIPPED BY A PRODUCER BEFORE they were specified, and this subsection records the shape rather than designing it.** `baton-proxy` has emitted all twelve in production since the resource/prompt work landed; the reference Console's ingest lists every one of them; and until this entry neither this document, `baton-spec/events.schema.json` nor `baton-sdk`'s models defined any of them. So where a choice below looks inconsistent, the inconsistency is **the producer's and is preserved**, flagged rather than corrected — correcting it here would make the schema of record disagree with the only producer there is.
+
+| `event_type` | Payload |
+|---|---|
+| `resource_list_start` | `{}` |
+| `resource_list_end` | `{count, duration_ms?}` |
+| `resource_list_error` | `{error_type, error_body, duration_ms?}` |
+| `resource_read_start` | `{uri, params?}` |
+| `resource_read_end` | `{uri, duration_ms?}` |
+| `resource_read_error` | `{uri, error_type, error_body, duration_ms?}` |
+| `prompt_list_start` | `{}` |
+| `prompt_list_end` | `{count, duration_ms?}` |
+| `prompt_list_error` | `{error_type, error_body, duration_ms?}` |
+| `prompt_get_start` | `{name, params?}` |
+| `prompt_get_end` | `{name, duration_ms?}` |
+| `prompt_get_error` | `{name, error_type, error_body, duration_ms?}` |
+
+**The envelope is §11.4's, unchanged.** That is what lets one collector endpoint accept all seventeen event types and one worker order them on `(session_id, sequence_number)`. A conforming producer MUST fill the same required envelope fields it fills on a tool call.
+
+**No payload here carries a BODY, and that is normative rather than an omission.**
+
+- A `resource_read` records its URI and its timing, never the content it fetched. A `prompt_get` records the prompt's name, never the messages it rendered.
+- **So `result_capture` (§11.4) does not appear on any of these payloads, and a producer MUST NOT add it.** The member declares that result-derived data was withheld; there is nothing on these payloads for a withhold to remove, so an SDK matching this shape needs no withhold extension. A producer that ever begins capturing a resource body MUST bring the rule with it in the same release.
+- **The `*_start` payloads DO carry caller data in `params`**, and it MUST be PII-scrubbed per §7 like any other payload. `result_capture` says nothing about it either way: §11.4 states outright that the member is not a statement about request data.
+
+**⚠ `params` is NOT built the same way on the two `*_start` payloads.** On `resource_read_start` it is the request's params with `_meta` removed and nothing else — **so `uri` appears twice**, once in its own member and once inside `params`. On `prompt_get_start` it is the request's `arguments` member alone, so `name` does **not** appear inside `params`. Measured in `baton_proxy.proxy`. A consumer MUST read the dedicated `uri` / `name` member and MUST NOT expect the subject inside `params`; a second producer SHOULD copy these shapes rather than infer a rule from one of them.
+
+**⚠ `count` on `resource_list_end` counts the `resources` array ALONE.** Resource TEMPLATES are a separate MCP method with their own result array and are not added in. A server exposing only templates therefore reports `count: 0`, which is correct, and a consumer MUST NOT read it as "this server has no resources".
+
+**⚠ There is no returned-flag shape here, so §11.4.3's `error_type` discriminator has no analogue.** `CallToolResult`'s error flag is a TOOL concept: a failing resource read or prompt get comes back as a JSON-RPC error, which §11.4.3 opens by calling a protocol fault. These six error payloads therefore carry **no `result`** and **no `failure_kind`**, and a producer MUST NOT synthesise either.
+
+**⚠ `error_type` is an unconstrained string and the producers do NOT agree on how to spell it.** A **wire sensor** holds the upstream's JSON-RPC error and files its numeric `code` as a string (`baton-proxy`); an **in-process SDK sensor** holds a live exception and files its class name, as §11.4.3's RAISE shape already does for tools. Both are conforming — the schema constrains neither, and §11.4.3 states that this member separates SHAPES and is not a closed set of values — and a consumer MUST NOT read one producer's spelling as the vocabulary. `error_body` is KEPT under every capture mode on all six: a failed FETCH's message is the producer's own diagnostic, not anything a resource returned, which is the same provenance ruling §11.4.3 gives the proxy's upstream-error analogue.
+
+**⚠ Leg pairing has only §11.5.4's FIFO floor here.** No producer sends `call_id` on any of these types, and the only one that exists sends no `call_id` on any event at all. A producer MAY mint one and the first that does needs no schema change; until then a consumer pairing a start with its end has nothing keyed on an identifier.
+
+**Consumer rules.**
+
+- **A consumer MUST NOT reject an event for carrying an unrecognised `event_type`**, here or anywhere. The reference Console accepts all twelve and reads none of them, which is conforming: these types are additive and a consumer adopts them when it has a use.
+- A consumer MUST NOT infer from a `*_list_end` `count` that it has seen the surface. `surface_snapshot` (§11.4.2) is what describes the surface; a count describes one call's answer.
+
 ### 11.5 Annotation correlation rules (worker-side)
 
 #### 11.5.1 Cycle-vs-session distinction
@@ -1332,6 +1437,8 @@ Defined error codes:
 >
 > **What the label DOES mean, from 2026-09-29 on:** the two entries immediately below are numbered `0.8.11` because that release ships them, per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
 
+- **Unreleased — twelve resource and prompt lifecycle event types (§11.4.4).** `resource_list_{start,end,error}`, `resource_read_{start,end,error}`, `prompt_list_{start,end,error}`, `prompt_get_{start,end,error}`. ⚠ **Additive to the SPEC, not to the wire: `baton-proxy` has been emitting all twelve in production, and the reference Console's ingest has been accepting all twelve, against no schema definition anywhere.** This entry gives them one. No producer changes in it and no existing event changes shape. The shapes are transcribed from that producer field for field, two of its own inconsistencies included and flagged rather than fixed (`params` is built differently on the two `*_start` payloads; `uri` appears both in its own member and inside `params`). None of the twelve carries a body, so `result_capture` does not appear on any of them and a producer MUST NOT add it; none carries `result` or `failure_kind`, there being no returned-flag shape for a resource or a prompt. **Consumer consequence: none required.** A consumer that ignored these types was already conforming and still is — §11.4.4's own rule is that an unrecognised `event_type` is never a reason to reject an event.
+
 
 - **0.8.11 — worker rule change (2026-09-25)** — **A runtime conversation identifier is a TASK bound, not a cycle boundary, and it no longer decides the task alone.** No envelope, field or shape change, and no producer changes: SDKs forward `_meta` verbatim as before. §11.5.1 previously listed conversation identifiers as "definitive" CYCLE boundaries. That was wrong on level: a conversation spans many turns, so the rule collapsed a whole conversation into one cycle. The reference worker already treated them one level up, as a deliberate and recorded drift. §11.5.1 now states the task rules, and §11.4.1 points to it instead of repeating a second list. The rule also changes strength. A worker previously kept every cycle carrying the same conversation identifier in one task, across any gap. Now the same identifier bounds the task without deciding it, and a gap of hours MAY split it. **Consumer consequence:** a conversation resumed after a long gap can become two tasks where it was one. Different identifiers still always split, and grouping still never joins two sessions. **And a change of conversation identifier now cuts a cycle** (§11.5.1 tier 0): without it, two conversations on one process within the gap threshold shared a cycle and could not be told apart. It only splits, so a consumer sees more cycles, never fewer. Also removed from §11.4.1's examples: `claudecode/sessionId`, which Claude Code has not been observed to send, and `cursor/conversationId`, for which no evidence exists. Added: `threadId` and the nested `turn_id` (Codex CLI), `vscode.requestId`, a rule that a key is levelled by what it identifies, not by its name, and a rule that a conversation-level key is never used as `session_id`.
 
@@ -1343,7 +1450,7 @@ Defined error codes:
 
   **⚠ (3) `result` is a BODY and never a discriminator — and the first attempt at this correction was wrong too.** §11.4.3 said `result` is “absent” on the RAISE shape while `baton-sdk`'s and `baton-ts`'s vectors carry `result: null`; the fix said “null, test the VALUE”, which `/code-review` then showed is wrong in BOTH directions. `baton-proxy` deliberately OMITS the key (`emitter.py:442`) and `baton-extmcp` calls it that way, so a consumer obeying “MUST NOT test for presence” hits a `KeyError`; and `baton-sdk`'s envelope serializer answers `None` when an envelope will not serialize, so a RETURN-shape failure can carry `result: null` legitimately. **Absent and null are equivalent and say nothing about the shape. `error_type` is the discriminator**, which this subsection already stated for the producer.
 
-  **⚠ (4) A NEW limit is recorded, and it is a gap rather than a nuance.** A sensor wrapping the tool executor cannot see a failure the SDK manufactures above it — output-schema validation, unknown tool, input-validation failure. Measured on both TypeScript majors: the client receives `isError: true` and the producer emits `tool_call_end`. **A consumer counting failures from `baton-ts` is counting failures the HANDLER reported, not failures the caller saw.** ⚠ Scoped to `baton-ts`, and the scope is a FINDING rather than caution: on `mcp` 2.x, argument validation and output conversion both happen inside `Tool.run`, which `baton-sdk`'s adapters wrap from OUTSIDE — so a conversion failure raises through to them and is filed correctly. Read in the installed 2.x source; `mcp` 1.x unread. The first draft of this entry called the same class “plausible” in Python, which was a hedge standing in for a five-minute read. Moving the sensor up does not simply fix it: both majors convert a throw into a returned `isError` inside the request handler, so above that seam `error_type` collapses to `"tool_error"` for both shapes and the exception class name is unrecoverable. The wire sensors are where this class is visible today.
+  **⚠ (4) A NEW limit is recorded, and it is a gap rather than a nuance.** ⚠ **Superseded twice, 2026-09-30 and 2026-10-02: the limit is now CLOSED on `baton-ts` and still OPEN on both Python producers. The paragraph that follows is the original record and is wrong on two counts; the 09-30 correction under it is wrong on a third — read to the end of this point before acting on any of it.** A sensor wrapping the tool executor cannot see a failure the SDK manufactures above it — output-schema validation, unknown tool, input-validation failure. Measured on both TypeScript majors: the client receives `isError: true` and the producer emits `tool_call_end`. **A consumer counting failures from `baton-ts` is counting failures the HANDLER reported, not failures the caller saw.** ⚠ Scoped to `baton-ts`, and the scope is a FINDING rather than caution: on `mcp` 2.x, argument validation and output conversion both happen inside `Tool.run`, which `baton-sdk`'s adapters wrap from OUTSIDE — so a conversion failure raises through to them and is filed correctly. Read in the installed 2.x source; `mcp` 1.x unread. The first draft of this entry called the same class “plausible” in Python, which was a hedge standing in for a five-minute read. Moving the sensor up does not simply fix it: both majors convert a throw into a returned `isError` inside the request handler, so above that seam `error_type` collapses to `"tool_error"` for both shapes and the exception class name is unrecoverable. The wire sensors are where this class is visible today.
 
   **⚠ Re-measured 2026-09-30, and the paragraph above is wrong twice.** Driven
   through real in-memory sessions on `mcp` 2.2.0, `fastmcp` 4.0.3 and both
@@ -1373,7 +1480,96 @@ Defined error codes:
   `fastmcp` 4.x patches are unmeasured. And on `@modelcontextprotocol/sdk` 1.x
   the output-schema case produced NO caller-visible failure either (empty
   content, no flag), so `baton-ts`'s false success in that row is `2.x`-only;
-  the 1.x cell is a success both sides agree on.
+  the 1.x cell is a success both sides agree on. ⚠ **That last clause is wrong
+  — superseded 2026-10-02, immediately below.**
+
+  **⚠ Re-measured again 2026-10-02: the limit is CLOSED on `baton-ts` and still
+  OPEN on both Python producers, and the 1.x cell just above is wrong.** Two
+  corrections, both driven. The closure is `baton-ts` `6d4d2c8` — a second seam,
+  with `6aff64e` accepting the member in the schema ahead of it.
+
+  | case | `baton-ts`, both majors |
+  |---|---|
+  | unknown tool | `tool_call_error` + `failure_kind: "unknown_tool"` |
+  | disabled tool | `tool_call_error` + `failure_kind: "tool_disabled"` |
+  | input validation | `tool_call_error` + `failure_kind: "invalid_argument"` |
+  | output-schema / structured-content conversion | `tool_call_error` + `failure_kind: "output_schema_mismatch"` |
+
+  Rows 1-3 are pinned per major by `test/integrations/mcp/aboveTool.test.ts` and
+  row 4 by `errorResult.test.ts`, both under `describe.each(MAJORS)`, which is
+  what makes "both majors" checkable rather than asserted. ⚠ **Row 3 is not
+  unconditional**: that producer WITHDRAWS `invalid_argument` — emitting the
+  event and omitting the member — when the registered tool declares
+  `execution.taskSupport` of `"required"` or `"optional"`, because the pinned
+  1.x peer rejects those before it looks at any argument. §11.4.3's MUST-omit
+  rule permits exactly that, and it is a pin on one peer rather than a property
+  of the class.
+
+  ⚠ **Both Python columns are unchanged from the 09-30 table above; only the
+  `baton-ts` column was re-driven.** The two cells that keep this limit open are
+  both there: the FastMCP middleware still files `tool_call_end` for a
+  conversion failure — the false success shape (b) names — and the official
+  adapter still emits NOTHING for an unknown tool. Neither was measured for a
+  disabled tool.
+
+  **A fourth row joins the table, and it is the case that justifies the
+  member.** A DISABLED tool: 1.x throws inside its own handler's `try` and so
+  the client sees the returned flag, 2.x throws before that `try` and so it
+  escapes, both saying `Tool <name> disabled` (`mcp.js:101-108`,
+  `mcp-DXXb3Vv3.mjs:1394-1399`). It was absent from the 09-30 run rather than
+  measured as fine, and `baton-ts` emitted no event for it until the second seam
+  — an inference from the executor-wrapper vantage point, which never entered.
+  The reference Console answers `unclassified` for that text with or without the
+  JSON-RPC prefix, and only the named kind reaches the bucket
+  (`baton-console`'s `test_tool_disabled_is_reachable_ONLY_from_the_named_kind`).
+
+  **"Moving the sensor up does not simply fix it" holds — so the remedy is a
+  SECOND seam at the `tools/call` handler rather than a relocated one:** the
+  inner seam stays, and one fact is handed outward, whether the vendor's handler
+  ran. §11.4.3's rule that a producer with only one seam MUST omit the member is
+  that mechanism stated normatively.
+
+  ⚠ **`error_type` is NOT `"tool_error"` for all of these, and the 09-24
+  paragraph's wording should not be read as saying so.** It says `error_type`
+  collapses above *the executor seam*, which is inside the vendor's handler, and
+  that holds. At the REQUEST handler it does not: 1.x converts all three
+  request-side cases into a returned `isError` inside its own `try`, so
+  `error_type` is `"tool_error"`, while 2.x THROWS for an unknown and a disabled
+  tool and returns only the rejected argument — so those two arrive as the class
+  name, `"ProtocolError"`. **One caller-visible failure, two spellings, by
+  major**, deliberately not special-cased: §11.4.3's discriminator is reporting
+  the SHAPE it was handed faithfully. ⚠ **Consumer consequence, and it is the
+  reason this member exists:** clause (1) of §11.4.3 reads a class-name
+  `error_type` as the vendor's handler having raised, and on 2.x these two did
+  not run the handler at all. A consumer MUST therefore read `failure_kind`
+  before concluding anything about the handler from `error_type`; it is what
+  makes the two majors comparable.
+
+  ⚠ **The 1.x cell is wrong, and the correction was reachable from a read.** The
+  scope paragraph above has 1.x producing no caller-visible failure here, making
+  `baton-ts`'s false success `2.x`-only. It validates output too:
+  `@modelcontextprotocol/sdk` raises `Output validation error: Tool <name> has an
+  output schema but no structured content was provided` from
+  `dist/esm/server/mcp.js:197`, with `McpError` adding the `MCP error -32602: `
+  prefix, so the client sees `isError: true` and that text. The false success was
+  never one major's and the limit was WIDER than recorded. `baton-ts`'s
+  `errorResult.test.ts` has asserted both on BOTH majors since `2c70d2a`
+  (2026-09-24) and been green in CI since; it surfaced only when the second seam
+  reddened the rest of that test.
+
+  **The mechanism is the part worth keeping:** both corrections were unmeasured
+  negatives read as measured facts. The run the `2.x`-only cell rests on is
+  `RESULTS_errortype_1001.md` (2026-10-01, `baton-ts` `d2b316c`), whose own text
+  says WHY its 1.x leg did not fire was unmeasured; the disabled case was absent
+  from the 09-30 run, not passed. An unexplained negative became a property of
+  the SDK instead of a property of the rig.
+
+  **Release status, stated because this entry is numbered.** npm serves `0.4.1`,
+  which predates `6d4d2c8` and carries the limit in full, and no Python producer
+  emits `failure_kind` at all — it is declared in `events.py` and emitted
+  nowhere. So a consumer reading this entry today still counts handler-reported
+  failures from every published artifact. The release that carries the second
+  seam is where this correction gets its own number.
 
   **⚠ (5) Settled later the same day: the `content` clause MUST NOT reach a WIRE sensor either.** This entry first left that open, with `baton-proxy` applying the clause and this section saying it should not — a deliberate disagreement pending a measurement. The measurement is one read: `CallToolResult`'s JSON schema makes `content` REQUIRED with no default, so the clause cannot fire for a conformant server and only loses failures from a non-conformant one. `baton-proxy` `a8e02bf` drops it and now matches `baton-extmcp` on that clause — though not on the flag's FORM, which `servicer.py:324` reads truthily while the proxy requires the boolean `true`; MCP types it as a boolean and a truthy read lets a server's own string `"false"` become a fabricated failure. **A consumer sees strictly MORE `tool_call_error` from the proxy after that commit**, for the same reason as point (3) of the 09-22 entry: a miscount removed, not a reliability regression.
 
@@ -1484,7 +1680,7 @@ Open spec-level design questions. Resolutions land in subsequent minor versions 
 - **Signal-type taxonomy stability.** The eight `signal_type` values are best-effort; future integrator feedback may add / merge / split categories. The enum is additive-only until v1.0 per §13.
 - **Background dispatch.** Dispatch is currently synchronous on the agent's hot path. Moving it off the critical path (background task / queue worker) is a future improvement; the SDK's bounded local buffer + retry-with-backoff is the substrate.
 - **Per-signal end-user consent flow.** Today (§9) the vendor supplies a single static `consent_token` at SDK init and every event ships with the same token — workable for single-end-user deployments, but not for multi-end-user vendor MCP servers. The planned design: on detection of a signal-worthy event (failure / dead-end / friction), the SDK emits an MCP **elicitation prompt** (or, on transports without elicitation support, surfaces a synthetic tool response asking the user to call a vendor-namespaced `<vendor_id>_consent` tool) describing what happened, who will receive the report (vendor display name), what will be sent (high-level summary), and a Y/N choice with an optional "always for this session." On refusal, the SDK MUST discard the payload and MUST NOT retry sending it unless a new signal occurs. Open: which signal types warrant a prompt vs. which can ride on session-level consent? How does this compose with the per-end-user OAuth/DID upgrade path (CHARTER ADR-1)?
-- **Richer PII scrub interface.** The current `VendorConfig.scrubber: Callable` (§7) puts all the burden on the vendor — they have to know what shapes to expect, recursively walk dicts, and reimplement common patterns (emails, API-key shapes, credential param keys). A richer interface would ship declarative rules — `scrub_rules: list[Rule]` with rule kinds `redact_key` / `mask_key` / `regex_mask`, targeting `params` / `error_body` / `result_content` / `intent` / `expected_outcome` — plus sensible defaults for common patterns. A typed `Scrubber` protocol (`scrub_params(tool_name, params)` / `scrub_result(tool_name, result)` / etc.) and a `DefaultScrubber(extra_key_denylist=..., extra_regex_rules=...)` baseline would let most vendors say `VendorConfig(scrub_keys=["password", "email"])` and be done. Sentry / OpenTelemetry pattern. The current `Callable` shape would become an escape hatch alongside the richer surface.
+- **Richer PII scrub interface.** The current `VendorConfig.scrubber: Callable` (§7) puts all the burden on the vendor — they have to know what shapes to expect, recursively walk dicts, and reimplement common patterns (emails, API-key shapes, credential param keys). A richer interface would ship declarative rules — `scrub_rules: list[Rule]` with rule kinds `redact_key` / `mask_key` / `regex_mask`, targeting `params` / `error_body` / `result_content` / `intent` / `expected_outcome` — plus sensible defaults for common patterns. A typed `Scrubber` protocol (`scrub_params(tool_name, params)` / `scrub_result(tool_name, result)` / etc.) and a `DefaultScrubber(extra_key_denylist=..., extra_regex_rules=...)` baseline would let most vendors say `VendorConfig(scrub_keys=["password", "email"])` and be done. Sentry / OpenTelemetry pattern. The current `Callable` shape would become an escape hatch alongside the richer surface. **Its relationship to `result_capture` (§11.4) is settled and should not be re-litigated:** these rules are the mechanism for the rungs that TRANSFORM a value, and `result_capture` is the declaration of the rung that transforms nothing because nothing crosses. A rule cannot express that rung — it produces a value where the wire needs a fact, and a consumer that cannot tell withholding from an empty response manufactures failures (§11.4). When these rules land, `result_capture` gains the partial rung as a second registered value and the two meet there.
 - **Cost knobs for annotation turn-count overhead.** Each annotation call is its own LLM inference turn, so proactive + reactive annotation around one real tool call triples the turn count. This is not extra reasoning load per turn — by the time the agent decides to call a tool, it has already internally answered what the user wants (`intent`), what the call should return (`expected_outcome`), and what bigger task this is part of (`workflow`). Annotation transcribes that existing state; the fields are deliberately scoped so the model emits known conclusions, not new analysis. What costs is the turn structure itself — each call re-tokenizes context and round-trips through inference regardless of how short the output is. The four-things-in-one-context payload is unobtainable without that turn overhead, so it's an inherent design tax. Open: is a cost knob needed? Every candidate targets turn count, not content: annotation-on-signal-only (skip proactive; keep `intent`/`expected_outcome` on failure traces only), per-tool toggles (vendor opts in only high-value tools), sampling. **Partly answered (2026-08-10, `baton-internal/spikes/overall_task_a5/`):** measured 2× amplification (4 annotation calls serving 4 tool calls in one session), and since `call_intent`/`call_expected`/`call_workflow` now ride every `tool_call_start`, the proactive annotation is redundant *as a data carrier* — which makes annotation-on-signal-only the leading candidate. Two constraints on it: (1) it must mean *no agent-initiated proactive calls*, NOT removal of the annotation tool — suppressing the tool outright also lost the reactive `feature_gap` on a dead end, i.e. the product signal; (2) proactive annotations currently supply **54% of turn boundaries** on real traffic (§11.5 tier 2), and no time-gap threshold substitutes — shortening the gap starts shattering turns before it stops collapsing them. The unblock is deriving conversations from call-level signals directly, which only becomes possible once `call_workflow` is present on the capture surface in question (SDK today; proxy/extmcp after the port).
 - **`proactive_mode` parity across producers.** _Partly closed 2026-09-01 (§13): baton-proxy now has the knob. **baton-ts still does not**, and is the remainder of this open question._ `VendorConfig.proactive_mode` (§13, 2026-08-10b) made the pre-call annotation request optional and defaulted it **off** in baton-sdk (Python): the injected params already carry `call_intent`/`call_expected`/`call_workflow` on every `tool_call_start`, so the proactive turn is redundant as a data carrier. baton-ts still unconditionally renders the "BEFORE invoking any tool … you MUST call" clause into its instructions, so every TS-wrapped server pays the proactive turn whether or not that deployment wants it, and it should gain the same option. **A spelling caution for whoever ports it:** the proxy's `on` is not the SDK's `on` — the proxy drops the pre-call clause in both modes, so its knob governs only the tool description and the handler. A third producer picking yet another meaning for the same word is the failure this bullet now exists to prevent; state which legs the knob governs when adding it. The *default* is deliberately left open here: baton-sdk wraps a server the vendor owns, whereas baton-proxy sits in front of servers it does not own, so flipping proxy's default silently changes capture on live traffic its operator may not control. **Ordering constraint:** proxy must not turn proactive off before the `overall_task` port (§13, 2026-08-10) lands — until proxy injects that param it emits no `call_workflow`, so disabling proactive annotation would drop the task label entirely rather than move it to a better-measured field. baton-extmcp is moot: it injects no annotation tool and no instructions suffix, so it has no proactive request to disable.
 - **Inline annotation via reserved tool-param prefix.** One alternative to the separate annotation tool (§5.1) is letting the agent pass `intent` / `expected_outcome` as arguments on the regular tool call — e.g., `vendor_tool(query="...", _baton_intent="...", _baton_expected="...")` — with the SDK extracting and stripping the reserved-prefix params before forwarding to the vendor handler. Single round-trip instead of two; nudges agents toward populating intent by exposing the fields directly on the tool schemas they're already looking at. Tradeoffs not yet evaluated: collision with vendor-owned param namespaces, whether agents actually populate the fields when threaded inline, schema-pollution concerns. Not implemented; revisit if the §5.1 path's turn-count cost becomes a blocker.

@@ -31,6 +31,23 @@ EventType = Literal[
     "tool_call_error",
     "annotation",
     "surface_snapshot",
+    # The RESOURCE and PROMPT lifecycles (SPEC §11.4.4). Twelve types, and
+    # their schema of record is HERE because this module is what
+    # ``baton-spec/scripts/generate.py`` exports the schema from — not because
+    # this SDK emits them. It does not: ``baton-proxy`` is the only producer,
+    # and it has been emitting all twelve against no schema at all.
+    "resource_list_start",
+    "resource_list_end",
+    "resource_list_error",
+    "resource_read_start",
+    "resource_read_end",
+    "resource_read_error",
+    "prompt_list_start",
+    "prompt_list_end",
+    "prompt_list_error",
+    "prompt_get_start",
+    "prompt_get_end",
+    "prompt_get_error",
 ]
 
 
@@ -72,6 +89,23 @@ class ToolCallEndPayload(BaseModel):
     tool_name: str
     result: Any | None = None
     duration_ms: int | None = None
+    result_capture: str | None = None
+    """SPEC §11.4: the producer declares it WITHHELD result-derived data.
+
+    Absent means captured, so no consumer needs a version table to read
+    events that predate the member. Registered value: ``"off"``.
+
+    ``str``, not ``Literal["off"]``, and not a bool: SPEC reserves a second
+    registered value for the content ladder's partial rung, and a ``Literal``
+    would make this producer unable to emit a value SPEC registers later —
+    turning a forward-compatible envelope into a ``ValidationError`` on a path
+    §11.2 requires to fail open. Same rule ``principal.source`` follows.
+
+    Declared here, unused here: the config knob and the withholding itself
+    are a separate change. This is only the wire schema PERMITTING the member,
+    which has to be published before any producer emits it — ``extra="forbid"``
+    above is why.
+    """
 
 
 class ToolCallErrorPayload(BaseModel):
@@ -100,6 +134,69 @@ class ToolCallErrorPayload(BaseModel):
     error_body: str
     duration_ms: int | None = None
     result: Any | None = None
+    result_capture: str | None = None
+    """SPEC §11.4, and it rides this payload too because the RETURN shape
+    withholds ``result`` as well.
+
+    ⚠ On that shape ``error_body`` is unwrapped FROM the result, so it is
+    withheld — but it is a REQUIRED member here and cannot be dropped, so it
+    is emitted as ``""``. An empty ``error_body`` is therefore ambiguous on
+    its own, and this member is what tells "withheld by policy" from "the
+    failure carried no message". See ``ToolCallEndPayload.result_capture``
+    for why it is a string.
+    """
+    failure_kind: str | None = None
+    """SPEC §11.4.3: the producer NAMES a failure it manufactured ABOVE the
+    vendor's handler, instead of leaving a consumer to pattern-match prose.
+
+    Registered values, each declaring which of this subsection's two shapes it
+    belongs to — which is the whole reason the member exists, since
+    ``error_type`` is already the RAISE/RETURN discriminator and this class is
+    neither:
+
+    ===========================  ==========================================
+    value                        shape
+    ===========================  ==========================================
+    ``unknown_tool``             the handler never ran: no such tool
+    ``tool_disabled``            the handler never ran: the tool is off
+    ``invalid_argument``         the handler never ran: arguments rejected
+    ``output_schema_mismatch``   the handler RETURNED and our conversion of
+                                 its output rejected it
+    ===========================  ==========================================
+
+    **Absent means the vendor's handler ran and spoke for itself** — a tool
+    that returned an error, or raised one. Absent is therefore correct both for
+    a producer predating this member and for every failure the vendor's own
+    code produced, so no consumer needs a version table.
+
+    ⚠ **Absent and null are equivalent, and a consumer MUST NOT test for the
+    KEY.** Same mechanical reason ``result_capture`` carries the same rule:
+    ``model_dump(mode="json")`` with no ``exclude_none`` puts
+    ``"failure_kind": null`` on the wire. Read the VALUE.
+
+    ⚠ **This payload only.** The output-schema case files ``tool_call_end``
+    today, and that false success is what naming this corrects — so after the
+    fix nothing carries a ``failure_kind`` on a success payload. Unlike
+    ``result_capture``, which rides both.
+
+    ⚠ **The first three are NOT result-derived** — the handler never ran, so
+    nothing it returned exists. Their ``error_body`` STAYS under
+    ``result_capture: "off"`` (scrubbed: the argument-rejection message can
+    echo argument values). ``output_schema_mismatch``'s message describes what
+    the tool RETURNED, so it GOES. A producer sorts these by whether its inner
+    tool wrapper fired, not by inspecting the result object — all four arrive
+    as the same shape.
+
+    ``str``, not a ``Literal`` and not a closed enum in the generated schema,
+    for the reason ``result_capture`` is: a producer must stay able to emit a
+    value SPEC registers later rather than raise on a path §11.2 requires to
+    fail open.
+
+    Declared here, unused here: emitting it needs a second capture seam above
+    the executor, which is a separate change. This is the wire schema
+    PERMITTING the member, which has to be published before any producer emits
+    it — ``extra="forbid"`` above is why.
+    """
 
 
 class AnnotationPayload(BaseModel):
@@ -344,6 +441,219 @@ class _EventEnvelope(BaseModel):
 
 
 # =============================================================================
+# Resource and prompt lifecycle payloads (SPEC §11.4.4)
+# =============================================================================
+#
+# ⚠ **Transcribed from ``baton_proxy.emitter``, field for field, because that
+# producer SHIPPED FIRST.** All twelve types have been reaching the Console in
+# production — whose ingest ``EventType`` lists every one of them — against no
+# schema definition anywhere: not here, not in ``events.schema.json``, not in
+# SPEC. So these models do not design a shape, they RECORD one, and where the
+# proxy's choice looks odd the oddity is preserved and annotated rather than
+# corrected. Correcting it here would make the schema of record disagree with
+# the only producer there is.
+#
+# ⚠ **No ``result_capture`` on any of the twelve, and that is not an
+# oversight.** SPEC §11.4 scopes the member to a TOOL's result, and none of
+# these payloads carries a body: a resource read records its URI and its
+# timing, never its content; a list records a count. There is nothing for
+# ``"off"`` to withhold, so an SDK matching this shape needs no withhold
+# extension — see ``response_capture_switch.md`` §"The rule is scoped to TOOL
+# results", which corrects an earlier claim that it did.
+#
+# ⚠ **The ``*_start`` payloads DO carry caller data**, in ``params``, and it is
+# PII-scrubbed at emit time like every other payload (SPEC §7, §11.2.2).
+# ``result_capture`` says nothing about that: §11.4 states outright that it is
+# not a statement about request data.
+#
+# ⚠ **There is no ``result``, and no returned-flag shape, on any of the six
+# error payloads.** ``CallToolResult``'s error flag is a TOOL concept: a
+# failing resource read or prompt get comes back as a JSON-RPC error, so these
+# have only §11.4.3's RAISE analogue and that subsection's ``error_type``
+# discriminator has no counterpart here. ``_emit_call_error`` in ``proxy.py``
+# says the same thing from the producer's side — ``result`` "rides the tool
+# lane only".
+
+
+class ResourceListStartPayload(BaseModel):
+    """Emitted before a ``resources/list`` reaches the upstream server.
+
+    Deliberately EMPTY. A list request carries no subject — the proxy passes
+    ``payload={}`` — and the envelope already names the session, the tenant and
+    the vendor. A consumer counting list traffic has everything it needs
+    without a member here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ResourceListEndPayload(BaseModel):
+    """Emitted after ``resources/list`` returns.
+
+    ⚠ ``count`` counts the ``resources`` array ALONE. Resource TEMPLATES are a
+    separate MCP method (``resources/templates/list``) with its own result
+    array, and the proxy does not add them in (``proxy.py``'s
+    ``_emit_call_end``: ``len((result or {}).get("resources", []))``). So a
+    server exposing only templates reports ``count: 0`` here, correctly — and a
+    consumer must not read this as "the server has no resources"."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int
+    duration_ms: int | None = None
+
+
+class ResourceListErrorPayload(BaseModel):
+    """Emitted when ``resources/list`` failed.
+
+    ``error_type`` is an UNCONSTRAINED string and the two producers spell it
+    differently on purpose — see ``ResourceReadErrorPayload``, which carries
+    the full note for all six error payloads."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    error_type: str
+    error_body: str
+    duration_ms: int | None = None
+
+
+class ResourceReadStartPayload(BaseModel):
+    """Emitted before a ``resources/read`` reaches the upstream server.
+
+    ⚠ ``uri`` is ALSO inside ``params``. The proxy builds ``params`` by
+    removing ``_meta`` from the request's params and nothing else
+    (``proxy.py``: ``{k: v for k, v in params.items() if k != "_meta"}``), and
+    ``uri`` is one of them — so the subject appears twice, once in its own
+    member and once in the bag. Recorded rather than deduplicated: the
+    dedicated member is what a consumer should read, the bag is what the caller
+    actually sent, and a producer that stripped ``uri`` from ``params`` would
+    stop being able to say that."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    uri: str
+    params: dict[str, Any] | None = None
+    """The caller's own request params, PII-scrubbed (SPEC §7). ``None`` where
+    the request carried nothing but ``_meta``."""
+
+
+class ResourceReadEndPayload(BaseModel):
+    """Emitted after ``resources/read`` returns.
+
+    ⚠ **No content member, and that is the design rather than a gap.** The
+    resource BODY is customer data of exactly the kind
+    ``response_capture_switch.md`` exists to keep off the wire, and the only
+    producer there is has never sent it. Recording the URI and the timing is
+    what makes a failing or slow read visible without the body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    uri: str
+    duration_ms: int | None = None
+
+
+class ResourceReadErrorPayload(BaseModel):
+    """Emitted when ``resources/read`` failed.
+
+    ⚠ **``error_type`` is an unconstrained string and the producers do NOT
+    agree on how to spell it** — stated here, for all six error payloads,
+    rather than left for a consumer to discover. ``baton-proxy`` reads the
+    WIRE, so what it holds is the upstream's JSON-RPC error and it files the
+    numeric ``code`` as a string (``"-32002"``). An in-process SDK sensor holds
+    a live exception instead and files its class name, the way §11.4.3's RAISE
+    shape already does for tools. Both are legal — the schema constrains
+    neither, and §11.4.3 says outright that this member separates SHAPES and is
+    not a closed set of values — but a consumer MUST NOT read one producer's
+    spelling as the vocabulary.
+
+    ⚠ **``error_body`` is KEPT whatever the capture mode.** It is a failed
+    FETCH's message, not anything a resource returned, so nothing here is
+    result-derived. §11.4.3's provenance rule put the proxy's own
+    upstream-error analogue on the same footing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    uri: str
+    error_type: str
+    error_body: str
+    duration_ms: int | None = None
+
+
+class PromptListStartPayload(BaseModel):
+    """Emitted before a ``prompts/list`` reaches the upstream server. Empty,
+    for the reason ``ResourceListStartPayload`` carries."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PromptListEndPayload(BaseModel):
+    """Emitted after ``prompts/list`` returns. ``count`` counts the ``prompts``
+    array."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int
+    duration_ms: int | None = None
+
+
+class PromptListErrorPayload(BaseModel):
+    """Emitted when ``prompts/list`` failed. See
+    ``ResourceReadErrorPayload`` for how ``error_type`` is spelled."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    error_type: str
+    error_body: str
+    duration_ms: int | None = None
+
+
+class PromptGetStartPayload(BaseModel):
+    """Emitted before a ``prompts/get`` reaches the upstream server.
+
+    ⚠ ``params`` is the request's ``arguments`` member alone, NOT the whole
+    params bag — which is the opposite of ``ResourceReadStartPayload``'s
+    choice, measured in ``proxy.py`` (``params=params.get("arguments")``
+    against the resource path's dict comprehension). The two are inconsistent
+    in the only producer that exists; the inconsistency is recorded here so a
+    second producer copies the shape rather than guessing at a rule, and so a
+    consumer does not expect ``name`` inside ``params`` the way ``uri`` does
+    appear there."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    params: dict[str, Any] | None = None
+    """The prompt's arguments, PII-scrubbed (SPEC §7). ``None`` where the
+    request supplied none."""
+
+
+class PromptGetEndPayload(BaseModel):
+    """Emitted after ``prompts/get`` returns.
+
+    ⚠ **No rendered messages**, for the reason ``ResourceReadEndPayload``
+    gives. A prompt's rendered text is authored by the SERVER rather than
+    fetched by a tool, so whether it is customer content at all is a decision
+    nobody has taken — and the standing answer, from the only producer, is that
+    it does not egress."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    duration_ms: int | None = None
+
+
+class PromptGetErrorPayload(BaseModel):
+    """Emitted when ``prompts/get`` failed. See ``ResourceReadErrorPayload``
+    for how ``error_type`` is spelled and why ``error_body`` is kept."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    error_type: str
+    error_body: str
+    duration_ms: int | None = None
+
+
+# =============================================================================
 # Concrete event classes
 # =============================================================================
 
@@ -373,6 +683,78 @@ class SurfaceSnapshotEvent(_EventEnvelope):
     payload: SurfaceSnapshotPayload
 
 
+# ⚠ The twelve lifecycle events. They carry the SAME envelope as the five
+# above — ``_EventEnvelope`` — which is what lets one collector endpoint accept
+# all seventeen and one worker order them on ``(session_id,
+# sequence_number)``. ``call_id``, ``principal`` and ``transport_observed``
+# stay OPTIONAL and the only producer sends none of them on these types
+# (``baton_proxy.emitter._enqueue`` stamps no ``call_id`` or
+# ``transport_observed`` on any event, and the twelve enqueue methods take no
+# ``principal``), so a consumer pairing a start with its end has only §11.5.4's
+# FIFO floor here. Recorded, not fixed: a producer MAY mint a ``call_id``, and
+# the first one that does needs no schema change.
+
+
+class ResourceListStartEvent(_EventEnvelope):
+    event_type: Literal["resource_list_start"] = "resource_list_start"
+    payload: ResourceListStartPayload
+
+
+class ResourceListEndEvent(_EventEnvelope):
+    event_type: Literal["resource_list_end"] = "resource_list_end"
+    payload: ResourceListEndPayload
+
+
+class ResourceListErrorEvent(_EventEnvelope):
+    event_type: Literal["resource_list_error"] = "resource_list_error"
+    payload: ResourceListErrorPayload
+
+
+class ResourceReadStartEvent(_EventEnvelope):
+    event_type: Literal["resource_read_start"] = "resource_read_start"
+    payload: ResourceReadStartPayload
+
+
+class ResourceReadEndEvent(_EventEnvelope):
+    event_type: Literal["resource_read_end"] = "resource_read_end"
+    payload: ResourceReadEndPayload
+
+
+class ResourceReadErrorEvent(_EventEnvelope):
+    event_type: Literal["resource_read_error"] = "resource_read_error"
+    payload: ResourceReadErrorPayload
+
+
+class PromptListStartEvent(_EventEnvelope):
+    event_type: Literal["prompt_list_start"] = "prompt_list_start"
+    payload: PromptListStartPayload
+
+
+class PromptListEndEvent(_EventEnvelope):
+    event_type: Literal["prompt_list_end"] = "prompt_list_end"
+    payload: PromptListEndPayload
+
+
+class PromptListErrorEvent(_EventEnvelope):
+    event_type: Literal["prompt_list_error"] = "prompt_list_error"
+    payload: PromptListErrorPayload
+
+
+class PromptGetStartEvent(_EventEnvelope):
+    event_type: Literal["prompt_get_start"] = "prompt_get_start"
+    payload: PromptGetStartPayload
+
+
+class PromptGetEndEvent(_EventEnvelope):
+    event_type: Literal["prompt_get_end"] = "prompt_get_end"
+    payload: PromptGetEndPayload
+
+
+class PromptGetErrorEvent(_EventEnvelope):
+    event_type: Literal["prompt_get_error"] = "prompt_get_error"
+    payload: PromptGetErrorPayload
+
+
 # =============================================================================
 # Discriminated union — worker reads JSON, dispatches to concrete type
 # =============================================================================
@@ -382,7 +764,19 @@ Event = Annotated[
     | ToolCallEndEvent
     | ToolCallErrorEvent
     | AnnotationEvent
-    | SurfaceSnapshotEvent,
+    | SurfaceSnapshotEvent
+    | ResourceListStartEvent
+    | ResourceListEndEvent
+    | ResourceListErrorEvent
+    | ResourceReadStartEvent
+    | ResourceReadEndEvent
+    | ResourceReadErrorEvent
+    | PromptListStartEvent
+    | PromptListEndEvent
+    | PromptListErrorEvent
+    | PromptGetStartEvent
+    | PromptGetEndEvent
+    | PromptGetErrorEvent,
     Field(discriminator="event_type"),
 ]
 
@@ -393,6 +787,30 @@ __all__ = [
     "Event",
     "EventType",
     "PrincipalWire",
+    "PromptGetEndEvent",
+    "PromptGetEndPayload",
+    "PromptGetErrorEvent",
+    "PromptGetErrorPayload",
+    "PromptGetStartEvent",
+    "PromptGetStartPayload",
+    "PromptListEndEvent",
+    "PromptListEndPayload",
+    "PromptListErrorEvent",
+    "PromptListErrorPayload",
+    "PromptListStartEvent",
+    "PromptListStartPayload",
+    "ResourceListEndEvent",
+    "ResourceListEndPayload",
+    "ResourceListErrorEvent",
+    "ResourceListErrorPayload",
+    "ResourceListStartEvent",
+    "ResourceListStartPayload",
+    "ResourceReadEndEvent",
+    "ResourceReadEndPayload",
+    "ResourceReadErrorEvent",
+    "ResourceReadErrorPayload",
+    "ResourceReadStartEvent",
+    "ResourceReadStartPayload",
     "SurfaceSnapshotEvent",
     "SurfaceSnapshotPayload",
     "ToolCallEndEvent",

@@ -613,7 +613,16 @@ class TestAnEmptyValueIsUnsetAtEVERYDoor:
             VendorConfig(dsn=dsn, consent_token="ct", vendor_id="", tenant_id="")
         )
         through_client = _resolve_client_config(
-            sink=None, dsn=dsn, vendor_id="", tenant_id="", consent_token="ct"
+            sink=None,
+            dsn=dsn,
+            vendor_id="",
+            tenant_id="",
+            consent_token="ct",
+            # Required rather than defaulted, deliberately: a default would let
+            # a caller that forgot it silently resolve to "full" for a vendor
+            # who asked for "off", and that is the one direction that cannot be
+            # undone once events are sent.
+            result_capture_mode="full",
         )
         assert through_install.vendor_id == through_client.vendor_id == SERVER
         assert through_install.tenant_id == through_client.tenant_id == WORKSPACE

@@ -10,6 +10,8 @@ fixture) keeps it visible to any test that wants to assert on it directly.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 
@@ -36,3 +38,15 @@ def principal_of(ev: dict[str, Any]) -> dict[str, Any] | None:
     )
     principal = ev.get("principal")
     return None if principal is None else dict(principal)
+
+
+def read_events(path: Path | str) -> list[dict[str, Any]]:
+    """Every event a ``FileSink`` wrote, in order.
+
+    Lives here because fourteen test modules had grown a byte-identical
+    private copy of these three lines and this is the module that exists for
+    it. New tests call this; the existing copies are left alone rather than
+    swept in a change that is about something else.
+    """
+    with open(path) as f:
+        return [json.loads(line) for line in f if line.strip()]
