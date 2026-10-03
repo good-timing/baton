@@ -120,8 +120,8 @@ from baton.integrations.identity_adapter import (
 from baton.integrations.official import _auth
 from baton.integrations.official._registry import get_tool_manager, get_tool_registry
 from baton.integrations.runtime_adapter import UNKNOWN_AGENT_RUNTIME, detect_agent_runtime
-from baton.scrub import identity_scrub
-from baton.sinks import Sink, safe_write
+from baton.scrub import identity_scrub, scrub_or_none
+from baton.sinks import Sink, safe_emit
 
 logger = logging.getLogger(__name__)
 
@@ -598,9 +598,13 @@ def _wrap_tool_run(
             call_intent, call_expected, call_task = _extract_goal_params(
                 name, arguments, intent_param_mode, param_registry
             )
-        scrubbed_intent = scrubber(call_intent) if call_intent is not None else None
-        scrubbed_expected = scrubber(call_expected) if call_expected is not None else None
-        scrubbed_task = scrubber(call_task) if call_task is not None else None
+        # scrub_or_none: OUTSIDE any `safe_emit` build thunk, so a raising
+        # vendor scrubber here would break the vendor's tool call (SPEC §11.2).
+        scrubbed_intent = scrub_or_none(scrubber, call_intent, USER_GOAL_PARAM_NAME, logger)
+        scrubbed_expected = scrub_or_none(
+            scrubber, call_expected, EXPECTED_RESULT_PARAM_NAME, logger
+        )
+        scrubbed_task = scrub_or_none(scrubber, call_task, OVERALL_TASK_PARAM_NAME, logger)
 
         params = dict(arguments or {})
         meta_dict = _extract_meta_from_context(context)
@@ -662,8 +666,11 @@ def _wrap_tool_run(
         )
         # Coordinates round BEFORE the vendor's scrubber, so they round whatever
         # scrubber is configured (``_meta_coords``); the detect above read raw.
-        scrubbed_meta = (
-            scrubber(round_meta_coordinates(meta_dict)) if meta_dict is not None else None
+        scrubbed_meta = scrub_or_none(
+            scrubber,
+            round_meta_coordinates(meta_dict) if meta_dict is not None else None,
+            "_meta",
+            logger,
         )
         call_session_id = await _resolve_call_session_id(
             headers=call_headers, fallback=fallback_session_id
@@ -1040,26 +1047,32 @@ def _make_emitters(
         principal: PrincipalWire | None,
         transport_observed: str | None,
     ) -> None:
-        await safe_write(
+        # ⚠ Hoisted out of the build thunk: a lambda cannot `await`.
+        # A build that then fails burns this number, which is already
+        # possible whenever `sink.write` fails, so the gap is not new.
+        _seq_n = await _seq(session_id)
+        await safe_emit(
             sink,
-            AnnotationEvent(
-                tenant_id=tenant_id,
-                vendor_id=vendor_id,
-                consent_token=consent_token,
-                session_id=session_id,
-                sequence_number=await _seq(session_id),
-                captured_at=datetime.now(UTC),
-                agent_runtime=agent_runtime,
-                principal=principal,
-                transport_observed=transport_observed,
-                runtime_meta=runtime_meta,
-                payload=AnnotationPayload(
-                    intent=intent,
-                    expected_outcome=expected_outcome,
-                    workflow=workflow,
-                    intent_source=INTENT_SOURCE_PARAM,
-                    tool_name=name,
-                ),
+            lambda: (
+                AnnotationEvent(
+                    tenant_id=tenant_id,
+                    vendor_id=vendor_id,
+                    consent_token=consent_token,
+                    session_id=session_id,
+                    sequence_number=_seq_n,
+                    captured_at=datetime.now(UTC),
+                    agent_runtime=agent_runtime,
+                    principal=principal,
+                    transport_observed=transport_observed,
+                    runtime_meta=runtime_meta,
+                    payload=AnnotationPayload(
+                        intent=intent,
+                        expected_outcome=expected_outcome,
+                        workflow=workflow,
+                        intent_source=INTENT_SOURCE_PARAM,
+                        tool_name=name,
+                    ),
+                )
             ),
             logger,
         )
@@ -1078,28 +1091,34 @@ def _make_emitters(
         transport_observed: str | None,
     ) -> None:
         injected_any = any(v is not None for v in (call_intent, call_expected, call_workflow))
-        await safe_write(
+        # ⚠ Hoisted out of the build thunk: a lambda cannot `await`.
+        # A build that then fails burns this number, which is already
+        # possible whenever `sink.write` fails, so the gap is not new.
+        _seq_n = await _seq(session_id)
+        await safe_emit(
             sink,
-            ToolCallStartEvent(
-                tenant_id=tenant_id,
-                vendor_id=vendor_id,
-                consent_token=consent_token,
-                session_id=session_id,
-                sequence_number=await _seq(session_id),
-                captured_at=datetime.now(UTC),
-                agent_runtime=agent_runtime,
-                principal=principal,
-                transport_observed=transport_observed,
-                call_id=call_id,
-                runtime_meta=runtime_meta,
-                payload=ToolCallStartPayload(
-                    tool_name=name,
-                    params=params,
-                    call_intent=call_intent,
-                    call_expected=call_expected,
-                    call_workflow=call_workflow,
-                    intent_source=INTENT_SOURCE_PARAM if injected_any else None,
-                ),
+            lambda: (
+                ToolCallStartEvent(
+                    tenant_id=tenant_id,
+                    vendor_id=vendor_id,
+                    consent_token=consent_token,
+                    session_id=session_id,
+                    sequence_number=_seq_n,
+                    captured_at=datetime.now(UTC),
+                    agent_runtime=agent_runtime,
+                    principal=principal,
+                    transport_observed=transport_observed,
+                    call_id=call_id,
+                    runtime_meta=runtime_meta,
+                    payload=ToolCallStartPayload(
+                        tool_name=name,
+                        params=params,
+                        call_intent=call_intent,
+                        call_expected=call_expected,
+                        call_workflow=call_workflow,
+                        intent_source=INTENT_SOURCE_PARAM if injected_any else None,
+                    ),
+                )
             ),
             logger,
         )
@@ -1121,26 +1140,32 @@ def _make_emitters(
             to_jsonable=_result_to_jsonable,
             result=result,
         )
-        await safe_write(
+        # ⚠ Hoisted out of the build thunk: a lambda cannot `await`.
+        # A build that then fails burns this number, which is already
+        # possible whenever `sink.write` fails, so the gap is not new.
+        _seq_n = await _seq(session_id)
+        await safe_emit(
             sink,
-            ToolCallEndEvent(
-                tenant_id=tenant_id,
-                vendor_id=vendor_id,
-                consent_token=consent_token,
-                session_id=session_id,
-                sequence_number=await _seq(session_id),
-                captured_at=datetime.now(UTC),
-                agent_runtime=agent_runtime,
-                principal=principal,
-                transport_observed=transport_observed,
-                call_id=call_id,
-                runtime_meta=runtime_meta,
-                payload=ToolCallEndPayload(
-                    tool_name=name,
-                    duration_ms=int(duration_s * 1000),
-                    result=end.result,
-                    result_capture=end.result_capture,
-                ),
+            lambda: (
+                ToolCallEndEvent(
+                    tenant_id=tenant_id,
+                    vendor_id=vendor_id,
+                    consent_token=consent_token,
+                    session_id=session_id,
+                    sequence_number=_seq_n,
+                    captured_at=datetime.now(UTC),
+                    agent_runtime=agent_runtime,
+                    principal=principal,
+                    transport_observed=transport_observed,
+                    call_id=call_id,
+                    runtime_meta=runtime_meta,
+                    payload=ToolCallEndPayload(
+                        tool_name=name,
+                        duration_ms=int(duration_s * 1000),
+                        result=end.result,
+                        result_capture=end.result_capture,
+                    ),
+                )
             ),
             logger,
         )
@@ -1163,28 +1188,34 @@ def _make_emitters(
         because only it knows whether it holds a live exception (``result``
         stays None — there is no result object to record) or a returned
         result whose error flag is set (``result`` carries the envelope)."""
-        await safe_write(
+        # ⚠ Hoisted out of the build thunk: a lambda cannot `await`.
+        # A build that then fails burns this number, which is already
+        # possible whenever `sink.write` fails, so the gap is not new.
+        _seq_n = await _seq(session_id)
+        await safe_emit(
             sink,
-            ToolCallErrorEvent(
-                tenant_id=tenant_id,
-                vendor_id=vendor_id,
-                consent_token=consent_token,
-                session_id=session_id,
-                sequence_number=await _seq(session_id),
-                captured_at=datetime.now(UTC),
-                agent_runtime=agent_runtime,
-                principal=principal,
-                transport_observed=transport_observed,
-                call_id=call_id,
-                runtime_meta=runtime_meta,
-                payload=ToolCallErrorPayload(
-                    tool_name=name,
-                    error_type=error_type,
-                    duration_ms=int(duration_s * 1000),
-                    error_body=fields.error_body,
-                    result=fields.result,
-                    result_capture=fields.result_capture,
-                ),
+            lambda: (
+                ToolCallErrorEvent(
+                    tenant_id=tenant_id,
+                    vendor_id=vendor_id,
+                    consent_token=consent_token,
+                    session_id=session_id,
+                    sequence_number=_seq_n,
+                    captured_at=datetime.now(UTC),
+                    agent_runtime=agent_runtime,
+                    principal=principal,
+                    transport_observed=transport_observed,
+                    call_id=call_id,
+                    runtime_meta=runtime_meta,
+                    payload=ToolCallErrorPayload(
+                        tool_name=name,
+                        error_type=error_type,
+                        duration_ms=int(duration_s * 1000),
+                        error_body=fields.error_body,
+                        result=fields.result,
+                        result_capture=fields.result_capture,
+                    ),
+                )
             ),
             logger,
         )
