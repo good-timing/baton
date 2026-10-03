@@ -722,10 +722,22 @@ def _wrap_tool_run(
         # must still never reach the vendor handler.
         is_continuation = _is_mrtr_continuation(context)
         if not is_continuation:
+            # ⚠ scrub_or_none, not a bare call. ``emit_before`` builds inside
+            # a ``safe_emit`` thunk — but THIS runs while its ARGUMENTS are
+            # evaluated, before that guard is entered, which is the same hole
+            # ``safe_emit`` was added to close one level down. Missed when the
+            # official adapter was converted (`eb4fb8f`) and found by teaching
+            # the AST sweep its own guard shapes.
+            #
+            # ⚠ ``{}`` is a LOSSY degradation: a consumer reads it as "called
+            # with no arguments", not "we could not scrub them". Accepted for
+            # the reason ``client.py:with_params`` records — the only way to
+            # assert nothing is to drop the START event, which orphans the end
+            # and loses the whole call.
             await emit_before(
                 call_session_id,
                 name,
-                scrubber(params),
+                scrub_or_none(scrubber, params, "params", logger) or {},
                 scrubbed_meta,
                 scrubbed_intent,
                 scrubbed_expected,
@@ -743,23 +755,44 @@ def _wrap_tool_run(
             # original __cause__ when present so error_type reflects the real
             # exception class the vendor's fn actually raised.
             original_exc = exc.__cause__ if exc.__cause__ is not None else exc
-            await emit_error(
-                call_session_id,
-                name,
-                type(original_exc).__name__,
-                monotonic() - called_at,
-                scrubbed_meta,
-                call_agent_runtime,
-                call_principal,
-                call_id,
-                call_transport,
-                # No result object exists on a raise, so there is none to
-                # record and none to withhold: SPEC §11.4.3(1) leaves this
-                # shape unchanged under every mode, because an exception
-                # message is the vendor's own code speaking about a call that
-                # never returned. Both defaults say exactly that.
-                ErrorResultFields(error_body=str(scrubber(str(original_exc)))[:2000]),
-            )
+            # ⚠ The CALL is guarded, not just the construction inside it.
+            # ``emit_error`` builds in a ``safe_emit`` thunk, but the
+            # scrubber below runs while these ARGUMENTS are evaluated —
+            # outside it — and this sits in an ``except`` with a ``raise``
+            # under it, so a throwing scrubber REPLACED the vendor's own
+            # exception with ours. Same shape proven on the library path
+            # (`spikes/client_failopen_1003/`); missed here when the
+            # official adapter was converted (`eb4fb8f`).
+            #
+            # Guarded rather than degraded because ``error_body`` is a
+            # required ``str``: ``""`` is the withheld/no-message
+            # ambiguity §11.4.3 exists to warn about, so there is no value
+            # that honestly says "we could not scrub this". Dropping the
+            # event asserts nothing. The ``raise`` is OUTSIDE, so the
+            # vendor's exception reaches them either way.
+            try:
+                await emit_error(
+                    call_session_id,
+                    name,
+                    type(original_exc).__name__,
+                    monotonic() - called_at,
+                    scrubbed_meta,
+                    call_agent_runtime,
+                    call_principal,
+                    call_id,
+                    call_transport,
+                    # No result object exists on a raise, so there is none to
+                    # record and none to withhold: SPEC §11.4.3(1) leaves this
+                    # shape unchanged under every mode, because an exception
+                    # message is the vendor's own code speaking about a call that
+                    # never returned. Both defaults say exactly that.
+                    ErrorResultFields(error_body=str(scrubber(str(original_exc)))[:2000]),
+                )
+            except Exception:
+                logger.exception(
+                    "baton: tool_call_error emit failed; event dropped, "
+                    "the vendor's exception still propagates"
+                )
             raise
         # MRTR (mcp>=2.0): an InputRequiredResult means the call paused mid-flight
         # to ask the client for more input — it hasn't finished, so no

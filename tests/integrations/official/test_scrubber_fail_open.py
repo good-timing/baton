@@ -107,3 +107,108 @@ async def test_a_throwing_scrubber_does_not_break_a_working_call(tmp_path: Path)
     assert "row-42-ok" in res["text"], (
         f"fail-open broken: the caller got our error instead of the tool's result: {res['text']}"
     )
+
+
+# --- the two sites the tests above could not reach -------------------------
+#
+# Found 2026-10-03 by teaching `ast_sweep.py` the guard shapes this thread
+# introduced. `emit_before` / `emit_error` build inside a `safe_emit` thunk,
+# but the scrubber in their ARGUMENTS runs before that guard is entered, so
+# `eb4fb8f` converted the construction and left these two live.
+
+
+class _DictThrower:
+    """Trips on a DICT, which is why the string thrower above missed a site.
+
+    ``scrubber(params)`` on the start leg is handed the arguments dict.
+    ``_Thrower`` guards every trip with ``isinstance(value, str)``, so it
+    could never fire there however the target was chosen — the site was
+    unreachable by the existing probes rather than guarded
+    → [[feedback_a_negative_test_must_be_able_to_fail]].
+    """
+
+    def __init__(self) -> None:
+        self.tripped = 0
+
+    def __call__(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            self.tripped += 1
+            raise RuntimeError("scrubber exploded on params")
+        return value
+
+
+async def test_a_scrubber_throwing_on_PARAMS_does_not_break_the_call(tmp_path: Path) -> None:
+    thrower = _DictThrower()
+    res = await _call(tmp_path / "p2.jsonl", thrower, fail=False)
+    assert thrower.tripped, "the probe never reached the params site; it proves nothing"
+    # Same discriminator as the test above: this surface returns our exception
+    # AS the tool's answer, so "did not raise" passes against the defect.
+    assert "row-42-ok" in res["text"], (
+        f"fail-open broken on the start leg: caller got our error: {res['text']}"
+    )
+
+
+async def _run_direct(events_path: Path, scrubber: Any) -> BaseException:
+    """Drive the wrapped tool directly and hand back what it raised.
+
+    ⚠ Not through a client session, and the reason is a CONTROL THAT FAILED.
+    The first version of the test below asserted the vendor's message reaches
+    the caller — it does not, with or without a scrubber: mcp 2.x masks every
+    handler exception as ``UnexpectedToolError("Error executing tool fetch")``
+    before the client sees it. So the caller-visible text is identical whether
+    fail-open holds or not, and asserting on it proves nothing either way
+    → [[feedback_control_condition_must_be_able_to_fail]]. What differs is the
+    ``__cause__`` the SDK wraps, which is visible here and nowhere else.
+    """
+    from baton.integrations.official import VendorConfig, install_baton
+    from baton.integrations.official._compat import MCPServerClass as FastMCP
+    from baton.sinks import FileSink
+
+    mcp = FastMCP("failopen-official-direct")
+
+    @mcp.tool()
+    def fetch(row: str) -> dict[str, Any]:
+        raise ValueError(VENDOR_MSG)
+
+    install_baton(
+        mcp,
+        VendorConfig(
+            vendor_id="failopen",
+            vendor_display_name="Fail Open",
+            consent_token="ct_failopen",
+            sink=FileSink(str(events_path)),
+            tenant_id="t-failopen",
+            scrubber=scrubber,
+        ),
+    )
+    tool = mcp._tool_manager.get_tool("fetch")
+    try:
+        await tool.run({"row": "42"}, None, convert_result=True)
+    except BaseException as e:  # the exception itself is the test's subject
+        return e
+    raise AssertionError("the tool did not raise; the rig is broken, not the code")
+
+
+async def test_a_throwing_scrubber_does_not_REPLACE_the_vendor_s_own_error(
+    tmp_path: Path,
+) -> None:
+    """The RAISE leg, which no test here reached.
+
+    ``emit_error``'s arguments are evaluated inside the vendor's ``except``,
+    with a ``raise`` below them, so a throw there substituted OUR exception
+    for theirs. The assertion is on the vendor's message surviving, not on
+    something having gone wrong.
+    """
+    control = await _run_direct(tmp_path / "c3.jsonl", lambda v: v)
+    assert isinstance(control.__cause__, ValueError) and VENDOR_MSG in str(control.__cause__), (
+        f"CONTROL: the vendor's exception is not the cause even without a "
+        f"throwing scrubber; the rig is broken, not the code: {control.__cause__!r}"
+    )
+
+    thrower = _Thrower(VENDOR_MSG, contains=True)
+    raised = await _run_direct(tmp_path / "p3.jsonl", thrower)
+    assert thrower.tripped, "the probe never reached the error leg; it proves nothing"
+    assert isinstance(raised.__cause__, ValueError) and VENDOR_MSG in str(raised.__cause__), (
+        f"fail-open broken on the raise leg: the vendor's ValueError was "
+        f"REPLACED by ours — the cause is {raised.__cause__!r}"
+    )
