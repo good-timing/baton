@@ -293,7 +293,7 @@ class PrincipalWire(BaseModel):
 
     ⚠ **Not ``baton.Principal``, and the two are easy to confuse.** That one is
     what a vendor's ``resolve_principal`` hook HANDS US: a raw subject, an
-    optional issuer, optional PII that never leaves the payload tier. This one
+    optional issuer, an optional display name. This one
     is what we PUT ON THE WIRE after resolving and deriving it — the raw value
     is gone by the time this is built, and nothing here is ever the input to a
     hash. One is the question, this is the answer.
@@ -337,8 +337,8 @@ class PrincipalWire(BaseModel):
     display_name: str | None = None
     """What a page shows for this principal, chosen by the vendor's resolver
     and sent verbatim. Personal data whenever present — ``form`` classifies
-    ``id`` only. A label, never a key. ``None`` serializes as ``null``, which
-    SPEC §11.4 makes equivalent to absent."""
+    ``id`` only. A label, never a key. ``None`` is OMITTED from the wire by
+    ``_omit_absent_name`` below — not sent as ``null``."""
 
     @model_serializer(mode="wrap")
     def _omit_absent_name(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
