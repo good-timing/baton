@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer
 
 from baton import __version__
 from baton._uuid import uuid7
@@ -298,9 +298,9 @@ class PrincipalWire(BaseModel):
     is gone by the time this is built, and nothing here is ever the input to a
     hash. One is the question, this is the answer.
 
-    **All three members are REQUIRED, and that is the guarantee the object
-    exists to give.** A producer emits the whole thing or omits ``principal``
-    entirely; a partial object is malformed, not a degraded reading. So there
+    **The first three members are REQUIRED, and that is the guarantee the
+    object exists to give.** A producer emits all three or omits ``principal``
+    entirely (``display_name`` rides only on a complete object); a partial object is malformed, not a degraded reading. So there
     is no conformant event carrying an ``id`` whose ``form`` a consumer has to
     guess, and none carrying a ``source`` for an identity nobody resolved. That
     binding is structural here precisely because its predecessor — a scheme
@@ -333,6 +333,25 @@ class PrincipalWire(BaseModel):
     form: str
     """WHAT it is: ``"hashed"`` or ``"raw"``. The privacy classification, and
     the only thing a consumer may classify on."""
+
+    display_name: str | None = None
+    """What a page shows for this principal, chosen by the vendor's resolver
+    and sent verbatim. Personal data whenever present — ``form`` classifies
+    ``id`` only. A label, never a key. ``None`` serializes as ``null``, which
+    SPEC §11.4 makes equivalent to absent."""
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_name(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        # A nameless principal serializes exactly as it did before the member
+        # existed. SPEC allows ``null``, but the collector types this object
+        # ``extra="forbid"``: sending ``null`` would make every principal — not
+        # only named ones — a rejected event against a collector that predates
+        # the member. ⚠ This hides the fields from a SERIALIZATION-mode JSON
+        # schema; baton-spec's generator uses validation mode, which is intact.
+        data: dict[str, Any] = handler(self)
+        if data.get("display_name") is None:
+            data.pop("display_name", None)
+        return data
 
     # ⚠ Deliberately `str`, not `Literal`, on BOTH members — the same decision
     # `transport_observed` records and the collector's ingest makes on the

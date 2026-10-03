@@ -85,6 +85,33 @@ PRINCIPAL_SOURCE_ASSERTED = "asserted"
 #: are not capped — truncating a digest would destroy the join.
 RAW_PRINCIPAL_ID_MAX_LEN = 128
 
+#: Cap on ``display_name``, in code points. Over it the name is DROPPED, not
+#: truncated: SPEC §11.4 forbids rewriting the value, so both SDKs send the
+#: same bytes for one resolver output.
+DISPLAY_NAME_MAX_LEN = 128
+
+# Unicode ``White_Space``, exactly (SPEC §11.4's blank rule). Not
+# ``str.strip()``: that also removes U+001C to U+001F, which ECMAScript's
+# ``trim()`` keeps, so the two SDKs would disagree on what is blank.
+_WHITE_SPACE = frozenset(
+    "\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005"
+    "\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+)
+
+
+def wire_display_name(value: object) -> str | None:
+    """The resolver's ``display_name`` as it goes on the wire, or ``None``.
+
+    Verbatim when usable. A non-string, a blank (only Unicode ``White_Space``)
+    or an over-long value is dropped ALONE — the rest of the principal is
+    still emitted, because a bad label is no reason to lose a good id.
+    """
+    if not isinstance(value, str) or len(value) > DISPLAY_NAME_MAX_LEN:
+        return None
+    if all(ch in _WHITE_SPACE for ch in value):
+        return None
+    return value
+
 
 #: A vendor's per-request identity resolver. Takes the adapter-neutral
 #: ``SessionResolutionContext`` — headers, meta, tool name, arguments and the
@@ -309,7 +336,12 @@ def _finish_principal(
     # returned ``None``, so "all three members or nothing" is a property of
     # the control flow rather than of two sites agreeing to pass the same
     # three arguments.
-    return PrincipalWire(id=value, source=PRINCIPAL_SOURCE_ASSERTED, form=form)
+    return PrincipalWire(
+        id=value,
+        source=PRINCIPAL_SOURCE_ASSERTED,
+        form=form,
+        display_name=wire_display_name(principal.display_name),
+    )
 
 
 async def resolve_call_principal(

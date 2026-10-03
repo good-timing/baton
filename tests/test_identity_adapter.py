@@ -440,10 +440,9 @@ def _email(token: Any) -> Principal | None:
 
 def test_the_email_hook_keys_on_the_WHOLE_address_and_names_the_local_part() -> None:
     """The local part alone is not an id: ``alice@acme.com`` and
-    ``alice@contoso.com`` are two people. It rides as ``user_name``, which never
-    leaves the payload tier."""
+    ``alice@contoso.com`` are two people. It rides as ``display_name``."""
     got = _email(_Token(claims={"email": "alice@acme.com", "sub": "x", "iss": "https://idp"}))
-    assert got == Principal(principal_id="alice@acme.com", user_name="alice", issuer=None)
+    assert got == Principal(principal_id="alice@acme.com", display_name="alice", issuer=None)
 
 
 def test_the_email_hook_keeps_one_pseudonym_across_issuers() -> None:
@@ -470,14 +469,14 @@ def test_the_same_local_part_at_two_domains_is_two_people() -> None:
     assert a.id != b.id
 
 
-def test_the_local_part_never_reaches_the_wire() -> None:
-    """``user_name`` is sent nowhere today. This is the guard for the day
-    someone wires it somewhere: in hashed mode the wire object must carry
-    neither half of the address."""
+def test_in_hashed_mode_the_name_is_sent_and_the_address_is_not() -> None:
+    """The local part reaches the wire as ``display_name`` in EVERY mode — a
+    vendor who wants no name writes their own hook (ruled 2026-10-02). The
+    address itself stays hashed: the domain must not appear anywhere."""
     got = _resolve(_Token(claims={"email": "alice@acme.com"}), hook=principal_from_oauth_email)
     assert got is not None
-    blob = got.model_dump_json()
-    assert "alice" not in blob and "acme" not in blob
+    assert got.display_name == "alice" and got.form == "hashed"
+    assert "acme" not in got.model_dump_json()
 
 
 def test_the_email_hook_does_not_fall_back_to_sub() -> None:
@@ -506,13 +505,13 @@ def test_an_address_with_no_at_sign_is_still_the_id_but_has_no_name() -> None:
     """Not every IdP validates the claim's shape. The value is still a stable
     identifier, so it keys the principal; there is just no local part to name."""
     got = _email(_Token(claims={"email": "alice"}))
-    assert got == Principal(principal_id="alice", user_name=None, issuer=None)
+    assert got == Principal(principal_id="alice", display_name=None, issuer=None)
 
 
 def test_the_local_part_splits_on_the_LAST_at_sign() -> None:
     """RFC 5321 permits a quoted ``@`` in the local part; the domain never has one."""
     got = _email(_Token(claims={"email": '"a@b"@acme.com'}))
-    assert got is not None and got.user_name == '"a@b"'
+    assert got is not None and got.display_name == '"a@b"'
 
 
 def test_email_verified_is_not_consulted() -> None:
@@ -683,3 +682,52 @@ def test_the_shared_cross_repo_vector_with_an_issuer() -> None:
         )
         == _VECTOR_WITH_ISSUER
     )
+
+
+# --------------------------------------------------------------------------
+# display_name on the wire (SPEC §11.4)
+# --------------------------------------------------------------------------
+
+
+def _named(name: Any) -> Any:
+    return lambda _ctx: Principal(principal_id="alice", display_name=name)
+
+
+@pytest.mark.parametrize("mode", [PRINCIPAL_ID_MODE_HASHED, PRINCIPAL_ID_MODE_RAW])
+def test_the_resolver_name_rides_every_mode(mode: str) -> None:
+    got = _resolve(None, hook=_named("Alice"), mode=mode)
+    assert got is not None and got.display_name == "Alice"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param(None, id="none"),
+        pytest.param("", id="empty"),
+        pytest.param(" \t\n", id="ascii-space"),
+        pytest.param("\x85\u3000", id="nel-and-ideographic-space"),
+        pytest.param(7, id="non-string"),
+        pytest.param("a" * 129, id="over-cap"),
+    ],
+)
+def test_an_unusable_name_is_dropped_and_the_id_is_kept(name: Any) -> None:
+    """A bad label costs only itself: the principal still ships."""
+    got = _resolve(None, hook=_named(name))
+    assert got is not None and got.id and got.display_name is None
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param(" Alice ", id="padded"),
+        pytest.param("\x1c", id="info-separator"),
+        pytest.param("\ufeff", id="bom"),
+        pytest.param("a" * 128, id="at-cap"),
+    ],
+)
+def test_a_usable_name_is_sent_verbatim(name: str) -> None:
+    """No trimming, and blank is Unicode ``White_Space`` exactly: Python's
+    ``strip()`` would drop U+001C, ECMAScript's ``trim()`` would drop U+FEFF,
+    and the two SDKs must agree."""
+    got = _resolve(None, hook=_named(name))
+    assert got is not None and got.display_name == name

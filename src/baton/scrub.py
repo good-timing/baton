@@ -47,10 +47,10 @@ DEPTH_LIMIT = 10
 # match. Case-insensitive exact match (no plural / prefix matching to keep
 # false positives down). Kept narrow on purpose — too broad and we wreck
 # legitimate fields like ``Slack:channel_token_string_id``.
-# ``user_name`` guards the PII half of a resolved end-user identity
-# (identity.Principal) in the event it ever lands in a payload — defence in
-# depth for the console path (residency contract). NOT ``name``: that collides with
-# legitimate payload keys (prompt names, tool names in surface snapshots).
+# ``user_name`` is a common PII key in tool params. NOT ``name``: that collides
+# with legitimate payload keys (prompt names, tool names in surface snapshots).
+# A principal's ``display_name`` is not a payload and never passes through here
+# (SPEC §11.4: the vendor's resolver already chose what is safe to show).
 REDACT_FIELD_NAMES: frozenset[str] = frozenset(
     {"email", "phone", "ssn", "api_key", "token", "secret", "password", "user_name"}
 )

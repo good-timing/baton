@@ -33,8 +33,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   hook keys on `(sub, iss)`, exactly as the deleted rung did. The email hook keys
   on the WHOLE address with no issuer — an address is unique on its own, and an
   issuer URL change must not split a person — and returns the part before the
-  last `@` as `Principal.user_name`, which nothing sends anywhere. Neither
+  last `@` as `Principal.display_name`, which IS sent (below). Neither
   consults `email_verified`. Both run inline, not on a hook thread.
+- **`principal.display_name` on the wire** (SPEC §11.4, §13) — what a page
+  shows for the principal. Your hook sets `Principal.display_name` (renamed
+  from `user_name`, which was never sent) and it is sent VERBATIM in every
+  mode, hashed included, and never through your scrubber: you choose what is
+  safe to show. A non-string, blank (only Unicode whitespace) or over-128-
+  character name is dropped on its own; the id still ships. ⚠ **The email
+  hook sends the local part** — `alice` for `alice@acme.com` — even when ids
+  are hashed; write your own hook if you don't want that. ⚠ Needs a collector
+  that accepts the member: a strict one rejects the event.
 - **`SessionResolutionContext.claims`** — the verified token's claims, or `None`
   (stdio, unauthenticated HTTP, `mcp < 1.27`), extracted the same way on both
   adapters so a hook never touches the adapter-specific token object. Kept out

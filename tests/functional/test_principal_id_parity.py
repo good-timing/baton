@@ -353,6 +353,7 @@ async def test_the_email_hook_reads_the_token_on_both_adapters_and_both_emit_pat
             "id": expected,
             "source": "asserted",
             "form": "hashed",
+            "display_name": "alice",
         }, path.name
         blob = path.read_text()
         # The tool's own argument is ``"alice"``, so the check is on the address.
