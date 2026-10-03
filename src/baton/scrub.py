@@ -35,9 +35,13 @@ matrix in `tests/test_scrub.py`.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import Counter
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar, cast
+
+_T = TypeVar("_T")
 
 # Cap on recursive walk depth. Matches LangSmith's default; protects
 # against pathological inputs without truncating realistic MCP payloads.
@@ -166,3 +170,59 @@ def identity_scrub(value: Any) -> Any:
     integrations get PII scrubbing without the operator having to opt in.
     """
     return value
+
+
+_SCRUB_WARNED: set[str] = set()
+
+
+def scrub_or_none(
+    scrubber: Callable[[Any], Any] | None,
+    value: _T | None,
+    field: str,
+    logger: logging.Logger,
+) -> _T | None:
+    """Fail-open wrapper around a VENDOR-supplied scrubber call.
+
+    SPEC §11.2: Baton instrumentation MUST NOT break the vendor's tool call on
+    its own internal failure. ``safe_write`` enforces that for ``sink.write``
+    and ``safe_emit`` for payload CONSTRUCTION — but the scrubber also runs in
+    plain statements, outside any build thunk, on every capture surface. A
+    throw there escapes both guards and the vendor's call dies.
+
+    ⚠ **The rule is the POSITION, not a list of fields.** Every scrubber
+    application that is not inside a ``safe_emit`` build thunk needs this. The
+    TS port learned that the hard way: an earlier version of its comment listed
+    the call sites instead of stating the rule, and a byte-identical
+    ``_meta`` line in another module was missed because of it.
+
+    ``None`` on failure because every caller already treats ``None`` as "this
+    field is unavailable": runtime detection loses the TIER and falls through,
+    ``_meta`` becomes absent, an unscrubbed goal param becomes no captured
+    intent. The field degrades and the call lives. ``None`` IN returns ``None``
+    without calling the scrubber.
+
+    ⚠ **NOT for a scrubber call inside a ``safe_emit`` build thunk.** There a
+    throw is already contained, and ``None`` would be WORSE than dropping the
+    event: a null ``result`` on a ``tool_call_error`` means "the handler
+    raised" (SPEC §11.4.3), so swallowing a scrubber failure into one would
+    fabricate a failure shape. Drop the event instead, which is what
+    ``safe_emit`` does.
+    """
+    if value is None or scrubber is None:
+        return value
+    try:
+        return cast("_T", scrubber(value))
+    except Exception:
+        # Once per field per process. ``safe_write`` logs per event because a
+        # sink failure is one write per event; this can fire five times per
+        # CALL, and runtime detection fires unconditionally — so the unbounded
+        # form would put a line on stderr for every tool call forever.
+        if field not in _SCRUB_WARNED:
+            _SCRUB_WARNED.add(field)
+            logger.exception(
+                "baton: the configured scrubber raised on %s; that field is "
+                "dropped and the tool call continues. Further failures on this "
+                "field are not logged.",
+                field,
+            )
+        return None

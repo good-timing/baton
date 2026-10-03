@@ -81,6 +81,40 @@ async def safe_write(sink: Sink, event: Event, logger: logging.Logger) -> None:
         logger.exception("baton: sink.write failed; event dropped, tool call continues")
 
 
+async def safe_emit(
+    sink: Sink, build: Callable[[], Event], logger: logging.Logger
+) -> None:
+    """Fail-open event CONSTRUCTION *and* write.
+
+    ``safe_write`` guards ``sink.write`` only — but Python evaluates the
+    argument expression before the call, so everything that BUILDS the event
+    runs outside that guard: the vendor's scrubber, ``model_validate``,
+    serialisation of an awkward value. A throw there breaks the vendor's tool
+    call, which is the one thing SPEC §11.2 says capture must never do.
+
+    Measured, not assumed, before this existed
+    (`baton-internal/spikes/python_scrubber_failopen_1002/`): a vendor scrubber
+    that raises turned a working tool call into ``MCPError: Internal server
+    error``, and on the failing leg it REPLACED the vendor's own error. ⚠ Our
+    exception did not reach the caller — FastMCP masks it — so the vendor got
+    no signal pointing at Baton at all.
+
+    Ported from ``baton-ts``'s ``emit()`` (`integrations/mcp/emit.ts`), which
+    has always had this shape; the Python side never did.
+
+    Catches ``Exception``, NOT ``BaseException`` — ``KeyboardInterrupt`` and
+    ``SystemExit`` must still propagate, same rule as ``safe_write``.
+    """
+    try:
+        event = build()
+    except Exception:
+        logger.exception(
+            "baton: event construction failed; event dropped, tool call continues"
+        )
+        return
+    await safe_write(sink, event, logger)
+
+
 class Sink(ABC):
     """A destination for emitted events. Implementations choose their own
     backpressure / retry / durability semantics."""

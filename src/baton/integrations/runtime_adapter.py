@@ -51,8 +51,13 @@ bug this module was moved here to stop, not one to reintroduce one layer down.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
+
+from baton.scrub import scrub_or_none
+
+logger = logging.getLogger(__name__)
 
 #: The per-request carrier for the client's declared identity, reserved by MCP
 #: 2026-07-28. Present in the mcp 2.x library today (``mcp.shared.inbound``
@@ -104,7 +109,13 @@ def _clean(name: Any, scrubber: Callable[[Any], Any] | None) -> str | None:
         return None
     cleaned: str = name
     if scrubber is not None:
-        scrubbed = scrubber(cleaned)
+        # scrub_or_none: this runs OUTSIDE any `safe_emit` build thunk, on
+        # EVERY tool call, and it is the site the Python fail-open proof
+        # actually hit (`spikes/python_scrubber_failopen_1002/`). A raising
+        # vendor scrubber here used to break the vendor's call. `None` loses
+        # this TIER and falls through to the next, which is what the
+        # not-a-string branch below already does.
+        scrubbed = scrub_or_none(scrubber, cleaned, "agent-runtime name", logger)
         # A scrubber that redacts by returning ``None`` — or anything else that
         # is not a string — loses this TIER, it does not get stringified onto
         # the wire. ``str(None)`` is ``"None"``, which is truthy and would ship
