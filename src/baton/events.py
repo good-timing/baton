@@ -532,8 +532,14 @@ class ResourceReadStartPayload(BaseModel):
 
     uri: str
     params: dict[str, Any] | None = None
-    """The caller's own request params, PII-scrubbed (SPEC §7). ``None`` where
-    the request carried nothing but ``_meta``."""
+    """The caller's own request params, PII-scrubbed (SPEC §7).
+
+    ⚠ The only producer ALWAYS sends this, as ``{}`` when the request carried
+    nothing but ``_meta`` — ``baton_proxy/emitter.py`` coerces with
+    ``dict(params) if params else {}``. This read "``None`` where the request
+    carried nothing but ``_meta``" until 2026-10-02. Optional here so the model
+    accepts both, but a consumer MUST NOT branch on ``None`` for the empty case
+    (SPEC §11.4.4)."""
 
 
 class ResourceReadEndPayload(BaseModel):
@@ -622,8 +628,12 @@ class PromptGetStartPayload(BaseModel):
 
     name: str
     params: dict[str, Any] | None = None
-    """The prompt's arguments, PII-scrubbed (SPEC §7). ``None`` where the
-    request supplied none."""
+    """The prompt's arguments, PII-scrubbed (SPEC §7).
+
+    ⚠ Always present from the only producer, as ``{}`` when the request
+    supplied none — same coercion as ``ResourceReadStartPayload.params``, and
+    this carried the same wrong ``None`` claim until 2026-10-02 (SPEC
+    §11.4.4)."""
 
 
 class PromptGetEndPayload(BaseModel):

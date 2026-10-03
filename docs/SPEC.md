@@ -1280,13 +1280,13 @@ nulls `result` on this event type drops the body this change exists to keep.
 | `resource_list_start` | `{}` |
 | `resource_list_end` | `{count, duration_ms?}` |
 | `resource_list_error` | `{error_type, error_body, duration_ms?}` |
-| `resource_read_start` | `{uri, params?}` |
+| `resource_read_start` | `{uri, params}` |
 | `resource_read_end` | `{uri, duration_ms?}` |
 | `resource_read_error` | `{uri, error_type, error_body, duration_ms?}` |
 | `prompt_list_start` | `{}` |
 | `prompt_list_end` | `{count, duration_ms?}` |
 | `prompt_list_error` | `{error_type, error_body, duration_ms?}` |
-| `prompt_get_start` | `{name, params?}` |
+| `prompt_get_start` | `{name, params}` |
 | `prompt_get_end` | `{name, duration_ms?}` |
 | `prompt_get_error` | `{name, error_type, error_body, duration_ms?}` |
 
@@ -1297,6 +1297,8 @@ nulls `result` on this event type drops the body this change exists to keep.
 - A `resource_read` records its URI and its timing, never the content it fetched. A `prompt_get` records the prompt's name, never the messages it rendered.
 - **So `result_capture` (§11.4) does not appear on any of these payloads, and a producer MUST NOT add it.** The member declares that result-derived data was withheld; there is nothing on these payloads for a withhold to remove, so an SDK matching this shape needs no withhold extension. A producer that ever begins capturing a resource body MUST bring the rule with it in the same release.
 - **The `*_start` payloads DO carry caller data in `params`**, and it MUST be PII-scrubbed per §7 like any other payload. `result_capture` says nothing about it either way: §11.4 states outright that the member is not a statement about request data.
+
+**⚠ `params` is ALWAYS PRESENT on both `*_start` payloads — never absent, never null.** The table spelled it `params?` until 2026-10-02, read off `baton_proxy.proxy`, which is one layer too high: `baton_proxy/emitter.py` coerces at the payload (`"params": dict(params) if params else {}`), so an empty request sends `{}`. A consumer branching on `params is None` for the empty case never matches, and a second producer told to copy this shape field for field would emit `null` and diverge from the producer it was copying. ⚠ No `baton-spec` vector covers any of the twelve types, so nothing catches this.
 
 **⚠ `params` is NOT built the same way on the two `*_start` payloads.** On `resource_read_start` it is the request's params with `_meta` removed and nothing else — **so `uri` appears twice**, once in its own member and once inside `params`. On `prompt_get_start` it is the request's `arguments` member alone, so `name` does **not** appear inside `params`. Measured in `baton_proxy.proxy`. A consumer MUST read the dedicated `uri` / `name` member and MUST NOT expect the subject inside `params`; a second producer SHOULD copy these shapes rather than infer a rule from one of them.
 
