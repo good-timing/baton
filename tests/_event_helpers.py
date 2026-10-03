@@ -48,7 +48,11 @@ def read_events(path: Path | str) -> list[dict[str, Any]]:
     it. New tests call this; the existing copies are left alone rather than
     swept in a change that is about something else.
     """
-    # utf-8 explicitly: `FileSink` WRITES utf-8 (`sinks.py`), so a locale
-    # default of anything else mis-decodes a non-ASCII payload on read.
+    # utf-8 explicitly, to PIN the decode to the sink's declared encoding —
+    # ⚠ not because a mis-decode is reachable today. `FileSink` writes with
+    # `json.dumps(...)` at the default `ensure_ascii=True` (`sinks.py:136,173`),
+    # so the file is pure ASCII and decodes the same under any ASCII-superset
+    # locale. This stays correct if `ensure_ascii=False` is ever set, which is
+    # the only reason it is here.
     with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]

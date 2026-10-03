@@ -70,16 +70,24 @@ def validate_mode(mode: str, *, field: str) -> ResultCaptureMode:
     that take the mode onward are not re-checked, matching the two sibling
     modes.
 
-    ⚠ **What holds the chain between is that those seams are PRIVATE, not the
-    type checker.** `ResultCaptureMode` is a bare `str` alias (line 37), so
-    mypy accepts any string in the slot — including a value meant for
-    `intent_param_mode` or `principal_id_mode`, which are also `str`. An
-    unregistered value reaching a seam directly reads as "not off" and captures
-    everything, silently. `BatonMiddleware` and `install_wraps` are exported
-    from no public package, which is why that is reachable only from this
-    repo's own tests today. Narrowing the alias to a `Literal` would make the
-    checker carry it (see this module's ⚠ above); until then the invariant is
-    the privacy of the seams and should be read as such.
+    ⚠ **NOTHING holds the chain between — stated plainly because two earlier
+    versions of this docstring claimed something that does.** It said
+    mypy-strict covered it: `ResultCaptureMode` is a bare `str` alias (line 37),
+    so mypy accepts any string in the slot, including one meant for
+    `intent_param_mode` or `principal_id_mode`. It then said the seams are
+    private: `BatonMiddleware` imports fine from
+    `baton.integrations.standalone.middleware`, a path with no underscore in
+    it, and `integrations/fastmcp.py` re-exports it deliberately, naming it
+    "the obvious candidate" for an external caller. Only `install_wraps` is
+    genuinely private.
+
+    So the reachable hole, unguarded: a vendor importing `BatonMiddleware`
+    directly and passing `result_capture_mode="Off"` gets no error,
+    `withholding()` answers False, and every result body is captured. The
+    behaviour is deliberate and pinned by
+    `test_the_mode_is_validated_at_the_DOORS_and_not_re_checked_inside`; what
+    is NOT true is that anything prevents it. Narrowing the alias to a
+    `Literal` (see this module's ⚠ above) is what would.
 
     ⚠ It is the ENABLED resolver that calls this, never the disabled one.
     `baton._optout` promises a disabled Baton never throws, and both doors

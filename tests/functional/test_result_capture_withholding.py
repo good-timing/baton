@@ -422,11 +422,17 @@ def test_the_mode_is_validated_at_the_DOORS_and_not_re_checked_inside() -> None:
     modes (`intent_param_mode`, `principal_id_mode`) are threaded through those
     same seams and validated at the config door only; adding seam checks here
     made the official path validate twice on every real install, and would have
-    made the reserved partial rung a four-place edit. mypy-strict over
-    `src/baton` covers the chain between the door and the seam.
+    made the reserved partial rung a four-place edit.
 
-    So what is pinned is the DOOR count: a vendor cannot reach the mode except
-    through `VendorConfig` or `Client`/`AsyncClient`, and both refuse.
+    ⚠ This read "mypy-strict over `src/baton` covers the chain between the door
+    and the seam" until 2026-10-02. It does not — `ResultCaptureMode` is a bare
+    `str` alias. See `baton._result_capture.validate_mode`, which carries the
+    same correction.
+
+    So what is pinned is the DOOR count: a vendor going through `VendorConfig`
+    or `Client`/`AsyncClient` is refused. ⚠ A vendor importing
+    `BatonMiddleware` directly is NOT — that path is public and unvalidated,
+    and this test does not claim otherwise.
     """
     from fastmcp import FastMCP
 
