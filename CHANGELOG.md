@@ -40,7 +40,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   from `user_name`, which was never sent) and it is sent VERBATIM in every
   mode, hashed included, and never through your scrubber: you choose what is
   safe to show. A non-string, blank (only Unicode whitespace), over-128-
-  character or lone-surrogate name is dropped on its own; the id still ships. ⚠ **The email
+  character, lone-surrogate or NUL-bearing name is dropped on its own; the id still ships. ⚠ **The email
   hook sends the local part** — `alice` for `alice@acme.com` — even when ids
   are hashed; write your own hook if you don't want that. ⚠ Needs a collector
   that accepts the member: every principal now carries it (`null` when there

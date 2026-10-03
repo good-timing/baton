@@ -100,24 +100,24 @@ _WHITE_SPACE = frozenset(
 )
 
 
-_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+# A lone surrogate cannot be UTF-8 encoded and U+0000 is refused by Postgres
+# text; either would cost a collector the whole EVENT, not the label.
+_UNSENDABLE = re.compile("[\x00\ud800-\udfff]")
 
 
 def wire_display_name(value: object) -> str | None:
     """The resolver's ``display_name`` as it goes on the wire, or ``None``.
 
     Verbatim when usable. A non-string, a blank (only Unicode
-    ``White_Space``), an over-long value or one holding a lone surrogate is
-    dropped ALONE — the rest of the principal is
-    still emitted, because a bad label is no reason to lose a good id.
+    ``White_Space``), an over-long value, or one holding a lone surrogate or
+    U+0000 is dropped ALONE — the rest of the principal is still emitted,
+    because a bad label is no reason to lose a good id.
     """
     if not isinstance(value, str) or len(value) > DISPLAY_NAME_MAX_LEN:
         return None
     if all(ch in _WHITE_SPACE for ch in value):
         return None
-    # A lone surrogate cannot be encoded as UTF-8, so a collector parsing the
-    # body may refuse it — and a refusal costs the whole EVENT, not the label.
-    if _LONE_SURROGATE.search(value):
+    if _UNSENDABLE.search(value):
         return None
     return value
 

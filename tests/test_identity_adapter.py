@@ -709,6 +709,7 @@ def test_the_resolver_name_rides_every_mode(mode: str) -> None:
         pytest.param(7, id="non-string"),
         pytest.param("a" * 129, id="over-cap"),
         pytest.param("a\ud800", id="lone-surrogate"),
+        pytest.param("jane\x00", id="nul"),
     ],
 )
 def test_an_unusable_name_is_dropped_and_the_id_is_kept(name: Any) -> None:
