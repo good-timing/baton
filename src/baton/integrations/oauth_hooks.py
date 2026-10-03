@@ -74,9 +74,9 @@ def principal_from_oauth_email(context: SessionResolutionContext) -> Principal |
     """The token's ``email`` claim, as the WHOLE address and with no issuer.
 
     The local part alone is not an id — ``alice@acme.com`` and
-    ``alice@contoso.com`` are two people. It is returned as ``user_name``,
-    which is what the hook HANDS BACK and nothing more: nothing in the SDK
-    reads it and it is sent nowhere.
+    ``alice@contoso.com`` are two people. It is returned as ``display_name``
+    and SENT, in every mode — a vendor who hashes ids to hide who their users
+    are, and does not want ``alice`` on the wire, writes their own hook.
 
     **No issuer**, unlike the ``sub`` hook. A subject is unique only per
     issuer; an address is unique on its own. Folding ``iss`` in would give one
@@ -99,4 +99,4 @@ def principal_from_oauth_email(context: SessionResolutionContext) -> Principal |
     if not isinstance(email, str) or not email.strip():
         return None
     local, at, _domain = email.rpartition("@")
-    return Principal(principal_id=email, user_name=local if at and local else None)
+    return Principal(principal_id=email, display_name=local if at and local else None)

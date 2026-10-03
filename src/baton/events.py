@@ -293,14 +293,14 @@ class PrincipalWire(BaseModel):
 
     ⚠ **Not ``baton.Principal``, and the two are easy to confuse.** That one is
     what a vendor's ``resolve_principal`` hook HANDS US: a raw subject, an
-    optional issuer, optional PII that never leaves the payload tier. This one
+    optional issuer, an optional display name. This one
     is what we PUT ON THE WIRE after resolving and deriving it — the raw value
     is gone by the time this is built, and nothing here is ever the input to a
     hash. One is the question, this is the answer.
 
-    **All three members are REQUIRED, and that is the guarantee the object
-    exists to give.** A producer emits the whole thing or omits ``principal``
-    entirely; a partial object is malformed, not a degraded reading. So there
+    **The first three members are REQUIRED, and that is the guarantee the
+    object exists to give.** A producer emits all three or omits
+    ``principal`` entirely (``display_name`` rides only on a complete object); a partial object is malformed, not a degraded reading. So there
     is no conformant event carrying an ``id`` whose ``form`` a consumer has to
     guess, and none carrying a ``source`` for an identity nobody resolved. That
     binding is structural here precisely because its predecessor — a scheme
@@ -333,6 +333,12 @@ class PrincipalWire(BaseModel):
     form: str
     """WHAT it is: ``"hashed"`` or ``"raw"``. The privacy classification, and
     the only thing a consumer may classify on."""
+
+    display_name: str | None = None
+    """What a page shows for this principal, chosen by the vendor's resolver
+    and sent verbatim. Personal data whenever present — ``form`` classifies
+    ``id`` only. A label, never a key. ``None`` is sent as ``null``, which
+    SPEC §11.4 makes equivalent to absent, like every other optional member."""
 
     # ⚠ Deliberately `str`, not `Literal`, on BOTH members — the same decision
     # `transport_observed` records and the collector's ingest makes on the

@@ -67,14 +67,15 @@ class Principal:
     """A resolved principal, RAW (pre-hash) — a person, a service account or an
     organisation, whichever the resolver can honestly name.
 
-    Only ``principal_id`` reaches the wire. ``user_name`` / ``user_data`` are
-    what a hook HANDS BACK and nothing more: no code path reads them, so they
-    are sent nowhere. If one ever is, it is PII, and the scrubber already
-    force-redacts a field named ``user_name`` (``REDACT_FIELD_NAMES``).
+    ``principal_id`` and ``display_name`` reach the wire (SPEC §11.4).
+    ``display_name`` is what a page shows for this principal, sent VERBATIM:
+    the vendor chooses what is safe to show, and it is personal data whatever
+    the id's mode. ``user_data`` is what a hook hands back and nothing more —
+    no code path reads it.
     """
 
     principal_id: str
-    user_name: str | None = None
+    display_name: str | None = None
     user_data: dict[str, Any] | None = None
     issuer: str | None = None
     """The identity provider that minted the principal (the OIDC ``iss``

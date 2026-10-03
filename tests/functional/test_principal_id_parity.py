@@ -353,6 +353,7 @@ async def test_the_email_hook_reads_the_token_on_both_adapters_and_both_emit_pat
             "id": expected,
             "source": "asserted",
             "form": "hashed",
+            "display_name": "alice",
         }, path.name
         blob = path.read_text()
         # The tool's own argument is ``"alice"``, so the check is on the address.
@@ -412,6 +413,7 @@ async def test_the_hook_supplies_identity_where_no_token_exists(
             "id": expected,
             "source": "asserted",
             "form": "hashed",
+            "display_name": None,
         }, path.name
 
 
@@ -442,7 +444,12 @@ async def test_a_hook_that_ignores_the_token_is_never_overridden_by_it(
 
     for path in (official_path, standalone_path):
         got = _one_principal(path)
-        assert got == {"id": asserted, "source": "asserted", "form": "hashed"}, path.name
+        assert got == {
+            "id": asserted,
+            "source": "asserted",
+            "form": "hashed",
+            "display_name": None,
+        }, path.name
         assert got["id"] != from_token, f"{path.name} used the token despite a hook"
 
 
@@ -557,6 +564,7 @@ async def test_raw_mode_KEEPS_the_provenance_it_used_to_forfeit(
             "id": HOOK_SUB,
             "source": "asserted",
             "form": "raw",
+            "display_name": None,
         }, path.name
 
 
@@ -595,6 +603,7 @@ async def test_the_sub_hook_emits_the_SAME_digest_the_deleted_token_rung_did(
             "id": rung_digest,
             "source": "asserted",
             "form": "hashed",
+            "display_name": None,
         }, path.name
 
 
