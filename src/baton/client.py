@@ -91,7 +91,7 @@ import logging
 import os
 import threading
 import traceback
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -120,8 +120,12 @@ from baton.events import (
     ToolCallStartEvent,
     ToolCallStartPayload,
 )
-from baton.scrub import Scrubber, identity_scrub  # noqa: F401  identity_scrub kept exported
-from baton.sinks import HttpSink, Sink, safe_write
+from baton.scrub import (  # noqa: F401  identity_scrub kept exported
+    Scrubber,
+    identity_scrub,
+    scrub_or_none,
+)
+from baton.sinks import HttpSink, Sink, safe_emit, safe_write
 
 T = TypeVar("T")
 
@@ -154,7 +158,7 @@ _UNSET: Any = object()
 _WITHHELD: Any = object()
 
 
-def _end_result_fields(observed: Any) -> ResultFields:
+def _end_result_fields(observed: Any, scrubber: Callable[[Any], Any]) -> ResultFields:
     """What the library path's stored result becomes on ``tool_call_end``.
 
     THREE states, not two, which is the whole reason this is a function: a
@@ -164,12 +168,31 @@ def _end_result_fields(observed: Any) -> ResultFields:
     publish a fabricated "the tool returned nothing" about a body the vendor
     deliberately withheld — the defect SPEC §11.4 exists to prevent.
 
+    ⚠ **The scrub happens HERE, inside the caller's build thunk, and not in
+    ``observed()``.** This is the one scrubber application on this surface
+    that must NOT degrade to ``None`` on a throw, and the reason is the
+    docstring above: ``result=None`` is ALREADY a state with a meaning here
+    (``observed()`` was never called), so a failed scrub answering ``None``
+    publishes the same fabricated "the tool returned nothing". There is no
+    value that honestly says "we could not describe this". So the throw
+    escapes to ``safe_emit``/``_emit_sync``, which DROPS the event — the only
+    outcome that asserts nothing. Every other scrubber call on this surface
+    takes ``scrub_or_none`` instead, where ``None`` already means "field
+    unavailable".
+
+    ⚠ The withheld branch returns BEFORE the scrubber is reached, which is
+    what keeps SPEC §7's rule that a withheld result is never handed to a
+    scrubber. Moving the scrub here does not weaken it: ``observed()`` still
+    decides withholding, and a withheld body is never stored.
+
     Shared by ``Trace`` and ``AsyncTrace``, which are otherwise twins by
     copy.
     """
     if observed is _WITHHELD:
         return ResultFields(result_capture=WITHHELD)
-    return ResultFields(result=observed if observed is not _UNSET else None)
+    if observed is _UNSET:
+        return ResultFields(result=None)
+    return ResultFields(result=scrubber(observed))
 
 
 # =============================================================================
@@ -566,7 +589,21 @@ class Trace:
 
     def with_params(self, params: dict[str, Any]) -> Self:
         """Attach params to the start event before it ships."""
-        self._params = self._client._scrubber(params)
+        # scrub_or_none, not a bare call: this runs OUTSIDE any build thunk,
+        # so a throwing vendor scrubber here would propagate into the vendor's
+        # own code at the end of their ``with`` block (SPEC §11.2).
+        #
+        # ⚠ **The degradation is LOSSY and this is the honest reading of it.**
+        # ``_params`` is typed ``dict`` with ``{}`` as its default, so a
+        # failure lands on ``{}`` — which a consumer reads as "called with no
+        # arguments", not as "we could not scrub them". That is the same
+        # fabrication ``_end_result_fields`` refuses to publish, and it is
+        # accepted HERE for a reason that does not apply there: the only way
+        # to assert nothing would be to drop the START event, which orphans
+        # the end event and loses the whole call. Losing the arguments of a
+        # recorded call is the smaller loss.
+        scrubbed = scrub_or_none(self._client._scrubber, params, "params", logger)
+        self._params = scrubbed if scrubbed is not None else {}
         # Two ways this lands too late, and they need DIFFERENT sentences —
         # ``_start_seq`` is set only while an entry is in progress, so it
         # separates them. Saying one of these things in both places is how this
@@ -679,7 +716,10 @@ class Trace:
             self._observed_result = _WITHHELD
             self._observed_error = None
         else:
-            self._observed_result = self._client._scrubber(result)
+            # RAW, deliberately: the scrub runs in ``_end_result_fields``,
+            # inside the build thunk, so a throwing scrubber drops the event
+            # instead of publishing ``result=None`` — see that function.
+            self._observed_result = result
             self._observed_error = None
         return self
 
@@ -703,39 +743,47 @@ class Trace:
         self._observed_result = _UNSET
         self._observed_error = None
         self._observed_warned = False
-        start_event = ToolCallStartEvent(
-            tenant_id=self._client._tenant_id,
-            vendor_id=self._client._vendor_id,
-            session_id=self._session_id,
-            sequence_number=self._start_seq,
-            captured_at=datetime.now(UTC),
-            consent_token=self._consent_token,
-            agent_runtime=self._client._agent_runtime,
-            call_id=self._call_id,
-            payload=ToolCallStartPayload(
-                tool_name=self._tool_name,
-                params=self._params,
-            ),
-        )
-        self._client._emit_sync(start_event)
-        # Proactive annotation if intent/expected/workflow supplied.
-        if self._intent or self._expected_outcome or self._workflow:
-            ann_seq = self._client._next_seq(self._session_id)
-            ann_event = AnnotationEvent(
+        # Read into a LOCAL before the thunk. ``_start_seq`` is ``int | None``
+        # and ``__enter__`` has just set it; a closure cannot carry that
+        # narrowing, and a thunk re-reading the attribute would see whatever
+        # the field holds when the build runs rather than when it was taken.
+        start_seq = self._start_seq
+        assert start_seq is not None  # set two lines up, in __enter__
+        self._client._emit_sync(
+            lambda: ToolCallStartEvent(
                 tenant_id=self._client._tenant_id,
                 vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
-                sequence_number=ann_seq,
+                sequence_number=start_seq,
                 captured_at=datetime.now(UTC),
                 consent_token=self._consent_token,
                 agent_runtime=self._client._agent_runtime,
-                payload=AnnotationPayload(
-                    intent=self._intent,
-                    expected_outcome=self._expected_outcome,
-                    workflow=self._workflow,
+                call_id=self._call_id,
+                payload=ToolCallStartPayload(
+                    tool_name=self._tool_name,
+                    params=self._params,
                 ),
             )
-            self._client._emit_sync(ann_event)
+        )
+        # Proactive annotation if intent/expected/workflow supplied.
+        if self._intent or self._expected_outcome or self._workflow:
+            ann_seq = self._client._next_seq(self._session_id)
+            self._client._emit_sync(
+                lambda: AnnotationEvent(
+                    tenant_id=self._client._tenant_id,
+                    vendor_id=self._client._vendor_id,
+                    session_id=self._session_id,
+                    sequence_number=ann_seq,
+                    captured_at=datetime.now(UTC),
+                    consent_token=self._consent_token,
+                    agent_runtime=self._client._agent_runtime,
+                    payload=AnnotationPayload(
+                        intent=self._intent,
+                        expected_outcome=self._expected_outcome,
+                        workflow=self._workflow,
+                    ),
+                )
+            )
         return self
 
     def __exit__(
@@ -756,23 +804,26 @@ class Trace:
         end_seq = self._client._next_seq(self._session_id)
 
         if exc is not None:
-            error_event = ToolCallErrorEvent(
-                tenant_id=self._client._tenant_id,
-                vendor_id=self._client._vendor_id,
-                session_id=self._session_id,
-                sequence_number=end_seq,
-                captured_at=datetime.now(UTC),
-                consent_token=self._consent_token,
-                agent_runtime=self._client._agent_runtime,
-                call_id=self._call_id,
-                payload=ToolCallErrorPayload(
-                    tool_name=self._tool_name,
-                    error_type=exc.__class__.__name__,
-                    error_body=self._client._scrubber(str(exc) or "".join(traceback.format_tb(tb))),
-                    duration_ms=duration_ms,
-                ),
+            self._client._emit_sync(
+                lambda: ToolCallErrorEvent(
+                    tenant_id=self._client._tenant_id,
+                    vendor_id=self._client._vendor_id,
+                    session_id=self._session_id,
+                    sequence_number=end_seq,
+                    captured_at=datetime.now(UTC),
+                    consent_token=self._consent_token,
+                    agent_runtime=self._client._agent_runtime,
+                    call_id=self._call_id,
+                    payload=ToolCallErrorPayload(
+                        tool_name=self._tool_name,
+                        error_type=exc.__class__.__name__,
+                        error_body=self._client._scrubber(
+                            str(exc) or "".join(traceback.format_tb(tb))
+                        ),
+                        duration_ms=duration_ms,
+                    ),
+                )
             )
-            self._client._emit_sync(error_event)
             return  # re-raise
 
         if self._observed_result is _UNSET and self._observed_error is None:
@@ -788,42 +839,49 @@ class Trace:
         if self._observed_error is not None:
             # observed() was called with error_type/body — emit tool_call_error
             error_type, error_body = self._observed_error
-            error_event = ToolCallErrorEvent(
-                tenant_id=self._client._tenant_id,
-                vendor_id=self._client._vendor_id,
-                session_id=self._session_id,
-                sequence_number=end_seq,
-                captured_at=datetime.now(UTC),
-                consent_token=self._consent_token,
-                agent_runtime=self._client._agent_runtime,
-                call_id=self._call_id,
-                payload=ToolCallErrorPayload(
-                    tool_name=self._tool_name,
-                    error_type=error_type,
-                    error_body=self._client._scrubber(error_body),
-                    duration_ms=duration_ms,
-                ),
+            self._client._emit_sync(
+                lambda: ToolCallErrorEvent(
+                    tenant_id=self._client._tenant_id,
+                    vendor_id=self._client._vendor_id,
+                    session_id=self._session_id,
+                    sequence_number=end_seq,
+                    captured_at=datetime.now(UTC),
+                    consent_token=self._consent_token,
+                    agent_runtime=self._client._agent_runtime,
+                    call_id=self._call_id,
+                    payload=ToolCallErrorPayload(
+                        tool_name=self._tool_name,
+                        error_type=error_type,
+                        error_body=self._client._scrubber(error_body),
+                        duration_ms=duration_ms,
+                    ),
+                )
             )
-            self._client._emit_sync(error_event)
         else:
-            end_fields = _end_result_fields(self._observed_result)
-            end_event = ToolCallEndEvent(
-                tenant_id=self._client._tenant_id,
-                vendor_id=self._client._vendor_id,
-                session_id=self._session_id,
-                sequence_number=end_seq,
-                captured_at=datetime.now(UTC),
-                consent_token=self._consent_token,
-                agent_runtime=self._client._agent_runtime,
-                call_id=self._call_id,
-                payload=ToolCallEndPayload(
-                    tool_name=self._tool_name,
-                    duration_ms=duration_ms,
-                    result=end_fields.result,
-                    result_capture=end_fields.result_capture,
-                ),
-            )
-            self._client._emit_sync(end_event)
+            # A named builder, not a lambda: the end leg needs ONE call to
+            # ``_end_result_fields`` (it runs the scrubber, so calling it per
+            # member would scrub twice) and a lambda has nowhere to put the
+            # local. Everything inside still runs under the guard.
+            def _build_end() -> ToolCallEndEvent:
+                end_fields = _end_result_fields(self._observed_result, self._client._scrubber)
+                return ToolCallEndEvent(
+                    tenant_id=self._client._tenant_id,
+                    vendor_id=self._client._vendor_id,
+                    session_id=self._session_id,
+                    sequence_number=end_seq,
+                    captured_at=datetime.now(UTC),
+                    consent_token=self._consent_token,
+                    agent_runtime=self._client._agent_runtime,
+                    call_id=self._call_id,
+                    payload=ToolCallEndPayload(
+                        tool_name=self._tool_name,
+                        duration_ms=duration_ms,
+                        result=end_fields.result,
+                        result_capture=end_fields.result_capture,
+                    ),
+                )
+
+            self._client._emit_sync(_build_end)
 
     def _compute_duration_ms(self) -> int | None:
         if self._call_started_at is None:
@@ -927,7 +985,10 @@ class Client:
             session_id=session_id,
         )
         if params is not None:
-            trace._params = self._scrubber(params)
+            # See ``Trace.with_params`` — same statement, same reason, and the
+            # same lossy ``{}`` on failure.
+            scrubbed = scrub_or_none(self._scrubber, params, "params", logger)
+            trace._params = scrubbed if scrubbed is not None else {}
         return trace
 
     def annotate(
@@ -956,24 +1017,25 @@ class Client:
         resolved_consent = consent_token or self._consent_token
         seq = self._next_seq(resolved_session)
         signal_type_str = _resolve_signal_type(signal_type)
-        event = AnnotationEvent(
-            tenant_id=self._tenant_id,
-            vendor_id=self._vendor_id,
-            session_id=resolved_session,
-            sequence_number=seq,
-            captured_at=datetime.now(UTC),
-            consent_token=resolved_consent,
-            agent_runtime=self._agent_runtime,
-            payload=AnnotationPayload(
-                intent=intent,
-                expected_outcome=expected_outcome,
-                signal_type=signal_type_str,
-                workflow=workflow,
-                suggested_improvement=suggested_improvement,
-                context=self._scrubber(context) if context else None,
-            ),
+        self._emit_sync(
+            lambda: AnnotationEvent(
+                tenant_id=self._tenant_id,
+                vendor_id=self._vendor_id,
+                session_id=resolved_session,
+                sequence_number=seq,
+                captured_at=datetime.now(UTC),
+                consent_token=resolved_consent,
+                agent_runtime=self._agent_runtime,
+                payload=AnnotationPayload(
+                    intent=intent,
+                    expected_outcome=expected_outcome,
+                    signal_type=signal_type_str,
+                    workflow=workflow,
+                    suggested_improvement=suggested_improvement,
+                    context=self._scrubber(context) if context else None,
+                ),
+            )
         )
-        self._emit_sync(event)
 
     def flush(self) -> None:
         """Block until pending events drain."""
@@ -1014,7 +1076,33 @@ class Client:
     # Internal — used by Trace
     # =========================================================================
 
-    def _emit_sync(self, event: Any) -> None:
+    def _emit_sync(self, build: Callable[[], Any]) -> None:
+        """Fail-open event CONSTRUCTION *and* write, for the sync door.
+
+        Takes a BUILDER, not an event: Python evaluates an argument before
+        the call, so an event passed in has already been constructed outside
+        any guard — the vendor's scrubber, ``model_validate``, serialisation
+        of an awkward value. A throw there propagates into the vendor's own
+        code at the end of their ``with client.trace(...)`` block, which is
+        what SPEC §11.2 forbids.
+
+        ⚠ **Not ``sinks.safe_emit``, and the difference is not stylistic.**
+        That helper is ``async``; this door bridges to a worker thread
+        through ``self._bridge.run(...)``. Handing the thunk to it would run
+        the VENDOR'S SCRUBBER on the bridge thread instead of the caller's,
+        and read ``exc``/``tb`` across that boundary. The guard is the same
+        shape, kept synchronous so the scrubber stays where the vendor put
+        it. ``AsyncClient._emit`` has no such constraint and uses
+        ``safe_emit`` directly.
+
+        Catches ``Exception``, NOT ``BaseException`` — same rule as
+        ``safe_write``.
+        """
+        try:
+            event = build()
+        except Exception:
+            logger.exception("baton: event construction failed; event dropped, trace continues")
+            return
         # safe_write, not self._sink.write directly — a raise here (closed
         # sink, an overflow warning promoted to an exception, etc.) would
         # otherwise propagate into the vendor's own code inside the
@@ -1089,7 +1177,21 @@ class AsyncTrace:
         return self._session_id
 
     def with_params(self, params: dict[str, Any]) -> Self:
-        self._params = self._client._scrubber(params)
+        # scrub_or_none, not a bare call: this runs OUTSIDE any build thunk,
+        # so a throwing vendor scrubber here would propagate into the vendor's
+        # own code at the end of their ``with`` block (SPEC §11.2).
+        #
+        # ⚠ **The degradation is LOSSY and this is the honest reading of it.**
+        # ``_params`` is typed ``dict`` with ``{}`` as its default, so a
+        # failure lands on ``{}`` — which a consumer reads as "called with no
+        # arguments", not as "we could not scrub them". That is the same
+        # fabrication ``_end_result_fields`` refuses to publish, and it is
+        # accepted HERE for a reason that does not apply there: the only way
+        # to assert nothing would be to drop the START event, which orphans
+        # the end event and loses the whole call. Losing the arguments of a
+        # recorded call is the smaller loss.
+        scrubbed = scrub_or_none(self._client._scrubber, params, "params", logger)
+        self._params = scrubbed if scrubbed is not None else {}
         # Two ways this lands too late, and they need DIFFERENT sentences —
         # ``_start_seq`` is set only while an entry is in progress, so it
         # separates them. Saying one of these things in both places is how this
@@ -1179,7 +1281,10 @@ class AsyncTrace:
             self._observed_result = _WITHHELD
             self._observed_error = None
         else:
-            self._observed_result = self._client._scrubber(result)
+            # RAW, deliberately: the scrub runs in ``_end_result_fields``,
+            # inside the build thunk, so a throwing scrubber drops the event
+            # instead of publishing ``result=None`` — see that function.
+            self._observed_result = result
             self._observed_error = None
         return self
 
@@ -1203,38 +1308,44 @@ class AsyncTrace:
         self._observed_result = _UNSET
         self._observed_error = None
         self._observed_warned = False
-        start_event = ToolCallStartEvent(
-            tenant_id=self._client._tenant_id,
-            vendor_id=self._client._vendor_id,
-            session_id=self._session_id,
-            sequence_number=self._start_seq,
-            captured_at=datetime.now(UTC),
-            consent_token=self._consent_token,
-            agent_runtime=self._client._agent_runtime,
-            call_id=self._call_id,
-            payload=ToolCallStartPayload(
-                tool_name=self._tool_name,
-                params=self._params,
-            ),
-        )
-        await self._client._emit(start_event)
-        if self._intent or self._expected_outcome or self._workflow:
-            ann_seq = self._client._next_seq(self._session_id)
-            ann_event = AnnotationEvent(
+        # See ``Trace.__enter__`` for why this is a local, not an attribute
+        # read inside the thunk.
+        start_seq = self._start_seq
+        assert start_seq is not None  # set two lines up, in __aenter__
+        await self._client._emit(
+            lambda: ToolCallStartEvent(
                 tenant_id=self._client._tenant_id,
                 vendor_id=self._client._vendor_id,
                 session_id=self._session_id,
-                sequence_number=ann_seq,
+                sequence_number=start_seq,
                 captured_at=datetime.now(UTC),
                 consent_token=self._consent_token,
                 agent_runtime=self._client._agent_runtime,
-                payload=AnnotationPayload(
-                    intent=self._intent,
-                    expected_outcome=self._expected_outcome,
-                    workflow=self._workflow,
+                call_id=self._call_id,
+                payload=ToolCallStartPayload(
+                    tool_name=self._tool_name,
+                    params=self._params,
                 ),
             )
-            await self._client._emit(ann_event)
+        )
+        if self._intent or self._expected_outcome or self._workflow:
+            ann_seq = self._client._next_seq(self._session_id)
+            await self._client._emit(
+                lambda: AnnotationEvent(
+                    tenant_id=self._client._tenant_id,
+                    vendor_id=self._client._vendor_id,
+                    session_id=self._session_id,
+                    sequence_number=ann_seq,
+                    captured_at=datetime.now(UTC),
+                    consent_token=self._consent_token,
+                    agent_runtime=self._client._agent_runtime,
+                    payload=AnnotationPayload(
+                        intent=self._intent,
+                        expected_outcome=self._expected_outcome,
+                        workflow=self._workflow,
+                    ),
+                )
+            )
         return self
 
     async def __aexit__(
@@ -1259,23 +1370,26 @@ class AsyncTrace:
         end_seq = self._client._next_seq(self._session_id)
 
         if exc is not None:
-            error_event = ToolCallErrorEvent(
-                tenant_id=self._client._tenant_id,
-                vendor_id=self._client._vendor_id,
-                session_id=self._session_id,
-                sequence_number=end_seq,
-                captured_at=datetime.now(UTC),
-                consent_token=self._consent_token,
-                agent_runtime=self._client._agent_runtime,
-                call_id=self._call_id,
-                payload=ToolCallErrorPayload(
-                    tool_name=self._tool_name,
-                    error_type=exc.__class__.__name__,
-                    error_body=self._client._scrubber(str(exc) or "".join(traceback.format_tb(tb))),
-                    duration_ms=duration_ms,
-                ),
+            await self._client._emit(
+                lambda: ToolCallErrorEvent(
+                    tenant_id=self._client._tenant_id,
+                    vendor_id=self._client._vendor_id,
+                    session_id=self._session_id,
+                    sequence_number=end_seq,
+                    captured_at=datetime.now(UTC),
+                    consent_token=self._consent_token,
+                    agent_runtime=self._client._agent_runtime,
+                    call_id=self._call_id,
+                    payload=ToolCallErrorPayload(
+                        tool_name=self._tool_name,
+                        error_type=exc.__class__.__name__,
+                        error_body=self._client._scrubber(
+                            str(exc) or "".join(traceback.format_tb(tb))
+                        ),
+                        duration_ms=duration_ms,
+                    ),
+                )
             )
-            await self._client._emit(error_event)
             return
 
         if self._observed_result is _UNSET and self._observed_error is None:
@@ -1289,42 +1403,46 @@ class AsyncTrace:
 
         if self._observed_error is not None:
             error_type, error_body = self._observed_error
-            error_event = ToolCallErrorEvent(
-                tenant_id=self._client._tenant_id,
-                vendor_id=self._client._vendor_id,
-                session_id=self._session_id,
-                sequence_number=end_seq,
-                captured_at=datetime.now(UTC),
-                consent_token=self._consent_token,
-                agent_runtime=self._client._agent_runtime,
-                call_id=self._call_id,
-                payload=ToolCallErrorPayload(
-                    tool_name=self._tool_name,
-                    error_type=error_type,
-                    error_body=self._client._scrubber(error_body),
-                    duration_ms=duration_ms,
-                ),
+            await self._client._emit(
+                lambda: ToolCallErrorEvent(
+                    tenant_id=self._client._tenant_id,
+                    vendor_id=self._client._vendor_id,
+                    session_id=self._session_id,
+                    sequence_number=end_seq,
+                    captured_at=datetime.now(UTC),
+                    consent_token=self._consent_token,
+                    agent_runtime=self._client._agent_runtime,
+                    call_id=self._call_id,
+                    payload=ToolCallErrorPayload(
+                        tool_name=self._tool_name,
+                        error_type=error_type,
+                        error_body=self._client._scrubber(error_body),
+                        duration_ms=duration_ms,
+                    ),
+                )
             )
-            await self._client._emit(error_event)
         else:
-            end_fields = _end_result_fields(self._observed_result)
-            end_event = ToolCallEndEvent(
-                tenant_id=self._client._tenant_id,
-                vendor_id=self._client._vendor_id,
-                session_id=self._session_id,
-                sequence_number=end_seq,
-                captured_at=datetime.now(UTC),
-                consent_token=self._consent_token,
-                agent_runtime=self._client._agent_runtime,
-                call_id=self._call_id,
-                payload=ToolCallEndPayload(
-                    tool_name=self._tool_name,
-                    duration_ms=duration_ms,
-                    result=end_fields.result,
-                    result_capture=end_fields.result_capture,
-                ),
-            )
-            await self._client._emit(end_event)
+            # See ``Trace.__exit__`` for why this is a named builder.
+            def _build_end() -> ToolCallEndEvent:
+                end_fields = _end_result_fields(self._observed_result, self._client._scrubber)
+                return ToolCallEndEvent(
+                    tenant_id=self._client._tenant_id,
+                    vendor_id=self._client._vendor_id,
+                    session_id=self._session_id,
+                    sequence_number=end_seq,
+                    captured_at=datetime.now(UTC),
+                    consent_token=self._consent_token,
+                    agent_runtime=self._client._agent_runtime,
+                    call_id=self._call_id,
+                    payload=ToolCallEndPayload(
+                        tool_name=self._tool_name,
+                        duration_ms=duration_ms,
+                        result=end_fields.result,
+                        result_capture=end_fields.result_capture,
+                    ),
+                )
+
+            await self._client._emit(_build_end)
 
 
 # =============================================================================
@@ -1402,7 +1520,10 @@ class AsyncClient:
             session_id=session_id,
         )
         if params is not None:
-            trace._params = self._scrubber(params)
+            # See ``Trace.with_params`` — same statement, same reason, and the
+            # same lossy ``{}`` on failure.
+            scrubbed = scrub_or_none(self._scrubber, params, "params", logger)
+            trace._params = scrubbed if scrubbed is not None else {}
         return trace
 
     async def annotate(
@@ -1423,24 +1544,25 @@ class AsyncClient:
         resolved_consent = consent_token or self._consent_token
         seq = self._next_seq(resolved_session)
         signal_type_str = _resolve_signal_type(signal_type)
-        event = AnnotationEvent(
-            tenant_id=self._tenant_id,
-            vendor_id=self._vendor_id,
-            session_id=resolved_session,
-            sequence_number=seq,
-            captured_at=datetime.now(UTC),
-            consent_token=resolved_consent,
-            agent_runtime=self._agent_runtime,
-            payload=AnnotationPayload(
-                intent=intent,
-                expected_outcome=expected_outcome,
-                signal_type=signal_type_str,
-                workflow=workflow,
-                suggested_improvement=suggested_improvement,
-                context=self._scrubber(context) if context else None,
-            ),
+        await self._emit(
+            lambda: AnnotationEvent(
+                tenant_id=self._tenant_id,
+                vendor_id=self._vendor_id,
+                session_id=resolved_session,
+                sequence_number=seq,
+                captured_at=datetime.now(UTC),
+                consent_token=resolved_consent,
+                agent_runtime=self._agent_runtime,
+                payload=AnnotationPayload(
+                    intent=intent,
+                    expected_outcome=expected_outcome,
+                    signal_type=signal_type_str,
+                    workflow=workflow,
+                    suggested_improvement=suggested_improvement,
+                    context=self._scrubber(context) if context else None,
+                ),
+            )
         )
-        await self._emit(event)
 
     async def flush(self) -> None:
         if self._closed:
@@ -1470,7 +1592,7 @@ class AsyncClient:
     # Internal
     # =========================================================================
 
-    async def _emit(self, event: Any) -> None:
+    async def _emit(self, build: Callable[[], Any]) -> None:
         if self._disabled:
             # ⚠ **The async door's ONLY emission guard.** The sync twin's is
             # ``self._bridge is None``, which reads as a guard about threads
@@ -1481,8 +1603,10 @@ class AsyncClient:
             # Caught by the test that hands a disabled client a WORKING sink,
             # which is the only kind of test that could have caught it.
             return
-        # safe_write — see Client._emit_sync for why.
-        await safe_write(self._sink, event, logger)
+        # safe_emit, not safe_write: it guards CONSTRUCTION as well as the
+        # write. See ``Client._emit_sync`` for why construction needs a guard
+        # at all, and why the sync twin cannot use this helper.
+        await safe_emit(self._sink, build, logger)
 
     def _next_seq(self, session_id: str) -> int:
         current = self._seq_counters.get(session_id, 0)
