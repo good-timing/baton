@@ -451,7 +451,12 @@ class TestPrincipalObject:
             payload=ToolCallStartPayload(tool_name="lookup"),
         )
         dumped = event.model_dump(mode="json")
-        assert dumped["principal"] == {"id": "h1:9f2c", "source": "attested", "form": "hashed"}
+        assert dumped["principal"] == {
+            "id": "h1:9f2c",
+            "source": "attested",
+            "form": "hashed",
+            "display_name": None,
+        }
 
     def test_the_retired_flat_spelling_is_gone_from_the_envelope(self) -> None:
         """`principal_id` is not accepted, not emitted, and not a silent extra.

@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer
+from pydantic import BaseModel, ConfigDict, Field
 
 from baton import __version__
 from baton._uuid import uuid7
@@ -299,8 +299,8 @@ class PrincipalWire(BaseModel):
     hash. One is the question, this is the answer.
 
     **The first three members are REQUIRED, and that is the guarantee the
-    object exists to give.** A producer emits all three or omits ``principal``
-    entirely (``display_name`` rides only on a complete object); a partial object is malformed, not a degraded reading. So there
+    object exists to give.** A producer emits all three or omits
+    ``principal`` entirely (``display_name`` rides only on a complete object); a partial object is malformed, not a degraded reading. So there
     is no conformant event carrying an ``id`` whose ``form`` a consumer has to
     guess, and none carrying a ``source`` for an identity nobody resolved. That
     binding is structural here precisely because its predecessor — a scheme
@@ -337,21 +337,8 @@ class PrincipalWire(BaseModel):
     display_name: str | None = None
     """What a page shows for this principal, chosen by the vendor's resolver
     and sent verbatim. Personal data whenever present — ``form`` classifies
-    ``id`` only. A label, never a key. ``None`` is OMITTED from the wire by
-    ``_omit_absent_name`` below — not sent as ``null``."""
-
-    @model_serializer(mode="wrap")
-    def _omit_absent_name(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        # A nameless principal serializes exactly as it did before the member
-        # existed. SPEC allows ``null``, but the collector types this object
-        # ``extra="forbid"``: sending ``null`` would make every principal — not
-        # only named ones — a rejected event against a collector that predates
-        # the member. ⚠ This hides the fields from a SERIALIZATION-mode JSON
-        # schema; baton-spec's generator uses validation mode, which is intact.
-        data: dict[str, Any] = handler(self)
-        if data.get("display_name") is None:
-            data.pop("display_name", None)
-        return data
+    ``id`` only. A label, never a key. ``None`` is sent as ``null``, which
+    SPEC §11.4 makes equivalent to absent, like every other optional member."""
 
     # ⚠ Deliberately `str`, not `Literal`, on BOTH members — the same decision
     # `transport_observed` records and the collector's ingest makes on the

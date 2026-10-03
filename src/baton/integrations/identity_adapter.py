@@ -24,6 +24,7 @@ and this is who the vendor says the person is. They answer different questions.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from types import MappingProxyType
@@ -99,11 +100,15 @@ _WHITE_SPACE = frozenset(
 )
 
 
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
 def wire_display_name(value: object) -> str | None:
     """The resolver's ``display_name`` as it goes on the wire, or ``None``.
 
-    Verbatim when usable. A non-string, a blank (only Unicode ``White_Space``),
-    an over-long value or one holding a lone surrogate is dropped ALONE — the rest of the principal is
+    Verbatim when usable. A non-string, a blank (only Unicode
+    ``White_Space``), an over-long value or one holding a lone surrogate is
+    dropped ALONE — the rest of the principal is
     still emitted, because a bad label is no reason to lose a good id.
     """
     if not isinstance(value, str) or len(value) > DISPLAY_NAME_MAX_LEN:
@@ -112,7 +117,7 @@ def wire_display_name(value: object) -> str | None:
         return None
     # A lone surrogate cannot be encoded as UTF-8, so a collector parsing the
     # body may refuse it — and a refusal costs the whole EVENT, not the label.
-    if any("\ud800" <= ch <= "\udfff" for ch in value):
+    if _LONE_SURROGATE.search(value):
         return None
     return value
 

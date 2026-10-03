@@ -39,11 +39,13 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   shows for the principal. Your hook sets `Principal.display_name` (renamed
   from `user_name`, which was never sent) and it is sent VERBATIM in every
   mode, hashed included, and never through your scrubber: you choose what is
-  safe to show. A non-string, blank (only Unicode whitespace) or over-128-
-  character name is dropped on its own; the id still ships. ⚠ **The email
+  safe to show. A non-string, blank (only Unicode whitespace), over-128-
+  character or lone-surrogate name is dropped on its own; the id still ships. ⚠ **The email
   hook sends the local part** — `alice` for `alice@acme.com` — even when ids
   are hashed; write your own hook if you don't want that. ⚠ Needs a collector
-  that accepts the member: a strict one rejects the event.
+  that accepts the member: every principal now carries it (`null` when there
+  is no name), so a strict collector that predates it rejects every event
+  with a principal.
 - **`SessionResolutionContext.claims`** — the verified token's claims, or `None`
   (stdio, unauthenticated HTTP, `mcp < 1.27`), extracted the same way on both
   adapters so a hook never touches the adapter-specific token object. Kept out

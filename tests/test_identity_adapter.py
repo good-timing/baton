@@ -724,6 +724,7 @@ def test_an_unusable_name_is_dropped_and_the_id_is_kept(name: Any) -> None:
         pytest.param("\x1c", id="info-separator"),
         pytest.param("\ufeff", id="bom"),
         pytest.param("a" * 128, id="at-cap"),
+        pytest.param("\U0001f600" * 128, id="astral-at-cap"),
     ],
 )
 def test_a_usable_name_is_sent_verbatim(name: str) -> None:
