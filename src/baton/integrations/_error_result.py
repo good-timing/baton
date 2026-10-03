@@ -1,4 +1,9 @@
-"""Detecting MCP's returned error flag, shared by both adapters.
+"""Detecting MCP's returned error flag, and projecting the RETURN shape.
+
+Two jobs since the capture-mode work: the flag detection both adapters share,
+and ``returned_error_fields`` — the RETURN-shape projection that applies
+``result_capture`` to ``error_body`` and ``result``. ``baton._result_capture``
+points here for the second one.
 
 SPEC §11.4.3. **A failed MCP tool call is a 200.** The protocol files it as a
 successful JSON-RPC response whose ``CallToolResult`` body sets the error flag;
@@ -28,11 +33,13 @@ from typing import Any, NamedTuple
 from baton._result_capture import WITHHELD, withholding
 
 #: ``error_type`` for a returned error, as opposed to a raised exception whose
-#: class name is used. Matches what ``baton-extmcp`` has emitted since 0.1.0 —
-#: sensor parity is the point of the change that introduced this module.
+#: class name is used. Matches ``baton-extmcp`` — sensor parity is the point of
+#: the change that introduced this module. ⚠ This read "has emitted since 0.1.0"
+#: until 2026-10-02; that is unsupported, the ``isError`` read arrives there in
+#: ``cc75dee`` (2026-08-05), after its only tag. Same correction as SPEC §13.
 TOOL_ERROR_TYPE = "tool_error"
 
-# ⚠ No cap here, deliberately. Both callers truncate AFTER scrubbing, matching
+# ⚠ No cap here, deliberately. The CALLER truncates AFTER scrubbing, matching
 # the raise path's `str(scrubber(str(exc)))[:2000]`. Cutting inside this helper
 # would put the truncation BEFORE the scrubber for one of the two failure
 # shapes and after it for the other — and a PII value straddling the boundary

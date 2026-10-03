@@ -360,8 +360,13 @@ def test_the_RETURN_shape_withholds_BOTH_members(tmp_path: Path) -> None:
     # `model_dump`. SPEC §11.4.3 names that explicitly — "baton-sdk's envelope
     # serializer answers None when an envelope cannot be made JSON-safe, so a
     # RETURN-shape failure can legitimately carry result: null" — which is also
-    # why `result` is not a discriminator. The mode's effect on this member is
-    # covered end-to-end by the live-server tests above.
+    # why `result` is not a discriminator. ⚠ The mode's effect on this member
+    # is NOT covered by the live-server tests above — this file has no
+    # RETURN-shape live-server test, for the reason its own docstring gives.
+    # It is `test_returned_error_keeps_the_body`, in BOTH
+    # `tests/integrations/official/test_iserror_reclassify.py` and its
+    # standalone twin, that a mutation check shows reddens when the body is
+    # dropped under `"full"`.
     assert kept.result is None
 
 

@@ -60,11 +60,26 @@ def withholding(mode: str) -> bool:
 def validate_mode(mode: str, *, field: str) -> ResultCaptureMode:
     """Refuse an unregistered mode, naming the field the caller set.
 
+    Refused HERE rather than at emit: an unregistered value reads as "not off"
+    to every downstream test, so a typo captures everything and nothing says
+    so. A door that throws is the only place the vendor finds out.
+
     Called at the two DOORS a vendor can reach — `VendorConfig` (via
     `resolve_config`) and `Client` / `AsyncClient` (via
     `_resolve_client_config`) — and nowhere else. The adapter-internal seams
     that take the mode onward are not re-checked, matching the two sibling
-    modes; mypy-strict over `src/baton` is what covers the chain between.
+    modes.
+
+    ⚠ **What holds the chain between is that those seams are PRIVATE, not the
+    type checker.** `ResultCaptureMode` is a bare `str` alias (line 37), so
+    mypy accepts any string in the slot — including a value meant for
+    `intent_param_mode` or `principal_id_mode`, which are also `str`. An
+    unregistered value reaching a seam directly reads as "not off" and captures
+    everything, silently. `BatonMiddleware` and `install_wraps` are exported
+    from no public package, which is why that is reachable only from this
+    repo's own tests today. Narrowing the alias to a `Literal` would make the
+    checker carry it (see this module's ⚠ above); until then the invariant is
+    the privacy of the seams and should be read as such.
 
     ⚠ It is the ENABLED resolver that calls this, never the disabled one.
     `baton._optout` promises a disabled Baton never throws, and both doors

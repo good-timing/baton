@@ -20,19 +20,17 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+from tests.functional.conftest import SPEC_ROOT
 from tests.functional.test_cross_path_envelope import _read_events, _run_mcp_path
+
+# ⚠ `SPEC_ROOT` and `event_schema` are imported/injected from `conftest.py`,
+# deliberately NOT copied here. A module-level fixture SHADOWS the conftest
+# one, so the private copy this file used to carry meant a change to the
+# submodule path or the skip rule silently missed these two tests — and the
+# failure mode is a `pytest.skip`, the very thing the fixture makes explicit.
 
 pytestmark = pytest.mark.functional
 
-SPEC_ROOT = Path(__file__).resolve().parents[2] / "baton-spec"
-
-
-@pytest.fixture(scope="module")
-def event_schema() -> dict:
-    schema_path = SPEC_ROOT / "events.schema.json"
-    if not schema_path.exists():
-        pytest.skip(f"baton-spec submodule not checked out ({schema_path} missing)")
-    return json.loads(schema_path.read_text())
 
 
 async def test_mcp_path_events_conform_to_shared_schema(event_schema: dict, tmp_path: Path) -> None:

@@ -48,5 +48,7 @@ def read_events(path: Path | str) -> list[dict[str, Any]]:
     it. New tests call this; the existing copies are left alone rather than
     swept in a change that is about something else.
     """
-    with open(path) as f:
+    # utf-8 explicitly: `FileSink` WRITES utf-8 (`sinks.py`), so a locale
+    # default of anything else mis-decodes a non-ASCII payload on read.
+    with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
