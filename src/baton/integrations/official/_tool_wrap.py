@@ -1053,26 +1053,24 @@ def _make_emitters(
         _seq_n = await _seq(session_id)
         await safe_emit(
             sink,
-            lambda: (
-                AnnotationEvent(
-                    tenant_id=tenant_id,
-                    vendor_id=vendor_id,
-                    consent_token=consent_token,
-                    session_id=session_id,
-                    sequence_number=_seq_n,
-                    captured_at=datetime.now(UTC),
-                    agent_runtime=agent_runtime,
-                    principal=principal,
-                    transport_observed=transport_observed,
-                    runtime_meta=runtime_meta,
-                    payload=AnnotationPayload(
-                        intent=intent,
-                        expected_outcome=expected_outcome,
-                        workflow=workflow,
-                        intent_source=INTENT_SOURCE_PARAM,
-                        tool_name=name,
-                    ),
-                )
+            lambda: AnnotationEvent(
+                tenant_id=tenant_id,
+                vendor_id=vendor_id,
+                consent_token=consent_token,
+                session_id=session_id,
+                sequence_number=_seq_n,
+                captured_at=datetime.now(UTC),
+                agent_runtime=agent_runtime,
+                principal=principal,
+                transport_observed=transport_observed,
+                runtime_meta=runtime_meta,
+                payload=AnnotationPayload(
+                    intent=intent,
+                    expected_outcome=expected_outcome,
+                    workflow=workflow,
+                    intent_source=INTENT_SOURCE_PARAM,
+                    tool_name=name,
+                ),
             ),
             logger,
         )
@@ -1097,28 +1095,26 @@ def _make_emitters(
         _seq_n = await _seq(session_id)
         await safe_emit(
             sink,
-            lambda: (
-                ToolCallStartEvent(
-                    tenant_id=tenant_id,
-                    vendor_id=vendor_id,
-                    consent_token=consent_token,
-                    session_id=session_id,
-                    sequence_number=_seq_n,
-                    captured_at=datetime.now(UTC),
-                    agent_runtime=agent_runtime,
-                    principal=principal,
-                    transport_observed=transport_observed,
-                    call_id=call_id,
-                    runtime_meta=runtime_meta,
-                    payload=ToolCallStartPayload(
-                        tool_name=name,
-                        params=params,
-                        call_intent=call_intent,
-                        call_expected=call_expected,
-                        call_workflow=call_workflow,
-                        intent_source=INTENT_SOURCE_PARAM if injected_any else None,
-                    ),
-                )
+            lambda: ToolCallStartEvent(
+                tenant_id=tenant_id,
+                vendor_id=vendor_id,
+                consent_token=consent_token,
+                session_id=session_id,
+                sequence_number=_seq_n,
+                captured_at=datetime.now(UTC),
+                agent_runtime=agent_runtime,
+                principal=principal,
+                transport_observed=transport_observed,
+                call_id=call_id,
+                runtime_meta=runtime_meta,
+                payload=ToolCallStartPayload(
+                    tool_name=name,
+                    params=params,
+                    call_intent=call_intent,
+                    call_expected=call_expected,
+                    call_workflow=call_workflow,
+                    intent_source=INTENT_SOURCE_PARAM if injected_any else None,
+                ),
             ),
             logger,
         )
@@ -1146,26 +1142,24 @@ def _make_emitters(
         _seq_n = await _seq(session_id)
         await safe_emit(
             sink,
-            lambda: (
-                ToolCallEndEvent(
-                    tenant_id=tenant_id,
-                    vendor_id=vendor_id,
-                    consent_token=consent_token,
-                    session_id=session_id,
-                    sequence_number=_seq_n,
-                    captured_at=datetime.now(UTC),
-                    agent_runtime=agent_runtime,
-                    principal=principal,
-                    transport_observed=transport_observed,
-                    call_id=call_id,
-                    runtime_meta=runtime_meta,
-                    payload=ToolCallEndPayload(
-                        tool_name=name,
-                        duration_ms=int(duration_s * 1000),
-                        result=end.result,
-                        result_capture=end.result_capture,
-                    ),
-                )
+            lambda: ToolCallEndEvent(
+                tenant_id=tenant_id,
+                vendor_id=vendor_id,
+                consent_token=consent_token,
+                session_id=session_id,
+                sequence_number=_seq_n,
+                captured_at=datetime.now(UTC),
+                agent_runtime=agent_runtime,
+                principal=principal,
+                transport_observed=transport_observed,
+                call_id=call_id,
+                runtime_meta=runtime_meta,
+                payload=ToolCallEndPayload(
+                    tool_name=name,
+                    duration_ms=int(duration_s * 1000),
+                    result=end.result,
+                    result_capture=end.result_capture,
+                ),
             ),
             logger,
         )
@@ -1194,28 +1188,26 @@ def _make_emitters(
         _seq_n = await _seq(session_id)
         await safe_emit(
             sink,
-            lambda: (
-                ToolCallErrorEvent(
-                    tenant_id=tenant_id,
-                    vendor_id=vendor_id,
-                    consent_token=consent_token,
-                    session_id=session_id,
-                    sequence_number=_seq_n,
-                    captured_at=datetime.now(UTC),
-                    agent_runtime=agent_runtime,
-                    principal=principal,
-                    transport_observed=transport_observed,
-                    call_id=call_id,
-                    runtime_meta=runtime_meta,
-                    payload=ToolCallErrorPayload(
-                        tool_name=name,
-                        error_type=error_type,
-                        duration_ms=int(duration_s * 1000),
-                        error_body=fields.error_body,
-                        result=fields.result,
-                        result_capture=fields.result_capture,
-                    ),
-                )
+            lambda: ToolCallErrorEvent(
+                tenant_id=tenant_id,
+                vendor_id=vendor_id,
+                consent_token=consent_token,
+                session_id=session_id,
+                sequence_number=_seq_n,
+                captured_at=datetime.now(UTC),
+                agent_runtime=agent_runtime,
+                principal=principal,
+                transport_observed=transport_observed,
+                call_id=call_id,
+                runtime_meta=runtime_meta,
+                payload=ToolCallErrorPayload(
+                    tool_name=name,
+                    error_type=error_type,
+                    duration_ms=int(duration_s * 1000),
+                    error_body=fields.error_body,
+                    result=fields.result,
+                    result_capture=fields.result_capture,
+                ),
             ),
             logger,
         )

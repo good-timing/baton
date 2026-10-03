@@ -81,9 +81,7 @@ async def safe_write(sink: Sink, event: Event, logger: logging.Logger) -> None:
         logger.exception("baton: sink.write failed; event dropped, tool call continues")
 
 
-async def safe_emit(
-    sink: Sink, build: Callable[[], Event], logger: logging.Logger
-) -> None:
+async def safe_emit(sink: Sink, build: Callable[[], Event], logger: logging.Logger) -> None:
     """Fail-open event CONSTRUCTION *and* write.
 
     ``safe_write`` guards ``sink.write`` only — but Python evaluates the
@@ -108,9 +106,7 @@ async def safe_emit(
     try:
         event = build()
     except Exception:
-        logger.exception(
-            "baton: event construction failed; event dropped, tool call continues"
-        )
+        logger.exception("baton: event construction failed; event dropped, tool call continues")
         return
     await safe_write(sink, event, logger)
 

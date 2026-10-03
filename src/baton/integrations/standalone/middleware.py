@@ -508,26 +508,24 @@ class BatonMiddleware(Middleware):
             seq_ann = await self._next_seq(session_id)
             await safe_emit(
                 self._sink,
-                lambda: (
-                    AnnotationEvent(
-                        tenant_id=self._tenant_id,
-                        vendor_id=self._vendor_id,
-                        consent_token=self._consent_token,
-                        session_id=session_id,
-                        sequence_number=seq_ann,
-                        captured_at=datetime.now(UTC),
-                        agent_runtime=runtime,
-                        principal=call_principal,
-                        transport_observed=call_transport,
-                        runtime_meta=scrubbed_meta,
-                        payload=AnnotationPayload(
-                            intent=scrubbed_intent,
-                            expected_outcome=scrubbed_expected,
-                            workflow=scrubbed_task,
-                            intent_source=INTENT_SOURCE_PARAM,
-                            tool_name=tool_name,
-                        ),
-                    )
+                lambda: AnnotationEvent(
+                    tenant_id=self._tenant_id,
+                    vendor_id=self._vendor_id,
+                    consent_token=self._consent_token,
+                    session_id=session_id,
+                    sequence_number=seq_ann,
+                    captured_at=datetime.now(UTC),
+                    agent_runtime=runtime,
+                    principal=call_principal,
+                    transport_observed=call_transport,
+                    runtime_meta=scrubbed_meta,
+                    payload=AnnotationPayload(
+                        intent=scrubbed_intent,
+                        expected_outcome=scrubbed_expected,
+                        workflow=scrubbed_task,
+                        intent_source=INTENT_SOURCE_PARAM,
+                        tool_name=tool_name,
+                    ),
                 ),
                 logger,
             )
@@ -554,35 +552,33 @@ class BatonMiddleware(Middleware):
             seq_start = await self._next_seq(session_id)
             await safe_emit(
                 self._sink,
-                lambda: (
-                    ToolCallStartEvent(
-                        tenant_id=self._tenant_id,
-                        vendor_id=self._vendor_id,
-                        consent_token=self._consent_token,
-                        session_id=session_id,
-                        sequence_number=seq_start,
-                        captured_at=datetime.now(UTC),
-                        agent_runtime=runtime,
-                        principal=call_principal,
-                        transport_observed=call_transport,
-                        call_id=call_id,
-                        runtime_meta=scrubbed_meta,
-                        payload=ToolCallStartPayload(
-                            tool_name=tool_name,
-                            params=self._scrubber(params),
-                            call_intent=scrubbed_intent,
-                            call_expected=scrubbed_expected,
-                            call_workflow=scrubbed_task,
-                            intent_source=(
-                                INTENT_SOURCE_PARAM
-                                if any(
-                                    v is not None
-                                    for v in (scrubbed_intent, scrubbed_expected, scrubbed_task)
-                                )
-                                else None
-                            ),
+                lambda: ToolCallStartEvent(
+                    tenant_id=self._tenant_id,
+                    vendor_id=self._vendor_id,
+                    consent_token=self._consent_token,
+                    session_id=session_id,
+                    sequence_number=seq_start,
+                    captured_at=datetime.now(UTC),
+                    agent_runtime=runtime,
+                    principal=call_principal,
+                    transport_observed=call_transport,
+                    call_id=call_id,
+                    runtime_meta=scrubbed_meta,
+                    payload=ToolCallStartPayload(
+                        tool_name=tool_name,
+                        params=self._scrubber(params),
+                        call_intent=scrubbed_intent,
+                        call_expected=scrubbed_expected,
+                        call_workflow=scrubbed_task,
+                        intent_source=(
+                            INTENT_SOURCE_PARAM
+                            if any(
+                                v is not None
+                                for v in (scrubbed_intent, scrubbed_expected, scrubbed_task)
+                            )
+                            else None
                         ),
-                    )
+                    ),
                 ),
                 logger,
             )
@@ -603,26 +599,24 @@ class BatonMiddleware(Middleware):
             seq_err = await self._next_seq(session_id)
             await safe_emit(
                 self._sink,
-                lambda: (
-                    ToolCallErrorEvent(
-                        tenant_id=self._tenant_id,
-                        vendor_id=self._vendor_id,
-                        consent_token=self._consent_token,
-                        session_id=session_id,
-                        sequence_number=seq_err,
-                        captured_at=datetime.now(UTC),
-                        agent_runtime=runtime,
-                        principal=call_principal,
-                        transport_observed=call_transport,
-                        call_id=call_id,
-                        runtime_meta=scrubbed_meta,
-                        payload=ToolCallErrorPayload(
-                            tool_name=tool_name,
-                            error_type=type(raised).__name__,
-                            error_body=str(self._scrubber(str(raised)))[:2000],
-                            duration_ms=duration_ms,
-                        ),
-                    )
+                lambda: ToolCallErrorEvent(
+                    tenant_id=self._tenant_id,
+                    vendor_id=self._vendor_id,
+                    consent_token=self._consent_token,
+                    session_id=session_id,
+                    sequence_number=seq_err,
+                    captured_at=datetime.now(UTC),
+                    agent_runtime=runtime,
+                    principal=call_principal,
+                    transport_observed=call_transport,
+                    call_id=call_id,
+                    runtime_meta=scrubbed_meta,
+                    payload=ToolCallErrorPayload(
+                        tool_name=tool_name,
+                        error_type=type(raised).__name__,
+                        error_body=str(self._scrubber(str(raised)))[:2000],
+                        duration_ms=duration_ms,
+                    ),
                 ),
                 logger,
             )
@@ -669,28 +663,26 @@ class BatonMiddleware(Middleware):
             seq_err = await self._next_seq(session_id)
             await safe_emit(
                 self._sink,
-                lambda: (
-                    ToolCallErrorEvent(
-                        tenant_id=self._tenant_id,
-                        vendor_id=self._vendor_id,
-                        consent_token=self._consent_token,
-                        session_id=session_id,
-                        sequence_number=seq_err,
-                        captured_at=datetime.now(UTC),
-                        agent_runtime=runtime,
-                        principal=call_principal,
-                        transport_observed=call_transport,
-                        call_id=call_id,
-                        runtime_meta=scrubbed_meta,
-                        payload=ToolCallErrorPayload(
-                            tool_name=tool_name,
-                            error_type=TOOL_ERROR_TYPE,
-                            duration_ms=duration_ms,
-                            error_body=err.error_body,
-                            result=err.result,
-                            result_capture=err.result_capture,
-                        ),
-                    )
+                lambda: ToolCallErrorEvent(
+                    tenant_id=self._tenant_id,
+                    vendor_id=self._vendor_id,
+                    consent_token=self._consent_token,
+                    session_id=session_id,
+                    sequence_number=seq_err,
+                    captured_at=datetime.now(UTC),
+                    agent_runtime=runtime,
+                    principal=call_principal,
+                    transport_observed=call_transport,
+                    call_id=call_id,
+                    runtime_meta=scrubbed_meta,
+                    payload=ToolCallErrorPayload(
+                        tool_name=tool_name,
+                        error_type=TOOL_ERROR_TYPE,
+                        duration_ms=duration_ms,
+                        error_body=err.error_body,
+                        result=err.result,
+                        result_capture=err.result_capture,
+                    ),
                 ),
                 logger,
             )
@@ -705,26 +697,24 @@ class BatonMiddleware(Middleware):
         seq_end = await self._next_seq(session_id)
         await safe_emit(
             self._sink,
-            lambda: (
-                ToolCallEndEvent(
-                    tenant_id=self._tenant_id,
-                    vendor_id=self._vendor_id,
-                    consent_token=self._consent_token,
-                    session_id=session_id,
-                    sequence_number=seq_end,
-                    captured_at=datetime.now(UTC),
-                    agent_runtime=runtime,
-                    principal=call_principal,
-                    transport_observed=call_transport,
-                    call_id=call_id,
-                    runtime_meta=scrubbed_meta,
-                    payload=ToolCallEndPayload(
-                        tool_name=tool_name,
-                        duration_ms=duration_ms,
-                        result=end.result,
-                        result_capture=end.result_capture,
-                    ),
-                )
+            lambda: ToolCallEndEvent(
+                tenant_id=self._tenant_id,
+                vendor_id=self._vendor_id,
+                consent_token=self._consent_token,
+                session_id=session_id,
+                sequence_number=seq_end,
+                captured_at=datetime.now(UTC),
+                agent_runtime=runtime,
+                principal=call_principal,
+                transport_observed=call_transport,
+                call_id=call_id,
+                runtime_meta=scrubbed_meta,
+                payload=ToolCallEndPayload(
+                    tool_name=tool_name,
+                    duration_ms=duration_ms,
+                    result=end.result,
+                    result_capture=end.result_capture,
+                ),
             ),
             logger,
         )

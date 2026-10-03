@@ -32,7 +32,6 @@ from tests.functional.test_cross_path_envelope import _read_events, _run_mcp_pat
 pytestmark = pytest.mark.functional
 
 
-
 async def test_mcp_path_events_conform_to_shared_schema(event_schema: dict, tmp_path: Path) -> None:
     events_path = str(tmp_path / "events.jsonl")
     await _run_mcp_path(events_path)
