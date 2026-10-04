@@ -752,7 +752,12 @@ class Trace:
                 # in an incident, often the scrubber itself — so a disabled
                 # client must not run the vendor's scrubber over every tool
                 # result. The emitters return before building for the same
-                # reason; this is the one application that runs ahead of them.
+                # reason. ⚠ It is NOT the only application that runs ahead
+                # of them: ``with_params`` and ``trace(params=...)`` still
+                # scrub on a disabled client, measured at 2.9 µs per trace
+                # for an event that is never built. Not fixed here — it is
+                # pre-existing, not something this change introduced — and
+                # queued on thread ``response-capture``.
                 self._observed_result = _UNSET
                 self._observed_error = None
                 return self
@@ -911,10 +916,9 @@ class Trace:
                 )
             )
         else:
-            # A named builder, not a lambda: the end leg needs ONE call to
-            # ``_end_result_fields`` (it runs the scrubber, so calling it per
-            # member would scrub twice) and a lambda has nowhere to put the
-            # local. Everything inside still runs under the guard.
+            # A named builder, not a lambda: the end leg reads two members
+            # off one ``_end_result_fields`` call and a lambda has nowhere to
+            # put the local. Everything inside still runs under the guard.
             def _build_end() -> ToolCallEndEvent:
                 end_fields = _end_result_fields(self._observed_result)
                 return ToolCallEndEvent(
@@ -1178,16 +1182,6 @@ class Client:
         # `with client.trace(...)` block, ahead of the vendor's real call in
         # the proactive case. SPEC §11.2 fail-open applies here exactly as it
         # does to the MCP adapters' tool-call wrapping.
-        # ``_disabled`` is the REASON; the bridge check is the invariant that
-        # follows from it (no bridge exists when disabled) and is what makes
-        # the narrowing hold for the call below.
-        if self._disabled or self._bridge is None:
-            # Disabled. The envelope above was still BUILT and is dropped here
-            # — a local that reaches no buffer, no thread and no socket. The
-            # alternative is a guard at each of the twelve places ``Trace``
-            # constructs one, which buys a pydantic model's allocation and
-            # costs twelve chances to miss one.
-            return
         self._bridge.run(safe_write(self._sink, event, logger))
 
     def _next_seq(self, session_id: str) -> int:
@@ -1363,7 +1357,12 @@ class AsyncTrace:
                 # in an incident, often the scrubber itself — so a disabled
                 # client must not run the vendor's scrubber over every tool
                 # result. The emitters return before building for the same
-                # reason; this is the one application that runs ahead of them.
+                # reason. ⚠ It is NOT the only application that runs ahead
+                # of them: ``with_params`` and ``trace(params=...)`` still
+                # scrub on a disabled client, measured at 2.9 µs per trace
+                # for an event that is never built. Not fixed here — it is
+                # pre-existing, not something this change introduced — and
+                # queued on thread ``response-capture``.
                 self._observed_result = _UNSET
                 self._observed_error = None
                 return self
