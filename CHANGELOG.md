@@ -10,6 +10,27 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+### Fixed
+
+- **A vendor scrubber that raises no longer breaks the vendor's tool call —
+  on any surface** (SPEC §11.2, fail-open at the capture boundary). Previously
+  a raising scrubber could turn a working call into an error, and on the
+  annotation tool it errored the vendor's own MCP server. Every scrubber
+  application now runs either inside the `safe_emit` build thunk — where a
+  throw drops the event and the call proceeds — or through `scrub_or_none`,
+  which degrades one field. ⚠ **Behaviour change a vendor will notice**: where
+  a raising scrubber used to fail loudly, the affected event is now silently
+  dropped (logged via `logger.exception`). If annotations or terminal events
+  go missing after upgrading, check your scrubber for exceptions in the log
+  rather than assuming the capture path is down.
+- **`annotation.workflow` is now PII-scrubbed.** The agent-supplied
+  `overall_task` text reached the sink unredacted on both adapters' annotation
+  tool, though SPEC §11.2(2) lists annotation text as covered and the
+  tool-call path already scrubbed the same field (`call_workflow`). Besides
+  the leak, a scrubber that rewrites rather than passes through emitted two
+  different values for the one key the Console groups on, splitting the group
+  across the annotation and tool-call surfaces.
+
 ### Changed
 
 - **BREAKING: the SDK no longer reads the OAuth access token on its own.

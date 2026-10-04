@@ -237,15 +237,24 @@ class _DeepThrower:
 
     `end_result_fields` hands the scrubber the WHOLE jsonable result in one
     call, so the str-only `_Thrower` never fires on a dict-returning tool.
+
+    ⚠ Records WHAT it tripped on. `tripped` alone cannot tell the two
+    projections apart — both scrub a value whose repr carries the reason — so a
+    RETURN-leg probe passes unchanged when only `end_result_fields` ran. The
+    RETURN projection scrubs `error_text(result)`, a BARE STRING; the END one
+    scrubs the serialised envelope. The tripped value's type is the
+    discriminator.
     """
 
     def __init__(self, trip: str) -> None:
         self._trip = trip
         self.tripped = 0
+        self.tripped_on: Any = None
 
     def __call__(self, value: Any) -> Any:
         if self._trip in repr(value):
             self.tripped += 1
+            self.tripped_on = value
             raise RuntimeError("scrubber exploded")
         return value
 
@@ -279,10 +288,15 @@ async def _call_soft_fail(events_path: Path, scrubber: Any) -> dict[str, Any]:
 
     @mcp.tool()
     def soft_fail(row: str) -> Any:
-        return mcp_types.CallToolResult(
-            content=[mcp_types.TextContent(type="text", text=RETURN_REASON)],
-            isError=True,
-        )
+        # ⚠ Snake-first, then camel — the same spelling dance as
+        # `test_iserror_reclassify.py::_error_result`, and for its stated
+        # reason: hardcoding one couples this file to one `mcp` major and the
+        # `mcp-matrix` spans both.
+        content = [mcp_types.TextContent(type="text", text=RETURN_REASON)]
+        try:
+            return mcp_types.CallToolResult(content=content, is_error=True)
+        except Exception:
+            return mcp_types.CallToolResult(content=content, isError=True)
 
     handle = install_baton(
         mcp,
@@ -322,7 +336,12 @@ async def test_a_throwing_scrubber_on_the_RETURN_leg_does_not_break_the_call(
     """`returned_error_fields` — an ARGUMENT to `emit_error` until 10-03."""
     thrower = _DeepThrower(RETURN_REASON)
     res = await _call_soft_fail(tmp_path / "p4.jsonl", thrower)
+    # ⚠ `tripped` alone does NOT name the projection — see `_DeepThrower`.
     assert thrower.tripped, "the probe never reached its target; the test proves nothing"
+    assert thrower.tripped_on == RETURN_REASON, (
+        "the END projection fired, not the RETURN one; this test is a duplicate "
+        f"of the END-leg test as written: {thrower.tripped_on!r}"
+    )
     assert RETURN_REASON in (res["text"] or "") or RETURN_REASON in (res["error"] or ""), (
         f"fail-open broken on the RETURN leg: {res['error']} / {res['text']}"
     )

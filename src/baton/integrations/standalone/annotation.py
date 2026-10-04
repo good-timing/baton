@@ -178,7 +178,7 @@ def register_annotation_tool(
             logger=logger,
             warned=warned,
         )
-        # safe_emit, not safe_write: the four `scrubber(...)` calls in the
+        # safe_emit, not safe_write: the five `scrubber(...)` calls in the
         # payload below are evaluated in THIS frame, before `safe_write` would
         # be entered, so a raising vendor scrubber used to break `_annotate` —
         # a tool on the VENDOR's server, so the vendor's end user sees their
@@ -206,7 +206,19 @@ def register_annotation_tool(
                     # same split the injected params use (`overall_task` ->
                     # `call_workflow`): renaming the param must not move the key the
                     # console groups on.
-                    workflow=overall_task,
+                    # ⚠ SCRUBBED, which it was not until 2026-10-03. The
+                    # rename that produced this key (`d0a2630`) carried the
+                    # expression across unchanged and nothing named the
+                    # omission: SPEC §11.2(2) lists "annotation text" as
+                    # covered, so agent-supplied free text was reaching the
+                    # sink unredacted on a path the vendor believes is
+                    # scrubbed. And the tool-call path DOES scrub the same
+                    # semantic field (`middleware.py`'s `scrubbed_task` ->
+                    # `call_workflow`), so any scrubber that rewrites rather
+                    # than passes through emitted two different values for the
+                    # one grouping key the comment above says must stay
+                    # joinable — splitting the group across the two surfaces.
+                    workflow=scrubber(overall_task) if overall_task else None,
                     suggested_improvement=(
                         scrubber(suggested_improvement) if suggested_improvement else None
                     ),
