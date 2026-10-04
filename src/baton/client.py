@@ -156,9 +156,19 @@ _UNSET: Any = object()
 # result already means "the handler raised" (SPEC §11.4.3), which is exactly
 # the confusion the marker exists to end.
 _WITHHELD: Any = object()
+# The scrubber raised on this result. A third sentinel rather than a value,
+# because there is no value that honestly describes it: ``None`` is already
+# "``observed()`` was never called" and any real object would be a lie about
+# what the tool returned. ``_end_result_fields`` turns it back into a throw
+# INSIDE the build thunk, where the construction guard drops the event.
+_SCRUB_FAILED: Any = object()
 
 
-def _end_result_fields(observed: Any, scrubber: Callable[[Any], Any]) -> ResultFields:
+class _ScrubFailed(Exception):
+    """Re-raised inside the build thunk so the guard drops the event."""
+
+
+def _end_result_fields(observed: Any) -> ResultFields:
     """What the library path's stored result becomes on ``tool_call_end``.
 
     THREE states, not two, which is the whole reason this is a function: a
@@ -168,31 +178,44 @@ def _end_result_fields(observed: Any, scrubber: Callable[[Any], Any]) -> ResultF
     publish a fabricated "the tool returned nothing" about a body the vendor
     deliberately withheld — the defect SPEC §11.4 exists to prevent.
 
-    ⚠ **The scrub happens HERE, inside the caller's build thunk, and not in
-    ``observed()``.** This is the one scrubber application on this surface
-    that must NOT degrade to ``None`` on a throw, and the reason is the
-    docstring above: ``result=None`` is ALREADY a state with a meaning here
-    (``observed()`` was never called), so a failed scrub answering ``None``
-    publishes the same fabricated "the tool returned nothing". There is no
-    value that honestly says "we could not describe this". So the throw
-    escapes to ``safe_emit``/``_emit_sync``, which DROPS the event — the only
-    outcome that asserts nothing. Every other scrubber call on this surface
-    takes ``scrub_or_none`` instead, where ``None`` already means "field
-    unavailable".
+    ⚠ **A failed scrub DROPS the event, and it must not degrade to ``None``**:
+    that value is already taken by "``observed()`` was never called", so
+    answering it publishes the same fabricated "the tool returned nothing".
+    ``observed()`` stores ``_SCRUB_FAILED`` and this re-raises it HERE, inside
+    the build thunk, where ``safe_emit`` / ``_emit_sync`` drops the event —
+    the only outcome that asserts nothing.
 
-    ⚠ The withheld branch returns BEFORE the scrubber is reached, which is
-    what keeps SPEC §7's rule that a withheld result is never handed to a
-    scrubber. Moving the scrub here does not weaken it: ``observed()`` still
-    decides withholding, and a withheld body is never stored.
+    ⚠ **The scrub itself stays in ``observed()``, and that is a CORRECTNESS
+    requirement, not a preference.** A copying scrubber (the default
+    ``Scrubber`` rebuilds dicts and lists) returns a detached snapshot; the
+    raw object does not. Scrubbing here instead would record the result as it
+    looks at ``__exit__``, so a handler that appends to, clears or reuses its
+    result buffer after reporting it would have the LATER contents recorded —
+    and on ``AsyncTrace`` that window spans every ``await`` in between.
+
+    ⚠ ``_WITHHELD`` never reaches a scrubber on either path, which is SPEC
+    §7's rule that a withheld result is not handed to one.
+
+    ⚠ **Two deliberate exceptions to "everything else takes
+    ``scrub_or_none``", so a guard sweep does not read past them.** The four
+    ``error_body`` applications in ``__exit__`` / ``__aexit__`` are bare
+    calls inside their build thunks, because that member is a required
+    ``str``: ``None`` will not type and ``""`` is the withheld/no-message
+    ambiguity §11.4.3 warns about, so they drop the event exactly as this
+    does. Every OTHER application — ``params`` on both doors, ``context`` on
+    both ``annotate``s — takes ``scrub_or_none``, where ``None`` already
+    means "field unavailable".
 
     Shared by ``Trace`` and ``AsyncTrace``, which are otherwise twins by
     copy.
     """
     if observed is _WITHHELD:
         return ResultFields(result_capture=WITHHELD)
+    if observed is _SCRUB_FAILED:
+        raise _ScrubFailed
     if observed is _UNSET:
         return ResultFields(result=None)
-    return ResultFields(result=scrubber(observed))
+    return ResultFields(result=observed)
 
 
 # =============================================================================
@@ -716,10 +739,31 @@ class Trace:
             self._observed_result = _WITHHELD
             self._observed_error = None
         else:
-            # RAW, deliberately: the scrub runs in ``_end_result_fields``,
-            # inside the build thunk, so a throwing scrubber drops the event
-            # instead of publishing ``result=None`` — see that function.
-            self._observed_result = result
+            # Scrubbed HERE, not at build time, so the recorded value is a
+            # SNAPSHOT: the default scrubber rebuilds dicts and lists, and a
+            # handler that mutates or reuses its result buffer after calling
+            # this must not change what we already recorded. A throw parks
+            # ``_SCRUB_FAILED``, which ``_end_result_fields`` turns back into
+            # a throw inside the build thunk so the event is dropped rather
+            # than sent with a fabricated ``result=None``.
+            if self._client._disabled:
+                # ⚠ The kill switch stops the WORK, not just the write. An
+                # operator flips it precisely when our capture is implicated
+                # in an incident, often the scrubber itself — so a disabled
+                # client must not run the vendor's scrubber over every tool
+                # result. The emitters return before building for the same
+                # reason; this is the one application that runs ahead of them.
+                self._observed_result = _UNSET
+                self._observed_error = None
+                return self
+            try:
+                self._observed_result = self._client._scrubber(result)
+            except Exception:
+                logger.exception(
+                    "baton: the configured scrubber raised on the result; "
+                    "the tool_call_end event is dropped and the trace continues"
+                )
+                self._observed_result = _SCRUB_FAILED
             self._observed_error = None
         return self
 
@@ -826,7 +870,16 @@ class Trace:
             )
             return  # re-raise
 
-        if self._observed_result is _UNSET and self._observed_error is None:
+        # ⚠ ``not _disabled``: the disabled branch of ``observed()`` parks
+        # ``_UNSET`` deliberately (it refuses to run the scrubber), which is
+        # indistinguishable here from the vendor forgetting the call. Without
+        # this, flipping the kill switch tells them to do a thing they just
+        # did — and nothing is emitted either way.
+        if (
+            self._observed_result is _UNSET
+            and self._observed_error is None
+            and not self._client._disabled
+        ):
             import warnings
 
             warnings.warn(
@@ -863,7 +916,7 @@ class Trace:
             # member would scrub twice) and a lambda has nowhere to put the
             # local. Everything inside still runs under the guard.
             def _build_end() -> ToolCallEndEvent:
-                end_fields = _end_result_fields(self._observed_result, self._client._scrubber)
+                end_fields = _end_result_fields(self._observed_result)
                 return ToolCallEndEvent(
                     tenant_id=self._client._tenant_id,
                     vendor_id=self._client._vendor_id,
@@ -1032,7 +1085,14 @@ class Client:
                     signal_type=signal_type_str,
                     workflow=workflow,
                     suggested_improvement=suggested_improvement,
-                    context=self._scrubber(context) if context else None,
+                    # scrub_or_none, unlike ``error_body`` below: ``context``
+                    # is nullable and ``None`` already means "not supplied", so a
+                    # throw costs this field instead of the whole annotation —
+                    # the signal_type, the suggested_improvement and the intent
+                    # are the product's core feedback and must survive it.
+                    context=scrub_or_none(self._scrubber, context, "context", logger)
+                    if context
+                    else None,
                 ),
             )
         )
@@ -1098,6 +1158,15 @@ class Client:
         Catches ``Exception``, NOT ``BaseException`` — same rule as
         ``safe_write``.
         """
+        # ⚠ BEFORE ``build()``. The disabled check used to sit below it only
+        # because the event arrived already constructed; now that this door
+        # owns construction, building first would run the vendor's scrubber
+        # over every result and validate a pydantic model with the kill
+        # switch ON — and an operator flipping ``BATON_DISABLED`` because the
+        # scrubber is implicated in an incident still pays for it. The async
+        # twin returns before its thunk for the same reason.
+        if self._disabled or self._bridge is None:
+            return
         try:
             event = build()
         except Exception:
@@ -1281,10 +1350,31 @@ class AsyncTrace:
             self._observed_result = _WITHHELD
             self._observed_error = None
         else:
-            # RAW, deliberately: the scrub runs in ``_end_result_fields``,
-            # inside the build thunk, so a throwing scrubber drops the event
-            # instead of publishing ``result=None`` — see that function.
-            self._observed_result = result
+            # Scrubbed HERE, not at build time, so the recorded value is a
+            # SNAPSHOT: the default scrubber rebuilds dicts and lists, and a
+            # handler that mutates or reuses its result buffer after calling
+            # this must not change what we already recorded. A throw parks
+            # ``_SCRUB_FAILED``, which ``_end_result_fields`` turns back into
+            # a throw inside the build thunk so the event is dropped rather
+            # than sent with a fabricated ``result=None``.
+            if self._client._disabled:
+                # ⚠ The kill switch stops the WORK, not just the write. An
+                # operator flips it precisely when our capture is implicated
+                # in an incident, often the scrubber itself — so a disabled
+                # client must not run the vendor's scrubber over every tool
+                # result. The emitters return before building for the same
+                # reason; this is the one application that runs ahead of them.
+                self._observed_result = _UNSET
+                self._observed_error = None
+                return self
+            try:
+                self._observed_result = self._client._scrubber(result)
+            except Exception:
+                logger.exception(
+                    "baton: the configured scrubber raised on the result; "
+                    "the tool_call_end event is dropped and the trace continues"
+                )
+                self._observed_result = _SCRUB_FAILED
             self._observed_error = None
         return self
 
@@ -1392,7 +1482,16 @@ class AsyncTrace:
             )
             return
 
-        if self._observed_result is _UNSET and self._observed_error is None:
+        # ⚠ ``not _disabled``: the disabled branch of ``observed()`` parks
+        # ``_UNSET`` deliberately (it refuses to run the scrubber), which is
+        # indistinguishable here from the vendor forgetting the call. Without
+        # this, flipping the kill switch tells them to do a thing they just
+        # did — and nothing is emitted either way.
+        if (
+            self._observed_result is _UNSET
+            and self._observed_error is None
+            and not self._client._disabled
+        ):
             import warnings
 
             warnings.warn(
@@ -1424,7 +1523,7 @@ class AsyncTrace:
         else:
             # See ``Trace.__exit__`` for why this is a named builder.
             def _build_end() -> ToolCallEndEvent:
-                end_fields = _end_result_fields(self._observed_result, self._client._scrubber)
+                end_fields = _end_result_fields(self._observed_result)
                 return ToolCallEndEvent(
                     tenant_id=self._client._tenant_id,
                     vendor_id=self._client._vendor_id,
@@ -1559,7 +1658,14 @@ class AsyncClient:
                     signal_type=signal_type_str,
                     workflow=workflow,
                     suggested_improvement=suggested_improvement,
-                    context=self._scrubber(context) if context else None,
+                    # scrub_or_none, unlike ``error_body`` below: ``context``
+                    # is nullable and ``None`` already means "not supplied", so a
+                    # throw costs this field instead of the whole annotation —
+                    # the signal_type, the suggested_improvement and the intent
+                    # are the product's core feedback and must survive it.
+                    context=scrub_or_none(self._scrubber, context, "context", logger)
+                    if context
+                    else None,
                 ),
             )
         )

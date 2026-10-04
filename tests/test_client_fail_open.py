@@ -150,3 +150,62 @@ async def test_async_holds_both_shapes_too(sink: CollectingSink) -> None:
             raise ValueError(VENDOR_MSG)
     assert str(caught.value) == VENDOR_MSG
     assert vendor.tripped
+
+
+# --- two regressions the builder refactor introduced ------------------------
+
+
+def test_the_recorded_result_is_a_SNAPSHOT_not_the_vendor_s_live_object(
+    sink: CollectingSink,
+) -> None:
+    """Mutating the result after ``observed()`` must not change what shipped.
+
+    The refactor briefly stored the vendor's object and scrubbed at
+    ``__exit__``, which recorded the value as it looked LATER — a pooled or
+    reused buffer, or a handler that appends to its result after reporting
+    it, would have the wrong contents recorded. On ``AsyncTrace`` the window
+    spans every ``await`` in between.
+
+    Snapshot semantics come from the default ``Scrubber`` rebuilding dicts
+    and lists, so this asserts through the real scrubber rather than an
+    identity one — an identity scrubber aliases and cannot see the bug.
+    """
+    rows: dict[str, Any] = {"rows": ["alice"]}
+    with Client(tenant_id="ten_abc", vendor_id="v1", sink=sink).trace(tool_name="fetch_rows") as t:
+        t.observed(result=rows)
+        rows["rows"].append("LATE-MUTATION")
+        rows["added_after"] = "observed()"
+
+    end = next(e for e in sink.events if e.event_type == "tool_call_end")
+    assert end.payload.result == {"rows": ["alice"]}, (
+        f"the vendor's later mutation reached the wire: {end.payload.result}"
+    )
+
+
+def test_a_DISABLED_client_runs_no_scrubber_and_builds_no_event(
+    monkeypatch: pytest.MonkeyPatch, sink: CollectingSink
+) -> None:
+    """The kill switch must stop the WORK, not just the write.
+
+    An operator flips ``BATON_DISABLED`` precisely when our capture is
+    implicated in an incident — often the scrubber itself. Building before
+    the check ran the vendor's scrubber over every result and validated a
+    pydantic model anyway. The async door already returned before its thunk;
+    this pins the sync door to the same behaviour.
+    """
+    monkeypatch.setenv("BATON_DISABLED", "1")
+    seen: list[Any] = []
+
+    def counting(value: Any) -> Any:
+        seen.append(value)
+        return value
+
+    with Client(tenant_id="ten_abc", vendor_id="v1", sink=sink, scrubber=counting).trace(
+        tool_name="fetch_rows", params={"id": "row-42"}
+    ) as t:
+        t.observed(result={"row": "row-42"})
+
+    assert sink.events == [], "a disabled client reached the sink"
+    assert seen == [{"id": "row-42"}], (
+        f"a disabled client still ran the scrubber over the RESULT: {seen}"
+    )
