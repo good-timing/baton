@@ -218,6 +218,16 @@ async def test_control_a_returned_error_flag_reaches_the_client(tmp_path: Path) 
     a rig whose tool never returned the flag."""
     res = await _drive(tmp_path / "c3.jsonl", lambda v: v, leg=LEG_ERROR_FLAG)
     assert res["ok"] or RETURN_REASON in (res["error"] or ""), res
+    # ⚠ The line above cannot fail on its own: `ok` is True for any `call_tool`
+    # that does not raise, including a rig whose tool never set the flag —
+    # which is the rig this control exists to catch
+    # (`feedback_control_condition_must_be_able_to_fail`). The emitted
+    # `tool_call_error` is what proves the producer read a flag.
+    kinds = [e["event_type"] for e in res["events"]]
+    assert "tool_call_error" in kinds, (
+        f"the tool's error flag never reached the producer; the RETURN probe "
+        f"below would be testing the END leg: {kinds}"
+    )
 
 
 @_needs_flag

@@ -287,9 +287,21 @@ async def test_a_throwing_scrubber_on_the_END_leg_does_not_break_the_call(
 
 async def test_control_a_returned_error_flag_reaches_the_client(tmp_path: Path) -> None:
     """Without this the RETURN-leg probe cannot tell a guard from a rig whose
-    tool never produced the flag."""
+    tool never produced the flag.
+
+    ⚠ Asserts the FLAG, not the reason. `RETURN_REASON` is the result's own
+    content text, so it reaches the client whether or not `isError` is set — a
+    control phrased on it passes for exactly the rig it exists to catch
+    (`feedback_control_condition_must_be_able_to_fail`). The emitted
+    `tool_call_error` is what proves the producer read a flag.
+    """
     res = await _drive(tmp_path / "c3.jsonl", lambda v: v, leg=LEG_ERROR_FLAG)
     assert RETURN_REASON in (res["text"] or "") or RETURN_REASON in (res["error"] or ""), res
+    kinds = [e["event_type"] for e in res["events"]]
+    assert "tool_call_error" in kinds, (
+        f"the tool's error flag never reached the producer; the RETURN probe "
+        f"below would be testing the END leg: {kinds}"
+    )
 
 
 async def test_a_throwing_scrubber_on_the_RETURN_leg_does_not_break_the_call(
@@ -298,7 +310,7 @@ async def test_a_throwing_scrubber_on_the_RETURN_leg_does_not_break_the_call(
     """`returned_error_fields` — an ARGUMENT to `emit_error` until 10-03."""
     thrower = SelectiveThrower(RETURN_REASON)
     res = await _drive(tmp_path / "p4.jsonl", thrower, leg=LEG_ERROR_FLAG)
-    # ⚠ `tripped` alone does NOT name the projection — see `_DeepThrower`.
+    # ⚠ `tripped` alone does NOT name the projection — see `SelectiveThrower`.
     assert thrower.tripped, "the probe never reached its target; the test proves nothing"
     assert thrower.tripped_on == RETURN_REASON, (
         "the END projection fired, not the RETURN one; this test is a duplicate "
@@ -331,7 +343,10 @@ async def test_a_throwing_scrubber_does_not_break_the_ANNOTATION_tool(
     ⚠ `_annotate` is a tool on the VENDOR's server, so a throw here surfaces to
     their end user as their server erroring.
     """
-    thrower = _Thrower(GOAL_MARKER)
+    # SelectiveThrower, not the file-local `_Thrower`: the assertion below
+    # discriminates on OUR error text, and only this thrower raises `SENTINEL`.
+    # With `_Thrower` ("scrubber exploded") that conjunct could never be False.
+    thrower = SelectiveThrower(GOAL_MARKER)
     res = await _drive(
         tmp_path / "p5.jsonl",
         thrower,

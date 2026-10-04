@@ -26,23 +26,9 @@ from typing import Any
 import pytest
 
 from baton.client import AsyncClient, Client
+from tests._failopen_helpers import SelectiveThrower
 
-SENTINEL = "BATON_SCRUBBER_BOOM"
 VENDOR_MSG = "vendor-real-failure-row-42"
-
-
-class SelectiveThrower:
-    """Identity, except on values whose repr contains ``trip_on``."""
-
-    def __init__(self, trip_on: str) -> None:
-        self.trip_on = trip_on
-        self.tripped = 0
-
-    def __call__(self, value: Any) -> Any:
-        if self.trip_on in repr(value):
-            self.tripped += 1
-            raise RuntimeError(SENTINEL)
-        return value
 
 
 class CollectingSink:

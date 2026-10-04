@@ -1,19 +1,19 @@
 """Shared rig for the scrubber fail-open suites.
 
 Three things lived in two or three copies before this module existed, and each
-copy was a place the next change had to be made again:
+copy was a place the next change had to be made again: a repr-contains throwing
+scrubber, the `fastmcp` floor's error-flag predicate, and the error-result
+builders for the two `mcp` majors.
 
-- **`SelectiveThrower`** — a repr-contains scrubber that raises. `_DeepThrower`
-  was a second implementation of `tests/test_client_fail_open.py`'s class, which
-  now lives here and is imported by all three suites.
-- **`FLAG_IS_EXPRESSIBLE`** — whether the installed `fastmcp` can express a
-  returned error flag at all. The 2.14.7 FLOOR cannot, so a fixture using it
-  raises `TypeError` there rather than failing an assertion. The positive pin
-  (`test_iserror_reclassify.py::test_floor_has_no_flag_to_read`) only ever
-  guarded the copy beside it, so a second copy could drift silently through
-  exactly the floor bump that pin exists for.
-- **`error_call_tool_result`** — the snake-then-camel `CallToolResult` dance for
-  the `mcp` majors.
+⚠ **NOTHING here may import `fastmcp` at module scope.** `tests/integrations/
+official/` is run by the `mcp-matrix` CI job against `[mcp,test]`, a tree that
+has no `fastmcp` and that the job asserts is fastmcp-free — so a module-scope
+import here turns the whole directory's collection into one error, not one
+failed test. Measured: `0 items collected` on every matrix leg. The constraint is
+documented in `test_observe_transport.py` and `test_install.py` for the same
+reason; this module is imported by BOTH adapters' suites, so it is the one place
+that must respect it unconditionally. `fastmcp` imports go inside the functions
+that need it.
 
 ⚠ The throwers here are SELECTIVE on purpose. One that throws on everything also
 throws inside the `safe_emit` build thunks, which drop the event by design — so
@@ -27,16 +27,41 @@ from __future__ import annotations
 
 from typing import Any
 
+__all__ = [
+    "FLAG_IS_EXPRESSIBLE",
+    "SENTINEL",
+    "SelectiveThrower",
+    "error_call_tool_result",
+    "error_result",
+]
+
 SENTINEL = "BATON_SCRUBBER_BOOM"
 
-try:  # fastmcp 3.x / 4.x
-    from fastmcp.tools import ToolResult as _ToolResult
-except ImportError:  # 2.14.7 — the floor exports it only from the leaf module
-    from fastmcp.tools.tool import ToolResult as _ToolResult
 
-FLAG_IS_EXPRESSIBLE = "is_error" in getattr(_ToolResult, "model_fields", {}) or hasattr(
-    _ToolResult, "is_error"
-)
+def _flag_is_expressible() -> bool:
+    """Whether the installed `fastmcp` can express a returned error flag.
+
+    2.14.7 is the `fastmcp-matrix` FLOOR and its `ToolResult.__init__` takes no
+    `is_error` at all, so a fixture using it raises `TypeError` there rather
+    than failing an assertion. `False` when `fastmcp` is absent entirely, which
+    is the `mcp-matrix` tree — there is nothing to express it with.
+
+    `test_iserror_reclassify.py::test_floor_has_no_flag_to_read` pins the
+    absence positively, so the day the floor grows the field that test reddens
+    rather than skipping forever. It only ever guarded the copy beside it, which
+    is why this predicate has exactly one home now.
+    """
+    try:
+        try:  # fastmcp 3.x / 4.x
+            from fastmcp.tools import ToolResult
+        except ImportError:  # 2.14.7 — the floor exports it from the leaf module
+            from fastmcp.tools.tool import ToolResult
+    except ImportError:  # no fastmcp at all — the mcp-matrix tree
+        return False
+    return "is_error" in getattr(ToolResult, "model_fields", {}) or hasattr(ToolResult, "is_error")
+
+
+FLAG_IS_EXPRESSIBLE = _flag_is_expressible()
 
 
 class SelectiveThrower:
@@ -69,11 +94,18 @@ class SelectiveThrower:
 def error_result(text: str) -> Any:
     """A ``fastmcp`` ``ToolResult`` carrying the error flag.
 
-    Guard with ``FLAG_IS_EXPRESSIBLE`` — on the 2.14.7 floor this raises.
+    Guard callers with ``FLAG_IS_EXPRESSIBLE`` — on the 2.14.7 floor the
+    keyword does not exist. ``fastmcp`` is imported HERE, not at module scope;
+    see this module's docstring.
     """
     import mcp.types as mcp_types
 
-    return _ToolResult(
+    try:  # fastmcp 3.x / 4.x
+        from fastmcp.tools import ToolResult
+    except ImportError:  # 2.14.7
+        from fastmcp.tools.tool import ToolResult
+
+    return ToolResult(
         content=[mcp_types.TextContent(type="text", text=text)],
         is_error=True,
     )
@@ -82,14 +114,18 @@ def error_result(text: str) -> Any:
 def error_call_tool_result(text: str) -> Any:
     """An ``mcp`` ``CallToolResult`` with the error flag, on either major.
 
-    Snake-first, matching the production detection order and for the same
-    reason: it is the spelling the current generation uses. Hardcoding one
-    couples a test to one major and the `mcp-matrix` spans both.
+    ⚠ **Branches on which name is a DECLARED FIELD, not on a ``TypeError``.**
+    A try/except here is dead code that silently ships a broken fixture:
+    ``mcp.types.Result`` sets ``extra="allow"``, so on 1.x
+    ``CallToolResult(is_error=True)`` SUCCEEDS — parking ``is_error`` as a
+    pydantic extra while the real ``isError`` field stays ``False``. Measured on
+    1.27.2: ``model_dump()`` carries both ``isError: False`` and a junk
+    ``is_error: True``, a shape no server produces, and the camelCase branch — the
+    only one a real 1.x server can hit — never ran.
     """
     import mcp.types as mcp_types
 
     content = [mcp_types.TextContent(type="text", text=text)]
-    try:
+    if "is_error" in mcp_types.CallToolResult.model_fields:
         return mcp_types.CallToolResult(content=content, is_error=True)
-    except Exception:
-        return mcp_types.CallToolResult(content=content, isError=True)
+    return mcp_types.CallToolResult(content=content, isError=True)

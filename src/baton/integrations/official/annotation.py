@@ -234,8 +234,15 @@ def register_annotation_tool(
         #
         # No `scrub_or_none` statement above to pair with this, unlike the
         # standalone surface: this path reads the meta for the RUNTIME only and
-        # deliberately emits no `runtime_meta` (see above), so every scrubber
-        # application on it is inside the thunk.
+        # deliberately emits no `runtime_meta` (see above), so there is no meta
+        # scrub out here to guard.
+        #
+        # ⚠ NOT "every scrubber application here is inside the thunk" —
+        # `detect_agent_runtime` above applies the vendor's scrubber as a plain
+        # statement. It is safe for a DIFFERENT reason (`runtime_adapter._clean`
+        # wraps it in `scrub_or_none` internally), and the distinction decides
+        # whether a newly added statement needs guarding: a scrubber call out
+        # here is only safe if something downstream guards it.
         await safe_emit(
             sink,
             lambda: AnnotationEvent(
