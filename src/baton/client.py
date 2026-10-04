@@ -125,7 +125,7 @@ from baton.scrub import (  # noqa: F401  identity_scrub kept exported
     identity_scrub,
     scrub_or_none,
 )
-from baton.sinks import HttpSink, Sink, safe_emit, safe_write
+from baton.sinks import HttpSink, Sink, build_or_none, safe_emit, safe_write
 
 T = TypeVar("T")
 
@@ -1171,10 +1171,8 @@ class Client:
         # twin returns before its thunk for the same reason.
         if self._disabled or self._bridge is None:
             return
-        try:
-            event = build()
-        except Exception:
-            logger.exception("baton: event construction failed; event dropped, trace continues")
+        event = build_or_none(build, logger)
+        if event is None:
             return
         # safe_write, not self._sink.write directly — a raise here (closed
         # sink, an overflow warning promoted to an exception, etc.) would

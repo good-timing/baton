@@ -103,12 +103,25 @@ async def safe_emit(sink: Sink, build: Callable[[], Event], logger: logging.Logg
     Catches ``Exception``, NOT ``BaseException`` — ``KeyboardInterrupt`` and
     ``SystemExit`` must still propagate, same rule as ``safe_write``.
     """
-    try:
-        event = build()
-    except Exception:
-        logger.exception("baton: event construction failed; event dropped, tool call continues")
+    event = build_or_none(build, logger)
+    if event is None:
         return
     await safe_write(sink, event, logger)
+
+
+def build_or_none(build: Callable[[], Event], logger: logging.Logger) -> Event | None:
+    """The sync half of ``safe_emit``: build, or log and answer ``None``.
+
+    Separate because ``Client``'s SYNC trace cannot ``await`` ``safe_emit`` and
+    had grown a hand-copied duplicate of these five lines. One body, two
+    callers — a guard copied by hand is a guard that drifts, which is the
+    failure this whole module exists to prevent.
+    """
+    try:
+        return build()
+    except Exception:
+        logger.exception("baton: event construction failed; event dropped, tool call continues")
+        return None
 
 
 class Sink(ABC):

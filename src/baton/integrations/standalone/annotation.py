@@ -24,8 +24,9 @@ from fastmcp import Context, FastMCP
 
 from baton._meta_coords import round_meta_coordinates
 from baton._state import ProactiveTracker, SessionCounter
-from baton.events import AnnotationEvent, AnnotationPayload
+from baton.events import AnnotationEvent
 from baton.integrations._annotation_name import derive_annotation_tool_name
+from baton.integrations._annotation_payload import build_annotation_payload
 from baton.integrations._config import SessionResolutionContext
 from baton.integrations._llm_text import build_annotation_tool_description
 from baton.integrations.identity_adapter import (
@@ -178,9 +179,10 @@ def register_annotation_tool(
             logger=logger,
             warned=warned,
         )
-        # safe_emit, not safe_write: the five `scrubber(...)` calls in the
-        # payload below are evaluated in THIS frame, before `safe_write` would
-        # be entered, so a raising vendor scrubber used to break `_annotate` —
+        # safe_emit, not safe_write: `build_annotation_payload` runs the
+        # vendor's scrubber on five fields, and as an ARGUMENT expression it
+        # would be evaluated in THIS frame, before `safe_write` was entered —
+        # so a raising vendor scrubber used to break `_annotate` —
         # a tool on the VENDOR's server, so the vendor's end user sees their
         # server erroring. Inside the thunk a throw drops the event instead,
         # which is right here: `intent`, `signal_type` and
@@ -198,31 +200,14 @@ def register_annotation_tool(
                 principal=annotation_principal,
                 transport_observed=observe_transport(),
                 runtime_meta=scrubbed_meta,
-                payload=AnnotationPayload(
-                    intent=scrubber(user_goal) if user_goal else None,
-                    expected_outcome=(scrubber(expected_result) if expected_result else None),
+                payload=build_annotation_payload(
+                    scrubber,
+                    user_goal=user_goal,
+                    expected_result=expected_result,
+                    overall_task=overall_task,
+                    suggested_improvement=suggested_improvement,
+                    context=context,
                     signal_type=signal_type,
-                    # Agent-facing param `overall_task` -> wire key `workflow`, the
-                    # same split the injected params use (`overall_task` ->
-                    # `call_workflow`): renaming the param must not move the key the
-                    # console groups on.
-                    # ⚠ SCRUBBED, which it was not until 2026-10-03. The
-                    # rename that produced this key (`d0a2630`) carried the
-                    # expression across unchanged and nothing named the
-                    # omission: SPEC §11.2(2) lists "annotation text" as
-                    # covered, so agent-supplied free text was reaching the
-                    # sink unredacted on a path the vendor believes is
-                    # scrubbed. And the tool-call path DOES scrub the same
-                    # semantic field (`middleware.py`'s `scrubbed_task` ->
-                    # `call_workflow`), so any scrubber that rewrites rather
-                    # than passes through emitted two different values for the
-                    # one grouping key the comment above says must stay
-                    # joinable — splitting the group across the two surfaces.
-                    workflow=scrubber(overall_task) if overall_task else None,
-                    suggested_improvement=(
-                        scrubber(suggested_improvement) if suggested_improvement else None
-                    ),
-                    context=scrubber(context) if context else None,
                 ),
             ),
             logger,

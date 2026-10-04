@@ -217,6 +217,15 @@ def scrub_or_none(
         # sink failure is one write per event; this can fire five times per
         # CALL, and runtime detection fires unconditionally — so the unbounded
         # form would put a line on stderr for every tool call forever.
+        #
+        # ⚠ That reasoning is about SINK failures and no longer covers the
+        # whole picture: since 2026-10-03 the result projections run inside
+        # ``safe_emit``'s thunk, so a persistently raising scrubber on the END
+        # leg now takes ``safe_emit``'s UNTHROTTLED ``logger.exception`` once
+        # per successful tool call. Left as it is deliberately — throttling
+        # there would change how a vendor sees an incident, and it is not a
+        # regression (before that change the same scrubber broke the call
+        # outright). Recorded so the asymmetry reads as a decision.
         if field not in _SCRUB_WARNED:
             _SCRUB_WARNED.add(field)
             logger.exception(

@@ -477,19 +477,21 @@ _EmitError = Callable[
         PrincipalWire | None,  # principal
         str,  # call_id
         str | None,  # transport_observed
-        # The result-derived members, as ONE value — and as a BUILDER rather
-        # than the value itself. They were three positional slots on this
-        # comment-named Callable, and the two failure shapes answer them
-        # DIFFERENTLY — so a mis-ordered argument at either call site was a
-        # silent wrong-field emit. `result_capture` was the second such member
-        # to land here; bundling them means the third widens a NamedTuple
-        # instead of this signature.
-        #
-        # ⚠ A thunk because resolving these CALLS the vendor's scrubber, and an
+        # ⚠ The RAW inputs to the result-derived members, never the members
+        # themselves. Resolving them CALLS the vendor's scrubber, and an
         # argument expression is evaluated in the caller's frame — outside the
-        # `safe_emit` thunk that is supposed to guard it. The emitter resolves
-        # it inside that thunk instead.
-        Callable[[], ErrorResultFields],
+        # `safe_emit` thunk meant to guard it. Passing a finished
+        # `ErrorResultFields`, or a thunk returning one, both type-check
+        # whether or not the scrubber already ran, so the discipline lived in a
+        # comment; passing the exception and the result makes it structural.
+        # `emit_after` takes its `result` raw for the same reason.
+        #
+        # Exactly one is set, and that is the RAISE/RETURN discriminator
+        # (SPEC §11.4.3): an exception means the handler raised and there is no
+        # result object to record; a result means it returned with the error
+        # flag set.
+        BaseException | None,  # raised
+        Any,  # result
     ],
     Awaitable[None],
 ]
@@ -761,17 +763,18 @@ def _wrap_tool_run(
             # original __cause__ when present so error_type reflects the real
             # exception class the vendor's fn actually raised.
             original_exc = exc.__cause__ if exc.__cause__ is not None else exc
-            # ⚠ A BUILDER, not a value. This scrubber call used to be an
-            # argument expression, evaluated in THIS frame before
-            # ``emit_error`` was entered, and this sits in an ``except`` with
-            # a ``raise`` under it — so a throwing scrubber REPLACED the
-            # vendor's own exception with ours. Same shape proven on the
-            # library path (`spikes/client_failopen_1003/`); missed here when
-            # the official adapter was converted (`eb4fb8f`), then guarded by
-            # a caller-side try/except (`cab0143`), now inside ``safe_emit``'s
-            # thunk like every other site. ``_seq`` is the one await left
-            # outside it and cannot raise (`_state.py`: a dict op under a
-            # lock), so the caller-side guard went with the change.
+            # ⚠ The exception goes in RAW. Its scrub used to be an argument
+            # expression, evaluated in THIS frame before ``emit_error`` was
+            # entered, and this sits in an ``except`` with a ``raise`` under
+            # it — so a throwing scrubber REPLACED the vendor's own exception
+            # with ours. Same shape proven on the library path
+            # (`spikes/client_failopen_1003/`); missed here when the official
+            # adapter was converted (`eb4fb8f`), then guarded by a caller-side
+            # try/except (`cab0143`), and now it cannot recur: the emitter owns
+            # the projection, so there is no expression here to get wrong.
+            # ``_seq`` is the one await left outside the thunk and cannot raise
+            # (`_state.py`: a dict op under a lock), so the caller-side guard
+            # went with the change.
             await emit_error(
                 call_session_id,
                 name,
@@ -782,12 +785,8 @@ def _wrap_tool_run(
                 call_principal,
                 call_id,
                 call_transport,
-                # No result object exists on a raise, so there is none to
-                # record and none to withhold: SPEC §11.4.3(1) leaves this
-                # shape unchanged under every mode, because an exception
-                # message is the vendor's own code speaking about a call that
-                # never returned. Both defaults say exactly that.
-                lambda: ErrorResultFields(error_body=str(scrubber(str(original_exc)))[:2000]),
+                original_exc,
+                None,
             )
             raise
         # MRTR (mcp>=2.0): an InputRequiredResult means the call paused mid-flight
@@ -814,11 +813,8 @@ def _wrap_tool_run(
                     call_principal,
                     call_id,
                     call_transport,
-                    lambda: returned_error_fields(
-                        mode=result_capture_mode,
-                        scrubber=scrubber,
-                        result=result,
-                    ),
+                    None,
+                    result,
                 )
             else:
                 await emit_after(
@@ -1159,7 +1155,7 @@ def _make_emitters(
         call_id: str,
         transport_observed: str | None,
     ) -> None:
-        # ⚠ Hoisted out of the build thunk: a lambda cannot `await`.
+        # ⚠ Hoisted out of the build thunk, because the thunk is sync.
         # A build that then fails burns this number, which is already
         # possible whenever `sink.write` fails, so the gap is not new.
         _seq_n = await _seq(session_id)
@@ -1169,7 +1165,7 @@ def _make_emitters(
         # scrubber escaped `safe_emit` entirely and broke the vendor's tool
         # call — `safe_emit` can only guard what the thunk it is handed
         # evaluates. A `def` rather than a lambda because the projection's
-        # result is read three times.
+        # result is read twice, and a lambda would run it once per read.
         def build() -> ToolCallEndEvent:
             end = end_result_fields(
                 mode=result_capture_mode,
@@ -1209,33 +1205,43 @@ def _make_emitters(
         principal: PrincipalWire | None,
         call_id: str,
         transport_observed: str | None,
-        fields: Callable[[], ErrorResultFields],
+        raised: BaseException | None,
+        result: Any,
     ) -> None:
         """One emitter for BOTH failure shapes (SPEC §11.4.3).
 
-        The caller resolves ``error_type`` / ``error_body`` / ``result``,
-        because only it knows whether it holds a live exception (``result``
-        stays None — there is no result object to record) or a returned
-        result whose error flag is set (``result`` carries the envelope).
-
-        ⚠ ``fields`` is a BUILDER, not a value. Both shapes resolve it by
-        calling the vendor's scrubber, and an argument expression is evaluated
-        in the CALLER's frame — so passing the finished ``ErrorResultFields``
-        ran that scrubber outside every guard, and on the RAISE leg a throw
-        there REPLACED the vendor's own exception with ours. Resolved inside
-        the thunk instead, so ``safe_emit`` drops the event.
+        The caller decides ``error_type`` and which shape this is, because only
+        it knows whether it holds a live exception or a returned result whose
+        error flag is set. It passes the RAW one of the two; the projection
+        onto ``error_body`` / ``result`` happens in the build thunk below, so
+        the vendor's scrubber runs inside ``safe_emit``'s guard. ``emit_after``
+        takes its ``result`` raw for the same reason.
 
         Dropping rather than degrading, for both shapes: ``error_body`` is a
         required ``str`` and ``""`` is exactly the withheld/no-message
         ambiguity §11.4.3 exists to warn about, so no value here honestly says
         "we could not scrub this". A dropped event asserts nothing."""
-        # ⚠ Hoisted out of the build thunk: a lambda cannot `await`.
+        # ⚠ Hoisted out of the build thunk, because the thunk is sync.
         # A build that then fails burns this number, which is already
         # possible whenever `sink.write` fails, so the gap is not new.
         _seq_n = await _seq(session_id)
 
         def build() -> ToolCallErrorEvent:
-            resolved = fields()
+            if raised is not None:
+                # No result object exists on a raise, so there is none to
+                # record and none to withhold: SPEC §11.4.3(1) leaves this
+                # shape unchanged under every mode, because an exception
+                # message is the vendor's own code speaking about a call that
+                # never returned. Both defaults say exactly that.
+                resolved = ErrorResultFields(error_body=str(scrubber(str(raised)))[:2000])
+            else:
+                # SPEC §11.4.3(2): both result-derived members, decided
+                # together, and the projection owns the scrubber call.
+                resolved = returned_error_fields(
+                    mode=result_capture_mode,
+                    scrubber=scrubber,
+                    result=result,
+                )
             return ToolCallErrorEvent(
                 tenant_id=tenant_id,
                 vendor_id=vendor_id,
