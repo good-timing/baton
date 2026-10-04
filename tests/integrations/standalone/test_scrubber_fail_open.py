@@ -111,11 +111,17 @@ async def test_a_throwing_scrubber_does_not_break_a_working_call(tmp_path: Path)
 async def test_a_throwing_scrubber_does_not_replace_the_vendors_error(
     tmp_path: Path,
 ) -> None:
-    """`safe_emit` on the RETURN shape — the scrubber runs inside the thunk.
+    """`safe_emit` on the RAISE shape — the scrubber runs inside the thunk.
 
-    ⚠ The site is `_error_result.py`, NOT the middleware's `except`: FastMCP
-    converts a raising tool to a returned-flag result before the middleware
-    sees it, and hands the scrubber its own wrapper text.
+    ⚠ **This docstring named the wrong site until 2026-10-03.** It said
+    ~~"`_error_result.py`, NOT the middleware's `except`: FastMCP converts a
+    raising tool to a returned-flag result before the middleware sees it"~~ —
+    measured on `fastmcp` 4.0.3, a raising tool propagates through `call_next`
+    as `ToolError` and this probe trips at `middleware.py`'s RAISE leg, inside
+    that `except`. The conversion claim is true of the `_error_result.py` site
+    the 10-02 spike measured and false as a statement about the seam, which is
+    why `returned_error_fields` went untested until a tool that RETURNS the
+    flag was driven (below).
     """
     thrower = _Thrower(VENDOR_MSG, contains=True)
     res = await _call(tmp_path / "p2.jsonl", thrower, fail=True)

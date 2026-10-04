@@ -413,3 +413,64 @@ async def test_a_throwing_scrubber_does_not_break_the_ANNOTATION_tool(
     assert "ok" in (res["text"] or "").lower() and "exploded" not in (res["text"] or ""), (
         f"fail-open broken on the annotation path: {res['text']} / {res['error']}"
     )
+
+
+async def _annotate_with(events_path: Path, scrubber: Any, **kwargs: Any) -> list[dict[str, Any]]:
+    """Drive `_annotate` on this adapter and return the events it wrote."""
+    import json
+
+    from baton.integrations.official import VendorConfig, install_baton
+    from baton.integrations.official._compat import MCPServerClass as FastMCP
+    from baton.sinks import FileSink
+    from tests._mcp_session import connected_session
+
+    mcp = FastMCP("annotate-scrub-official")
+
+    @mcp.tool()
+    def fetch(row: str) -> dict[str, Any]:
+        return {"record": "ok"}
+
+    handle = install_baton(
+        mcp,
+        VendorConfig(
+            vendor_id="scrub",
+            vendor_display_name="Scrub",
+            consent_token="ct_scrub",
+            sink=FileSink(str(events_path)),
+            tenant_id="t-scrub",
+            scrubber=scrubber,
+        ),
+    )
+    try:
+        async with connected_session(mcp) as client:
+            await client.call_tool(handle.annotation_tool_name, kwargs)
+    finally:
+        await handle.aclose()
+    return [json.loads(line) for line in events_path.read_text().splitlines() if line]
+
+
+async def test_the_annotation_workflow_field_goes_through_the_scrubber(
+    tmp_path: Path,
+) -> None:
+    """SPEC §11.2(2) — the official twin of the standalone test.
+
+    ⚠ Both adapters carried the same unscrubbed `workflow` and the same
+    one-line fix, so testing one would leave a SPEC §11.2(2) fix half proven on
+    a path the vendor believes is scrubbed.
+    """
+    events = await _annotate_with(
+        tmp_path / "w1.jsonl",
+        lambda v: v.replace("alice@acme.com", "[REDACTED]") if isinstance(v, str) else v,
+        user_goal="goal alice@acme.com",
+        overall_task="task alice@acme.com",
+        signal_type="failure",
+    )
+    ann = [e for e in events if e.get("event_type") == "annotation"]
+    assert ann, f"no annotation event written: {events!r}"
+    payload = ann[0]["payload"]
+    # The control: the field that was ALREADY scrubbed. Without it a scrubber
+    # the rig never wired up reads exactly like a working one.
+    assert payload["intent"] == "goal [REDACTED]", payload
+    assert payload["workflow"] == "task [REDACTED]", (
+        f"`workflow` bypassed the vendor's scrubber: {payload['workflow']!r}"
+    )
