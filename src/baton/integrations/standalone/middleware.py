@@ -654,16 +654,24 @@ class BatonMiddleware(Middleware):
         # as before. That is correct — there is no flag to misread — and it is
         # pinned positively by ``test_floor_has_no_flag_to_read``.
         if is_error_result(result):
-            # SPEC §11.4.3(2): both result-derived members, decided together.
-            err = returned_error_fields(
-                mode=self._result_capture_mode,
-                scrubber=self._scrubber,
-                result=result,
-            )
             seq_err = await self._next_seq(session_id)
-            await safe_emit(
-                self._sink,
-                lambda: ToolCallErrorEvent(
+
+            # SPEC §11.4.3(2): both result-derived members, decided together.
+            # ⚠ The projection runs INSIDE the thunk. It owns the scrubber call
+            # (`_error_result.py`), and as a statement out here a raising vendor
+            # scrubber escaped `safe_emit` and broke the vendor's tool call —
+            # the guard only covers what the thunk it is handed evaluates. A
+            # `def` rather than a lambda because the projection is read three
+            # times. Dropping rather than degrading: `error_body` is a required
+            # `str` and `""` is the withheld/no-message ambiguity §11.4.3 warns
+            # about, so no value here honestly says "we could not scrub this".
+            def build_err() -> ToolCallErrorEvent:
+                err = returned_error_fields(
+                    mode=self._result_capture_mode,
+                    scrubber=self._scrubber,
+                    result=result,
+                )
+                return ToolCallErrorEvent(
                     tenant_id=self._tenant_id,
                     vendor_id=self._vendor_id,
                     consent_token=self._consent_token,
@@ -683,21 +691,25 @@ class BatonMiddleware(Middleware):
                         result=err.result,
                         result_capture=err.result_capture,
                     ),
-                ),
-                logger,
-            )
+                )
+
+            await safe_emit(self._sink, build_err, logger)
             return result
 
-        end = end_result_fields(
-            mode=self._result_capture_mode,
-            scrubber=self._scrubber,
-            to_jsonable=self._result_to_jsonable,
-            result=result,
-        )
         seq_end = await self._next_seq(session_id)
-        await safe_emit(
-            self._sink,
-            lambda: ToolCallEndEvent(
+
+        # ⚠ The projection runs INSIDE the thunk, same rule as the error leg
+        # above: it owns the scrubber call (`_result_capture.py`), and out here
+        # a raising vendor scrubber escaped `safe_emit` and broke the vendor's
+        # tool call.
+        def build_end() -> ToolCallEndEvent:
+            end = end_result_fields(
+                mode=self._result_capture_mode,
+                scrubber=self._scrubber,
+                to_jsonable=self._result_to_jsonable,
+                result=result,
+            )
+            return ToolCallEndEvent(
                 tenant_id=self._tenant_id,
                 vendor_id=self._vendor_id,
                 consent_token=self._consent_token,
@@ -715,9 +727,9 @@ class BatonMiddleware(Middleware):
                     result=end.result,
                     result_capture=end.result_capture,
                 ),
-            ),
-            logger,
-        )
+            )
+
+        await safe_emit(self._sink, build_end, logger)
         return result
 
     # =========================================================================

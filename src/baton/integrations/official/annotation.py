@@ -40,7 +40,7 @@ from baton.integrations.official._tool_wrap import (
 )
 from baton.integrations.runtime_adapter import UNKNOWN_AGENT_RUNTIME, detect_agent_runtime
 from baton.scrub import identity_scrub
-from baton.sinks import Sink, safe_write
+from baton.sinks import Sink, safe_emit
 
 logger = logging.getLogger(__name__)
 
@@ -222,9 +222,21 @@ def register_annotation_tool(
         if signal_type is None:
             tracker.mark(session_id)
         seq = await counter.next(session_id)
-        await safe_write(
+        # safe_emit, not safe_write: the four `scrubber(...)` calls in the
+        # payload below are evaluated in THIS frame, before `safe_write` would
+        # be entered, so a raising vendor scrubber used to break `_annotate` —
+        # a tool on the VENDOR's server, so the vendor's end user sees their
+        # server erroring. Inside the thunk a throw drops the event instead,
+        # which is right here: `intent`, `signal_type` and
+        # `suggested_improvement` are one report and degrade together.
+        #
+        # No `scrub_or_none` statement above to pair with this, unlike the
+        # standalone surface: this path reads the meta for the RUNTIME only and
+        # deliberately emits no `runtime_meta` (see above), so every scrubber
+        # application on it is inside the thunk.
+        await safe_emit(
             sink,
-            AnnotationEvent(
+            lambda: AnnotationEvent(
                 tenant_id=tenant_id,
                 vendor_id=vendor_id,
                 consent_token=consent_token,

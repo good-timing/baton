@@ -212,3 +212,185 @@ async def test_a_throwing_scrubber_does_not_REPLACE_the_vendor_s_own_error(
         f"fail-open broken on the raise leg: the vendor's ValueError was "
         f"REPLACED by ours — the cause is {raised.__cause__!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The sites `safe_emit` did NOT reach until 2026-10-03 on this surface: the
+# `end_result_fields` / `returned_error_fields` projections and `_annotate`'s
+# own event, all evaluated in the CALLER's frame — a statement or an argument,
+# either way outside the thunk `safe_emit` guards
+# (`feedback_a_guard_does_not_cover_its_callers_arguments`).
+#
+# ⚠ The RAISE leg is NOT retested here: `cab0143` already guarded it with a
+# caller-side try/except and `test_a_throwing_scrubber_does_not_REPLACE_the_
+# vendor_s_own_error` above pins it. The builder change moved it inside the
+# thunk; that test keeps it honest either way.
+# ---------------------------------------------------------------------------
+
+RESULT_MARKER = "row-42-ok"  # appears ONLY in the tool's return value
+RETURN_REASON = "you do not have sufficient access"
+GOAL_MARKER = "ship-the-thing"
+
+
+class _DeepThrower:
+    """Identity, except where `trip` appears anywhere in the value's repr.
+
+    `end_result_fields` hands the scrubber the WHOLE jsonable result in one
+    call, so the str-only `_Thrower` never fires on a dict-returning tool.
+    """
+
+    def __init__(self, trip: str) -> None:
+        self._trip = trip
+        self.tripped = 0
+
+    def __call__(self, value: Any) -> Any:
+        if self._trip in repr(value):
+            self.tripped += 1
+            raise RuntimeError("scrubber exploded")
+        return value
+
+
+async def test_a_throwing_scrubber_on_the_END_leg_does_not_break_the_call(
+    tmp_path: Path,
+) -> None:
+    """`end_result_fields` — a statement before `safe_emit` until 10-03."""
+    thrower = _DeepThrower(RESULT_MARKER)
+    res = await _call(tmp_path / "p3.jsonl", thrower, fail=False)
+    assert thrower.tripped, "the probe never reached its target; the test proves nothing"
+    # ⚠ `res["ok"]` alone does NOT test this. On this surface an escaping throw
+    # is caught by `mcp`'s server and converted into an error RESULT, so
+    # `call_tool` returns and `ok` is True while the vendor's answer has been
+    # replaced by "scrubber exploded". The surviving ANSWER is the property.
+    assert RESULT_MARKER in (res["text"] or ""), (
+        f"fail-open broken on the END leg — vendor's result replaced: {res['text']}"
+    )
+
+
+async def _call_soft_fail(events_path: Path, scrubber: Any) -> dict[str, Any]:
+    """A tool that RETURNS the error flag instead of raising — SPEC §11.4.3(2)."""
+    import mcp.types as mcp_types
+
+    from baton.integrations.official import VendorConfig, install_baton
+    from baton.integrations.official._compat import MCPServerClass as FastMCP
+    from baton.sinks import FileSink
+    from tests._mcp_session import connected_session
+
+    mcp = FastMCP("failopen-official-soft")
+
+    @mcp.tool()
+    def soft_fail(row: str) -> Any:
+        return mcp_types.CallToolResult(
+            content=[mcp_types.TextContent(type="text", text=RETURN_REASON)],
+            isError=True,
+        )
+
+    handle = install_baton(
+        mcp,
+        VendorConfig(
+            vendor_id="failopen",
+            vendor_display_name="Fail Open",
+            consent_token="ct_failopen",
+            sink=FileSink(str(events_path)),
+            tenant_id="t-failopen",
+            scrubber=scrubber,
+        ),
+    )
+    out: dict[str, Any] = {"ok": False, "error": None, "text": ""}
+    try:
+        async with connected_session(mcp) as client:
+            try:
+                res = await client.call_tool("soft_fail", {"row": "42"})
+                out["ok"] = True
+                out["text"] = str(getattr(res, "content", res))
+            except Exception as exc:
+                out["error"] = str(exc)
+    finally:
+        await handle.aclose()
+    return out
+
+
+async def test_control_a_returned_error_flag_reaches_the_client(tmp_path: Path) -> None:
+    """Without this the RETURN-leg probe cannot tell a guard from a rig whose
+    tool never produced the flag."""
+    res = await _call_soft_fail(tmp_path / "c3.jsonl", lambda v: v)
+    assert RETURN_REASON in (res["text"] or "") or RETURN_REASON in (res["error"] or ""), res
+
+
+async def test_a_throwing_scrubber_on_the_RETURN_leg_does_not_break_the_call(
+    tmp_path: Path,
+) -> None:
+    """`returned_error_fields` — an ARGUMENT to `emit_error` until 10-03."""
+    thrower = _DeepThrower(RETURN_REASON)
+    res = await _call_soft_fail(tmp_path / "p4.jsonl", thrower)
+    assert thrower.tripped, "the probe never reached its target; the test proves nothing"
+    assert RETURN_REASON in (res["text"] or "") or RETURN_REASON in (res["error"] or ""), (
+        f"fail-open broken on the RETURN leg: {res['error']} / {res['text']}"
+    )
+
+
+async def _call_annotate(events_path: Path, scrubber: Any) -> dict[str, Any]:
+    from baton.integrations.official import VendorConfig, install_baton
+    from baton.integrations.official._compat import MCPServerClass as FastMCP
+    from baton.sinks import FileSink
+    from tests._mcp_session import connected_session
+
+    mcp = FastMCP("failopen-official-annotate")
+
+    @mcp.tool()
+    def fetch(row: str) -> dict[str, Any]:
+        return {"record": "ok"}
+
+    handle = install_baton(
+        mcp,
+        VendorConfig(
+            vendor_id="failopen",
+            vendor_display_name="Fail Open",
+            consent_token="ct_failopen",
+            sink=FileSink(str(events_path)),
+            tenant_id="t-failopen",
+            scrubber=scrubber,
+        ),
+    )
+    out: dict[str, Any] = {"ok": False, "error": None, "text": ""}
+    try:
+        async with connected_session(mcp) as client:
+            try:
+                res = await client.call_tool(
+                    handle.annotation_tool_name,
+                    {"user_goal": GOAL_MARKER, "signal_type": "failure"},
+                )
+                out["ok"] = True
+                out["text"] = str(getattr(res, "content", res))
+            except Exception as exc:
+                out["error"] = str(exc)
+    finally:
+        await handle.aclose()
+    return out
+
+
+async def test_control_the_annotation_tool_accepts_a_goal(tmp_path: Path) -> None:
+    res = await _call_annotate(tmp_path / "c4.jsonl", lambda v: v)
+    assert res["ok"], res["error"]
+    assert "ok" in (res["text"] or "").lower(), (
+        f"the probe below reads this text; name it here: {res['text']}"
+    )
+
+
+async def test_a_throwing_scrubber_does_not_break_the_ANNOTATION_tool(
+    tmp_path: Path,
+) -> None:
+    """`_annotate`'s own `AnnotationEvent(...)`, built in the caller's frame and
+    handed to `safe_write` until 10-03.
+
+    ⚠ `_annotate` is a tool on the VENDOR's server, so a throw here surfaces to
+    their end user as their server erroring.
+    """
+    thrower = _Thrower(GOAL_MARKER)
+    res = await _call_annotate(tmp_path / "p5.jsonl", thrower)
+    assert thrower.tripped, "the probe never reached its target; the test proves nothing"
+    # Same trap as the END leg: an escaping throw comes back as an error RESULT
+    # whose text is ours, so `ok` is True either way. `_annotate` answers
+    # `{"ok": True}`; that is what must survive.
+    assert "ok" in (res["text"] or "").lower() and "exploded" not in (res["text"] or ""), (
+        f"fail-open broken on the annotation path: {res['text']} / {res['error']}"
+    )

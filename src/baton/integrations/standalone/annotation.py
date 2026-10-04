@@ -45,8 +45,8 @@ from baton.integrations.standalone._session import (
     observe_transport,
     resolve_call_session_id,
 )
-from baton.scrub import identity_scrub
-from baton.sinks import Sink, safe_write
+from baton.scrub import identity_scrub, scrub_or_none
+from baton.sinks import Sink, safe_emit
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +131,18 @@ def register_annotation_tool(
         )
         # Coordinates round before the vendor's scrubber, whatever it is
         # (``_meta_coords``); the detect above read the raw meta.
-        scrubbed_meta = (
-            scrubber(round_meta_coordinates(meta_dict)) if meta_dict is not None else None
+        #
+        # scrub_or_none, not a bare call: this is a plain statement OUTSIDE the
+        # build thunk below, and it stays out there deliberately — it must keep
+        # scrubbing BEFORE the awaits that follow, one of which runs the
+        # vendor's own `resolve_principal` hook. `None` loses `runtime_meta`
+        # alone, which costs a join and degrades this surface to what
+        # `official/annotation.py` already emits.
+        scrubbed_meta = scrub_or_none(
+            scrubber,
+            round_meta_coordinates(meta_dict) if meta_dict is not None else None,
+            "annotation _meta",
+            logger,
         )
 
         # SPEC §3.4's ladder, resolved by the SAME function the middleware's
@@ -168,9 +178,16 @@ def register_annotation_tool(
             logger=logger,
             warned=warned,
         )
-        await safe_write(
+        # safe_emit, not safe_write: the four `scrubber(...)` calls in the
+        # payload below are evaluated in THIS frame, before `safe_write` would
+        # be entered, so a raising vendor scrubber used to break `_annotate` —
+        # a tool on the VENDOR's server, so the vendor's end user sees their
+        # server erroring. Inside the thunk a throw drops the event instead,
+        # which is right here: `intent`, `signal_type` and
+        # `suggested_improvement` are one report and degrade together.
+        await safe_emit(
             sink,
-            AnnotationEvent(
+            lambda: AnnotationEvent(
                 tenant_id=tenant_id,
                 vendor_id=vendor_id,
                 consent_token=consent_token,
