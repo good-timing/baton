@@ -29,6 +29,8 @@ async def your_tool(...): ...
 
 On `mcp` 1.x the class is `mcp.server.fastmcp.FastMCP`; on standalone `fastmcp` it is `fastmcp.FastMCP`. `install_baton` detects which you passed and raises `TypeError`, before mutating anything, if it is neither.
 
+**One gap worth knowing about on standalone `fastmcp`, and it is not ours to fix.** If a tool declares an output schema and your handler returns the right SHAPE with wrong VALUES — `dict[str, int]` and you return `{"a": "oops"}` — `fastmcp` does not check, so your server returns a success and Baton records one. The failed call shows as `tool_call_end`, so do not build an alert on that. Only the MCP client catches it, and only if it validates. A result that cannot be structured content at all (a list where a dict is required) IS rejected by `fastmcp` inside the call, and Baton records that as a failure. The `mcp` package checks values inside the server, so the same call is a failure there. Measured on `fastmcp` 2.14.7 / 3.4.2 / 4.0.x and `mcp` 1.20.0 / 2.2.0.
+
 Copy the DSN from **/account**. It packs four values: the collector to send to, your workspace, this server, and the key that binds them. The SDK unpacks them and builds the sink itself. Tools registered before and after the call are both captured.
 
 **Installing changes what your server advertises.** Each tool handler is wrapped, a `<vendor>_annotate` tool is registered, the server's `instructions` are rewritten, and three intent parameters are added to every tool's schema and stripped again before your handler sees them. [What gets injected](https://goodtiming.ai/docs.html#injected-tools).
