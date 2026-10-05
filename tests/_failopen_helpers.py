@@ -19,8 +19,9 @@ that need it.
 throws inside the `safe_emit` build thunks, which drop the event by design — so
 the only surviving assertion is "the call worked" and every site becomes
 indistinguishable. Throwing on one value keeps the rest of the pipeline, which
-lets each leg assert that ITS field degraded. (The throw-EVERYTHING matrix is a
-separate, still-unbuilt thing: see `fail_open_capture_boundary.md`.)
+lets each leg assert that ITS field degraded. ``ThrowAll`` is the opposite tool
+for the opposite question: the ``test_*fail_open_matrix.py`` files use it to ask
+only "did the vendor's caller see any difference", on every surface and leg.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ __all__ = [
     "FLAG_IS_EXPRESSIBLE",
     "SENTINEL",
     "SelectiveThrower",
+    "ThrowAll",
     "error_call_tool_result",
     "error_result",
 ]
@@ -89,6 +91,22 @@ class SelectiveThrower:
             self.tripped_on = value
             raise RuntimeError(SENTINEL)
         return value
+
+
+class ThrowAll:
+    """Raises on every value it is handed, and remembers each one."""
+
+    def __init__(self) -> None:
+        self.seen: list[Any] = []
+
+    def saw(self, marker: str) -> bool:
+        """Whether a value carrying ``marker`` reached the scrubber. A bare
+        call count is satisfied by the params scrub alone on every leg."""
+        return any(marker in repr(value) for value in self.seen)
+
+    def __call__(self, value: Any) -> Any:
+        self.seen.append(value)
+        raise RuntimeError(SENTINEL)
 
 
 def error_result(text: str) -> Any:
