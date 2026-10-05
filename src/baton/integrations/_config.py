@@ -12,11 +12,7 @@ from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
 from baton._dsn import parse_dsn, resolve_dsn, select_dsn
 from baton._result_capture import ResultCaptureMode, validate_mode
 from baton.events import DEFAULT_CONSENT_TOKEN
-from baton.integrations.identity_adapter import (
-    PRINCIPAL_ID_MODE_HASHED,
-    PRINCIPAL_ID_MODES,
-    ResolvePrincipalHook,
-)
+from baton.integrations.identity_adapter import ResolvePrincipalHook
 from baton.sinks import HttpSink, Sink, StdoutSink
 
 # ``_VENDOR_ID_PATTERN`` is imported, not defined here, because a DSN's server
@@ -261,39 +257,6 @@ def _resolve_tenant_id(explicit: str | None, vendor_id: str) -> str:
     return vendor_id
 
 
-def _resolve_principal_id_hmac_key(explicit: bytes | str | None, *, mode: str) -> bytes | None:
-    """``principal_id_hmac_key``: explicit → ``BATON_PRINCIPAL_ID_HMAC_KEY`` → ``None``.
-
-    In hashed mode with neither set, a leftover ``BATON_USER_ID_HMAC_KEY`` (the
-    pre-0.8.6 name, which is NOT read) logs a WARNING: identity fails open, so
-    nothing else would say it stopped. ``mode`` is required so no caller can
-    skip that distinction.
-
-    ``None`` is a supported state, not an error: it means hashed-mode identity
-    is off and events emit without ``principal``.
-    """
-    if explicit is not None:
-        # A ``str`` is encoded rather than refused, because the env path has
-        # always taken one and a vendor moving a working secret from
-        # ``BATON_PRINCIPAL_ID_HMAC_KEY`` into the field would otherwise hit
-        # ``hmac.new``'s "expected bytes" TypeError — and only in the
-        # deployment shape this field exists for (HTTP + OAuth), so never in
-        # their local testing. Same secret, same bytes, either way.
-        return explicit.encode("utf-8") if isinstance(explicit, str) else explicit
-    from_env = os.environ.get("BATON_PRINCIPAL_ID_HMAC_KEY")
-    if (
-        mode == PRINCIPAL_ID_MODE_HASHED
-        and not from_env
-        and os.environ.get("BATON_USER_ID_HMAC_KEY")
-    ):
-        logger.warning(
-            "baton: BATON_USER_ID_HMAC_KEY is set, but it was renamed to "
-            "BATON_PRINCIPAL_ID_HMAC_KEY in 0.8.6 and is no longer read, so hashed "
-            "principal_id is OFF. Set BATON_PRINCIPAL_ID_HMAC_KEY to turn it back on."
-        )
-    return from_env.encode("utf-8") if from_env else None
-
-
 @dataclass(kw_only=True)
 class VendorConfig:
     """Vendor-side configuration for ``install_baton``.
@@ -403,7 +366,7 @@ class VendorConfig:
     value then.
 
     **A mode string, not a boolean**, matching ``intent_param_mode`` /
-    ``proactive_mode`` / ``principal_id_mode``, and leaving room for the
+    ``proactive_mode``, and leaving room for the
     content ladder's partial rung as a third value rather than a second field.
 
     **Not a scrubber rule, deliberately** (SPEC §7). A scrubber TRANSFORMS a
@@ -463,65 +426,6 @@ class VendorConfig:
     running both also makes two competing ``workflow`` labels that a consumer
     has to arbitrate."""
 
-    principal_id_mode: str = "hashed"
-    """How a resolved principal reaches the wire (SPEC §11.4 ``principal.form``).
-    ``"hashed"`` (default) emits ``<scheme>:<hex>`` — an HMAC computed in this
-    process, so the collector only ever sees the pseudonym. ``"raw"`` emits the
-    principal verbatim.
-
-    **``"raw"`` puts real identities in the collector's database.** It
-    is the right choice for a vendor instrumenting a server whose users are
-    themselves, or one with no residency obligation who would rather read a
-    name than a hash — and the wrong choice by default, which is why it is not
-    the default. On a multi-tenant vendor server the principals are the
-    VENDOR's customers, and shipping their identities to a third party is a
-    decision only that vendor can make.
-
-    Hashed mode needs ``principal_id_hmac_key``; raw mode needs nothing. Which
-    one was emitted is ``principal.form`` on the envelope, and that member is
-    the ONLY legal discriminator.
-
-    ⚠ **A consumer MUST NOT read the classification off the value's shape**
-    (SPEC §11.4). This paragraph used to say the opposite — that a scheme
-    prefix made the two distinguishable "without a second field" — and that
-    rule cannot work: ``mailto:jane@example.com``, ``acct:…``, ``urn:uuid:…``
-    and ``https://accounts.example.com/…`` are all legitimate OIDC subject
-    forms, so anything testing for "letters then a colon" classifies a live
-    email address as a safe pseudonym. The prefix that remains on a hashed
-    value names the HMAC key generation and nothing else."""
-
-    principal_id_hmac_key: bytes | str | None = field(default=None, repr=False)
-    """Secret keying the ``principal.id`` HMAC in ``"hashed"`` mode.
-
-    ⚠ **``repr=False`` — PRE-EXISTING, and not part of the DSN lane that
-    brought the other two.** It is the same defect in the same ``repr`` for the
-    same reason, found while fixing them: a field whose own docstring says the
-    vendor holds it and Baton never sees it has no business printing itself.
-
-    Resolved explicit → ``BATON_PRINCIPAL_ID_HMAC_KEY`` → ``None``. Unset means
-    hashed identity is fail-open-skipped: ``principal`` is dropped, events still
-    emit, and it is logged once. ``principal`` is additive analytics — never a
-    consent or authorization gate.
-
-    **The vendor generates and holds this; Baton never sees it.** That is what
-    makes the pseudonym real: if the collector held the key it could hash a
-    list of candidate identities and reverse the column, which is exactly what
-    hashing at the edge exists to prevent.
-
-    ⚠ **Use a high-entropy secret** — ``openssl rand -hex 32`` or equivalent.
-    The input space here is emails and user ids, which is small and guessable,
-    so a memorable key defeats the entire purpose: anyone holding the database
-    could dictionary-attack the column. A weak key is not a weaker pseudonym,
-    it is none.
-
-    ⚠ **Rotation is a HARD discontinuity and is no longer marked anywhere.**
-    Cut to a new key and every principal under this tenant gets a new value,
-    with nothing on the wire saying a rotation happened — the scheme prefix that
-    used to say so came off the value at 0.8.11 (SPEC §11.4, §13). The raw value
-    was never stored, so nothing can be re-hashed and no consumer can match the
-    new digests to the old ones. Accepted, and the cost of rotating: a reader
-    sees that tenant's whole population replaced."""
-
     resolve_principal: ResolvePrincipalHook | None = None
     """Optional vendor-supplied identity resolver — the ONLY source of
     ``principal`` (SPEC §11.4). Unset, no event carries one.
@@ -531,6 +435,11 @@ class VendorConfig:
     ``None``, a wrong type, or a raised exception (logged, never propagated)
     means the event ships without a ``principal``. Sync or async. Import the
     return type as ``from baton import Principal``.
+
+    The SDK sends what the hook returns and does nothing else to it: the id
+    as given, ``Principal.form`` to say whether the hook hashed it, and
+    ``display_name`` for what a page shows. A vendor who must not send real
+    identities hashes inside the hook and returns ``form="hashed"``.
 
     **Two ready-made hooks cover the OAuth case**: pass
     ``baton.principal_from_oauth_sub`` to key on the token's subject, or
@@ -544,8 +453,6 @@ class VendorConfig:
     event. Until this release the SDK read the token's ``sub`` itself when no
     hook answered and stamped it ``"attested"``; that fallback is gone, so a
     vendor who relied on it passes ``principal_from_oauth_sub`` explicitly.
-
-    ⚠ **``principal_id_mode="raw"`` keeps ``source``**, as every mode does.
 
     ⚠ **It is not ``default_agent_runtime`` returning.** That was a static
     value set once at install, asserting over whatever a client declared per
@@ -697,7 +604,7 @@ def resolve_config(config: VendorConfig) -> VendorConfig:
     # ⚠ **Validated BEFORE the sink is built, and the order is the point.**
     # ``HttpSink.__init__`` eagerly constructs an ``httpx.AsyncClient``, so a
     # config that fails validation for an unrelated reason — an emptied
-    # consent_token, a bad principal_id_mode — used to leave that client
+    # consent_token, a bad intent_param_mode — used to leave that client
     # unreachable and never closed, printing an unclosed-transport warning on
     # top of the real error. The callers validate again; it is pure, and a
     # second call costs nothing next to a resource that outlives its error.
@@ -740,16 +647,6 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             "without one MUST be rejected by the consumer per SPEC §2.3. Leave "
             "it unset to take the SDK's default."
         )
-    if config.principal_id_hmac_key is not None and not isinstance(
-        config.principal_id_hmac_key, bytes | bytearray | str
-    ):
-        raise ValueError(
-            f"principal_id_hmac_key must be bytes or str, got "
-            f"{type(config.principal_id_hmac_key).__name__} — it keys an HMAC, and "
-            f"a wrong type fails at the FIRST AUTHENTICATED CALL rather than "
-            f"here, which is a deployment a vendor cannot reach in local "
-            f"testing."
-        )
     if config.resolve_principal is not None and not callable(config.resolve_principal):
         raise ValueError(
             f"VendorConfig.resolve_principal must be callable, got "
@@ -758,12 +655,6 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             f"silently absent for the life of the process — and that guard is "
             f"there for a vendor's resolver raising, not for the field holding "
             f"the wrong thing."
-        )
-    if config.principal_id_mode not in PRINCIPAL_ID_MODES:
-        raise ValueError(
-            f"principal_id_mode {config.principal_id_mode!r} must be one of "
-            f"{sorted(PRINCIPAL_ID_MODES)} — 'hashed' emits an HMAC pseudonym, "
-            f"'raw' emits the principal verbatim to the collector."
         )
     validate_mode(config.result_capture_mode, field="VendorConfig.result_capture_mode")
     if config.intent_param_mode not in _INTENT_PARAM_MODES:

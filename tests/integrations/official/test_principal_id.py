@@ -49,8 +49,6 @@ from tests.integrations.official._fake_context import _FakeContextV1, _FakeConte
 #: kwarg — so a token built below simply has no claims to read.
 _CLAIMS_SUPPORTED = "claims" in AccessToken.model_fields
 
-HMAC_KEY = b"official-principal-id-key"
-
 
 def _read(path: Path) -> list[dict[str, Any]]:
     with open(path) as f:
@@ -71,8 +69,6 @@ async def _drive(
     events_path: Path,
     token: Any,
     *,
-    mode: str = "hashed",
-    hmac_key: bytes | None = HMAC_KEY,
     resolve_principal: Any = principal_from_oauth_sub,
     monkeypatch: pytest.MonkeyPatch,
 ) -> list[dict[str, Any]]:
@@ -95,8 +91,6 @@ async def _drive(
             consent_token="ct_uid",
             sink=FileSink(str(events_path)),
             tenant_id="tenant-official",
-            principal_id_mode=mode,
-            principal_id_hmac_key=hmac_key,
             resolve_principal=resolve_principal,
         ),
     )
@@ -149,8 +143,7 @@ async def test_every_event_of_a_call_carries_the_same_principal_id(
     assert "tool_call_start" in by_type, f"no tool_call_start, got {sorted(by_type)}"
 
     if _CLAIMS_SUPPORTED:
-        assert all(v is not None and ":" not in v for v in by_type.values()), by_type
-        assert len(set(by_type.values())) == 1, f"one caller, two principal_ids: {by_type}"
+        assert set(by_type.values()) == {"alice"}, by_type
     else:
         # mcp < 1.27: the field cannot be carried, so it is absent everywhere.
         # Absent, not wrong — and above all not an exception.
@@ -177,16 +170,14 @@ async def test_a_vendor_subclass_carries_identity_on_every_version(
         VendorToken(token="jwt", client_id="acme-app", scopes=[], claims={"sub": "carol"}),
         monkeypatch=monkeypatch,
     )
-    principal_ids = {_pid(ev) for ev in events}
-    assert principal_ids != {None}, "a vendor-declared claims field was not read"
-    assert all(v is not None and ":" not in v for v in principal_ids), principal_ids
+    assert {_pid(ev) for ev in events} == {"carol"}, "a vendor-declared claims field was not read"
 
 
 async def test_a_token_with_no_hook_emits_without_the_field(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The deleted rung, on every matrix leg: a usable token is not read unless
-    the vendor's hook reads it."""
+    """On every matrix leg: a usable token is not read unless the vendor's
+    hook reads it."""
     events = await _drive(
         tmp_path / "e.jsonl",
         _token(claims={"sub": "alice", "iss": "https://idp"}),
@@ -207,74 +198,18 @@ async def test_an_unauthenticated_call_emits_without_the_field(
     )
 
 
-async def test_the_raw_principal_never_reaches_the_wire_in_hashed_mode(
+async def test_the_form_the_hook_states_is_on_every_event_with_the_id_untouched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Asserted against the RAW FILE, not the parsed field.
-
-    The residency contract is about bytes leaving the process, so checking
-    ``ev["principal_id"]`` alone would miss the identity riding some other key —
-    which is exactly the leak baton-extmcp 0.2.0 had to remove, where raw
-    identity travelled in ``runtime_meta`` while ``principal_id`` looked correct.
-    """
-    events_path = tmp_path / "e.jsonl"
-    await _drive(
-        events_path,
-        _token(claims={"sub": "alice@acme.example", "iss": "https://idp.example"}),
-        monkeypatch=monkeypatch,
-    )
-    blob = events_path.read_text()
-    assert "alice@acme.example" not in blob
-    assert "idp.example" not in blob
-
-
-async def test_raw_mode_puts_the_principal_on_the_wire_deliberately(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The opt-in half. If this ever passes by accident on the default config,
-    the default has changed and the residency posture went with it."""
-    if not _CLAIMS_SUPPORTED:
-        pytest.skip("mcp < 1.27 cannot carry claims; nothing to read in either mode")
+    from baton.identity import Principal
 
     events = await _drive(
         tmp_path / "e.jsonl",
-        _token(claims={"sub": "alice@acme.example"}),
-        mode="raw",
-        hmac_key=None,
+        None,
+        resolve_principal=lambda _ctx: Principal(principal_id="9F2C-Digest", form="hashed"),
         monkeypatch=monkeypatch,
     )
-    principal_ids = {_pid(ev) for ev in events}
-    assert principal_ids == {"alice@acme.example"}, principal_ids
-
-
-async def test_hashed_mode_without_a_key_still_emits_events(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Fail-open-skip: ``principal_id`` is additive analytics, never a gate."""
-    events = await _drive(
-        tmp_path / "e.jsonl",
-        _token(claims={"sub": "alice"}),
-        hmac_key=None,
-        monkeypatch=monkeypatch,
-    )
-    assert {_pid(ev) for ev in events} == {None}
-    assert any(ev["event_type"] == "tool_call_end" for ev in events)
-
-
-def test_an_invalid_mode_is_refused_at_install() -> None:
-    """D3's refusal posture: a misconfiguration that would silently emit the
-    wrong thing fails loudly at install instead."""
-    mcp = FastMCP("principal-id-invalid")
-    with pytest.raises(ValueError, match="principal_id_mode"):
-        install_baton(
-            mcp,
-            VendorConfig(
-                vendor_id="uid",
-                vendor_display_name="Identity Vendor",
-                consent_token="ct_uid",
-                principal_id_mode="plaintext",
-            ),
-        )
+    assert {(_pid(ev), _member(ev, "form")) for ev in events} == {("9F2C-Digest", "hashed")}
 
 
 # ---------------------------------------------------------------------------
@@ -286,9 +221,9 @@ def test_an_invalid_mode_is_refused_at_install() -> None:
 # ``tests/integrations/official/`` and nothing else, so nothing else in the
 # suite exercises the official adapter against mcp 1.20 / 1.25 / 1.27 / 2.0.
 #
-# The version-sensitive part is not the hashing — it is that a hook makes
-# ``_extract_headers_from_context`` run on the ANNOTATION path for the first
-# time, and header access differs across the mcp majors (1.x has no
+# The version-sensitive part is that a hook makes
+# ``_extract_headers_from_context`` run on the ANNOTATION path, and header
+# access differs across the mcp majors (1.x has no
 # ``Context.headers``; the extractor reaches through ``request_context.request``
 # and must swallow the ``ValueError`` that raises outside a live request).
 # ``connected_session`` is in-process with no HTTP request, which is exactly
@@ -323,28 +258,16 @@ def _per_call_hook() -> Any:
 async def test_a_hook_carries_identity_on_every_leg_including_the_claimless_ones(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``token=None`` is stdio, and it is also 1.20/1.25 with nothing readable.
-
-    The expected value is computed here rather than pattern-matched, so a hash
-    that is merely *present* cannot pass for the right one.
-    """
-    from baton.identity import hash_principal_id
-
-    expected = hash_principal_id("employee-4417", tenant_id="tenant-official", key=HMAC_KEY)
+    """``token=None`` is stdio, and it is also 1.20/1.25 with nothing readable."""
     events = await _drive(
         tmp_path / "e.jsonl",
         None,
         resolve_principal=_fixed_hook("employee-4417"),
         monkeypatch=monkeypatch,
     )
-    got = {_pid(ev) for ev in events}
-    assert got == {expected}, got
-    # No tag rides the value from 0.8.11: an asserted principal hashes to the
-    # same bare digest as an attested one, and `source` carries the provenance
-    # the tag used to. Asserted negatively so a reintroduced tag of ANY letter
-    # reds here.
-    assert ":" not in expected
+    assert {_pid(ev) for ev in events} == {"employee-4417"}
     assert {_member(ev, "source") for ev in events} == {"asserted"}
+    assert {_member(ev, "form") for ev in events} == {"raw"}
 
 
 async def test_the_annotation_path_consults_the_hook_on_every_leg(

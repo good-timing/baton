@@ -418,9 +418,9 @@ def test_the_mode_is_validated_at_the_DOORS_and_not_re_checked_inside() -> None:
     ⚠ This test replaced one that asserted `BatonMiddleware` and
     `install_wraps` ALSO refuse an unregistered mode. They did, for one commit,
     and the justification was circular: the seams were guarded because the test
-    suite constructs them directly, which is not a vendor. The two sibling
-    modes (`intent_param_mode`, `principal_id_mode`) are threaded through those
-    same seams and validated at the config door only; adding seam checks here
+    suite constructs them directly, which is not a vendor. The sibling mode
+    `intent_param_mode` is threaded through those same seams and validated at
+    the config door only; adding seam checks here
     made the official path validate twice on every real install, and would have
     made the reserved partial rung a four-place edit.
 

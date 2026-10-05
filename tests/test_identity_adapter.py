@@ -28,18 +28,13 @@ import pytest
 
 from baton import principal_from_oauth_email, principal_from_oauth_sub
 from baton.events import PrincipalWire
-from baton.identity import Principal, hash_principal_id
+from baton.identity import Principal
 from baton.integrations._config import SessionResolutionContext
 from baton.integrations.identity_adapter import (
-    PRINCIPAL_ID_MODE_HASHED,
-    PRINCIPAL_ID_MODE_RAW,
-    RAW_PRINCIPAL_ID_MAX_LEN,
+    PRINCIPAL_ID_MAX_LEN,
     resolve_call_principal,
     token_claims,
 )
-
-KEY = b"unit-test-key"
-TENANT = "tenant-a"
 
 
 @dataclass
@@ -75,17 +70,13 @@ def _sub(token: Any) -> Principal | None:
     return principal_from_oauth_sub(_ctx(token))
 
 
-def _resolve(token: Any, hook: Any = principal_from_oauth_sub, **kw: Any) -> PrincipalWire | None:
+def _resolve(token: Any, hook: Any = principal_from_oauth_sub) -> PrincipalWire | None:
     """The whole call-level path a vendor gets by passing the hook."""
-    params: dict[str, Any] = {
-        "mode": PRINCIPAL_ID_MODE_HASHED,
-        "tenant_id": TENANT,
-        "hmac_key": KEY,
-        "logger": logging.getLogger("test"),
-        "warned": set(),
-    }
-    params.update(kw)
-    return asyncio.run(resolve_call_principal(hook=hook, hook_context=_ctx(token), **params))
+    return asyncio.run(
+        resolve_call_principal(
+            hook=hook, hook_context=_ctx(token), logger=logging.getLogger("test")
+        )
+    )
 
 
 # --------------------------------------------------------------------------
@@ -96,8 +87,7 @@ def _resolve(token: Any, hook: Any = principal_from_oauth_sub, **kw: Any) -> Pri
 def test_the_subject_claim_is_what_is_read() -> None:
     principal = _sub(_Token(claims={"sub": "alice", "iss": "https://idp"}))
     assert principal is not None
-    assert principal.principal_id == "alice"
-    assert principal.issuer == "https://idp"
+    assert principal == Principal(principal_id="alice")
 
 
 def test_client_id_is_never_the_identity() -> None:
@@ -169,106 +159,39 @@ def test_a_vendor_subclass_declaring_claims_is_read_on_any_version() -> None:
 
 
 # --------------------------------------------------------------------------
-# The issuer fold
-# --------------------------------------------------------------------------
-
-
-def test_two_issuers_with_one_sub_are_two_different_users() -> None:
-    """``sub`` is unique only per issuer (RFC 7519 §4.1.2, and the ``mcp``
-    SDK's own comment on ``AccessToken.subject``).
-
-    A vendor running two identity providers can hand the same ``sub`` to two
-    different people. Without the issuer folded in they hash to one
-    ``principal_id`` — a silent merge, invisible in every total.
-    """
-    a = _resolve(_Token(claims={"sub": "alice", "iss": "https://idp-one"}))
-    b = _resolve(_Token(claims={"sub": "alice", "iss": "https://idp-two"}))
-    assert a != b
-
-
-def test_issuerless_hashes_are_byte_identical_to_the_pre_issuer_form() -> None:
-    """The compatibility guarantee that lets this diverge from baton-proxy.
-
-    Every hash the proxy and extmcp have emitted since 0.5.0 is issuer-less. If
-    adding the parameter changed those values, one ``h1:`` tag would name two
-    different derivations across the family — precisely what the scheme prefix
-    exists to prevent.
-
-    ⚠ **This assertion is self-referential** — both sides come from this
-    module, so it proves the default is inert and nothing about agreeing with
-    the sibling sensor. The frozen cross-repo vector at the bottom of this file
-    is what covers that, and it was added on 2026-09-10 when ``baton-proxy``
-    finally took the same ``issuer`` parameter.
-    """
-    assert hash_principal_id("alice", tenant_id=TENANT, key=KEY) == hash_principal_id(
-        "alice", tenant_id=TENANT, key=KEY, issuer=None
-    )
-
-
-def test_the_tenant_is_still_folded_in() -> None:
-    a = _resolve(_Token(claims={"sub": "alice"}), tenant_id="tenant-a")
-    b = _resolve(_Token(claims={"sub": "alice"}), tenant_id="tenant-b")
-    assert a != b
-
-
-# --------------------------------------------------------------------------
 # Modes
 # --------------------------------------------------------------------------
 
 
-def test_hashed_mode_emits_a_BARE_digest_and_never_the_principal() -> None:
-    """SPEC 0.8.11: no tag, no prefix, no scheme — 64 hex characters and nothing
-    else. ⚠ This test asserted ``startswith("h1:")`` until 0.8.11; it is
-    inverted rather than deleted, because the property it guards is the same one
-    (what may appear in ``id``) read the other way round.
+def test_the_id_is_sent_exactly_as_the_hook_returned_it() -> None:
+    """No canonicalization, no issuer concatenated, and ``form`` is ``"raw"``
+    unless the hook says otherwise."""
+    got = _resolve(_Token(claims={"sub": " Alice@Acme.COM", "iss": "https://idp"}))
+    assert got == PrincipalWire(id=" Alice@Acme.COM", source="asserted", form="raw")
 
-    **The colon check is the durable half.** Testing "not ``h1:``" would pass a
-    value tagged ``h2:``, ``v1:`` or anything a future edit invents; a value
-    carrying no colon at all cannot carry a scheme of any shape. ``form`` is
-    what says it is a pseudonym now, and the value says nothing about itself.
-    """
-    got = _resolve(_Token(claims={"sub": "alice@acme.com", "iss": "https://idp"}))
+
+def _stating(form: Any) -> Any:
+    return lambda _ctx: Principal(principal_id="9f2c-vendor-digest", form=form)
+
+
+def test_a_form_the_hook_states_reaches_the_wire_with_the_id_untouched() -> None:
+    got = _resolve(None, hook=_stating("hashed"))
+    assert got == PrincipalWire(id="9f2c-vendor-digest", source="asserted", form="hashed")
+
+
+@pytest.mark.parametrize("form", ["HASHED", "encrypted", "", None, 7, ["hashed"]])
+def test_an_unregistered_form_is_sent_as_raw(form: Any, caplog: pytest.LogCaptureFixture) -> None:
+    """SPEC §11.4: anything not ``"hashed"`` is personal data."""
+    with caplog.at_level(logging.WARNING):
+        got = _resolve(None, hook=_stating(form))
+    assert got is not None and got.form == "raw" and got.id == "9f2c-vendor-digest"
+    assert "form" in caplog.text
+
+
+def test_the_id_is_capped() -> None:
+    got = _resolve(_Token(claims={"sub": "x" * 500}))
     assert got is not None
-    assert ":" not in got.id, "a tag came back onto the value"
-    assert len(got.id) == 64 and all(c in "0123456789abcdef" for c in got.id)
-    assert got.form == "hashed"
-    assert got.source == "asserted"
-    # The whole object, serialised — a member that leaked the subject would
-    # pass a check that only read `id`.
-    blob = got.model_dump_json()
-    assert "alice" not in blob
-    assert "acme.com" not in blob
-    assert "idp" not in blob
-
-
-def test_raw_mode_emits_the_subject_verbatim() -> None:
-    """Verbatim: no canonicalization, no issuer concatenated.
-
-    Both would defeat the only reason to choose this mode — it exists so a
-    human can read the value.
-    """
-    got = _resolve(
-        _Token(claims={"sub": "Alice@Acme.COM", "iss": "https://idp"}),
-        mode=PRINCIPAL_ID_MODE_RAW,
-    )
-    assert got is not None
-    assert got.id == "Alice@Acme.COM"
-    assert got.form == "raw"
-    # ⚠ The provenance SURVIVES raw mode. It did not while the scheme tag
-    # carried it, and that loss is what the object was built to end.
-    assert got.source == "asserted"
-
-
-def test_raw_mode_is_capped() -> None:
-    got = _resolve(_Token(claims={"sub": "x" * 500}), mode=PRINCIPAL_ID_MODE_RAW)
-    assert got is not None
-    assert len(got.id) == RAW_PRINCIPAL_ID_MAX_LEN
-
-
-def test_raw_mode_needs_no_hmac_key() -> None:
-    """The key is a hashing concern; raw mode does not hash."""
-    got = _resolve(_Token(claims={"sub": "alice"}), mode=PRINCIPAL_ID_MODE_RAW, hmac_key=None)
-    assert got is not None and got.id == "alice"
+    assert len(got.id) == PRINCIPAL_ID_MAX_LEN
 
 
 # --------------------------------------------------------------------------
@@ -276,33 +199,10 @@ def test_raw_mode_needs_no_hmac_key() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_no_auth_yields_no_principal_id_in_either_mode() -> None:
+def test_no_auth_yields_no_principal() -> None:
     """The common case, and every stdio call: MCP auth is ASGI middleware, so
     ``get_access_token()`` returns ``None`` when there is no bearer token."""
     assert _resolve(None) is None
-    assert _resolve(None, mode=PRINCIPAL_ID_MODE_RAW) is None
-
-
-def test_hashed_mode_without_a_key_drops_the_field_and_warns_once(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    warned: set[str] = set()
-    logger = logging.getLogger("baton.test.identity")
-    with caplog.at_level(logging.WARNING, logger=logger.name):
-        for _ in range(5):
-            got = _resolve(
-                _Token(claims={"sub": "alice@acme.com"}),
-                hmac_key=None,
-                logger=logger,
-                warned=warned,
-            )
-            assert got is None
-    hits = [r for r in caplog.records if "HMAC key" in r.message]
-    assert len(hits) == 1, f"expected exactly one warning across five calls, got {len(hits)}"
-    # The warning explains a silent drop; it must not explain it by printing
-    # the identity into the vendor's log files.
-    assert "alice" not in hits[0].message
-    assert "acme.com" not in hits[0].message
 
 
 @pytest.mark.parametrize(
@@ -310,16 +210,8 @@ def test_hashed_mode_without_a_key_drops_the_field_and_warns_once(
     [pytest.param(" ", id="space"), pytest.param("\t\n", id="tab-newline")],
 )
 def test_a_whitespace_only_subject_is_a_miss(blank_sub: str) -> None:
-    """``hash_principal_id`` canonicalizes NFC → strip → lower, so every
-    whitespace-only subject collapses to the SAME digest — measured,
-    ``" "`` and ``"\t\n"`` both give ``h1:14fa5f91…``.
-
-    A truthiness guard passes them, and the result is a real, stable
-    pseudonym naming nobody that every such caller merges into. Far less
-    reachable than from a vendor's own hook (a verifier would have to mint
-    one), but both feed one hash and a guard that differs between them is a
-    guard waiting to be copied wrong.
-    """
+    """A truthiness guard passes them, and every such caller would merge into
+    one actor naming nobody."""
     assert _sub(_Token(claims={"sub": blank_sub})) is None
 
 
@@ -345,70 +237,6 @@ def test_a_hostile_token_object_cannot_fail_a_tool_call() -> None:
 # --------------------------------------------------------------------------
 # Review findings, 2026-09-09 — each of these failed before its fix
 # --------------------------------------------------------------------------
-
-
-def test_a_str_hmac_key_is_encoded_rather_than_exploding_at_call_time() -> None:
-    """``VendorConfig(principal_id_hmac_key="secret")`` must work.
-
-    ``hmac.new`` takes bytes and raises ``TypeError: key: expected bytes`` on a
-    ``str`` — and it raises inside the tool call, not at install, so the vendor
-    sees it only once a real authenticated request arrives. That is the ONE
-    deployment shape they cannot reach in local testing (identity needs HTTP
-    plus OAuth), which makes it the worst possible place to fail. The env var
-    has always accepted a string, so a vendor moving a working secret out of
-    ``BATON_PRINCIPAL_ID_HMAC_KEY`` and into the field hits exactly this.
-    """
-    from baton.integrations._config import _resolve_principal_id_hmac_key
-
-    assert _resolve_principal_id_hmac_key("secret", mode="hashed") == b"secret"
-    assert _resolve_principal_id_hmac_key(b"secret", mode="hashed") == b"secret"
-    # And the two spellings must agree, or moving the secret between them
-    # would silently re-pseudonymise every user.
-    from baton.identity import hash_principal_id
-
-    assert hash_principal_id("alice", tenant_id=TENANT, key=b"secret") == hash_principal_id(
-        "alice",
-        tenant_id=TENANT,
-        key=_resolve_principal_id_hmac_key("secret", mode="hashed") or b"",
-    )
-
-
-@pytest.mark.parametrize(
-    ("new_env", "explicit", "mode", "expected", "warns"),
-    [
-        (None, None, "hashed", None, True),
-        ("new-secret", None, "hashed", b"new-secret", False),
-        (None, "explicit-secret", "hashed", b"explicit-secret", False),
-        (None, None, "raw", None, False),
-    ],
-    ids=["old-name-only", "new-env-var", "explicit-field", "raw-mode"],
-)
-def test_the_renamed_hmac_env_var_is_never_read_and_warned_about_only_when_it_matters(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-    new_env: str | None,
-    explicit: str | None,
-    mode: str,
-    expected: bytes | None,
-    warns: bool,
-) -> None:
-    """0.8.6 renamed ``BATON_USER_ID_HMAC_KEY`` with no fallback.
-
-    Hashed identity fails open, so a leftover old variable with nothing in its
-    place is warned about. Beside a working key, or in raw mode (no key
-    needed), it is not. Its value is never used or logged.
-    """
-    from baton.integrations import _config
-
-    monkeypatch.setenv("BATON_USER_ID_HMAC_KEY", "old-secret-value")
-    if new_env:
-        monkeypatch.setenv("BATON_PRINCIPAL_ID_HMAC_KEY", new_env)
-    with caplog.at_level(logging.WARNING, logger=_config.logger.name):
-        assert _config._resolve_principal_id_hmac_key(explicit, mode=mode) == expected
-    assert ("BATON_USER_ID_HMAC_KEY" in caplog.text) is warns
-    # The part that tells the operator what to do: the name to set instead.
-    assert ("BATON_PRINCIPAL_ID_HMAC_KEY" in caplog.text) is warns
-    assert "old-secret-value" not in caplog.text
 
 
 def test_a_token_accessor_that_raises_cannot_reach_the_tool_call() -> None:
@@ -442,24 +270,7 @@ def test_the_email_hook_keys_on_the_WHOLE_address_and_names_the_local_part() -> 
     """The local part alone is not an id: ``alice@acme.com`` and
     ``alice@contoso.com`` are two people. It rides as ``display_name``."""
     got = _email(_Token(claims={"email": "alice@acme.com", "sub": "x", "iss": "https://idp"}))
-    assert got == Principal(principal_id="alice@acme.com", display_name="alice", issuer=None)
-
-
-def test_the_email_hook_keeps_one_pseudonym_across_issuers() -> None:
-    """An address is unique on its own, so the issuer is NOT folded in: an
-    identity provider moving its issuer URL, or a second one, must not split
-    one person into two actors."""
-    a = _resolve(
-        _Token(claims={"email": "alice@acme.com", "iss": "https://sts.windows.net/x/"}),
-        hook=principal_from_oauth_email,
-    )
-    b = _resolve(
-        _Token(
-            claims={"email": "alice@acme.com", "iss": "https://login.microsoftonline.com/x/v2.0"}
-        ),
-        hook=principal_from_oauth_email,
-    )
-    assert a is not None and a == b
+    assert got == Principal(principal_id="alice@acme.com", display_name="alice")
 
 
 def test_the_same_local_part_at_two_domains_is_two_people() -> None:
@@ -467,16 +278,6 @@ def test_the_same_local_part_at_two_domains_is_two_people() -> None:
     b = _resolve(_Token(claims={"email": "alice@contoso.com"}), hook=principal_from_oauth_email)
     assert a is not None and b is not None
     assert a.id != b.id
-
-
-def test_in_hashed_mode_the_name_is_sent_and_the_address_is_not() -> None:
-    """The local part reaches the wire as ``display_name`` in EVERY mode — a
-    vendor who wants no name writes their own hook (ruled 2026-10-02). The
-    address itself stays hashed: the domain must not appear anywhere."""
-    got = _resolve(_Token(claims={"email": "alice@acme.com"}), hook=principal_from_oauth_email)
-    assert got is not None
-    assert got.display_name == "alice" and got.form == "hashed"
-    assert "acme" not in got.model_dump_json()
 
 
 def test_the_email_hook_does_not_fall_back_to_sub() -> None:
@@ -505,7 +306,7 @@ def test_an_address_with_no_at_sign_is_still_the_id_but_has_no_name() -> None:
     """Not every IdP validates the claim's shape. The value is still a stable
     identifier, so it keys the principal; there is just no local part to name."""
     got = _email(_Token(claims={"email": "alice"}))
-    assert got == Principal(principal_id="alice", display_name=None, issuer=None)
+    assert got == Principal(principal_id="alice", display_name=None)
 
 
 def test_the_local_part_splits_on_the_LAST_at_sign() -> None:
@@ -554,12 +355,6 @@ def test_an_unhashable_callable_hook_still_runs() -> None:
 
     got = _resolve(None, hook=Resolver())
     assert got is not None and got.source == "asserted"
-
-
-def test_the_sub_hook_returns_a_clean_issuer_to_a_wrapping_vendor() -> None:
-    """Public export: a vendor reading ``.issuer`` gets a str or ``None``."""
-    assert _sub(_Token(claims={"sub": "a", "iss": 42})).issuer is None  # type: ignore[union-attr]
-    assert _sub(_Token(claims={"sub": "a", "iss": ""})).issuer is None  # type: ignore[union-attr]
 
 
 def test_an_AsyncMock_hook_is_awaited_not_returned_raw() -> None:
@@ -618,73 +413,6 @@ def test_the_hooks_never_raise_on_a_hostile_token() -> None:
 
 
 # --------------------------------------------------------------------------
-# The CROSS-REPO vector — the only assertion that can catch a joint drift
-# --------------------------------------------------------------------------
-
-# One principal, one tenant, one key, and the two digests they must produce.
-# ⚠ These literals are DUPLICATED VERBATIM in the sibling sensor
-# (`baton/tests/test_identity_adapter.py` <-> `baton-proxy/tests/test_identity.py`)
-# and that duplication is the entire point: `hash_principal_id` is a hand-maintained
-# copy across two repos that cannot import each other, and every other test of
-# it compares the implementation to ITSELF. The pre-existing
-# "issuer=None matches the pre-issuer form" check asserts
-# `hash_principal_id(x) == hash_principal_id(x, issuer=None)` — both sides from the same
-# module — so a layout change applied to BOTH repos on the same day stays green
-# in both while every `h1:` hash ever emitted becomes unreproducible. A frozen
-# literal is the only thing that reds for that, because it was computed before
-# the change and no edit can move it.
-#
-# The principal carries a trailing space and mixed case on purpose: canonical-
-# isation (NFC, strip, lower) is part of the derivation, so a divergence there
-# is a divergence in the hash.
-#
-# If one of these ever fails, the answer is NOT to update the literal. It means
-# the two sensors have stopped agreeing about the derivation, and every stored
-# `principal_id` was written under the other definition.
-#
-# ⚠ **The HEX was edited ONCE, at 0.8.11, and only by DELETING the `h1:` in
-# front of it.** That release took the tag off the value (SPEC §11.4, §13) and
-# the tag was never part of the HMAC message, so the 64 hex characters below are
-# byte-for-byte what they were when frozen on 2026-09-10 — the guard still pins
-# exactly what it was written to pin. **That is the only edit this comment
-# permits: removing a prefix.** A change to any hex digit means the derivation
-# moved, and the answer is still to revert the code, not the literal.
-_VECTOR_PRINCIPAL = "Alice@Example.COM "
-_VECTOR_TENANT = "ten_abc"
-_VECTOR_KEY = b"shared-key-bytes"
-_VECTOR_ISSUER = "https://idp.example.com"
-_VECTOR_ISSUERLESS = "b8556c3cd4564b06af433259553eadee690754318e27ca392deabba8aac7843b"
-_VECTOR_WITH_ISSUER = "9fc18f492b9dfe9092acf9d330d710b648d29b4aa131ecf702938df9409f0e78"
-
-
-def test_the_shared_cross_repo_vector_issuerless() -> None:
-    """Frozen 2026-09-10, when the two copies were verified byte-identical."""
-    assert (
-        hash_principal_id(_VECTOR_PRINCIPAL, tenant_id=_VECTOR_TENANT, key=_VECTOR_KEY)
-        == _VECTOR_ISSUERLESS
-    )
-
-
-def test_the_shared_cross_repo_vector_with_an_issuer() -> None:
-    """The issuer fold is append-only, so this pins the APPENDED layout too.
-
-    Without it, only the issuer-less half would be nailed down and the two
-    repos could still diverge on where the issuer goes — which is the failure
-    the docstring warns cannot be hidden behind a compatible default a second
-    time.
-    """
-    assert (
-        hash_principal_id(
-            _VECTOR_PRINCIPAL,
-            tenant_id=_VECTOR_TENANT,
-            key=_VECTOR_KEY,
-            issuer=_VECTOR_ISSUER,
-        )
-        == _VECTOR_WITH_ISSUER
-    )
-
-
-# --------------------------------------------------------------------------
 # display_name on the wire (SPEC §11.4)
 # --------------------------------------------------------------------------
 
@@ -693,9 +421,8 @@ def _named(name: Any) -> Any:
     return lambda _ctx: Principal(principal_id="alice", display_name=name)
 
 
-@pytest.mark.parametrize("mode", [PRINCIPAL_ID_MODE_HASHED, PRINCIPAL_ID_MODE_RAW])
-def test_the_resolver_name_rides_every_mode(mode: str) -> None:
-    got = _resolve(None, hook=_named("Alice"), mode=mode)
+def test_the_resolver_name_reaches_the_wire() -> None:
+    got = _resolve(None, hook=_named("Alice"))
     assert got is not None and got.display_name == "Alice"
 
 

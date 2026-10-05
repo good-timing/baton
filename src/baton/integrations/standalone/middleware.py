@@ -61,7 +61,6 @@ from baton.integrations._llm_text import (
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 from baton.integrations.identity_adapter import (
-    PRINCIPAL_ID_MODE_HASHED,
     ResolvePrincipalHook,
     resolve_call_principal,
     token_claims,
@@ -101,10 +100,7 @@ class BatonMiddleware(Middleware):
         result_capture_mode: ResultCaptureMode = "full",
         proactive_tracker: ProactiveTracker | None = None,
         server_meta: dict[str, Any] | None = None,
-        principal_id_mode: str = PRINCIPAL_ID_MODE_HASHED,
-        principal_id_hmac_key: bytes | None = None,
         resolve_principal_hook: ResolvePrincipalHook | None = None,
-        identity_warned: set[str] | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._vendor_id = vendor_id
@@ -118,13 +114,7 @@ class BatonMiddleware(Middleware):
         self._result_capture_mode = result_capture_mode
         self._proactive = proactive_tracker or ProactiveTracker()
         self._server_meta = server_meta or {}
-        self._principal_id_mode = principal_id_mode
-        self._principal_id_hmac_key = principal_id_hmac_key
         self._resolve_principal_hook = resolve_principal_hook
-        # Warn-once state for the missing-HMAC-key line. SHARED with the
-        # annotation path via install.py so the line is logged once per
-        # install, not once per emit path.
-        self._identity_warned = identity_warned if identity_warned is not None else set()
         # tool_name -> {param_name: "injected" | "native"}. Populated at
         # on_list_tools; read at on_call_tool to decide strip-vs-forward, per
         # param, independently. A plain dict (no lock) is safe: all access is
@@ -461,11 +451,7 @@ class BatonMiddleware(Middleware):
         call_principal = await resolve_call_principal(
             hook=self._resolve_principal_hook,
             hook_context=identity_hook_context,
-            mode=self._principal_id_mode,
-            tenant_id=self._tenant_id,
-            hmac_key=self._principal_id_hmac_key,
             logger=logger,
-            warned=self._identity_warned,
         )
         # Round coordinates first, whatever scrubber is configured
         # (``_meta_coords``), then scrub — meta values may carry

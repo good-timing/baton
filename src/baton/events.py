@@ -292,11 +292,8 @@ class PrincipalWire(BaseModel):
     """The principal AS EMITTED — the finished envelope value (SPEC §11.4).
 
     ⚠ **Not ``baton.Principal``, and the two are easy to confuse.** That one is
-    what a vendor's ``resolve_principal`` hook HANDS US: a raw subject, an
-    optional issuer, an optional display name. This one
-    is what we PUT ON THE WIRE after resolving and deriving it — the raw value
-    is gone by the time this is built, and nothing here is ever the input to a
-    hash. One is the question, this is the answer.
+    what a vendor's ``resolve_principal`` hook HANDS US. This one is what we
+    PUT ON THE WIRE: the same value, with ``source`` added.
 
     **The first three members are REQUIRED, and that is the guarantee the
     object exists to give.** A producer emits all three or omits
@@ -318,8 +315,8 @@ class PrincipalWire(BaseModel):
     copy."""
 
     id: str
-    """The value: an HMAC pseudonym in ``"hashed"`` mode, the principal
-    verbatim in ``"raw"`` mode. Which one is ``form``, and it is NEVER the
+    """The value, as the vendor's resolver returned it: a real identity, or a
+    pseudonym the resolver derived. Which one is ``form``, and it is NEVER the
     value's shape — a real OIDC subject (``mailto:``, ``acct:``, ``urn:``,
     ``https:``) reads as a scheme-tagged pseudonym to anything testing for
     "letters then a colon"."""
@@ -384,8 +381,8 @@ class _EventEnvelope(BaseModel):
     or an organisation (SPEC §11.4).
 
     **Absent as a whole whenever no identity resolved**, which is the common
-    case and never an error: no auth on the request, stdio with no hook
-    configured, or hashed mode with no key. Never a partial object — see
+    case and never an error: no hook configured, or a hook with no answer for
+    this call. Never a partial object — see
     ``PrincipalWire``.
 
     Was the flat field ``user_id`` until 0.8.6, then the flat ``principal_id``,

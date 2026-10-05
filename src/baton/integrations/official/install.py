@@ -52,7 +52,6 @@ from baton._uuid import uuid7
 from baton.integrations._annotation_name import resolve_annotation_names
 from baton.integrations._config import (
     VendorConfig,
-    _resolve_principal_id_hmac_key,
     _resolve_tenant_id,
     _validate_vendor_config,
     build_config,
@@ -118,13 +117,6 @@ def install_baton(
     # tenant than its tool call is unjoinable — the one correlation the
     # sensor exists to produce.
     tenant_id = _resolve_tenant_id(config.tenant_id, config.vendor_id)
-    principal_id_hmac_key = _resolve_principal_id_hmac_key(
-        config.principal_id_hmac_key, mode=config.principal_id_mode
-    )
-    # ONE set for the whole install. Two would make "logged once per install"
-    # into twice — the tool path and the annotation path each warning — which
-    # is precisely what a duplicated warn-once guard buys.
-    identity_warned: set[str] = set()
     fallback_session_id = f"sdk-{uuid7()}"
     counter = SessionCounter()
     # Shared across the wrap layer (synthesises a proactive from the first
@@ -178,10 +170,7 @@ def install_baton(
         intent_param_mode=config.intent_param_mode,
         result_capture_mode=config.result_capture_mode,
         proactive_tracker=proactive_tracker,
-        principal_id_mode=config.principal_id_mode,
-        principal_id_hmac_key=principal_id_hmac_key,
         resolve_principal_hook=config.resolve_principal,
-        identity_warned=identity_warned,
         server_meta=server_meta,
     )
 
@@ -205,10 +194,7 @@ def install_baton(
         # instructions name a tool that does not exist.
         annotation_tool_name=annotation_tool_name,
         proactive_mode=config.proactive_mode,
-        principal_id_mode=config.principal_id_mode,
-        principal_id_hmac_key=principal_id_hmac_key,
         resolve_principal_hook=config.resolve_principal,
-        identity_warned=identity_warned,
         scrubber=scrubber,
         proactive_tracker=proactive_tracker,
     )

@@ -112,7 +112,6 @@ from baton.integrations._session import (
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 from baton.integrations.identity_adapter import (
-    PRINCIPAL_ID_MODE_HASHED,
     ResolvePrincipalHook,
     resolve_call_principal,
     token_claims,
@@ -187,17 +186,10 @@ def install_wraps(
     result_capture_mode: ResultCaptureMode = "full",
     proactive_tracker: ProactiveTracker | None = None,
     server_meta: dict[str, Any] | None = None,
-    principal_id_mode: str = PRINCIPAL_ID_MODE_HASHED,
-    principal_id_hmac_key: bytes | None = None,
     resolve_principal_hook: ResolvePrincipalHook | None = None,
-    identity_warned: set[str] | None = None,
 ) -> None:
     """Inject + wrap all currently-registered tools AND future registrations."""
     tracker = proactive_tracker or ProactiveTracker()
-    # Warn-once state for identity resolution — SHARED with the annotation
-    # path via install.py, so "logged once per install" is once, not once per
-    # emit path.
-    warned = identity_warned if identity_warned is not None else set()
     # tool_name -> {param_name: "injected" | "native"}. Populated as tools are
     # injected; read in the wrapper to decide strip-vs-forward, per param,
     # independently. A plain dict (no lock) is safe: all access is on the one
@@ -269,10 +261,7 @@ def install_wraps(
                 tracker=tracker,
                 fallback_session_id=fallback_session_id,
                 tenant_id=tenant_id,
-                principal_id_mode=principal_id_mode,
-                principal_id_hmac_key=principal_id_hmac_key,
                 resolve_principal_hook=resolve_principal_hook,
-                identity_warned=warned,
                 surface_state=surface_state,
                 emit_surface=emit_surface,
                 annotation_tool_name=annotation_tool_name,
@@ -529,10 +518,7 @@ def _wrap_tool_run(
     tracker: ProactiveTracker,
     fallback_session_id: str,
     tenant_id: str,
-    principal_id_mode: str,
-    principal_id_hmac_key: bytes | None,
     resolve_principal_hook: ResolvePrincipalHook | None,
-    identity_warned: set[str],
     surface_state: _SurfaceState,
     emit_surface: _EmitSurface,
     annotation_tool_name: str | None,
@@ -666,11 +652,7 @@ def _wrap_tool_run(
         call_principal = await resolve_call_principal(
             hook=resolve_principal_hook,
             hook_context=identity_hook_context,
-            mode=principal_id_mode,
-            tenant_id=tenant_id,
-            hmac_key=principal_id_hmac_key,
             logger=logger,
-            warned=identity_warned,
         )
         # Coordinates round BEFORE the vendor's scrubber, so they round whatever
         # scrubber is configured (``_meta_coords``); the detect above read raw.

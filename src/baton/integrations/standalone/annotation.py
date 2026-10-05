@@ -30,7 +30,6 @@ from baton.integrations._annotation_payload import build_annotation_payload
 from baton.integrations._config import SessionResolutionContext
 from baton.integrations._llm_text import build_annotation_tool_description
 from baton.integrations.identity_adapter import (
-    PRINCIPAL_ID_MODE_HASHED,
     ResolvePrincipalHook,
     resolve_call_principal,
     token_claims,
@@ -79,14 +78,10 @@ def register_annotation_tool(
     proactive_mode: str = "off",
     scrubber: Callable[[Any], Any] = identity_scrub,
     proactive_tracker: ProactiveTracker | None = None,
-    principal_id_mode: str = PRINCIPAL_ID_MODE_HASHED,
-    principal_id_hmac_key: bytes | None = None,
     resolve_principal_hook: ResolvePrincipalHook | None = None,
-    identity_warned: set[str] | None = None,
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
     tracker = proactive_tracker or ProactiveTracker()
-    warned = identity_warned if identity_warned is not None else set()
     name = annotation_tool_name
     description = build_annotation_tool_description(
         vendor_display_name=vendor_display_name, proactive_mode=proactive_mode
@@ -173,11 +168,7 @@ def register_annotation_tool(
         annotation_principal = await resolve_call_principal(
             hook=resolve_principal_hook,
             hook_context=identity_hook_context,
-            mode=principal_id_mode,
-            tenant_id=tenant_id,
-            hmac_key=principal_id_hmac_key,
             logger=logger,
-            warned=warned,
         )
         # safe_emit, not safe_write: `build_annotation_payload` runs the
         # vendor's scrubber on five fields, and as an ARGUMENT expression it

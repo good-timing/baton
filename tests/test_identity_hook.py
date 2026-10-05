@@ -24,20 +24,17 @@ from typing import Any, NamedTuple
 import pytest
 
 from baton.events import PrincipalWire
-from baton.identity import Principal, hash_principal_id
+from baton.identity import Principal
 from baton.integrations._config import (
     CaseInsensitiveHeaders,
     SessionResolutionContext,
     _validate_vendor_config,
 )
 from baton.integrations.identity_adapter import (
-    PRINCIPAL_ID_MODE_HASHED,
     resolve_call_principal,
     resolve_principal_via_hook,
 )
 
-KEY = b"unit-test-key"
-TENANT = "tenant-a"
 CTX = SessionResolutionContext(headers=None, meta=None, tool_name="lookup", arguments={})
 
 
@@ -80,25 +77,15 @@ async def _resolve(hook: Any, **kw: Any) -> PrincipalWire | None:
     params: dict[str, Any] = {
         "hook": hook,
         "hook_context": CTX_WITH_TOKEN,
-        "mode": PRINCIPAL_ID_MODE_HASHED,
-        "tenant_id": TENANT,
-        "hmac_key": KEY,
         "logger": logging.getLogger("test"),
-        "warned": set(),
     }
     params.update(kw)
     return await resolve_call_principal(**params)
 
 
-async def test_an_asserted_principal_hashes_under_the_KEY_GENERATION_tag() -> None:
-    """``v1:`` is retired: the hook's principal is the bare digest, and
-    ``source`` is ``"asserted"`` — the only value this SDK emits."""
+async def test_the_hooks_principal_is_sent_as_given_and_asserted() -> None:
     got = await _resolve(lambda _c: Principal(principal_id="employee-1"))
-    assert got == PrincipalWire(
-        id=hash_principal_id("employee-1", tenant_id=TENANT, key=KEY),
-        source="asserted",
-        form="hashed",
-    )
+    assert got == PrincipalWire(id="employee-1", source="asserted", form="raw")
 
 
 async def test_a_usable_token_with_NO_hook_yields_no_principal() -> None:
@@ -143,7 +130,7 @@ class _DuckPrincipal(NamedTuple):
     a dict, and a namedtuple with the right field names is the near miss."""
 
     principal_id: str
-    issuer: str | None = None
+    form: str = "raw"
 
 
 @pytest.mark.parametrize(
@@ -157,10 +144,10 @@ class _DuckPrincipal(NamedTuple):
     ],
 )
 async def test_a_wrong_return_type_is_a_miss_not_a_value(returned: Any) -> None:
-    """Duck-typing these would put an unvalidated value one line from an HMAC.
+    """Duck-typing these would put an unvalidated value on the wire.
 
     The namedtuple case is the one that matters: it has ``.principal_id`` and
-    ``.issuer``, so ``getattr``-based code would accept it and hash it happily.
+    ``.form``, so ``getattr``-based code would accept it.
     """
     assert await _resolve(lambda _c: returned) is None
 
@@ -177,17 +164,9 @@ async def test_a_wrong_return_type_is_a_miss_not_a_value(returned: Any) -> None:
     ],
 )
 async def test_a_principal_with_no_usable_principal_id_is_a_miss(bad_principal_id: Any) -> None:
-    """An empty subject hashes to a real, stable digest that names nobody —
-    every such caller merged into one actor, which is the exact collapse
-    ``principal_id`` exists to undo. It must not reach the HMAC.
-
-    ⚠ The whitespace cases are NOT padding on the empty one. ``hash_principal_id``
-    canonicalizes NFC → strip → lower, so `" "` and `"\t\n"` hash to the SAME
-    digest — measured ``h1:14fa5f91…`` for both — and a truthiness guard waves
-    them through. A blank header value and a padded ``CHAR(n)`` column are the
-    reachable shapes, and they are what makes the phantom actor a real merge
-    rather than a theoretical one.
-    """
+    """A blank id names nobody, and every such caller would merge into one
+    actor. A blank header value and a padded ``CHAR(n)`` column are the
+    reachable shapes, which a truthiness guard waves through."""
     got = await _resolve(lambda _c: Principal(principal_id=bad_principal_id))
     assert got is None
 
@@ -304,43 +283,12 @@ async def test_a_blocking_hook_does_not_stall_concurrent_calls() -> None:
     assert ticks > 10, f"the event loop was blocked during the hook: {ticks} ticks"
 
 
-# --- the normalizer's issuer rules (found by /code-review, 2026-09-11) -------
-
-
-async def test_an_empty_issuer_hashes_as_no_issuer() -> None:
-    """``Principal(principal_id=sub, issuer=claims.get("iss", ""))`` is the natural
-    thing for a vendor to write. Without coercion it appends an extra
-    separator to the HMAC message, so one person gets a stable-but-wrong
-    pseudonym and a later switch to ``None`` silently renames every user."""
-    absent = await _resolve(lambda _c: Principal(principal_id="same-person"))
-    empty = await _resolve(lambda _c: Principal(principal_id="same-person", issuer=""))
-    assert absent == empty
-
-
-@pytest.mark.parametrize(
-    "bad_issuer",
-    [
-        pytest.param(42, id="int"),
-        pytest.param(object(), id="object"),
-        pytest.param(b"x", id="bytes"),
-    ],
-)
-async def test_a_junk_issuer_costs_the_issuer_not_the_identity(bad_issuer: Any) -> None:
-    """A non-string issuer reaches ``unicodedata.normalize`` and raises. Caught
-    downstream — but the cost was the whole event's ``principal``. It is
-    coerced before it gets there, so a junk issuer costs the issuer only."""
-    got = await _resolve(lambda _c: Principal(principal_id="employee-1", issuer=bad_issuer))
-    assert got == await _resolve(lambda _c: Principal(principal_id="employee-1"))
-    assert got is not None and got.source == "asserted"
-
-
-async def test_a_principal_that_cannot_be_hashed_emits_nothing() -> None:
-    """An unpaired surrogate is the reachable shape once ``issuer`` is coerced.
-    The context carries a usable token, and it must not be substituted: a hook
-    that named a person and failed to render them has not asked for the
-    token's subject."""
-    got = await _resolve(lambda _c: Principal(principal_id="a\ud800b"))
-    assert got is None, "a failed hash substituted a different actor"
+@pytest.mark.parametrize("unsendable", ["a\ud800b", "jane\x00"], ids=["lone-surrogate", "nul"])
+async def test_an_id_that_cannot_be_sent_emits_no_principal(unsendable: str) -> None:
+    """Either would cost a collector the whole event. The context carries a
+    usable token, and it must not be substituted for the hook's answer."""
+    got = await _resolve(lambda _c: Principal(principal_id=unsendable))
+    assert got is None
 
 
 async def test_the_hook_receives_the_context_it_was_given() -> None:
@@ -363,12 +311,6 @@ async def test_an_async_hook_is_awaited() -> None:
     assert got == Principal(principal_id="employee-1")
 
 
-async def test_hashed_mode_with_no_key_drops_the_field_rather_than_leaking_it() -> None:
-    """The principal must not appear in the output on the missing-key branch."""
-    got = await _resolve(lambda _c: Principal(principal_id="employee-1"), hmac_key=None)
-    assert got is None
-
-
 def test_a_non_callable_resolve_principal_is_refused_at_install() -> None:
     """Unvalidated it would fail inside the hook's own fail-open guard —
     logged, identity silently absent for the life of the process, in the one
@@ -383,39 +325,6 @@ def test_a_non_callable_resolve_principal_is_refused_at_install() -> None:
                 resolve_principal="baton.identity.resolve",  # type: ignore[arg-type]
             )
         )
-
-
-def test_NO_scheme_tag_comes_back_and_neither_constant_returns() -> None:
-    """Both retired tags stay retired, and so does the machinery for one.
-
-    This test has been rewritten twice, each time narrowing what may appear in
-    a hashed value, and the history is the point:
-
-    * originally it guarded that the vendor tag ``v1:`` sat OUTSIDE the ``h*``
-      family, so a key rotation could not eat its letter;
-    * at 0.8.10 ``v1:`` was retired — provenance became ``principal.source``,
-      which survives ``"raw"`` mode where a tag cannot — and this asserted that
-      one family remained and meant only the key generation;
-    * at 0.8.11 that family went too, so **nothing may prefix the digest**.
-
-    ⚠ **The assertions are written NEGATIVELY and generically on purpose.**
-    Naming ``h1:`` would let ``h2:`` or a newly invented letter through, which
-    is exactly how the thing being guarded came back the first time. No colon,
-    and no constant to select one.
-    """
-    import baton.identity
-
-    assert not hasattr(baton.identity, "VENDOR_HASH_SCHEME")
-    assert not hasattr(baton.identity, "HASH_SCHEME")
-    digest = hash_principal_id("x", tenant_id=TENANT, key=KEY)
-    assert ":" not in digest
-    assert len(digest) == 64 and digest == digest.lower()
-
-    # And the parameter that selected a tag is gone from the signature, not
-    # merely unused: a keyword left in place is an invitation to pass one.
-    import inspect
-
-    assert "scheme" not in inspect.signature(hash_principal_id).parameters
 
 
 # =============================================================================

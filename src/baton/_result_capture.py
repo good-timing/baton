@@ -37,8 +37,8 @@ ladder's partial rung — which is why nothing here tests `!= "off"` to mean
 ResultCaptureMode = str
 """What a vendor may set: `"full"` or `WITHHELD`.
 
-An alias rather than a `Literal`, matching `intent_param_mode` and
-`principal_id_mode`, which are plain `str` validated once at the config door.
+An alias rather than a `Literal`, matching `intent_param_mode`, which is a
+plain `str` validated once at the config door.
 ⚠ If the partial rung lands and a third value has to be threaded, narrowing
 this to a `Literal` and letting mypy-strict enforce it at the adapter-internal
 seams is the stronger move than re-validating at each one.
@@ -74,7 +74,7 @@ def validate_mode(mode: str, *, field: str) -> ResultCaptureMode:
     versions of this docstring claimed something that does.** It said
     mypy-strict covered it: `ResultCaptureMode` is a bare `str` alias (line 37),
     so mypy accepts any string in the slot, including one meant for
-    `intent_param_mode` or `principal_id_mode`. It then said the seams are
+    `intent_param_mode`. It then said the seams are
     private: `BatonMiddleware` imports fine from
     `baton.integrations.standalone.middleware`, a path with no underscore in
     it, and `integrations/fastmcp.py` re-exports it deliberately, naming it

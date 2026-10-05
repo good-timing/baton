@@ -44,7 +44,6 @@ from tests._event_helpers import principal_of, without_surface_snapshots
 pytestmark = pytest.mark.functional
 
 TENANT = "tenant-parity"
-HMAC_KEY = b"parity-principal-id-key"
 CLAIMS = {"sub": "alice@acme.example", "iss": "https://idp.example"}
 
 
@@ -70,7 +69,6 @@ def _standalone_token(claims: dict[str, Any] = CLAIMS) -> Any:
 async def _run_official_path(
     events_path: Path,
     token: Any,
-    mode: str,
     monkeypatch: pytest.MonkeyPatch,
     resolve_principal: Any = None,
 ) -> str:
@@ -94,8 +92,6 @@ async def _run_official_path(
             consent_token="ct_parity",
             sink=FileSink(str(events_path)),
             tenant_id=TENANT,
-            principal_id_mode=mode,
-            principal_id_hmac_key=HMAC_KEY,
             resolve_principal=resolve_principal,
         ),
     )
@@ -113,7 +109,6 @@ async def _run_official_path(
 async def _run_standalone_path(
     events_path: Path,
     token: Any,
-    mode: str,
     monkeypatch: pytest.MonkeyPatch,
     resolve_principal: Any = None,
 ) -> None:
@@ -137,8 +132,6 @@ async def _run_standalone_path(
             consent_token="ct_parity",
             sink=FileSink(str(events_path)),
             tenant_id=TENANT,
-            principal_id_mode=mode,
-            principal_id_hmac_key=HMAC_KEY,
             resolve_principal=resolve_principal,
         ),
     )
@@ -189,95 +182,22 @@ def _one_principal(path: Path) -> dict[str, Any]:
     return one.model_dump()
 
 
-async def test_both_adapters_hash_one_principal_identically(
+async def test_both_adapters_send_one_principal_identically(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The expected value first, then agreement.
-
-    The expected value is computed independently here rather than by comparing
-    the two runs, because two adapters that both dropped the field agree
-    perfectly.
-    """
-    from baton.identity import hash_principal_id
-
-    expected = hash_principal_id(
-        CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"]
-    )
-
+    """The expected value is stated here rather than found by comparing the two
+    runs, because two adapters that both dropped the field agree perfectly."""
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
     await _run_official_path(
         official_path,
         _official_token(),
-        "hashed",
         monkeypatch,
         resolve_principal=principal_from_oauth_sub,
     )
     await _run_standalone_path(
         standalone_path,
         _standalone_token(),
-        "hashed",
-        monkeypatch,
-        resolve_principal=principal_from_oauth_sub,
-    )
-
-    official = _principal_ids(official_path)
-    standalone = _principal_ids(standalone_path)
-
-    assert official == {expected}, f"official adapter: {official}"
-    assert standalone == {expected}, f"standalone adapter: {standalone}"
-    assert official == standalone
-
-
-async def test_neither_adapter_leaks_the_principal_in_hashed_mode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Checked against the raw files on both sides.
-
-    One adapter leaking while the other does not is the shape this whole file
-    exists to catch, and a residency leak is the worst version of it.
-    """
-    official_path = tmp_path / "official.jsonl"
-    standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(
-        official_path,
-        _official_token(),
-        "hashed",
-        monkeypatch,
-        resolve_principal=principal_from_oauth_sub,
-    )
-    await _run_standalone_path(
-        standalone_path,
-        _standalone_token(),
-        "hashed",
-        monkeypatch,
-        resolve_principal=principal_from_oauth_sub,
-    )
-
-    for path in (official_path, standalone_path):
-        blob = path.read_text()
-        assert CLAIMS["sub"] not in blob, f"raw principal found in {path.name}"
-        assert CLAIMS["iss"] not in blob, f"issuer found in {path.name}"
-
-
-async def test_both_adapters_agree_in_raw_mode_too(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Raw mode is a wire contract like any other — two sensors watching one
-    client must not disagree about who it is, whichever mode is configured."""
-    official_path = tmp_path / "official.jsonl"
-    standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(
-        official_path,
-        _official_token(),
-        "raw",
-        monkeypatch,
-        resolve_principal=principal_from_oauth_sub,
-    )
-    await _run_standalone_path(
-        standalone_path,
-        _standalone_token(),
-        "raw",
         monkeypatch,
         resolve_principal=principal_from_oauth_sub,
     )
@@ -298,8 +218,8 @@ async def test_both_adapters_drop_the_WHOLE_object_when_unauthenticated(
     """
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(official_path, None, "hashed", monkeypatch)
-    await _run_standalone_path(standalone_path, None, "hashed", monkeypatch)
+    await _run_official_path(official_path, None, monkeypatch)
+    await _run_standalone_path(standalone_path, None, monkeypatch)
 
     assert _principals(official_path) == {None}
     assert _principals(standalone_path) == {None}
@@ -308,13 +228,12 @@ async def test_both_adapters_drop_the_WHOLE_object_when_unauthenticated(
 async def test_a_verified_token_with_NO_hook_yields_no_principal_on_either_adapter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The deletion, end to end. Until this release both adapters read the
-    token's ``sub`` themselves whenever no hook answered; identity is now the
-    vendor's choice, so a usable token on its own puts nothing on the wire."""
+    """Identity is the vendor's choice, so a usable token on its own puts
+    nothing on the wire."""
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(official_path, _official_token(), "hashed", monkeypatch)
-    await _run_standalone_path(standalone_path, _standalone_token(), "hashed", monkeypatch)
+    await _run_official_path(official_path, _official_token(), monkeypatch)
+    await _run_standalone_path(standalone_path, _standalone_token(), monkeypatch)
 
     assert _principals(official_path) == {None}
     assert _principals(standalone_path) == {None}
@@ -327,41 +246,32 @@ async def test_the_email_hook_reads_the_token_on_both_adapters_and_both_emit_pat
     (two adapters x tool call and annotation). ``_one_principal`` collapses
     every event of a run to one value, so a site that forgot the token yields
     a second, ``None``, entry and fails here."""
-    from baton.identity import hash_principal_id
-
     claims = {"sub": "opaque-123", "email": "alice@acme.example", "iss": CLAIMS["iss"]}
-    # No issuer: an address is unique on its own (see the hook's docstring).
-    expected = hash_principal_id(claims["email"], tenant_id=TENANT, key=HMAC_KEY)
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
     await _run_official_path(
         official_path,
         _official_token(claims),
-        "hashed",
         monkeypatch,
         resolve_principal=principal_from_oauth_email,
     )
     await _run_standalone_path(
         standalone_path,
         _standalone_token(claims),
-        "hashed",
         monkeypatch,
         resolve_principal=principal_from_oauth_email,
     )
     for path in (official_path, standalone_path):
         assert _one_principal(path) == {
-            "id": expected,
+            "id": "alice@acme.example",
             "source": "asserted",
-            "form": "hashed",
+            "form": "raw",
             "display_name": "alice",
         }, path.name
-        blob = path.read_text()
-        # The tool's own argument is ``"alice"``, so the check is on the address.
-        assert "@acme.example" not in blob, f"the address leaked in {path.name}"
 
 
 # ---------------------------------------------------------------------------
-# The vendor identity hook (N11) — the ASSERTED provenance.
+# The vendor identity hook.
 #
 # These run through the same two drivers as everything above, which is the
 # point: each driver calls a tool AND the annotation tool, and ``_principal_ids``
@@ -370,7 +280,6 @@ async def test_the_email_hook_reads_the_token_on_both_adapters_and_both_emit_pat
 # without a test that names the annotation path at all.
 
 HOOK_SUB = "employee-4417"
-HOOK_ISS = "https://sso.acme.internal"
 
 
 def _hook(principal: Any) -> Any:
@@ -389,30 +298,54 @@ async def test_the_hook_supplies_identity_where_no_token_exists(
 
     ``token=None`` is what ``get_access_token()`` returns on every stdio call
     on every supported version — MCP auth is ASGI middleware and stdio has no
-    ASGI. Before the hook this run emitted no ``principal_id`` at all, on either
-    adapter. The expected value is computed here rather than compared between
-    runs, for the reason at the top of this file.
+    ASGI.
     """
-    from baton.identity import Principal, hash_principal_id
+    from baton.identity import Principal
 
-    expected = hash_principal_id(HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=HOOK_ISS)
-    assert ":" not in expected, (
-        "no tag rides a hashed value from 0.8.11 — an asserted principal hashes "
-        "to the same bare digest as any other, and its provenance rides "
-        "`principal.source`"
-    )
-
-    hook = _hook(Principal(principal_id=HOOK_SUB, issuer=HOOK_ISS))
+    hook = _hook(Principal(principal_id=HOOK_SUB))
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(official_path, None, "hashed", monkeypatch, resolve_principal=hook)
-    await _run_standalone_path(standalone_path, None, "hashed", monkeypatch, resolve_principal=hook)
+    await _run_official_path(official_path, None, monkeypatch, resolve_principal=hook)
+    await _run_standalone_path(standalone_path, None, monkeypatch, resolve_principal=hook)
 
     for path in (official_path, standalone_path):
         assert _one_principal(path) == {
-            "id": expected,
+            "id": HOOK_SUB,
             "source": "asserted",
-            "form": "hashed",
+            "form": "raw",
+            "display_name": None,
+        }, path.name
+
+
+@pytest.mark.parametrize(
+    ("stated", "on_the_wire"),
+    [
+        pytest.param({"form": "hashed"}, "hashed", id="hashed-is-passed-through"),
+        pytest.param({}, "raw", id="unstated-is-raw"),
+        pytest.param({"form": "encrypted"}, "raw", id="unregistered-is-raw"),
+    ],
+)
+async def test_the_form_the_hook_states_is_the_form_on_the_wire(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stated: dict[str, str],
+    on_the_wire: str,
+) -> None:
+    """On both adapters and both emit paths, with the id untouched: the SDK
+    never derives ``form``, and never rewrites the value to match it."""
+    from baton.identity import Principal
+
+    hook = _hook(Principal(principal_id="9F2C-Vendor-Digest", **stated))
+    official_path = tmp_path / "official.jsonl"
+    standalone_path = tmp_path / "standalone.jsonl"
+    await _run_official_path(official_path, None, monkeypatch, resolve_principal=hook)
+    await _run_standalone_path(standalone_path, None, monkeypatch, resolve_principal=hook)
+
+    for path in (official_path, standalone_path):
+        assert _one_principal(path) == {
+            "id": "9F2C-Vendor-Digest",
+            "source": "asserted",
+            "form": on_the_wire,
             "display_name": None,
         }, path.name
 
@@ -420,37 +353,21 @@ async def test_the_hook_supplies_identity_where_no_token_exists(
 async def test_a_hook_that_ignores_the_token_is_never_overridden_by_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The token here is the SAME one every other test in this file uses, so its
-    value is known: a producer still reading it behind the hook would emit the
-    hash of ``CLAIMS["sub"]`` somewhere on these runs.
-    """
-    from baton.identity import Principal, hash_principal_id
+    """The token here is the SAME one every other test in this file uses, so a
+    producer still reading it behind the hook would emit ``CLAIMS["sub"]``
+    somewhere on these runs."""
+    from baton.identity import Principal
 
-    asserted = hash_principal_id(HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=HOOK_ISS)
-    from_token = hash_principal_id(
-        CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"]
-    )
-    assert asserted != from_token
-
-    hook = _hook(Principal(principal_id=HOOK_SUB, issuer=HOOK_ISS))
+    hook = _hook(Principal(principal_id=HOOK_SUB))
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(
-        official_path, _official_token(), "hashed", monkeypatch, resolve_principal=hook
-    )
+    await _run_official_path(official_path, _official_token(), monkeypatch, resolve_principal=hook)
     await _run_standalone_path(
-        standalone_path, _standalone_token(), "hashed", monkeypatch, resolve_principal=hook
+        standalone_path, _standalone_token(), monkeypatch, resolve_principal=hook
     )
 
     for path in (official_path, standalone_path):
-        got = _one_principal(path)
-        assert got == {
-            "id": asserted,
-            "source": "asserted",
-            "form": "hashed",
-            "display_name": None,
-        }, path.name
-        assert got["id"] != from_token, f"{path.name} used the token despite a hook"
+        assert _principal_ids(path) == {HOOK_SUB}, path.name
 
 
 async def test_a_hook_that_raises_costs_the_principal_and_events_still_emit(
@@ -468,11 +385,9 @@ async def test_a_hook_that_raises_costs_the_principal_and_events_still_emit(
 
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(
-        official_path, _official_token(), "hashed", monkeypatch, resolve_principal=boom
-    )
+    await _run_official_path(official_path, _official_token(), monkeypatch, resolve_principal=boom)
     await _run_standalone_path(
-        standalone_path, _standalone_token(), "hashed", monkeypatch, resolve_principal=boom
+        standalone_path, _standalone_token(), monkeypatch, resolve_principal=boom
     )
 
     assert _principals(official_path) == {None}
@@ -484,35 +399,27 @@ async def test_an_async_hook_works_on_both_adapters(
 ) -> None:
     """Sync or async, matching ``scrubber``. A
     vendor resolving identity will usually be doing I/O to do it."""
-    from baton.identity import Principal, hash_principal_id
-
-    expected = hash_principal_id(HOOK_SUB, tenant_id=TENANT, key=HMAC_KEY, issuer=None)
+    from baton.identity import Principal
 
     async def resolve(_ctx: Any) -> Any:
         return Principal(principal_id=HOOK_SUB)
 
     official_path = tmp_path / "official.jsonl"
     standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(official_path, None, "hashed", monkeypatch, resolve_principal=resolve)
-    await _run_standalone_path(
-        standalone_path, None, "hashed", monkeypatch, resolve_principal=resolve
-    )
+    await _run_official_path(official_path, None, monkeypatch, resolve_principal=resolve)
+    await _run_standalone_path(standalone_path, None, monkeypatch, resolve_principal=resolve)
 
-    assert _principal_ids(official_path) == {expected}
-    assert _principal_ids(standalone_path) == {expected}
+    assert _principal_ids(official_path) == {HOOK_SUB}
+    assert _principal_ids(standalone_path) == {HOOK_SUB}
 
 
 async def test_the_hook_sees_the_calls_own_context_not_an_install_time_value(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The difference from the removed ``default_agent_runtime``.
-
-    That was one value fixed at install. This is a callable invoked per
-    request, so it can answer differently per call — asserted by returning a
-    principal derived from the context the hook was handed, and then finding
-    BOTH resulting hashes on the wire.
-    """
-    from baton.identity import Principal, hash_principal_id
+    """The hook is invoked per request, so it can answer differently per call
+    — asserted by returning a principal derived from the context it was
+    handed, and then finding BOTH on the wire."""
+    from baton.identity import Principal
 
     def per_call(ctx: Any) -> Any:
         # ``tool_name`` differs between the lookup call and the annotation
@@ -521,119 +428,30 @@ async def test_the_hook_sees_the_calls_own_context_not_an_install_time_value(
 
     official_path = tmp_path / "official.jsonl"
     annotate = await _run_official_path(
-        official_path, None, "hashed", monkeypatch, resolve_principal=per_call
+        official_path, None, monkeypatch, resolve_principal=per_call
     )
-    got = _principal_ids(official_path)
-
-    def h(sub: str) -> str:
-        return hash_principal_id(sub, tenant_id=TENANT, key=HMAC_KEY, issuer=None)
-
-    assert h("user-of-lookup") in got
-    assert h(f"user-of-{annotate}") in got, (
-        "the annotation path did not consult the hook — a session would carry "
-        "two provenances for one person"
-    )
-    assert len(got) == 2, got
-
-
-async def test_raw_mode_KEEPS_the_provenance_it_used_to_forfeit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """**The defect this whole change exists to fix, asserted directly.**
-
-    This test previously pinned the OPPOSITE and was right to: provenance was
-    encoded in the scheme tag, ``"raw"`` mode emits no tag, so an asserted
-    principal and an attested one reached the wire as indistinguishable bare
-    strings and no consumer could recover which it held. SPEC §11.4 conceded it
-    in its own derivation row.
-
-    ``source`` is a member now, so it survives a mode that has no tag to carry
-    it. The value stays verbatim — that is what ``"raw"`` means and it has not
-    changed — and the classification travels beside it.
-    """
-    from baton.identity import Principal
-
-    hook = _hook(Principal(principal_id=HOOK_SUB, issuer=HOOK_ISS))
-    official_path = tmp_path / "official.jsonl"
-    standalone_path = tmp_path / "standalone.jsonl"
-    await _run_official_path(official_path, None, "raw", monkeypatch, resolve_principal=hook)
-    await _run_standalone_path(standalone_path, None, "raw", monkeypatch, resolve_principal=hook)
-
-    for path in (official_path, standalone_path):
-        assert _one_principal(path) == {
-            "id": HOOK_SUB,
-            "source": "asserted",
-            "form": "raw",
-            "display_name": None,
-        }, path.name
-
-
-async def test_the_sub_hook_emits_the_SAME_digest_the_deleted_token_rung_did(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """**The migration claim in SPEC §13, asserted.** A vendor who relied on
-    the deleted rung restores it by passing ``principal_from_oauth_sub``, and
-    their users keep their pseudonyms: one ``(tenant, sub, iss)`` hashes to the
-    same digest it always did, and only ``source`` changes. The expected value
-    is computed exactly as the deleted rung computed it.
-
-    Also the hook-vs-hand-written agreement: a vendor hook returning the same
-    ``Principal`` by hand must land on the same digest, or the ready-made hook
-    is doing something a vendor's own cannot reproduce.
-    """
-    from baton.identity import Principal, hash_principal_id
-
-    rung_digest = hash_principal_id(
-        CLAIMS["sub"], tenant_id=TENANT, key=HMAC_KEY, issuer=CLAIMS["iss"]
-    )
-    by_hand = tmp_path / "hand.jsonl"
-    via_hook = tmp_path / "hook.jsonl"
-    same = Principal(principal_id=CLAIMS["sub"], issuer=CLAIMS["iss"])
-    await _run_official_path(by_hand, None, "hashed", monkeypatch, resolve_principal=_hook(same))
-    await _run_official_path(
-        via_hook,
-        _official_token(),
-        "hashed",
-        monkeypatch,
-        resolve_principal=principal_from_oauth_sub,
-    )
-
-    for path in (by_hand, via_hook):
-        assert _one_principal(path) == {
-            "id": rung_digest,
-            "source": "asserted",
-            "form": "hashed",
-            "display_name": None,
-        }, path.name
+    assert _principal_ids(official_path) == {"user-of-lookup", f"user-of-{annotate}"}
 
 
 async def test_source_stays_asserted_in_every_form(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """SPEC §11.4: ``form`` says nothing about trust and ``source`` says nothing
-    about privacy. With one live source, what remains to pin is that neither
-    the mode nor the KIND of hook (a fixed value, or the token read) moves
-    ``source`` — a producer that still stamped a token read ``"attested"``
-    fails the token rows.
-    """
+    about privacy. Neither the stated form nor the KIND of hook (a fixed value,
+    or the token read) moves ``source``."""
     from baton.identity import Principal
 
-    hook = _hook(Principal(principal_id=HOOK_SUB, issuer=HOOK_ISS))
-    cells = 0
-    for mode, form in (("hashed", "hashed"), ("raw", "raw")):
-        for label, token, resolver in (
-            ("token", _official_token(), principal_from_oauth_sub),
-            ("fixed", None, hook),
-        ):
-            path = tmp_path / f"{label}-{mode}.jsonl"
-            await _run_official_path(path, token, mode, monkeypatch, resolve_principal=resolver)
-            got = _one_principal(path)
-            assert got["source"] == "asserted", got
-            assert got["form"] == form, got
-            cells += 1
-
-    # Guards against a vacuous pass — a loop that ran zero times.
-    assert cells == 4, f"the matrix ran {cells} cells"
+    resolvers = {
+        "token": (_official_token(), principal_from_oauth_sub, "raw"),
+        "fixed-raw": (None, _hook(Principal(principal_id=HOOK_SUB)), "raw"),
+        "fixed-hashed": (None, _hook(Principal(principal_id=HOOK_SUB, form="hashed")), "hashed"),
+    }
+    for label, (token, resolver, form) in resolvers.items():
+        path = tmp_path / f"{label}.jsonl"
+        await _run_official_path(path, token, monkeypatch, resolve_principal=resolver)
+        got = _one_principal(path)
+        assert got["source"] == "asserted", got
+        assert got["form"] == form, got
 
 
 # ---------------------------------------------------------------------------

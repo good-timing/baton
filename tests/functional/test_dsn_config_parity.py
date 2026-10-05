@@ -470,7 +470,6 @@ class TestNothingTheDsnBUILDSPrintsTheBearer:
             vendor_display_name="Echo",
             consent_token="ct",
             dsn=f"https://{KEY}@ingest.example.com/{WORKSPACE}/{SERVER}",
-            principal_id_hmac_key="a-vendor-secret-nobody-else-holds",
         )
 
     def test_the_config_does_not_print_the_dsn(self) -> None:
@@ -480,16 +479,9 @@ class TestNothingTheDsnBUILDSPrintsTheBearer:
         config, a plain ``print`` — all three wrote a publishable key out."""
         assert KEY not in repr(self._config())
 
-    def test_the_config_does_not_print_the_HMAC_KEY_either(self) -> None:
-        """Pre-existing rather than this lane's, and fixed with it: the same
-        defect in the same ``repr``, on a field whose own docstring says the
-        vendor holds it and Baton never sees it."""
-        assert "a-vendor-secret-nobody-else-holds" not in repr(self._config())
-
-    def test_reading_either_field_by_name_is_unchanged(self) -> None:
+    def test_reading_the_field_by_name_is_unchanged(self) -> None:
         config = self._config()
         assert config.dsn is not None and KEY in config.dsn
-        assert config.principal_id_hmac_key == "a-vendor-secret-nobody-else-holds"
 
     def test_the_sink_the_dsn_built_does_not_print_its_bearer(self) -> None:
         """⚠ **Checked because the TypeScript sink DID leak here, not because

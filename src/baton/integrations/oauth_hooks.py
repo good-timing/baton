@@ -47,42 +47,28 @@ if TYPE_CHECKING:
 
 @runs_inline
 def principal_from_oauth_sub(context: SessionResolutionContext) -> Principal | None:
-    """The token's ``sub``, keyed with its ``iss``.
+    """The token's ``sub``.
 
-    ``sub`` is unique only per issuer, which is why ``iss`` rides along: two
-    identity providers can hand two different people the same subject.
+    ``sub`` is unique only per issuer: a vendor running two identity providers
+    writes a hook that combines it with ``iss``.
     """
     claims = context.claims
     if claims is None:
         return None
     sub = claims.get("sub")
-    # ``.strip()``, not truthiness: the hash canonicalizes NFC → strip → lower,
-    # so a whitespace-only subject would be one phantom actor every such
-    # caller merges into.
     if not isinstance(sub, str) or not sub.strip():
         return None
-    # Coerced HERE as well as in the runner: these are public exports, and a
-    # vendor wrapping one reads ``.issuer`` before the runner ever sees it.
-    issuer = claims.get("iss")
-    return Principal(
-        principal_id=sub, issuer=issuer if isinstance(issuer, str) and issuer else None
-    )
+    return Principal(principal_id=sub)
 
 
 @runs_inline
 def principal_from_oauth_email(context: SessionResolutionContext) -> Principal | None:
-    """The token's ``email`` claim, as the WHOLE address and with no issuer.
+    """The token's ``email`` claim, as the WHOLE address.
 
     The local part alone is not an id — ``alice@acme.com`` and
-    ``alice@contoso.com`` are two people. It is returned as ``display_name``
-    and SENT, in every mode — a vendor who hashes ids to hide who their users
-    are, and does not want ``alice`` on the wire, writes their own hook.
-
-    **No issuer**, unlike the ``sub`` hook. A subject is unique only per
-    issuer; an address is unique on its own. Folding ``iss`` in would give one
-    person a new pseudonym the day their identity provider changes its issuer
-    URL (a v1 → v2 endpoint, a custom domain) or they sign in through a second
-    one — the actor split keying on email exists to avoid.
+    ``alice@contoso.com`` are two people. It is returned as ``display_name``.
+    Both are sent as they are: a vendor who must not put an address on the
+    wire writes their own hook.
 
     ⚠ **``email`` is not a standard ACCESS-token claim.** OIDC puts it in the ID
     token; it is in ``claims`` only if the vendor's identity provider adds it

@@ -11,7 +11,6 @@ raises what fastmcp really raises.
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +98,6 @@ async def test_identity_failures_cannot_fail_the_call_either(
         monkeypatch.setattr(_auth, "get_access_token_or_none", getter)
         mcp, handle = _install(
             events_path,
-            principal_id_hmac_key=b"k",
             tenant_id="t",
             resolve_principal=principal_from_oauth_sub,
         )
@@ -112,72 +110,3 @@ async def test_identity_failures_cannot_fail_the_call_either(
         calls = [e for e in events if e["event_type"].startswith("tool_call")]
         assert calls, "the call must still have been captured"
         assert {e.get("principal") for e in calls} == {None}
-
-
-async def test_a_str_hmac_key_does_not_break_the_call(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``hmac.new`` refuses a ``str`` key, inside the call, in the one
-    deployment shape a vendor cannot reach locally. The env var has always
-    taken a string, so this is the natural mistake."""
-    from dataclasses import dataclass
-
-    from baton import principal_from_oauth_sub
-    from baton.integrations.standalone import _auth
-
-    @dataclass
-    class _Tok:
-        claims: dict[str, Any] | None = None
-
-    monkeypatch.setattr(_auth, "get_access_token_or_none", lambda: _Tok({"sub": "alice"}))
-    events_path = tmp_path / "e.jsonl"
-    mcp, handle = _install(
-        events_path,
-        principal_id_hmac_key="a-string-secret",
-        tenant_id="t",
-        resolve_principal=principal_from_oauth_sub,
-    )
-    try:
-        async with Client(mcp) as client:
-            assert await client.call_tool("lookup", {"name": "alice"}) is not None
-    finally:
-        await handle.aclose()
-    events = [json.loads(x) for x in events_path.read_text().splitlines() if x.strip()]
-    principals = [e.get("principal") for e in events if e["event_type"].startswith("tool_call")]
-    assert principals and all(
-        p is not None and ":" not in p["id"] and p["form"] == "hashed" for p in principals
-    ), principals
-
-
-async def test_the_missing_key_warning_fires_once_per_install(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """One install, one warning — not one per emit path.
-
-    The tool-call path and the annotation path each held their own warn-once
-    set, so a vendor in hashed mode with no key was told twice.
-    """
-    from dataclasses import dataclass
-
-    from baton import principal_from_oauth_sub
-    from baton.integrations.standalone import _auth
-
-    @dataclass
-    class _Tok:
-        claims: dict[str, Any] | None = None
-
-    monkeypatch.setattr(_auth, "get_access_token_or_none", lambda: _Tok({"sub": "alice"}))
-    mcp, handle = _install(
-        tmp_path / "e.jsonl", tenant_id="t", resolve_principal=principal_from_oauth_sub
-    )  # no key
-    with caplog.at_level(logging.WARNING):
-        try:
-            async with Client(mcp) as client:
-                await client.call_tool("lookup", {"name": "alice"})
-                await client.call_tool(
-                    handle.annotation_tool_name, {"user_goal": "g", "signal_type": "failure"}
-                )
-        finally:
-            await handle.aclose()
-    hits = [r for r in caplog.records if "HMAC key" in r.message]
-    assert len(hits) == 1, f"expected one warning per install, got {len(hits)}"
