@@ -12,6 +12,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Fixed
 
+- **One event that cannot be encoded no longer stops `HttpSink` for the rest
+  of the process.** The sink sends the oldest buffered event first and only
+  removed it after the collector answered. An event that could not be turned
+  into a request body raised before anything was sent, stayed at the front of
+  the buffer, and failed the same way on every later drain — so no event after
+  it was delivered, and the vendor's tool calls kept working with nothing in
+  the log. The common trigger is a lone surrogate (half of an emoji) in a tool
+  argument or result with `httpx>=0.28`, which raises `UnicodeEncodeError`;
+  older `httpx` escapes it and sends it. Such an event is now dropped with one
+  warning naming the event type and the exception type, and the events behind
+  it are sent. The exit-time flush had the same gap and has the same fix.
 - **A vendor scrubber that raises no longer breaks the vendor's tool call —
   on any surface** (SPEC §11.2, fail-open at the capture boundary). Previously
   a raising scrubber could turn a working call into an error, and on the

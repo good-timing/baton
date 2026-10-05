@@ -16,6 +16,7 @@ import warnings
 from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 import pytest
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Response
@@ -854,3 +855,132 @@ class TestARejectedEventSaysSo:
         assert len(sink._buffer) == 0
         assert caplog.text == "", f"a successful send logged: {caplog.text!r}"
         sink._closed = True
+
+
+# =============================================================================
+# An event that cannot be encoded
+# =============================================================================
+
+
+def _make_event_with_params(sequence_number: int, params: dict[str, Any]) -> ToolCallStartEvent:
+    event = _make_event(sequence_number)
+    event.payload.params = params
+    return event
+
+
+def _record_posted_sequence_numbers(httpserver: HTTPServer) -> list[int]:
+    posted: list[int] = []
+
+    def handler(request: Any) -> Response:
+        posted.append(request.get_json()["sequence_number"])
+        return Response("", status=201)
+
+    httpserver.expect_request("/v0/events", method="POST").respond_with_handler(handler)
+    return posted
+
+
+_UNSERIALIZABLE = {"q": object()}
+# httpx before 0.28 escapes a lone surrogate and sends it; from 0.28 it raises.
+# So these tests pin only what holds on both: the events after it still ship.
+_LONE_SURROGATE = {"q": "half an emoji \ud83d"}
+
+
+class TestAnUnencodableEventDoesNotBlockTheQueue:
+    async def test_the_drain_drops_it_and_ships_what_follows(
+        self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        posted = _record_posted_sequence_numbers(httpserver)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            await sink.write(_make_event_with_params(1, _UNSERIALIZABLE))
+            await sink.write(_make_event(sequence_number=2))
+            await sink.aclose()
+
+        assert posted == [2]
+        assert len(sink._buffer) == 0
+        dropped = [r for r in caplog.records if "has been dropped" in r.getMessage()]
+        assert len(dropped) == 1
+        assert "tool_call_start" in dropped[0].getMessage()
+        assert "PydanticSerializationError" in dropped[0].getMessage()
+
+    async def test_the_shutdown_flush_drops_it_and_ships_what_follows(
+        self, httpserver: HTTPServer
+    ) -> None:
+        posted = _record_posted_sequence_numbers(httpserver)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+        sink._enqueue_for_test(_make_event_with_params(1, _UNSERIALIZABLE))
+        sink._enqueue_for_test(_make_event(sequence_number=2))
+
+        sink._atexit_flush()
+
+        assert posted == [2]
+        assert len(sink._buffer) == 0
+        sink._closed = True
+
+    async def test_a_lone_surrogate_does_not_stop_the_drain(
+        self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        posted = _record_posted_sequence_numbers(httpserver)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            await sink.write(_make_event_with_params(1, _LONE_SURROGATE))
+            await sink.write(_make_event(sequence_number=2))
+            await sink.aclose()
+
+        assert posted[-1:] == [2]
+        assert len(sink._buffer) == 0
+        assert "half an emoji" not in caplog.text
+
+    async def test_a_lone_surrogate_does_not_stop_the_shutdown_flush(
+        self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        posted = _record_posted_sequence_numbers(httpserver)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+        sink._enqueue_for_test(_make_event_with_params(1, _LONE_SURROGATE))
+        sink._enqueue_for_test(_make_event(sequence_number=2))
+
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            sink._atexit_flush()
+
+        assert posted[-1:] == [2]
+        assert len(sink._buffer) == 0
+        assert "half an emoji" not in caplog.text
+        sink._closed = True
+
+    async def test_dropping_it_does_not_close_an_open_circuit(self, httpserver: HTTPServer) -> None:
+        sink = HttpSink(
+            url=httpserver.url_for(""),
+            api_key="k",
+            circuit_breaker_threshold=1,
+            circuit_breaker_reset_seconds=0.0,
+        )
+        sink._circuit.record_failure()
+        sink._enqueue_for_test(_make_event_with_params(1, _UNSERIALIZABLE))
+
+        await sink.flush()
+
+        assert len(sink._buffer) == 0
+        assert sink._circuit._opened_at is not None
+        await sink.aclose()
+
+    async def test_a_malformed_sink_url_is_not_blamed_on_the_event(self) -> None:
+        sink = HttpSink(url="http://127.0.0.1:9/\x00", api_key="k")
+        sink._enqueue_for_test(_make_event())
+
+        with pytest.raises(httpx.InvalidURL):
+            await sink.flush()
+
+        assert len(sink._buffer) == 1
+        sink._closed = True
+        await sink._http_client.aclose()
+
+    async def test_an_unencodable_api_key_is_not_blamed_on_the_event(self) -> None:
+        sink = HttpSink(url="http://127.0.0.1:9", api_key="ké")
+        sink._enqueue_for_test(_make_event())
+
+        with pytest.raises(UnicodeEncodeError):
+            await sink.flush()
+
+        assert len(sink._buffer) == 1
+        sink._closed = True
+        await sink._http_client.aclose()

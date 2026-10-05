@@ -457,6 +457,33 @@ class HttpSink(Sink):
             detail,
         )
 
+    def _build_request_or_none(self, client: Any, event: Event, **kwargs: Any) -> Any:
+        """None when the event cannot be made into a request; it is logged."""
+        # Encoding fails the same way on every attempt, so the caller drops the
+        # event instead of retrying. Only the exception TYPE is logged: its
+        # message can quote the event's own text.
+        import httpx
+
+        # Outside the try: a malformed URL or key is the sink's fault, not the event's.
+        url = httpx.URL(self._events_url())
+        headers = httpx.Headers(self._auth_headers())
+        try:
+            return client.build_request(
+                "POST",
+                url,
+                json=event.model_dump(mode="json"),
+                headers=headers,
+                **kwargs,
+            )
+        except Exception as exc:
+            logging.getLogger("baton").warning(
+                "baton: a %s event could not be encoded and has been dropped (%s) "
+                "— the event is gone; the events after it are still sent.",
+                event.event_type,
+                type(exc).__name__,
+            )
+            return None
+
     def _atexit_flush(self) -> None:
         """Best-effort flush when the process exits without an explicit
         ``aclose()`` — a forgotten shutdown call, or an unhandled exception
@@ -531,8 +558,6 @@ class HttpSink(Sink):
             import httpx
 
             deadline = monotonic() + self._shutdown_flush_timeout
-            url = self._events_url()
-            headers = self._auth_headers()
             sent = 0
             dropped = 0
             with httpx.Client() as client:
@@ -540,14 +565,15 @@ class HttpSink(Sink):
                     remaining = deadline - monotonic()
                     if remaining <= 0:
                         break
-                    event = self._buffer[0]
+                    request = self._build_request_or_none(
+                        client, self._buffer[0], timeout=remaining
+                    )
+                    if request is None:
+                        self._buffer.popleft()
+                        dropped += 1
+                        continue
                     try:
-                        response = client.post(
-                            url,
-                            json=event.model_dump(mode="json"),
-                            headers=headers,
-                            timeout=remaining,
-                        )
+                        response = client.send(request)
                     except httpx.HTTPError:
                         break  # transient — process is exiting, don't burn the deadline retrying
                     outcome = self._classify_status(response.status_code)
@@ -564,7 +590,7 @@ class HttpSink(Sink):
             if remaining_count or dropped:
                 log.warning(
                     "baton: process exiting without sink.aclose(); "
-                    "%d event(s) flushed, %d dropped (permanent failure), "
+                    "%d event(s) flushed, %d dropped (refused or unencodable), "
                     "%d still buffered and lost",
                     sent,
                     dropped,
@@ -589,6 +615,9 @@ class HttpSink(Sink):
             elif outcome == "permanent_failure":
                 self._buffer.popleft()
                 self._circuit.record_success()
+            elif outcome == "unencodable":
+                # Nothing was sent, so the circuit learns nothing about the endpoint.
+                self._buffer.popleft()
             else:
                 self._circuit.record_failure()
                 return
@@ -596,13 +625,13 @@ class HttpSink(Sink):
     async def _send_with_retry(self, event: Event) -> str:
         import httpx  # importable — constructing this sink already imported it
 
-        url = self._events_url()
-        headers = self._auth_headers()
-        body = event.model_dump(mode="json")
+        request = self._build_request_or_none(self._http_client, event)
+        if request is None:
+            return "unencodable"
 
         for attempt in range(self._max_retries + 1):
             try:
-                response = await self._http_client.post(url, json=body, headers=headers)
+                response = await self._http_client.send(request)
                 outcome = self._classify_status(response.status_code)
                 if outcome == "permanent_failure":
                     # Logged HERE, which is the only scope holding the
