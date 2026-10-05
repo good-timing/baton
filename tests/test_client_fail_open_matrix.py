@@ -27,7 +27,7 @@ LEG_MARKER = {
     "success": "result-row-42",
     "raise": "vendor-real-failure-row-42",
     "error_result": "returned-failure-row-42",
-    "annotate": "annotate-context-42",
+    "annotate": "annotate-intent-42",
 }
 LEGS = tuple(LEG_MARKER)
 IN_TRACE_ANNOTATION = "in-trace-annotation-42"
@@ -52,7 +52,7 @@ def _drive_sync(scrubber: Any, leg: str) -> BaseException | None:
     try:
         if leg == "annotate":
             client.annotate(
-                signal_type="failure", intent="ship it", context={"note": LEG_MARKER["annotate"]}
+                signal_type="failure", intent=LEG_MARKER["annotate"], context={"row": "42"}
             )
             return None
         try:
@@ -78,7 +78,7 @@ async def _drive_async(scrubber: Any, leg: str) -> BaseException | None:
     try:
         if leg == "annotate":
             await client.annotate(
-                signal_type="failure", intent="ship it", context={"note": LEG_MARKER["annotate"]}
+                signal_type="failure", intent=LEG_MARKER["annotate"], context={"row": "42"}
             )
             return None
         try:

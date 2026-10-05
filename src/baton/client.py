@@ -97,7 +97,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from time import monotonic
 from types import TracebackType
-from typing import Any, Self, TypeVar
+from typing import Any, Self, TypeVar, cast
 
 from baton._dsn import parse_dsn, select_dsn
 from baton._optout import DisabledSink, capture_disabled, log_disabled
@@ -162,6 +162,11 @@ _WITHHELD: Any = object()
 # what the tool returned. ``_end_result_fields`` turns it back into a throw
 # INSIDE the build thunk, where the construction guard drops the event.
 _SCRUB_FAILED: Any = object()
+
+
+def _scrubbed_text(scrubber: Callable[[Any], Any], text: str | None) -> str | None:
+    """Call only inside a build thunk: a throw here drops the event."""
+    return None if text is None else cast("str | None", scrubber(text))
 
 
 class _ScrubFailed(Exception):
@@ -827,9 +832,11 @@ class Trace:
                     consent_token=self._consent_token,
                     agent_runtime=self._client._agent_runtime,
                     payload=AnnotationPayload(
-                        intent=self._intent,
-                        expected_outcome=self._expected_outcome,
-                        workflow=self._workflow,
+                        intent=_scrubbed_text(self._client._scrubber, self._intent),
+                        expected_outcome=_scrubbed_text(
+                            self._client._scrubber, self._expected_outcome
+                        ),
+                        workflow=_scrubbed_text(self._client._scrubber, self._workflow),
                     ),
                 )
             )
@@ -1084,16 +1091,13 @@ class Client:
                 consent_token=resolved_consent,
                 agent_runtime=self._agent_runtime,
                 payload=AnnotationPayload(
-                    intent=intent,
-                    expected_outcome=expected_outcome,
+                    intent=_scrubbed_text(self._scrubber, intent),
+                    expected_outcome=_scrubbed_text(self._scrubber, expected_outcome),
                     signal_type=signal_type_str,
-                    workflow=workflow,
-                    suggested_improvement=suggested_improvement,
-                    # scrub_or_none, unlike ``error_body`` below: ``context``
-                    # is nullable and ``None`` already means "not supplied", so a
-                    # throw costs this field instead of the whole annotation —
-                    # the signal_type, the suggested_improvement and the intent
-                    # are the product's core feedback and must survive it.
+                    workflow=_scrubbed_text(self._scrubber, workflow),
+                    suggested_improvement=_scrubbed_text(self._scrubber, suggested_improvement),
+                    # scrub_or_none, unlike the text fields above: a throw on
+                    # ``context`` costs that field, not the whole annotation.
                     context=scrub_or_none(self._scrubber, context, "context", logger)
                     if context
                     else None,
@@ -1427,9 +1431,11 @@ class AsyncTrace:
                     consent_token=self._consent_token,
                     agent_runtime=self._client._agent_runtime,
                     payload=AnnotationPayload(
-                        intent=self._intent,
-                        expected_outcome=self._expected_outcome,
-                        workflow=self._workflow,
+                        intent=_scrubbed_text(self._client._scrubber, self._intent),
+                        expected_outcome=_scrubbed_text(
+                            self._client._scrubber, self._expected_outcome
+                        ),
+                        workflow=_scrubbed_text(self._client._scrubber, self._workflow),
                     ),
                 )
             )
@@ -1650,16 +1656,13 @@ class AsyncClient:
                 consent_token=resolved_consent,
                 agent_runtime=self._agent_runtime,
                 payload=AnnotationPayload(
-                    intent=intent,
-                    expected_outcome=expected_outcome,
+                    intent=_scrubbed_text(self._scrubber, intent),
+                    expected_outcome=_scrubbed_text(self._scrubber, expected_outcome),
                     signal_type=signal_type_str,
-                    workflow=workflow,
-                    suggested_improvement=suggested_improvement,
-                    # scrub_or_none, unlike ``error_body`` below: ``context``
-                    # is nullable and ``None`` already means "not supplied", so a
-                    # throw costs this field instead of the whole annotation —
-                    # the signal_type, the suggested_improvement and the intent
-                    # are the product's core feedback and must survive it.
+                    workflow=_scrubbed_text(self._scrubber, workflow),
+                    suggested_improvement=_scrubbed_text(self._scrubber, suggested_improvement),
+                    # scrub_or_none, unlike the text fields above: a throw on
+                    # ``context`` costs that field, not the whole annotation.
                     context=scrub_or_none(self._scrubber, context, "context", logger)
                     if context
                     else None,

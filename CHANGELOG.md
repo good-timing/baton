@@ -12,6 +12,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Fixed
 
+- **The library client now PII-scrubs annotation text** (SPEC §11.2 item 2).
+  `Client.annotate`, `AsyncClient.annotate`, `Trace.annotate` and the
+  annotation a `trace(intent=..., expected_outcome=..., workflow=...)` files
+  on entry sent `intent`, `expected_outcome`, `workflow` and
+  `suggested_improvement` to the sink as given; only `context` went through
+  the scrubber. Both MCP adapters already scrubbed these fields. A scrubber
+  that raises on one of them now drops that annotation (logged), as on the
+  adapters; a raise on `context` still costs only `context`.
 - **One event that cannot be encoded no longer stops `HttpSink` for the rest
   of the process.** The sink sends the oldest buffered event first and only
   removed it after the collector answered. An event that could not be turned
