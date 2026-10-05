@@ -246,6 +246,11 @@ class SurfaceSnapshotPayload(BaseModel):
     shape, not just the current one. The list is DATA,
     not shape: it must never feed ``surface_hash``, or adding a param would
     invalidate every recipe pinned to the vendor's real surface.
+
+    ``seam_augmentations.intent_param.required_names: list[str]`` is which of
+    ``names`` the producer advertised as required. Not every producer or older
+    event carries it, so a consumer MUST read a missing ``required_names`` as
+    unknown, never as an empty list.
     """
 
     model_config = ConfigDict(extra="forbid")
