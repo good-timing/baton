@@ -8,7 +8,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.8.12: the hook states the principal, and results can be withheld
+
+⚠ **This is a BREAKING release on a patch number.** `>=0.8.x` and `~=0.8.0`
+ranges adopt it without an edit. Read "Changed" before upgrading if you
+configure `resolve_principal`, relied on the OAuth `sub` default, or pin your
+tools' advertised schema.
 
 ### Fixed
 
@@ -63,6 +68,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   `required_names` as unknown, not as empty. If your agents' tool-list
   snapshots or schema tests pin the advertised `required` list, they will
   change. Set `intent_param_mode="optional"` to keep both params optional.
+- **BREAKING: your `resolve_principal` hook decides everything about the
+  principal, and the SDK sends it as given** (SPEC §11.4, §13). `Principal`
+  gains `form`: `"raw"` by default, `"hashed"` when your hook derived a
+  pseudonym itself. `principal_id`, `form` and `display_name` go on the wire as
+  returned, with `source: "asserted"`. ⚠ **The default is now a RAW id.**
+  Before this release the SDK hashed the id with your HMAC key unless told
+  otherwise; it no longer hashes anything. If you must not send real
+  identities, hash inside the hook and return `form="hashed"`. An
+  unregistered `form` is sent as `"raw"`. A `principal_id` that is blank, not
+  a string, or holds a lone surrogate or U+0000 costs the event its
+  `principal`, not the event.
 - **BREAKING: the SDK no longer reads the OAuth access token on its own.
   `principal` comes ONLY from `VendorConfig.resolve_principal`** (SPEC §11.4,
   §13). Until now, with no hook configured (or a hook that returned nothing), the
@@ -70,30 +86,40 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   `source: "attested"`. Which claim names the person — or whether the token names
   a person at all rather than a gateway's service account — is the vendor's call,
   so that default is gone. **If you relied on it, pass
-  `resolve_principal=principal_from_oauth_sub`**: one `(tenant, sub, iss)` hashes
-  to the same digest it always did, so your users keep their pseudonyms; only
-  `source` changes, to `"asserted"`. A hook that raises or returns something
+  `resolve_principal=principal_from_oauth_sub`**. ⚠ That hook returns the
+  subject itself, unhashed, so the `id` your events carry changes from the old
+  digest to the raw `sub`, and `source` changes to `"asserted"`. To keep the
+  old pseudonyms, write a hook that hashes as the SDK used to and returns
+  `form="hashed"`. A hook that raises or returns something
   unusable now costs the event its `principal` rather than falling back to the
   token. `"attested"` is no longer emitted.
+
+### Removed
+
+- **BREAKING: `VendorConfig.principal_id_mode`, `principal_id_hmac_key` and
+  the `BATON_PRINCIPAL_ID_HMAC_KEY` read.** Nothing in the SDK hashes or holds
+  a key. A removed field raises at install; the variable is not read, with no
+  warning.
+- **BREAKING: `baton.identity.hash_principal_id` and `Principal.issuer`.**
 
 ### Added
 
 - **`principal_from_oauth_sub` and `principal_from_oauth_email` — ready-made
   `resolve_principal` hooks.** Both read `SessionResolutionContext.claims` and
   return `None` when their claim is absent, so they compose with `or`. The sub
-  hook keys on `(sub, iss)`, exactly as the deleted rung did. The email hook keys
-  on the WHOLE address with no issuer — an address is unique on its own, and an
-  issuer URL change must not split a person — and returns the part before the
-  last `@` as `Principal.display_name`, which IS sent (below). Neither
+  hook returns `sub` alone; `sub` is unique only per issuer, so with two
+  identity providers write a hook that combines it with `iss`. The email hook
+  returns the WHOLE address and the part before the last `@` as
+  `Principal.display_name`, which IS sent (below). Both ids are sent raw. Neither
   consults `email_verified`. Both run inline, not on a hook thread.
 - **`principal.display_name` on the wire** (SPEC §11.4, §13) — what a page
   shows for the principal. Your hook sets `Principal.display_name` (renamed
-  from `user_name`, which was never sent) and it is sent VERBATIM in every
-  mode, hashed included, and never through your scrubber: you choose what is
+  from `user_name`, which was never sent) and it is sent VERBATIM whatever
+  `form` says, and never through your scrubber: you choose what is
   safe to show. A non-string, blank (only Unicode whitespace), over-128-
   character, lone-surrogate or NUL-bearing name is dropped on its own; the id still ships. ⚠ **The email
-  hook sends the local part** — `alice` for `alice@acme.com` — even when ids
-  are hashed; write your own hook if you don't want that. ⚠ Needs a collector
+  hook sends the local part** — `alice` for `alice@acme.com`; write your own
+  hook if you don't want that. ⚠ Needs a collector
   that accepts the member: every principal now carries it (`null` when there
   is no name), so a strict collector that predates it rejects every event
   with a principal.

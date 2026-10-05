@@ -201,13 +201,15 @@ def _end_result_fields(observed: Any) -> ResultFields:
     ⚠ ``_WITHHELD`` never reaches a scrubber on either path, which is SPEC
     §7's rule that a withheld result is not handed to one.
 
-    ⚠ **Two deliberate exceptions to "everything else takes
+    ⚠ **Three deliberate exceptions to "everything else takes
     ``scrub_or_none``", so a guard sweep does not read past them.** The four
     ``error_body`` applications in ``__exit__`` / ``__aexit__`` are bare
     calls inside their build thunks, because that member is a required
     ``str``: ``None`` will not type and ``""`` is the withheld/no-message
     ambiguity §11.4.3 warns about, so they drop the event exactly as this
-    does. Every OTHER application — ``params`` on both doors, ``context`` on
+    does. The annotation text fields go through ``_scrubbed_text``, also bare
+    inside a thunk: an annotation is one report and is dropped whole, as on
+    the adapters. Every OTHER application — ``params`` on both doors, ``context`` on
     both ``annotate``s — takes ``scrub_or_none``, where ``None`` already
     means "field unavailable".
 
