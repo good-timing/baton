@@ -977,7 +977,7 @@ Clients are not consistent about names. Codex CLI's `sessionId` carries the same
 
 The worker's correlation hierarchy is §11.5.1. It is stated there once.
 
-The SDK does NOT interpret `runtime_meta` beyond capture; it remains "what the runtime supplied," verbatim. See §11.5 for how the worker derives cycle boundaries from these primitives.
+The SDK does NOT interpret `runtime_meta` beyond capture; it remains "what the runtime supplied," verbatim. See §11.5 for how the worker derives turn boundaries from these primitives.
 
 Worker derives the canonical SignalPayload (§3) by:
 - Grouping events by `(tenant_id, session_id)`
@@ -1347,44 +1347,44 @@ Read the predicate disjunctively: ANY of the four binds, not all four. A produce
 
 ### 11.5 Annotation correlation rules (worker-side)
 
-#### 11.5.1 Cycle-vs-session distinction
+#### 11.5.1 Turn-vs-session distinction
 
-`session_id` (§11.4) is the SDK process-lifetime identifier — generated at `install_baton(...)` time and reused for every event the SDK emits from that process. A single Claude Code conversation with N user prompts produces 1 `session_id` covering all N turns. To do annotation correlation accurately, the worker MUST distinguish a "cycle" (one logical proactive→tool→reactive unit, ideally one user-prompt-and-response) from a "session."
+`session_id` (§11.4) is the SDK process-lifetime identifier — generated at `install_baton(...)` time and reused for every event the SDK emits from that process. A single Claude Code conversation with N user prompts produces 1 `session_id` covering all N of them. To do annotation correlation accurately, the worker MUST distinguish a "turn" (one user prompt and the calls made in answer to it: one logical proactive→tool→reactive unit) from a "session."
 
-The worker derives cycle boundaries using this hierarchy (most-authoritative first):
+The worker derives turn boundaries using this hierarchy (most-authoritative first). Only rule 1 is the client's own statement of a turn; under rules 2 and 3 a turn is the worker's estimate of one:
 
-0. **A change of CONVERSATION identifier** (§11.4.1) opens a new cycle: when the event's conversation identifier differs from the running cycle's, the worker MUST cut, whatever the gap or turn identifier. One turn never spans two conversations. This only splits. The same identifier never holds events in one cycle, and an identifier on one side only decides nothing. A conversation identifier otherwise spans many turns and is consumed one level up (below).
+0. **A change of CONVERSATION identifier** (§11.4.1) opens a new turn: when the event's conversation identifier differs from the running turn's, the worker MUST cut, whatever the gap or turn identifier. One turn never spans two conversations. This only splits. The same identifier never holds events in one turn, and an identifier on one side only decides nothing. A conversation identifier otherwise spans many turns and is consumed one level up (below).
 
-1. **A runtime-supplied TURN identifier** (§11.4.1, e.g. `vscode.requestId`), on both the event and the running cycle, is definitive both ways: a different id opens a new cycle, the same id keeps the event in the cycle.
+1. **A runtime-supplied TURN identifier** (§11.4.1, e.g. `vscode.requestId`), on both the event and the running turn, is definitive both ways: a different id opens a new turn, the same id keeps the event in the turn.
 
-2. **Proactive-annotation boundaries** (§5.1.2). When no runtime turn identifier applies, each proactive annotation (`signal_type` null, `intent` populated) marks the start of a new cycle. The cycle extends until the next proactive annotation or end-of-session, whichever comes first.
+2. **Proactive-annotation boundaries** (§5.1.2). When no runtime turn identifier applies, each proactive annotation (`signal_type` null, `intent` populated) marks the start of a new turn. The turn extends until the next proactive annotation or end-of-session, whichever comes first.
 
-3. **Time-gap heuristic.** When neither of the above applies, a contiguous run of events with `captured_at` deltas under N seconds (default N=120) is one cycle; a gap ≥ N seconds breaks into a new cycle. Workers SHOULD make N configurable per tenant and document it. This rule is brittle (long-running tools, human-in-loop pauses) and is the last resort.
+3. **Time-gap heuristic.** When neither of the above applies, a contiguous run of events with `captured_at` deltas under N seconds (default N=120) is one turn; a gap ≥ N seconds breaks into a new turn. Workers SHOULD make N configurable per tenant and document it. This rule is brittle (long-running tools, human-in-loop pauses) and is the last resort.
 
-Cycles are assembled at correlation time, not at emit time — the SDK does not invent cycle IDs. The worker MUST recompute cycle assignment on event replay so reprocessing remains deterministic.
+Turns are assembled at correlation time, not at emit time — the SDK does not invent turn IDs. The worker MUST recompute turn assignment on event replay so reprocessing remains deterministic.
 
-**Grouping cycles into tasks.** The worker groups contiguous cycles of one session into tasks: one task is one thing the user was trying to get done. The technique is implementation-defined and MUST be deterministic on replay. A runtime-supplied CONVERSATION identifier (§11.4.1), on two adjacent cycles, constrains it:
+**Grouping turns into tasks.** The worker groups contiguous turns of one session into tasks: one task is one thing the user was trying to get done. The technique is implementation-defined and MUST be deterministic on replay. A runtime-supplied CONVERSATION identifier (§11.4.1), on two adjacent turns, constrains it:
 
 - **Different identifiers MUST split.** Two conversations are never one task.
-- **The same identifier bounds the task but does not decide it.** A conversation can hold several tasks: a thread resumed hours later is usually a new piece of work. The worker MAY split on the same identifier; a gap-based split SHOULD use a threshold of hours, not minutes (the reference worker uses 6 hours). Within that threshold, the same identifier SHOULD keep the cycles in one task.
+- **The same identifier bounds the task but does not decide it.** A conversation can hold several tasks: a thread resumed hours later is usually a new piece of work. The worker MAY split on the same identifier; a gap-based split SHOULD use a threshold of hours, not minutes (the reference worker uses 6 hours). Within that threshold, the same identifier SHOULD keep the turns in one task.
 - **An identifier present on only one side decides nothing by itself.** An event with no `_meta`, such as a `surface_snapshot`, can sit inside a tagged conversation.
 - **Grouping only splits a session; it never joins two.** Two stored sessions that carry the same identifier stay separate. A client's identifier is asserted, never attested, and a join made on it would be invented.
 - A conversation identifier MUST NOT be used to pair a tool call's start with its end. `call_id` is the only pairing key.
 
-#### 11.5.2 Annotation correlation within a cycle
+#### 11.5.2 Annotation correlation within a turn
 
-Per SPEC §5.1.1, the worker MUST attach the most-recent annotation to each signal *within the cycle*. Concretely:
+Per SPEC §5.1.1, the worker MUST attach the most-recent annotation to each signal *within the turn*. Concretely:
 
 - **Proactive annotation:** an `annotation` event with no `signal_type` populated. Its `intent` / `expected_outcome` / `workflow` fields attach to the resulting signal.
-- **Reactive annotation:** an `annotation` event with `signal_type` populated, occurring AFTER a `tool_call_end` or `tool_call_error` **in the same cycle**. Its `signal_type` / `suggested_improvement` / `context` fields create the signal; the preceding tool call in the same cycle provides the `tool_calls[0]` + `observed_outcomes[0]`.
+- **Reactive annotation:** an `annotation` event with `signal_type` populated, occurring AFTER a `tool_call_end` or `tool_call_error` **in the same turn**. Its `signal_type` / `suggested_improvement` / `context` fields create the signal; the preceding tool call in the same turn provides the `tool_calls[0]` + `observed_outcomes[0]`.
 
-**The critical rule:** the proactive annotation and the tool reference attached to a reactive annotation MUST come from the SAME CYCLE as the reactive annotation. Sessions can contain many cycles; treating "first proactive in session" or "first tool call in session" as the pair is incorrect and produces semantically incoherent signals (demonstrated in an early v0.2 Console ticketing Channel — bug fixed by switching from "first in session" to "latest preceding the reactive" within the cycle).
+**The critical rule:** the proactive annotation and the tool reference attached to a reactive annotation MUST come from the SAME TURN as the reactive annotation. Sessions can contain many turns; treating "first proactive in session" or "first tool call in session" as the pair is incorrect and produces semantically incoherent signals (demonstrated in an early v0.2 Console ticketing Channel — bug fixed by switching from "first in session" to "latest preceding the reactive" within the turn).
 
-If multiple proactive annotations precede the reactive within a cycle: the most-recent wins per session-stable semantics from SPEC §5.1.1. `workflow` is cycle-stable; if set in an earlier annotation in the cycle, persists across subsequent signals in the cycle.
+If multiple proactive annotations precede the reactive within a turn: the most-recent wins per session-stable semantics from SPEC §5.1.1. `workflow` is turn-stable; if set in an earlier annotation in the turn, persists across subsequent signals in the turn.
 
 #### 11.5.3 Channels MUST consume Signals, not events
 
-Channels (Pylon, Slack, Notion, etc.) MUST receive assembled `SignalPayload` objects from the worker — they MUST NOT do cycle/annotation correlation against raw events themselves. The thin SDK / fat worker split (CHARTER ADR-4) means the worker owns interpretation, and Channels are pure renderers. Channels that walk event windows directly are an anti-pattern; they will produce the same incoherent-ticket bug noted in §11.5.2 above (and consistently, since the bug fix lives in the worker, not in every Channel).
+Channels (Pylon, Slack, Notion, etc.) MUST receive assembled `SignalPayload` objects from the worker — they MUST NOT do turn/annotation correlation against raw events themselves. The thin SDK / fat worker split (CHARTER ADR-4) means the worker owns interpretation, and Channels are pure renderers. Channels that walk event windows directly are an anti-pattern; they will produce the same incoherent-ticket bug noted in §11.5.2 above (and consistently, since the bug fix lives in the worker, not in every Channel).
 
 Migration note: Console implementations that currently do correlation in Channels (e.g., a v0.2 ticketing Channel reading raw events from Postgres) MUST migrate to consuming `SignalPayload` from a worker-side store before v0.3. The interim "session-windowed Channels" pattern is acknowledged as v0.2 expedient, not normative.
 
@@ -1396,7 +1396,7 @@ Migration note: Console implementations that currently do correlation in Channel
 
 #### 11.5.4 Tool-call leg pairing (worker-side)
 
-Pairing a `tool_call_start` with its `tool_call_end` / `tool_call_error` is a separate problem from cycle assembly above, and the worker MUST resolve it in these tiers, best first:
+Pairing a `tool_call_start` with its `tool_call_end` / `tool_call_error` is a separate problem from turn assembly above, and the worker MUST resolve it in these tiers, best first:
 
 1. **`call_id`**, where both legs carry one (§11.4). The only tier keyed on an identifier the producer minted.
 2. **`runtime_meta["claudecode/toolUseId"]`**, where both legs carry one. A real per-call id, but the client's to define, and exactly one client sends it.
@@ -1473,6 +1473,8 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **Worker wording change (2026-10-07) — §11.5's "cycle" is renamed "turn".** No envelope, field or shape change, and no rule change: the four boundary rules of §11.5.1 and the same-turn rule of §11.5.2 read as before with the one word replaced. The unit was always meant to be one user prompt and the calls made in answer to it, which is what clients and readers call a turn. A runtime-supplied turn identifier (§11.4.1) keeps its name and its place as rule 1. Entries below this one keep the word they were written with.
 
 - **PENDING (2026-10-03; no producer ships it) — a producer offering a withholding mode AND emitting any of the four resource/prompt `*_error` legs MUST emit a `UserWarning` at CONFIGURATION time naming them, in addition to the documentation rule (§11.4.4, §11.2 item 6).** Not a wire change: no payload moves and no consumer needs anything. **Genuinely pending rather than carrying the stale label**: the predicate is empty, measured across all four producers on 2026-10-03 — `baton-ts` and `baton-sdk` offer the mode and emit none of the twelve (types and models only, no emit site); `baton-proxy` emits all twelve and offers no mode. It first binds `baton-proxy` in the release that gives it the mode, and either SDK in the release that starts emitting resource or prompt events. ⚠ Not assertable from a payload: a conformance suite configures a producer and captures its warnings.
 

@@ -9,7 +9,7 @@ Why wrap ``Tool.run`` (instead of ``Tool.fn`` as the 0.2.x adapter did):
   binding gymnastics to map positional args back to parameter names.
 - We receive the request ``context`` directly — that's where the MCP
   ``_meta`` lives, which we forward as the event envelope's ``runtime_meta``
-  field per SPEC §11.4.1 (the primitive the Console worker uses for cycle
+  field per SPEC §11.4.1 (the primitive the Console worker uses for turn
   correlation more precise than session_id alone).
 - ``Tool.run`` is always async — no sync→async bridging via
   ``asyncio.to_thread``, no need to flip ``Tool.is_async``.
@@ -1052,7 +1052,7 @@ def _make_emitters(
     ``_resolve_call_session_id`` as its first argument — real on stateful
     HTTP, ``fallback_session_id`` otherwise (stdio, or no header found). The
     Console worker also uses ``runtime_meta`` (populated below) for finer
-    per-cycle correlation per SPEC §11.5, independent of this.
+    per-turn correlation per SPEC §11.5, independent of this.
     """
 
     async def _seq(session_id: str) -> int:

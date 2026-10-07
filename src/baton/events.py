@@ -440,7 +440,7 @@ class _EventEnvelope(BaseModel):
     """
     runtime_meta: dict[str, Any] | None = None
     """Runtime-supplied ``_meta`` envelope from the MCP request (SPEC §11.4).
-    Per SPEC §11.5 the Console worker uses this to derive turn / cycle
+    Per SPEC §11.5 the Console worker uses this to derive turn
     boundaries that are more precise than ``session_id`` alone (which is
     only the SDK-process lifetime, not a conversation turn). Examples:
     ``claudecode/toolUseId``, ``claudecode/sessionId``, ``progressToken``.
