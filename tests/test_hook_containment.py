@@ -211,10 +211,16 @@ async def test_the_ceiling_refusal_names_itself_and_is_not_the_deadline() -> Non
         release.wait(timeout=30)
         return "never-observed"
 
+    ceiling = hooks_mod.HOOK_THREAD_CEILING
     try:
-        for _ in range(hooks_mod.HOOK_THREAD_CEILING):
+        # Driven by the count, not the number of calls: a deadline that fires
+        # before the worker picks the call up wedges no thread.
+        for _ in range(ceiling * 4):
+            if live_hook_threads() >= ceiling:
+                break
             with pytest.raises(HookFailed):
                 await _run(wedged, None, timeout=0.05)
+        assert live_hook_threads() >= ceiling, "could not wedge enough threads"
         with pytest.raises(HookFailed) as refused:
             await _run(wedged, None, timeout=0.05)
         assert "refused" in str(refused.value), str(refused.value)
