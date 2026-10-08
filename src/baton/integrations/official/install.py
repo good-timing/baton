@@ -153,6 +153,7 @@ def install_baton(
         vendor_display_name=vendor_display_name,
         annotation_tool_name=annotation_tool_name,
         proactive_mode=config.proactive_mode,
+        intent_param_mode=config.intent_param_mode,
     )
     set_server_instructions(mcp, instructions)
 

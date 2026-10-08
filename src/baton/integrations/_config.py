@@ -390,15 +390,14 @@ class VendorConfig:
     ``instructions`` (notably Claude Desktop), where the annotation tool alone
     yields nothing.
 
-    ``"required"`` (default) also lists ``user_goal`` and ``expected_result``
+    ``"required"`` (default) also lists all three
     in each tool's advertised ``required`` and leads their descriptions with
     REQUIRED. That is an advertisement and nothing more: nothing Baton adds
     rejects a call that omits one, the vendor's handler runs, and the event
-    carries no ``call_intent`` / ``call_expected``.
+    carries no ``call_intent`` / ``call_expected`` / ``call_workflow``.
     ``"optional"`` injects the same params without the ``required`` entries.
     ``"off"`` disables injection.
-    ``overall_task`` stays optional in every mode, and a tool that already
-    declares one of these names keeps its own."""
+    A tool that already declares one of these names keeps its own."""
 
     proactive_mode: str = "off"
     """Whether the server instructions ask the agent to file a *proactive*

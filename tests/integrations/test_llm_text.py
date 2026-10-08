@@ -15,9 +15,11 @@ from __future__ import annotations
 import pytest
 
 from baton.integrations._llm_text import (
-    _INSTRUCTIONS_LENGTH_CAP,
+    _CLAUDE_CODE_TRUNCATION_CAP,
     build_annotation_tool_description,
+    build_overall_task_param_description,
     build_server_instructions,
+    required_param_names,
 )
 
 
@@ -30,7 +32,7 @@ def test_instructions_under_truncation_cap(proactive_mode: str) -> None:
         annotation_tool_name="very_long_vendor_display_name_annotate",
         proactive_mode=proactive_mode,
     )
-    assert len(rendered) <= _INSTRUCTIONS_LENGTH_CAP
+    assert len(rendered) < _CLAUDE_CODE_TRUNCATION_CAP
 
 
 def test_instructions_raises_when_names_exceed_cap() -> None:
@@ -222,7 +224,7 @@ class TestProactiveMode:
         on = build_server_instructions(**kw, proactive_mode="on")
         off = build_server_instructions(**kw, proactive_mode="off")
         assert len(off) < len(on)
-        assert len(on) <= _INSTRUCTIONS_LENGTH_CAP
+        assert len(on) < _CLAUDE_CODE_TRUNCATION_CAP
 
     def test_tool_description_keeps_every_field_in_both_modes(self) -> None:
         """The tool's FIELD contract is mode-independent — only the lead
@@ -298,3 +300,83 @@ def test_no_agent_facing_text_still_asks_for_a_retired_param_name() -> None:
                 f"{where} still names the retired param {retired!r}; agents will send it "
                 f"and the value will be dropped"
             )
+
+
+class TestTurnNumber:
+    """The wording asks for the user's message number at the start of
+    ``overall_task``; the text is the one the rig runs scored."""
+
+    BODY = (
+        "The number of the user's current message in this conversation "
+        "(1 for the first), a colon, then a short stable label for the broader "
+        "task this call serves (e.g. '3: prepare campaign approval'). Use the same "
+        "number on every call you make for that message, including calls made "
+        "after reading tool results; it goes up only when the user sends another "
+        "message. REPEAT the exact same label text after the colon on every call "
+        "serving the same task, across messages; change the label only when the "
+        "user starts a different task."
+    )
+    SUBAGENTS = (
+        "When you hand work to a subagent that may call this server's tools, tell it "
+        "the number of the user's current message in this conversation, and that it "
+        "must start overall_task with that number on every call to this server's "
+        "tools. This applies only to this server's tools."
+    )
+
+    def test_the_param_description_is_the_scored_text(self) -> None:
+        assert build_overall_task_param_description(intent_param_mode="required") == (
+            "REQUIRED. " + self.BODY
+        )
+        assert build_overall_task_param_description(intent_param_mode="optional") == (
+            "OPTIONAL. " + self.BODY
+        )
+
+    def test_required_mode_escalates_all_three_params(self) -> None:
+        assert required_param_names(intent_param_mode="required") == (
+            "user_goal",
+            "expected_result",
+            "overall_task",
+        )
+        assert required_param_names(intent_param_mode="optional") == ()
+
+    @pytest.mark.parametrize("proactive_mode", ["off", "on"])
+    def test_instructions_end_with_the_subagent_sentence(self, proactive_mode: str) -> None:
+        """A main agent that never loads the tool schema reads only this."""
+        rendered = build_server_instructions(
+            vendor_display_name="Acme",
+            annotation_tool_name="acme_annotate",
+            proactive_mode=proactive_mode,
+        )
+        assert rendered.endswith("\n\n" + self.SUBAGENTS)
+
+    def test_no_subagent_sentence_when_no_param_is_injected(self) -> None:
+        rendered = build_server_instructions(
+            vendor_display_name="Acme",
+            annotation_tool_name="acme_annotate",
+            proactive_mode="on",
+            intent_param_mode="off",
+        )
+        assert "subagent" not in rendered
+
+    def test_the_sentence_spends_headroom_and_not_the_name_budget(self) -> None:
+        """The longest text that renders still clears Claude Code's cut."""
+        kw = {"annotation_tool_name": "a_annotate", "proactive_mode": "on"}
+        longest = max(
+            n
+            for n in range(1, 400)
+            if _renders(vendor_display_name="A" * n, intent_param_mode="off", **kw)
+        )
+        with_sentence = build_server_instructions(vendor_display_name="A" * longest, **kw)
+        without = build_server_instructions(
+            vendor_display_name="A" * longest, intent_param_mode="off", **kw
+        )
+        assert len(with_sentence) == len(without) + len("\n\n" + self.SUBAGENTS)
+        assert len(with_sentence) < _CLAUDE_CODE_TRUNCATION_CAP
+
+
+def _renders(**kwargs: str) -> bool:
+    try:
+        build_server_instructions(**kwargs)
+    except ValueError:
+        return False
+    return True

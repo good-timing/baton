@@ -24,6 +24,7 @@ from baton.integrations._llm_text import (
     OVERALL_TASK_PARAM_NAME,
     USER_GOAL_PARAM_NAME,
     build_expected_result_param_description,
+    build_overall_task_param_description,
     build_user_goal_param_description,
 )
 from baton.integrations.standalone import VendorConfig, install_baton
@@ -109,10 +110,8 @@ class TestListInjection:
         Pinned in BOTH directions, because the failure this replaces was a
         constant that was true under one mode and silently false under the
         other: the ``optional`` leg is the control that proves the mode is
-        what moves the label. Since D8 ``expected_result`` is escalated too, so
-        its label moves in lockstep with its own ``required`` entry;
-        ``overall_task`` is never escalated and is now what separates a label
-        that tracks the schema from one that tracks the mode.
+        what moves the label. All three params are escalated, so each
+        label moves in lockstep with its own ``required`` entry.
         """
 
         for mode, expected_lead in (("optional", "OPTIONAL."), ("required", "REQUIRED.")):
@@ -143,8 +142,9 @@ class TestListInjection:
                 expected_desc[len(expected_lead) :]
                 == build_expected_result_param_description()[len("OPTIONAL.") :]
             )
-            # overall_task is the control: never escalated, label never moves.
-            assert props[OVERALL_TASK_PARAM_NAME]["description"].startswith("OPTIONAL.")
+            task_desc = props[OVERALL_TASK_PARAM_NAME]["description"]
+            assert task_desc == build_overall_task_param_description(intent_param_mode=mode)
+            assert task_desc.startswith(expected_lead)
 
     async def test_off_mode_no_injection(self, sink: Sink) -> None:
         mcp = _build_mcp(sink, intent_param_mode="off")
@@ -200,7 +200,7 @@ class TestListInjection:
         required = echo_tool.inputSchema.get("required", [])
         assert EXPECTED_RESULT_PARAM_NAME in required
         assert USER_GOAL_PARAM_NAME in required
-        assert OVERALL_TASK_PARAM_NAME not in required
+        assert OVERALL_TASK_PARAM_NAME in required
 
     async def test_native_expected_result_left_untouched_independently(
         self, sink: Sink, captured: list[dict[str, Any]]
@@ -380,7 +380,7 @@ class TestProactiveSynthesis:
 
 
 class TestOverallTaskParam:
-    async def test_overall_task_injected_optional_even_in_required_mode(self, sink: Sink) -> None:
+    async def test_overall_task_is_required_in_required_mode(self, sink: Sink) -> None:
         mcp = _build_mcp(sink, intent_param_mode="required")
 
         @mcp.tool()
@@ -392,7 +392,7 @@ class TestOverallTaskParam:
 
         (echo_tool,) = tools
         assert OVERALL_TASK_PARAM_NAME in echo_tool.inputSchema["properties"]
-        assert OVERALL_TASK_PARAM_NAME not in echo_tool.inputSchema.get("required", [])
+        assert OVERALL_TASK_PARAM_NAME in echo_tool.inputSchema["required"]
 
     async def test_overall_task_stripped_and_captured_as_call_workflow(
         self, sink: Sink, captured: list[dict[str, Any]]
@@ -483,7 +483,8 @@ def _echo_server(path: str, **overrides: Any) -> tuple[FastMCP, Any, list[str]]:
 
 class TestRequiredByDefaultIsNeverEnforced:
     """``intent_param_mode`` defaults to ``required``, which ADVERTISES
-    ``user_goal`` as required and must never refuse a call that omits it.
+    the three injected params as required and must never refuse a call that
+    omits them.
 
     Driven through fastmcp's in-memory ``Client``, a real MCP session, so the
     client, the server's call path and the middleware chain all see the
@@ -510,6 +511,7 @@ class TestRequiredByDefaultIsNeverEnforced:
 
         assert USER_GOAL_PARAM_NAME in schema["required"]
         assert EXPECTED_RESULT_PARAM_NAME in schema["required"]
+        assert OVERALL_TASK_PARAM_NAME in schema["required"]
         assert schema["properties"][USER_GOAL_PARAM_NAME]["description"].startswith("REQUIRED.")
         assert not without.get("isError"), without
         assert without["content"][0]["text"] == "echo:a"
@@ -517,6 +519,7 @@ class TestRequiredByDefaultIsNeverEnforced:
         assert seen == ["a", "b"], "the vendor's handler ran for both calls"
         starts = [e for e in _read_events(path) if e["event_type"] == "tool_call_start"]
         assert [s["payload"].get("call_intent") for s in starts] == [None, "why"]
+        assert [s["payload"].get("call_workflow") for s in starts] == [None, None]
 
     async def test_a_native_user_goal_is_left_alone(self, tmp_path: Any) -> None:
         """A tool that declares its own ``user_goal`` keeps it: not added to
@@ -584,6 +587,7 @@ class TestRequiredByDefaultIsNeverEnforced:
         assert payloads["optional"]["seam_augmentations"]["intent_param"]["mode"] == "optional"
         assert payloads["default"]["seam_augmentations"]["intent_param"]["required_names"] == [
             "expected_result",
+            "overall_task",
             "user_goal",
         ]
         assert payloads["optional"]["seam_augmentations"]["intent_param"]["required_names"] == []

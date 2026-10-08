@@ -336,7 +336,10 @@ def _inject_goal_params(tool: Any, intent_param_mode: str) -> dict[str, str]:
             EXPECTED_RESULT_PARAM_NAME,
             build_expected_result_param_description(intent_param_mode=intent_param_mode),
         ),
-        (OVERALL_TASK_PARAM_NAME, build_overall_task_param_description()),
+        (
+            OVERALL_TASK_PARAM_NAME,
+            build_overall_task_param_description(intent_param_mode=intent_param_mode),
+        ),
     ):
         if name in existing:
             dispositions[name] = "native"

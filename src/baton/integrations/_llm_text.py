@@ -10,9 +10,9 @@ truncation cap):**
 - *Server instructions* carry the MUST/REQUIRED behavioral framing —
   the BEFORE/AFTER/IF triggers, the signal_type enum, and the
   "annotation doesn't replace answering" guardrail. Claude Code
-  truncates ``InitializeResult.instructions`` at ~2087 chars, so this
-  template is kept under ~1500 chars to leave headroom for vendor
-  extensions. Loaded once at session init, which is the only point that
+  truncates ``InitializeResult.instructions`` at ~2087 chars, so the
+  template is kept under ~1500 chars and the fixed subagent sentence
+  added after it fits in the rest. Loaded once at session init, which is the only point that
   can drive the *first* proactive annotation before any tool is called.
 - *Annotation tool description* carries the field-level reference (what
   belongs in user_goal / expected_result / overall_task / suggested_improvement /
@@ -139,7 +139,7 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
 
 
 # Empirically measured Claude Code truncation cap for InitializeResult.instructions.
-# Reserve headroom for vendor extensions composed on top.
+# The cap below it leaves room for ``_INSTRUCTIONS_SUBAGENT_CLAUSE``.
 _CLAUDE_CODE_TRUNCATION_CAP = 2087
 _INSTRUCTIONS_LENGTH_CAP = 1500
 
@@ -162,7 +162,7 @@ SIGNAL_TYPES: tuple[str, ...] = (
 )
 
 
-# Per-tool intent-param injection. Two reserved parameters are injected into
+# Per-tool intent-param injection. Three reserved parameters are injected into
 # every wrapped tool's input schema at ``tools/list`` and stripped at
 # ``tools/call`` before the vendor handler runs — so intent is captured even
 # on runtimes that drop ``instructions`` (notably Claude Desktop), where the
@@ -179,7 +179,7 @@ SIGNAL_TYPES: tuple[str, ...] = (
 # the SPEC §13 divergence; the two producers now advertise the same three.
 USER_GOAL_PARAM_NAME = "user_goal"
 EXPECTED_RESULT_PARAM_NAME = "expected_result"
-# The task-label grouping key (wire field ``call_workflow``; console rung 3b).
+# The task label (wire field ``call_workflow``).
 # Deliberately NOT named ``workflow``: injected params live inside vendor tool
 # schemas, where ``workflow`` is a plausible real vendor param (Workfront
 # approvals, CI pipelines, Notion automations) — a collision would make the
@@ -198,11 +198,6 @@ INTENT_SOURCE_PARAM = "injected_param"
 # schema it ships inside — the model reads both. Only the label moves; the body
 # is byte-identical across modes, because that sentence is the measured text and
 # the mode is not a licence to reword it.
-#
-# ``required`` escalates ``user_goal`` and ``expected_result``.
-# ``overall_task`` is NEVER escalated: it is a grouping key whose value is
-# worthless unless repeated verbatim, so forcing a label the agent does not
-# have splits one task into several.
 _USER_GOAL_PARAM_BODY = (
     "One sentence: what the user is actually trying to accomplish "
     "with this call (their goal, not a restatement of the arguments)."
@@ -217,44 +212,33 @@ _EXPECTED_RESULT_PARAM_BODY = (
 _EXPECTED_RESULT_PARAM_DESCRIPTION = "OPTIONAL. " + _EXPECTED_RESULT_PARAM_BODY
 _EXPECTED_RESULT_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + _EXPECTED_RESULT_PARAM_BODY
 
-# The stability contract is the load-bearing design element: user_goal/
-# expected_result are call-scoped diagnostics that reword freely, so they
-# cannot key grouping; this param works ONLY if the model repeats the label
-# verbatim while the task is unchanged (measured 2026-08-10: without the
-# contract, 80% of adjacent same-task calls reword their goal text).
+# Two parts with two jobs. The leading number says which user message the
+# call answers, and the Console cuts a turn where it changes (SPEC §11.5.1
+# rule 2). The label after the colon says which task, and it works ONLY if the
+# model repeats it verbatim while the task is unchanged: user_goal and
+# expected_result reword freely, so they cannot key grouping.
 #
-# Granularity is a KNOWN, MEASURED weakness of this text, kept anyway because
-# the obvious fix is worse. Do not reword without scoring against both corpora
-# in a scored internal experiment (40 paired live-agent sessions,
-# 2026-08-11, one build per run).
-#
-# What this text gets wrong: when the user switches topic WITHOUT announcing it,
-# agents carry the first task's label onto everything after it — one session
-# labelled a rice lookup, a chickpea restock and a waste check all
-# "cook dal tonight". Boundary detection 0.700 on cue-free multi-task scripts
-# (1.000 when the user says "Different thing:", which is why an earlier run
-# missed this entirely).
-#
-# What it gets right, and why it stays: it never splits a task that should stay
-# whole — 20/20 same-task pairs held the label verbatim across both corpora.
-# The candidate rewording ("the specific task the user is working on right now
-# — not the overall theme of the conversation") fixes the boundary problem
-# completely (1.000) but relabels *within* a single task, describing successive
-# steps of one goal as different tasks; it scored 0.200 then 0.400 over-split on
-# identical scripts, and produced an A → B → A label that a merge-only,
-# adjacency-based consumer resolves as three tasks instead of one. The gain
-# (+0.300 boundary) is smaller than the cost (0.400 over-split), and shattering
-# is the failure mode that destroys downstream trust, so the trade goes this way.
-#
-# The open target for any v3 is therefore specific: the candidate's boundary
-# behaviour with this text's within-task stability. The two failure modes are
-# independent, so it is not a granularity dial to be tuned — it needs the
-# repeat-verbatim contract hardened against step-level rewording.
-_OVERALL_TASK_PARAM_DESCRIPTION = (
-    "OPTIONAL. Short stable label for the broader task this call serves "
-    "(e.g. 'prepare campaign approval'). REPEAT the exact same string on "
-    "every call serving the same task; change it only when the user starts "
-    "a different task."
+# Do not reword without scoring the result on live agents.
+_OVERALL_TASK_PARAM_BODY = (
+    "The number of the user's current message in this conversation "
+    "(1 for the first), a colon, then a short stable label for the broader "
+    "task this call serves (e.g. '3: prepare campaign approval'). Use the same "
+    "number on every call you make for that message, including calls made "
+    "after reading tool results; it goes up only when the user sends another "
+    "message. REPEAT the exact same label text after the colon on every call "
+    "serving the same task, across messages; change the label only when the "
+    "user starts a different task."
+)
+_OVERALL_TASK_PARAM_DESCRIPTION = "OPTIONAL. " + _OVERALL_TASK_PARAM_BODY
+_OVERALL_TASK_PARAM_DESCRIPTION_REQUIRED = "REQUIRED. " + _OVERALL_TASK_PARAM_BODY
+
+# A main agent that delegates may never load this server's tool schemas, so the
+# param description above never reaches it and its subagents get no number.
+_INSTRUCTIONS_SUBAGENT_CLAUSE = (
+    "\n\nWhen you hand work to a subagent that may call this server's tools, tell it "
+    "the number of the user's current message in this conversation, and that it "
+    "must start overall_task with that number on every call to this server's "
+    "tools. This applies only to this server's tools."
 )
 
 
@@ -295,16 +279,22 @@ def required_param_names(*, intent_param_mode: str) -> tuple[str, ...]:
     these names itself keeps its own schema and is not escalated.
 
     ``required`` is advertised and never enforced: a call omitting the param is
-    served as it would be unwrapped, pinned by
+    served as it would be unwrapped, pinned for all three names by
     ``TestRequiredByDefaultIsNeverEnforced`` on both adapters.
     """
     if intent_param_mode != "required":
         return ()
-    return (USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME)
+    return (USER_GOAL_PARAM_NAME, EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME)
 
 
-def build_overall_task_param_description() -> str:
-    """Build the injected ``overall_task`` param's ``description`` field."""
+def build_overall_task_param_description(*, intent_param_mode: str = "optional") -> str:
+    """Build the injected ``overall_task`` param's ``description`` field.
+
+    Mirrors ``build_user_goal_param_description``: only the leading label
+    tracks the mode.
+    """
+    if intent_param_mode == "required":
+        return _OVERALL_TASK_PARAM_DESCRIPTION_REQUIRED
     return _OVERALL_TASK_PARAM_DESCRIPTION
 
 
@@ -313,11 +303,14 @@ def build_server_instructions(
     vendor_display_name: str,
     annotation_tool_name: str,
     proactive_mode: str = "off",
+    intent_param_mode: str = "required",
 ) -> str:
     """Build the server-instructions text for the MCP ``instructions`` field.
 
     ``proactive_mode="off"`` (the default) drops the pre-call annotation
     request; the reactive clauses are identical in both modes.
+    ``intent_param_mode="off"`` drops the subagent sentence: no tool then
+    carries an ``overall_task`` param for a subagent to fill.
     """
     if proactive_mode == "on":
         template = _INSTRUCTIONS_HEAD_PROACTIVE + _INSTRUCTIONS_PROACTIVE_CLAUSE
@@ -334,6 +327,11 @@ def build_server_instructions(
             f"(Claude Code truncates at ~{_CLAUDE_CODE_TRUNCATION_CAP}). "
             f"Shorten vendor_display_name or annotation_tool_name."
         )
+    # Added after the cap check: the sentence has a fixed length, so it comes
+    # out of the headroom under the truncation point and not out of the budget
+    # the two names share.
+    if intent_param_mode != "off":
+        rendered += _INSTRUCTIONS_SUBAGENT_CLAUSE
     return rendered
 
 

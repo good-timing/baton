@@ -90,6 +90,27 @@ class TestInstallation:
         await handle.flush()
         await handle.aclose()
 
+    @pytest.mark.parametrize(("intent_param_mode", "served"), [("required", True), ("off", False)])
+    async def test_the_subagent_sentence_follows_the_configured_mode(
+        self, events_path: str, intent_param_mode: str, served: bool
+    ) -> None:
+        mcp = FastMCP("x")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="acme",
+                vendor_display_name="ACME Corp",
+                consent_token="ct_test",
+                sink=FileSink(events_path),
+                intent_param_mode=intent_param_mode,
+                proactive_mode="on",
+            ),
+        )
+        try:
+            assert ("subagent" in mcp.instructions) is served
+        finally:
+            await handle.aclose()
+
     async def test_sets_server_instructions(self, events_path: str) -> None:
         mcp = FastMCP("x")
         handle = install_baton(
