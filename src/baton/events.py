@@ -393,18 +393,11 @@ class _EventEnvelope(BaseModel):
     Was the flat field ``user_id`` until 0.8.6, then the flat ``principal_id``,
     and became this object at the release SPEC §13 leaves unnumbered."""
     call_id: str | None = None
-    """The minted per-call correlation key (SPEC §11.4, OPTIONAL + nullable).
-
-    The SAME value on a tool call's ``tool_call_start`` and its
-    ``tool_call_end`` / ``tool_call_error``, so a worker pairs the two legs on
-    an identifier this producer controls rather than inferring the pairing.
-    Consumers key tier 1 on ``(call_id, tool_name)`` (SPEC §11.5.4), not on the
-    id alone.
-
-    Null on every event emitted before this field existed, and on the
-    ``annotation`` event, which SPEC defines no ``call_id`` for — the field is
-    specified for a tool call's legs, and putting one on an annotation would
-    invent semantics no spec text defines. Null is never an error.
+    """The minted per-call correlation key (SPEC §11.4). Required on
+    ``tool_call_start``, ``tool_call_end`` and ``tool_call_error``, the SAME
+    value on a call's start and its end or error; null on every other type.
+    It is the only key a worker pairs the two legs on, as
+    ``(call_id, tool_name)`` (SPEC §11.5.4).
 
     Minted as a bare opaque UUID string in a local variable inside the scope
     that emits both legs — per-call by construction and correct across
@@ -701,16 +694,10 @@ class SurfaceSnapshotEvent(_EventEnvelope):
     payload: SurfaceSnapshotPayload
 
 
-# ⚠ The twelve lifecycle events. They carry the SAME envelope as the five
-# above — ``_EventEnvelope`` — which is what lets one collector endpoint accept
-# all seventeen and one worker order them on ``(session_id,
-# sequence_number)``. ``call_id``, ``principal`` and ``transport_observed``
-# stay OPTIONAL and the only producer sends none of them on these types
-# (``baton_proxy.emitter._enqueue`` stamps no ``call_id`` or
-# ``transport_observed`` on any event, and the twelve enqueue methods take no
-# ``principal``), so a consumer pairing a start with its end has only §11.5.4's
-# FIFO floor here. Recorded, not fixed: a producer MAY mint a ``call_id``, and
-# the first one that does needs no schema change.
+# The twelve lifecycle events carry the same envelope as the five above, so one
+# collector endpoint accepts all seventeen and one worker orders them on
+# ``(session_id, sequence_number)``. No producer sends ``call_id`` on these
+# types, so their legs have no pairing key (SPEC §11.5.4).
 
 
 class ResourceListStartEvent(_EventEnvelope):

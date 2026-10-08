@@ -780,7 +780,7 @@ Every event has these fields:
   "event_id": "01H4F...",                    // UUIDv7
   "event_type": "tool_call_end",             // see enum below
   "session_id": "...",                       // from layered fallback per §3.4
-  "call_id": "0193f2c1-...",                 // optional; minted per call, identical on both legs; see below
+  "call_id": "0193f2c1-...",                 // REQUIRED on tool_call_start / _end / _error; minted per call, identical on both legs; see below
   "tenant_id": "...",                        // the account/customer; from VendorConfig
   "vendor_id": "...",                        // the wrapped vendor; matches VendorConfig.vendor_id (see note below)
   "sequence_number": 42,                     // monotonic per session (session-stitched mode); 1 (per-event mode) — ⚠ NOT a mode discriminator, see §3.4
@@ -892,7 +892,7 @@ Keep all of it apart from `agent_runtime`. `agent_runtime` is what the client *s
 
 **`principal` goes in its own envelope member, never inside `runtime_meta`.** That dict is the client's `_meta` forwarded verbatim (§11.4.1). A claim the producer makes about its own resolution must stay separable from text the client supplied.
 
-**`call_id` — the minted per-call correlation key (OPTIONAL, nullable).** The SAME value on a tool call's `tool_call_start` and its `tool_call_end` / `tool_call_error`, so a worker pairs the two legs on an identifier the producer controls rather than inferring the pairing. Absent wherever the producer did not mint one, which is the state of every event emitted before this field existed and is never an error.
+**`call_id` — the minted per-call correlation key (REQUIRED on `tool_call_start`, `tool_call_end` and `tool_call_error`; absent or null on every other type).** The SAME non-empty value on a tool call's start and its end or error. It is the only key a worker pairs the two legs on (§11.5.4), so a collector MAY reject a tool-call leg that carries none, and a leg stored without one stays unpaired.
 
 Four rules, each of them a mistake this project has already made or nearly made:
 
@@ -1338,7 +1338,7 @@ Read the predicate disjunctively: ANY of the four binds, not all four. A produce
 
 ⚠ **No producer meets the predicate as of 2026-10-03.** `baton-ts` and `baton-sdk` offer the mode and emit none of the twelve — both carry the types and the models, neither has an emit site. `baton-proxy` emits all twelve and offers no mode. The obligations first bind `baton-proxy` in the release that gives it the mode, and bind either SDK in the release that starts emitting resource or prompt events.
 
-**⚠ Leg pairing has only §11.5.4's FIFO floor here.** No producer sends `call_id` on any of these types, and the only one that exists sends no `call_id` on any event at all. A producer MAY mint one and the first that does needs no schema change; until then a consumer pairing a start with its end has nothing keyed on an identifier.
+**⚠ These legs have no pairing key.** No producer sends `call_id` on any of these twelve types, and §11.5.4 pairs on nothing else. A producer MAY mint one and the first that does needs no schema change; until then a consumer has nothing to pair a start with its end on.
 
 **Consumer rules.**
 
@@ -1404,17 +1404,11 @@ Migration note: Console implementations that currently do correlation in Channel
 
 #### 11.5.4 Tool-call leg pairing (worker-side)
 
-Pairing a `tool_call_start` with its `tool_call_end` / `tool_call_error` is a separate problem from turn assembly above, and the worker MUST resolve it in these tiers, best first:
+Pairing a `tool_call_start` with its `tool_call_end` / `tool_call_error` is a separate problem from turn assembly above. **The worker MUST pair on `call_id` (§11.4) and on nothing else.** A leg with no `call_id` stays unpaired: a start reads as unanswered and an end as an orphan. A worker MUST NOT fall back to a client's own per-call id (`runtime_meta["claudecode/toolUseId"]`) or to order of arrival.
 
-1. **`call_id`**, where both legs carry one (§11.4). The only tier keyed on an identifier the producer minted.
-2. **`runtime_meta["claudecode/toolUseId"]`**, where both legs carry one. A real per-call id, but the client's to define, and exactly one client sends it.
-3. **FIFO within a session, partitioned on `tool_name`.** Keyed on nothing. Deprecated on arrival — see below.
+**A consumer SHOULD key on `(call_id, tool_name)`, not on `call_id` alone**, even though a correct mint makes the id unique by itself. Nothing on the wire enforces that uniqueness. A mint hoisted out of per-call scope — onto a module-level or per-session variable — sends one constant id for a whole session, and a key on the id alone would then queue every call in that session together ACROSS TOOLS, letting one tool's end answer another tool's start. A mispair is a permutation, so every total holds and nothing shows it. With `tool_name` in the key a collapsed id degrades to first-in-first-out within one tool, and a correct mint pays nothing — both legs of a real call carry the same `tool_name`. Pinned in `baton-console`'s `tests/test_call_id_pairing.py`.
 
-**The partitions MUST NOT mix.** An id-bearing end MUST NOT pair with an id-less pending start, nor the reverse. A lost half stays unpaired rather than corrupting a neighbour.
-
-**A consumer SHOULD key tier 1 on `(call_id, tool_name)`, not on `call_id` alone**, even though a correct mint makes the id unique by itself. Nothing on the wire enforces that uniqueness. A mint hoisted out of per-call scope — onto a module-level or per-session variable — sends one constant id for a whole session, and a tier keyed on the id alone would then queue every call in that session together ACROSS TOOLS, letting one tool's end answer another tool's start. That is strictly worse than the FIFO floor tier 1 outranks, and it is invisible: a mispair is a permutation, so every total holds. With `tool_name` in the key, a collapsed id degrades to exactly tier 3, and a correct mint pays nothing — both legs of a real call carry the same `tool_name`. Found by code review 2026-09-09 and pinned in `baton-console`'s `tests/test_call_id_pairing.py`.
-
-**Tier 3 is scheduled for removal, and the ORDER matters.** It comes out once `call_id` is flowing, not before. Removing it first unpairs new traffic from every client that sends no `toolUseId` — not merely the history that already lacks one.
+**Events stored before a producer minted the id carry none.** A consumer holding such history either leaves those calls unpaired or writes ids onto them once, from whatever pairing it used at the time, and marks them as its own.
 
 ### 11.6 Action vocabulary (additive-only)
 
@@ -1481,6 +1475,8 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **proxy 0.6.14 (2026-10-07) — `call_id` is REQUIRED on `tool_call_start`, `tool_call_end` and `tool_call_error`, and it is the only pairing key.** §11.4 marked it optional and §11.5.4 listed two lower tiers, a client's `claudecode/toolUseId` and order of arrival per tool, for producers that minted none. `baton-proxy` 0.6.14 was the last producer to start minting it (`baton-sdk` has since 0.8.0), so both tiers are removed. **Consumer consequence:** a collector MAY reject a tool-call leg with no `call_id`, and the one this is developed against does; a worker pairs on `(call_id, tool_name)` only. **Producer consequence:** a producer older than the release that mints the id has every tool-call event refused by such a collector, and a non-429 4xx is not retried. The other fourteen event types are unchanged and carry no `call_id`. The published schema still types the field as optional until the next SDK release regenerates it.
 
 - **Worker rule change (2026-10-07) — a turn number at the start of the task label cuts turns (§11.5.1 rule 2).** No envelope, field or shape change: the number travels inside the existing `call_workflow` and annotation `workflow` strings. An agent that starts its label with the number of the user's current message (`3: prepare campaign approval`) gives the worker the agent's own statement of where a turn starts; the worker cuts where the leading integer changes and holds the turn while it stays the same. The rule sits between the runtime turn identifier and the proactive-annotation rule, which become rules 3 and 4 unchanged. **No producer asks for the number yet**; this entry specifies the reader first, as `call_id` was. The description text that asks agents for it lands under its own entry. **Consumer consequence:** a label that already starts with an integer and a separator is now read as numbered, and a consumer that compares `workflow` or `call_workflow` strings MUST strip the number first or it will see a new task at every message.
 - **Worker wording change (2026-10-07) — §11.5's "cycle" is renamed "turn".** No envelope, field or shape change, and no rule change: the four boundary rules of §11.5.1 and the same-turn rule of §11.5.2 read as before with the one word replaced. The unit was always meant to be one user prompt and the calls made in answer to it, which is what clients and readers call a turn. A runtime-supplied turn identifier (§11.4.1) keeps its name and its place as rule 1. Entries below this one keep the word they were written with.
