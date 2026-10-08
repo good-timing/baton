@@ -10,6 +10,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+## 0.8.13: the client as observed, and the turn number
+
+Nothing in your code has to change unless you pin `mcp` to 1.20.0 or 1.21.0,
+or build tool-call events by hand. Two things change around it:
+
+- **What an agent is shown.** `tools/list` now lists `overall_task` as
+  required too, its description asks for a turn number, and the server
+  instructions gain one sentence.
+- **What is sent.** `agent_runtime` is always `"unknown"`, and each event
+  with a caller carries `client_observed`. A collector must read
+  `client_observed` before it receives events from this version. The hosted
+  Console does.
+
 ### Added
 
 - **`client_observed` on every event that has a caller.** It carries what
@@ -47,6 +60,18 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   it emits changes. If you build these three events by hand, in a test or a
   custom producer, you must now pass one. The other event types are
   unchanged.
+- **`overall_task` is advertised as required too, and asks for the turn
+  number.** Under the default `intent_param_mode="required"`, `tools/list`
+  now lists all three intent params in each wrapped tool's `required`. The
+  `overall_task` description asks the agent to start the label with the
+  number of the user's current message ("3: prepare campaign approval"),
+  which the Console reads to cut turns. None of the three is enforced: a call
+  that omits them still reaches your handler. `surface_snapshot` reports the
+  names in `seam_augmentations.intent_param.required_names`.
+- **The server instructions end with one sentence for a delegating agent**,
+  telling it to pass the turn number to its subagents. The sentence is left
+  out under `intent_param_mode="off"`, and on a server where one of your
+  tools declares its own `overall_task`.
 
 ## 0.8.12: the hook states the principal, and results can be withheld
 
