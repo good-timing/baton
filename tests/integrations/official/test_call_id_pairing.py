@@ -13,7 +13,7 @@ own assertion rather than on a timeout or a ``TypeError``.
 
 Here rather than in ``tests/functional/`` for the reason ``test_principal_id.py`` and
 ``test_observed_client.py`` are: **``mcp-matrix`` runs
-``tests/integrations/official/`` and nothing else**, against mcp 1.20.0 /
+``tests/integrations/official/`` and nothing else**, against mcp 1.21.1 /
 1.25.0 / 1.27.2 / 2.0.0. Whether one session even carries two concurrent
 ``tools/call`` requests is a per-version property of the server library, so a
 home outside this directory would test it on exactly one resolve — the same gap

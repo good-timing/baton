@@ -32,14 +32,14 @@ if TYPE_CHECKING:
     # ``type: ignore`` here did: correct under 1.x, and under 2.x three errors
     # (a missing ``FastMCP`` attribute, the suppression itself reported
     # unused, and an untyped ``tool()`` decorator downstream). Since CI's
-    # unpinned ``mcp>=1.20,<3`` resolves to whatever is newest, the pin was
+    # unpinned ``mcp>=1.21.1,<3`` resolves to whatever is newest, the pin was
     # guaranteed to rot on the next major.
     #
     # ``Any`` is the honest annotation, not a suppression: everything the
     # adapter reaches for on this object is the private internals listed in
     # the module docstring, already duck-typed on ``Any`` in ``_tool_wrap``
     # and ``_registry``. The version matrix — not mypy — is what proves those
-    # internals still exist, and `mcp-matrix` runs the tests on 1.20 / 1.25 /
+    # internals still exist, and `mcp-matrix` runs the tests on 1.21 / 1.25 /
     # 1.27 / 2.0.
     MCPServerClass = Any
     ContextClass = Any
@@ -126,7 +126,7 @@ def require_high_level_server(mcp: Any) -> None:
         "A bare ``mcp.server.Server`` — the low-level API the reference servers "
         "(git, time, fetch) are written against — has none of them and is not "
         "supported yet. If this IS a FastMCP/MCPServer, then it is a version "
-        "problem: pin mcp>=1.20,<3."
+        "problem: pin mcp>=1.21.1,<3."
     )
 
 
@@ -147,7 +147,7 @@ def get_lowlevel_server(mcp: Any) -> Any:
             "baton: this object has no low-level server backing (tried "
             "``_mcp_server`` and ``_lowlevel_server``). On the official SDK's "
             "FastMCP/MCPServer that backing always exists, so if that is what "
-            "you built with, this is a version problem: pin mcp>=1.20,<3. "
+            "you built with, this is a version problem: pin mcp>=1.21.1,<3. "
             "Otherwise it is the shape: install_baton takes the high-level "
             "server and reaches down into it, and a bare ``mcp.server.Server`` "
             "— the low-level API the reference servers (git, time, fetch) are "

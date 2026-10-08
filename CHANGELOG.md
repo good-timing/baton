@@ -27,6 +27,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Changed
 
+- **The oldest supported `mcp` is now 1.21.1 (was 1.20).** `mcp` 1.20.0 and
+  1.21.0 import a private `pydantic` function that `pydantic` 2.14 removed,
+  so `import mcp` fails on a fresh install of either, with or without this
+  SDK. The `[mcp]` extra now asks for `mcp>=1.21.1,<3`. If you pin `mcp` to
+  1.20.0 or 1.21.0, move to 1.21.1 or later.
+
 - **The MCP adapters no longer name the client: `agent_runtime` is always
   `"unknown"`.** It used to hold the name the client declared, or
   `claude-code` when a `claudecode/*` key was present. The collector now

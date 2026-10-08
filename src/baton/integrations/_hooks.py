@@ -27,7 +27,7 @@ NOT**, and this module claimed it was until it was measured — see
 ``HOOK_THREAD_CEILING``. Concurrency primitives are exactly
 the kind of code where reimplementing to avoid a dependency costs more than
 the dependency, and ``anyio`` is not a real dependency anyway: ``mcp`` requires
-it at every point in the supported band (1.20.0 ``anyio>=4.5``, 2.2.0
+it at every point in the supported band (1.21.1 ``anyio>=4.5``, 2.2.0
 ``anyio>=4.10``) and ``fastmcp`` gets it through ``mcp``, so declaring it in
 the integration extras is as free as ``pydantic`` already is.
 

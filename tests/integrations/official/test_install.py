@@ -1322,7 +1322,7 @@ def test_the_low_level_backing_error_leads_with_the_version_cause() -> None:
         get_lowlevel_server(Server("bare-low-level"))
 
     detail = str(excinfo.value)
-    assert "pin mcp>=1.20,<3" in detail, "the message does not give the version fix"
+    assert "pin mcp>=1.21.1,<3" in detail, "the message does not give the version fix"
     assert detail.index("version problem") < detail.index("the shape"), (
         "the shape branch leads, which is the wrong diagnosis for anything "
         "that can still reach this error"

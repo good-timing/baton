@@ -4,7 +4,7 @@
 file only pins them. Two things about its placement are not stated there:
 
 **It lives here because ``mcp-matrix`` can run nothing else.** That job is the
-only one pinning an ``mcp`` version (1.20 / 1.25 / 1.27.2 / 2.0.0) and its last
+only one pinning an ``mcp`` version (1.21 / 1.25 / 1.27.2 / 2.0.0) and its last
 step runs ``pytest tests/integrations/official/`` alone. The equivalent
 assertions in ``tests/functional/test_transport_observed_parity.py`` cover both
 adapters, so every file there imports ``fastmcp`` — and this job resolves

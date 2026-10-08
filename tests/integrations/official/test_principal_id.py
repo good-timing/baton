@@ -2,7 +2,7 @@
 
 Here rather than in ``tests/functional/`` for the same reason
 ``test_observed_client.py`` is: ``mcp-matrix`` runs
-``tests/integrations/official/`` against mcp 1.20.0 / 1.25.0 / 1.27.2 / 2.0.0
+``tests/integrations/official/`` against mcp 1.21.1 / 1.25.0 / 1.27.2 / 2.0.0
 and nothing else, and this field is version-sensitive in a way nothing else in
 the suite is — ``AccessToken`` gained ``claims`` and ``subject`` somewhere in
 (1.25, 1.27], so **two of those four legs cannot carry identity at all.**
@@ -219,7 +219,7 @@ async def test_the_form_the_hook_states_is_on_every_event_with_the_id_untouched(
 # ``tests/test_identity_hook.py``. It is duplicated HERE, thinly, for the
 # reason at the top of this file: ``mcp-matrix`` runs
 # ``tests/integrations/official/`` and nothing else, so nothing else in the
-# suite exercises the official adapter against mcp 1.20 / 1.25 / 1.27 / 2.0.
+# suite exercises the official adapter against mcp 1.21 / 1.25 / 1.27 / 2.0.
 #
 # The version-sensitive part is that a hook makes
 # ``_extract_headers_from_context`` run on the ANNOTATION path, and header

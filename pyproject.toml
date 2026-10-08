@@ -55,7 +55,7 @@ dependencies = [
     # whichever tool call first runs a hook, and the next module-scope
     # ``import anyio`` anywhere under ``baton/`` re-breaks it silently.
     # For MCP vendors — everyone else — it stays free: ``mcp`` requires anyio
-    # at every point in the supported band (1.20.0 ``anyio>=4.5``, 2.2.0
+    # at every point in the supported band (1.21.1 ``anyio>=4.5``, 2.2.0
     # ``anyio>=4.10``) and ``fastmcp`` gets it through ``mcp``. The ``>=4.5``
     # floor matches the oldest ``mcp`` in band; nothing here uses anything
     # newer than ``to_thread.run_sync(abandon_on_cancel=...)``, which predates
@@ -91,15 +91,13 @@ Issues = "https://github.com/good-timing/baton/issues"
 # (``mcp.server.fastmcp``) on 1.x, renamed ``MCPServer`` (``mcp.server.mcpserver``)
 # in 2.0. ``baton.integrations.official._compat`` resolves both; the internal struct
 # the adapter wraps is preserved byte-for-byte across the rename.
-# Minimum 1.20: earlier versions have a `Tool.from_function` bug that calls
-# `issubclass(param.annotation, Context)` without first checking for
-# stringified annotations from `from __future__ import annotations` (PEP 563),
-# which crashes on any tool fn that uses future-annotations. Fixed upstream
-# pre-1.20; we don't ship a workaround.
+# Minimum 1.21.1: 1.20.0 and 1.21.0 import a private pydantic function that
+# pydantic 2.14 removed, so `import mcp` fails on a fresh install of either.
+# Both declare `pydantic<3`, so a resolver still picks 2.14 for them.
 # Upper bound <3: 2.x is supported + CI-tested; cap guards against an untested
 # future major (2.0 already renamed the server class + instructions backing).
 mcp = [
-    "mcp>=1.20,<3",
+    "mcp>=1.21.1,<3",
 ]
 # Adapts the standalone ``fastmcp`` library's ``fastmcp.FastMCP`` (different
 # project; advanced features like middleware not in the official SDK).
