@@ -43,6 +43,7 @@ def _envelope() -> dict[str, Any]:
         "captured_at": datetime.now(UTC),
         "consent_token": "ct_test_01H4F",
         "agent_runtime": "claude-code",
+        "call_id": "call_01H4F",
     }
 
 
@@ -249,6 +250,45 @@ class TestVendorId:
         assert rebuilt.vendor_id == "notion"
 
 
+class TestCallId:
+    """SPEC §11.4: required on the three tool-call types, optional elsewhere."""
+
+    @pytest.mark.parametrize(
+        ("model", "payload"),
+        [
+            (ToolCallStartEvent, ToolCallStartPayload(tool_name="t")),
+            (ToolCallEndEvent, ToolCallEndPayload(tool_name="t")),
+            (
+                ToolCallErrorEvent,
+                ToolCallErrorPayload(tool_name="t", error_type="E", error_body="b"),
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("call_id", ["absent", None, ""])
+    def test_a_tool_call_leg_needs_one(self, model: Any, payload: Any, call_id: Any) -> None:
+        envelope = _envelope()
+        if call_id == "absent":
+            del envelope["call_id"]
+        else:
+            envelope["call_id"] = call_id
+        with pytest.raises(ValidationError):
+            model(**envelope, payload=payload)
+
+    def test_every_other_type_may_omit_it(self) -> None:
+        envelope = _envelope()
+        del envelope["call_id"]
+        assert AnnotationEvent(**envelope, payload=AnnotationPayload()).call_id is None
+
+    def test_the_schema_requires_it_on_exactly_the_three_call_types(self) -> None:
+        defs = TypeAdapter(Event).json_schema()["$defs"]
+        requiring = {
+            name
+            for name, d in defs.items()
+            if "call_id" in d.get("required", ()) and "Event" in name
+        }
+        assert requiring == {"ToolCallStartEvent", "ToolCallEndEvent", "ToolCallErrorEvent"}
+
+
 class TestSequenceNumber:
     def test_non_negative_allowed(self) -> None:
         envelope = _envelope()
@@ -331,6 +371,7 @@ class TestDiscriminatedUnion:
         data = {
             "event_id": "01970000-0000-7000-8000-000000000000",
             "event_type": "tool_call_start",
+            "call_id": "c1",
             "tenant_id": "t",
             "vendor_id": "t",
             "session_id": "s",
@@ -407,6 +448,7 @@ class TestDiscriminatedUnion:
             {
                 "event_id": "01970000-0000-7000-8000-000000000003",
                 "event_type": "tool_call_error",
+                "call_id": "c1",
                 "tenant_id": "t",
                 "vendor_id": "t",
                 "session_id": "s",

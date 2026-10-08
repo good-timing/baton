@@ -543,6 +543,7 @@ class TestNothingTheDsnBUILDSPrintsTheBearer:
                 captured_at=datetime.now(UTC),
                 consent_token="ct",
                 agent_runtime="claude-code",
+                call_id="call_test",
                 payload=ToolCallStartPayload(tool_name="lookup"),
             )
             await safe_write(sink, event, logging.getLogger("baton"))

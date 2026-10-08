@@ -73,6 +73,7 @@ def _make_start_event(sequence_number: int = 1) -> ToolCallStartEvent:
         captured_at=datetime.now(UTC),
         consent_token="ct_harness",
         agent_runtime="test",
+        call_id="call_harness",
         payload=ToolCallStartPayload(tool_name="t"),
     )
 

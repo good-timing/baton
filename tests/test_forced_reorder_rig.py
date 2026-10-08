@@ -46,6 +46,7 @@ def _envelope() -> dict[str, Any]:
         "captured_at": datetime.now(UTC),
         "consent_token": "ct_rig",
         "agent_runtime": "claude-code",
+        "call_id": "call_rig",
     }
 
 

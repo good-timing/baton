@@ -702,16 +702,19 @@ class PromptGetErrorPayload(BaseModel):
 
 class ToolCallStartEvent(_EventEnvelope):
     event_type: Literal["tool_call_start"] = "tool_call_start"
+    call_id: str = Field(min_length=1)
     payload: ToolCallStartPayload
 
 
 class ToolCallEndEvent(_EventEnvelope):
     event_type: Literal["tool_call_end"] = "tool_call_end"
+    call_id: str = Field(min_length=1)
     payload: ToolCallEndPayload
 
 
 class ToolCallErrorEvent(_EventEnvelope):
     event_type: Literal["tool_call_error"] = "tool_call_error"
+    call_id: str = Field(min_length=1)
     payload: ToolCallErrorPayload
 
 

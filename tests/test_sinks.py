@@ -34,6 +34,7 @@ def _make_event(sequence_number: int = 1) -> ToolCallStartEvent:
         captured_at=datetime.now(UTC),
         consent_token="ct_test",
         agent_runtime="claude-code",
+        call_id="call_test",
         payload=ToolCallStartPayload(tool_name="t"),
     )
 

@@ -597,9 +597,9 @@ class Trace:
         # SPEC §11.4's per-call join key. Minted on ENTRY, not here: this
         # object is the per-call scope only while it is entered, and a
         # Trace re-entered for a second call must not reuse the first
-        # call's id — a shared id pairs across calls of one tool, which is
-        # strictly worse than the FIFO floor tier 1 outranks.
-        self._call_id: str | None = None
+        # call's id — a shared id pairs across calls of one tool in arrival
+        # order, not call by call.
+        self._call_id = ""
         self._observed_warned = False
         # "This object has completed at least one entry" — set on entry, never
         # cleared. It is what tells a LATE with_params() apart from an early
@@ -1228,9 +1228,9 @@ class AsyncTrace:
         # SPEC §11.4's per-call join key. Minted on ENTRY, not here: this
         # object is the per-call scope only while it is entered, and a
         # Trace re-entered for a second call must not reuse the first
-        # call's id — a shared id pairs across calls of one tool, which is
-        # strictly worse than the FIFO floor tier 1 outranks.
-        self._call_id: str | None = None
+        # call's id — a shared id pairs across calls of one tool in arrival
+        # order, not call by call.
+        self._call_id = ""
         self._observed_warned = False
         # "This object has completed at least one entry" — set on entry, never
         # cleared. It is what tells a LATE with_params() apart from an early

@@ -29,6 +29,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   receives events from this version**, or every client shows as unknown. The
   hosted Console does. `baton.Client(agent_runtime=...)`, the library API, is
   unchanged.
+- **`ToolCallStartEvent`, `ToolCallEndEvent` and `ToolCallErrorEvent` require
+  `call_id`**, a non-empty string, and the published schema says so (SPEC
+  §11.4). The SDK has sent one on every tool-call leg since 0.8.0, so nothing
+  it emits changes. If you build these three events by hand, in a test or a
+  custom producer, you must now pass one. The other event types are
+  unchanged.
 
 ## 0.8.12: the hook states the principal, and results can be withheld
 
