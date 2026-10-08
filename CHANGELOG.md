@@ -19,6 +19,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   copied. Values pass through your scrubber. It is `null` when there is
   nothing to carry.
 
+- **Three tool list event models (SPEC §11.4.5), declared and not yet
+  emitted by this SDK.** `tool_list_start`, `tool_list_end` and
+  `tool_list_error` record a client's `tools/list` request. The models are
+  here because the shared schema is generated from this package. No Python
+  adapter sends them yet.
+
 ### Changed
 
 - **The MCP adapters no longer name the client: `agent_runtime` is always

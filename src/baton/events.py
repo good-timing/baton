@@ -48,6 +48,10 @@ EventType = Literal[
     "prompt_get_start",
     "prompt_get_end",
     "prompt_get_error",
+    # SPEC §11.4.5.
+    "tool_list_start",
+    "tool_list_end",
+    "tool_list_error",
 ]
 
 
@@ -695,6 +699,34 @@ class PromptGetErrorPayload(BaseModel):
     duration_ms: int | None = None
 
 
+class ToolListStartPayload(BaseModel):
+    """Emitted before a ``tools/list`` request is served (SPEC §11.4.5). Empty,
+    for the reason ``ResourceListStartPayload`` carries."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ToolListEndPayload(BaseModel):
+    """Emitted after ``tools/list`` returns. ``count`` is the length of the
+    ``tools`` array in that one response, the producer's own tools included."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int
+    duration_ms: int | None = None
+
+
+class ToolListErrorPayload(BaseModel):
+    """Emitted when ``tools/list`` failed. See
+    ``ResourceReadErrorPayload`` for how ``error_type`` is spelled."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    error_type: str
+    error_body: str
+    duration_ms: int | None = None
+
+
 # =============================================================================
 # Concrete event classes
 # =============================================================================
@@ -728,8 +760,8 @@ class SurfaceSnapshotEvent(_EventEnvelope):
     payload: SurfaceSnapshotPayload
 
 
-# The twelve lifecycle events carry the same envelope as the five above, so one
-# collector endpoint accepts all seventeen and one worker orders them on
+# The lifecycle events carry the same envelope as the five above, so one
+# collector endpoint accepts every type and one worker orders them on
 # ``(session_id, sequence_number)``. No producer sends ``call_id`` on these
 # types, so their legs have no pairing key (SPEC §11.5.4).
 
@@ -794,6 +826,21 @@ class PromptGetErrorEvent(_EventEnvelope):
     payload: PromptGetErrorPayload
 
 
+class ToolListStartEvent(_EventEnvelope):
+    event_type: Literal["tool_list_start"] = "tool_list_start"
+    payload: ToolListStartPayload
+
+
+class ToolListEndEvent(_EventEnvelope):
+    event_type: Literal["tool_list_end"] = "tool_list_end"
+    payload: ToolListEndPayload
+
+
+class ToolListErrorEvent(_EventEnvelope):
+    event_type: Literal["tool_list_error"] = "tool_list_error"
+    payload: ToolListErrorPayload
+
+
 # =============================================================================
 # Discriminated union — worker reads JSON, dispatches to concrete type
 # =============================================================================
@@ -815,7 +862,10 @@ Event = Annotated[
     | PromptListErrorEvent
     | PromptGetStartEvent
     | PromptGetEndEvent
-    | PromptGetErrorEvent,
+    | PromptGetErrorEvent
+    | ToolListStartEvent
+    | ToolListEndEvent
+    | ToolListErrorEvent,
     Field(discriminator="event_type"),
 ]
 
@@ -858,4 +908,10 @@ __all__ = [
     "ToolCallErrorPayload",
     "ToolCallStartEvent",
     "ToolCallStartPayload",
+    "ToolListEndEvent",
+    "ToolListEndPayload",
+    "ToolListErrorEvent",
+    "ToolListErrorPayload",
+    "ToolListStartEvent",
+    "ToolListStartPayload",
 ]

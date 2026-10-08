@@ -943,7 +943,7 @@ Four rules, each of them a mistake this project has already made or nearly made:
 
 **Every value is client-supplied text.** A producer passes each one through `VendorConfig(scrubber=...)`, as it does `_meta`, and truncates it: `info.name` and `info.version` at 128 characters, as §3.4 does the declared name, and each header value at 256.
 
-**Which events carry it.** Every event with a live request behind it (`tool_call_*`, `annotation`, `resource_list_*`). Never `surface_snapshot`, which describes the vendor's server and not a caller.
+**Which events carry it.** Every event with a live request behind it (`tool_call_*`, `annotation`, `tool_list_*`, `resource_list_*`). Never `surface_snapshot`, which describes the vendor's server and not a caller.
 
 **What it is for.** It replaces `agent_runtime` as the way a client is named. That field is one string a producer resolved, so it could not say whether a name was declared or guessed, carried no version, and ended at `unknown` on a server that never sees the handshake. This object gives a consumer the inputs, so the label is computed where it can be corrected without an SDK release. A producer that emits it stops resolving `agent_runtime` (§3.4).
 
@@ -969,7 +969,7 @@ Event types and their payload shapes:
 | `annotation` | `{intent?, expected_outcome?, signal_type?, workflow?, suggested_improvement?, context?}` (all nullable; agent populates what it has) | SDK annotation tool handler / library `client.annotate(...)` / `trace.annotate(...)` |
 | `surface_snapshot` | `{surface_hash, server_info?, capabilities?, instructions?, tools, seam_augmentations}` — top-level fields mirror baton-proxy's `enqueue_surface_snapshot`; `seam_augmentations.intent_param` shape differs (§11.4.2) | SDK middleware/wrap layer, once per observed `surface_hash` per process; see §11.4.2 |
 
-⚠ **These five are the TOOL-call and annotation types, and they are not the whole enum.** Twelve more — the resource and prompt lifecycles — are specified in **§11.4.4**, with one producer already emitting all of them. `EventType` has seventeen values; a consumer reading this table as exhaustive will reject conforming traffic, which §11.4.4 forbids outright.
+⚠ **These five are the TOOL-call and annotation types, and they are not the whole enum.** Fifteen more are specified below: the twelve resource and prompt lifecycle types in **§11.4.4**, and the three tool list types in **§11.4.5**. `EventType` has twenty values; a consumer reading this table as exhaustive will reject conforming traffic, which §11.4.4 forbids outright.
 
 **`result_capture` — the producer declares that result-derived data was WITHHELD (OPTIONAL, on `tool_call_end` and `tool_call_error`).** A vendor may configure a producer to capture no tool-response data at all. When it does, the event says so, in its own member, rather than leaving a consumer to infer it from what is missing.
 
@@ -1336,7 +1336,7 @@ nulls `result` on this event type drops the body this change exists to keep.
 | `prompt_get_end` | `{name, duration_ms?}` |
 | `prompt_get_error` | `{name, error_type, error_body, duration_ms?}` |
 
-**The envelope is §11.4's, unchanged.** That is what lets one collector endpoint accept all seventeen event types and one worker order them on `(session_id, sequence_number)`. A conforming producer MUST fill the same required envelope fields it fills on a tool call.
+**The envelope is §11.4's, unchanged.** That is what lets one collector endpoint accept every event type and one worker order them on `(session_id, sequence_number)`. A conforming producer MUST fill the same required envelope fields it fills on a tool call.
 
 **No payload here carries a BODY, and that is normative rather than an omission.**
 
@@ -1377,6 +1377,30 @@ Read the predicate disjunctively: ANY of the four binds, not all four. A produce
 
 - **A consumer MUST NOT reject an event for carrying an unrecognised `event_type`**, here or anywhere. The reference Console accepts all twelve and reads none of them, which is conforming: these types are additive and a consumer adopts them when it has a use.
 - A consumer MUST NOT infer from a `*_list_end` `count` that it has seen the surface. `surface_snapshot` (§11.4.2) is what describes the surface; a count describes one call's answer.
+
+#### 11.4.5 Tool list events — three types
+
+A producer sends these when a client asks for the server's tools (`tools/list`). They record that a client looked at the server, whether or not it then called a tool.
+
+| `event_type` | Payload |
+|---|---|
+| `tool_list_start` | `{}` |
+| `tool_list_end` | `{count, duration_ms?}` |
+| `tool_list_error` | `{error_type, error_body, duration_ms?}` |
+
+**The shapes are §11.4.4's list shapes**, and its rules for `error_type`, `error_body`, pairing and `result_capture` apply here unchanged. These three are specified apart from the twelve only because they were designed here and not recorded from a producer.
+
+**The envelope is §11.4's, unchanged**, `client_observed` included. No `call_id` and no `principal`, as in §11.4.4.
+
+**One pair per request.** A producer emits a start and one terminal event for every `tools/list` request it serves. A client that pages through the list makes several requests and gets a pair for each.
+
+**`count` is the length of the `tools` array in that one response.** It includes any tool the producer itself added to the list. It counts one page, not the server's surface: `surface_snapshot` (§11.4.2) describes the surface.
+
+**No payload carries the list.** A producer MUST NOT put tool names, descriptions or schemas on these events.
+
+**What a consumer may conclude.** A session that holds `tool_list_*` events and no other request was a client that connected and listed the tools and did not use the server. A consumer SHOULD NOT count such a session as a session of use. A listing carries the session id any other request from that client would carry (§3.4). Where a producer can only give each request a session id of its own, each listing arrives as a session of its own.
+
+**Not the handshake.** A producer does not emit an event for `initialize`. Every client lists tools; not every client sends a handshake the server sees.
 
 ### 11.5 Annotation correlation rules (worker-side)
 
@@ -1508,6 +1532,8 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **ts 0.5.3 — ADDED: three tool list event types (§11.4.5).** `tool_list_start`, `tool_list_end`, `tool_list_error`, sent for every `tools/list` request. Additive: no envelope or existing payload changes. `baton-ts` 0.5.3 emits them. `baton-sdk` carries the models and has no emit site yet. A collector that rejects an event type it does not know, which §11.4.4 forbids, loses these events until it adds the three.
 
 - **Unreleased (SDK-only, 2026-10-07) — the injected `overall_task` asks for the turn number, and `intent_param_mode="required"` now escalates it.** No envelope, field or shape change. **This supersedes the 0.8.12 entry's "`overall_task` is still never escalated".** Three text changes in this producer: (1) the `overall_task` description asks the agent to start the label with the number of the user's current message, then a colon, then the stable task label (`3: prepare campaign approval`), which is what §11.5.1 rule 2 reads; (2) under `required` the param is listed in each tool's advertised `required` and its description leads with `REQUIRED.`, still advertised and never enforced; (3) the server instructions end with one sentence telling an agent that delegates to pass the number to its subagent, because a parent that never loads the tool schema never sees the description. That sentence is added whenever a param is injected, after the 1,500-character check, so it spends the headroom under Claude Code's ~2,087 cut (about 310 characters remain for a vendor's own text) and not the budget the vendor's names share. **Consumer consequence:** `call_workflow` values from this producer start with a number (the annotation tool's own `overall_task` text is unchanged, so an agent-filed annotation's `workflow` carries one only when the agent adds it), a server with a tool that declares its own `overall_task` param does not get the subagent sentence, so the number is not sent into the vendor's argument (the official adapter drops it when the tool is registered; the FastMCP adapter sees schemas only at `tools/list`, so it drops it for sessions that start after the first listing), and `surface_snapshot.seam_augmentations.intent_param.required_names` lists three names. The 0.8.12 entry's reason for holding `overall_task` back was that a forced label splits one task into several; that risk is accepted, and it is why the label text after the colon keeps its repeat-verbatim contract. **Measured** on Claude Code 2.1.290–292 with Sonnet 5.5 and Opus 5.5 only: the number changed at every new message and at no other point on every main-agent call; with the instructions sentence, subagents carried the parent's number, and Sonnet repeated one number across two messages on 3 of 40 boundaries. Not measured: any other client. **Tracked divergence, widened:** baton-proxy and baton-ts still send the old text and escalate as before.
 - **proxy 0.6.14 (2026-10-07) — `call_id` is REQUIRED on `tool_call_start`, `tool_call_end` and `tool_call_error`, and it is the only pairing key.** §11.4 marked it optional and §11.5.4 listed two lower tiers, a client's `claudecode/toolUseId` and order of arrival per tool, for producers that minted none. `baton-proxy` 0.6.14 was the last producer to start minting it (`baton-sdk` has since 0.8.0), so both tiers are removed. **Consumer consequence:** a collector MAY reject a tool-call leg with no `call_id`, and the one this is developed against does; a worker pairs on `(call_id, tool_name)` only. **Producer consequence:** a producer older than the release that mints the id has every tool-call event refused by such a collector, and a non-429 4xx is not retried. The other fourteen event types are unchanged and carry no `call_id`. The published schema requires it on those three types.
