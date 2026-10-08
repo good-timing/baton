@@ -93,6 +93,12 @@ tools' advertised schema.
   `form="hashed"`. A hook that raises or returns something
   unusable now costs the event its `principal` rather than falling back to the
   token. `"attested"` is no longer emitted.
+- **`SessionResolutionContext.headers` is left out of the context's `repr`.**
+  The standalone adapter delivers every request header, `Authorization:
+  Bearer …` included, so a hook that logged its context wrote a live
+  credential out. `repr(ctx)`, `str(ctx)` and an f-string no longer show the
+  field; reading `ctx.headers` is unchanged. If your own hook's logs relied
+  on seeing the headers there, log the ones you need by name.
 
 ### Removed
 

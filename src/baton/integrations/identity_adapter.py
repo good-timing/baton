@@ -156,10 +156,10 @@ def token_claims(token: Any) -> Mapping[str, Any] | None:
     built, outside the hook runner's boundary, and an identity read may not
     fail a tool call.
 
-    **A read-only VIEW**, not the token's own dict: shipped hooks run inline
-    on the request, and a hook normalizing in place would otherwise rewrite
-    the claims the vendor's tool handler reads next. A proxy, not a copy —
-    it blocks the write without allocating per call.
+    **A read-only VIEW**, not the token's own dict: the hook is handed the
+    same object the vendor's tool handler reads next, so a hook normalizing
+    in place would otherwise rewrite the handler's claims. A proxy, not a
+    copy — it blocks the write without copying the claims per call.
     """
     if token is None:
         return None
@@ -222,8 +222,10 @@ async def resolve_call_principal(
 
     ⚠ **The hook is not consulted when it is not configured, and that path must
     stay free.** ``hook_context`` is built by the caller only when ``hook`` is
-    not ``None`` — header extraction and the token read are not free on every
-    tool call of every server that will never set this field. A configured
+    not ``None`` — the token read is not free on every tool call of every
+    server that will never set this field. Headers are read on every call
+    regardless, for the session id: the official adapter shares that one
+    read with the hook, the standalone adapter makes a second one for it. A configured
     hook with a ``None`` context is treated as no hook rather than as an error.
 
     Fail-open throughout, like everything on this path: a hook that raises,

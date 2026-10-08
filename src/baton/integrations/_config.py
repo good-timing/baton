@@ -159,8 +159,9 @@ class SessionResolutionContext:
     each adapter's extractor.** Of the original four fields, ``headers`` is the only one
     declared abstractly, and it is the only one that diverged — the other three
     are concrete types mypy forces every adapter to normalize before it can
-    construct this object (``claims``, added later, is a plain ``Mapping``
-    for the same reason — see its own note). The abstract annotation WAS the hole, so a fix that
+    construct this object (``claims``, added later, is abstract too and is not
+    folded here: both adapters fill it through the one extractor,
+    ``token_claims``). The abstract annotation WAS the hole, so a fix that
     lived in one adapter's extractor would leave the class promising something
     only a convention upheld: a fifth construction site, a third extractor or
     the planned ``claude_code`` adapter would re-open A8 with no type error and
