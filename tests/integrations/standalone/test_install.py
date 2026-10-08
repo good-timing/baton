@@ -121,6 +121,45 @@ class TestInstallation:
         finally:
             await handle.aclose()
 
+    @pytest.mark.parametrize(("native", "served"), [(True, False), (False, True)])
+    async def test_a_tool_with_its_own_overall_task_drops_the_subagent_sentence(
+        self, httpserver: HTTPServer, native: bool, served: bool
+    ) -> None:
+        """The sentence would send the turn number into the vendor's argument."""
+        mcp = FastMCP("x")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="acme",
+                vendor_display_name="ACME Corp",
+                consent_token="ct_test",
+                sink=HttpSink(url=httpserver.url_for(""), api_key="k"),
+            ),
+        )
+        if native:
+
+            @mcp.tool()
+            def approve(doc: str, overall_task: str = "") -> str:
+                return doc
+        else:
+
+            @mcp.tool()
+            def approve(doc: str) -> str:
+                return doc
+
+        try:
+            async with Client(mcp) as client:
+                await client.list_tools()
+            async with Client(mcp) as later:
+                # Where the client keeps the server's instructions moved
+                # between fastmcp majors.
+                result = later.initialize_result
+                instructions = (later.session if result is None else result).instructions
+            assert ("subagent" in instructions) is served
+            assert "NOT replace answering" in instructions
+        finally:
+            await handle.aclose()
+
     async def test_sets_server_instructions(self, httpserver: HTTPServer) -> None:
         """install_baton sets MCP server instructions templated from vendor name."""
         mcp = FastMCP("x")

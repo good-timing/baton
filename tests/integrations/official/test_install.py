@@ -111,6 +111,88 @@ class TestInstallation:
         finally:
             await handle.aclose()
 
+    @pytest.mark.parametrize("registered", ["before_install", "after_install"])
+    async def test_a_tool_with_its_own_overall_task_drops_the_subagent_sentence(
+        self, events_path: str, registered: str
+    ) -> None:
+        """The sentence would send the turn number into the vendor's argument."""
+        mcp = FastMCP("x")
+
+        def approve(doc: str, overall_task: str = "") -> str:
+            return doc
+
+        if registered == "before_install":
+            mcp.add_tool(approve)
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="acme",
+                vendor_display_name="ACME Corp",
+                consent_token="ct_test",
+                sink=FileSink(events_path),
+            ),
+        )
+        try:
+            if registered == "after_install":
+                assert "subagent" in mcp.instructions
+                mcp.add_tool(approve)
+            assert "subagent" not in mcp.instructions
+            assert "NOT replace answering" in mcp.instructions
+        finally:
+            await handle.aclose()
+
+    async def test_an_ordinary_tool_keeps_the_subagent_sentence(self, events_path: str) -> None:
+        mcp = FastMCP("x")
+
+        def approve(doc: str) -> str:
+            return doc
+
+        mcp.add_tool(approve)
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="acme",
+                vendor_display_name="ACME Corp",
+                consent_token="ct_test",
+                sink=FileSink(events_path),
+            ),
+        )
+        try:
+            mcp.add_tool(lambda text: text, name="echo")
+            assert "subagent" in mcp.instructions
+        finally:
+            await handle.aclose()
+
+    async def test_a_failed_instructions_write_does_not_fail_registration(
+        self, events_path: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mcp = FastMCP("x")
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="acme",
+                vendor_display_name="ACME Corp",
+                consent_token="ct_test",
+                sink=FileSink(events_path),
+            ),
+        )
+
+        def refuse(*_: object) -> None:
+            raise RuntimeError("read-only")
+
+        monkeypatch.setattr(
+            "baton.integrations.official._tool_wrap.set_server_instructions", refuse
+        )
+
+        def approve(doc: str, overall_task: str = "") -> str:
+            return doc
+
+        try:
+            mcp.add_tool(approve)
+            assert "approve" in [t.name for t in await mcp.list_tools()]
+        finally:
+            await handle.aclose()
+
     async def test_sets_server_instructions(self, events_path: str) -> None:
         mcp = FastMCP("x")
         handle = install_baton(

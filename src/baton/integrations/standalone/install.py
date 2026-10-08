@@ -65,7 +65,7 @@ from baton.integrations._config import (
     resolve_sink,
 )
 from baton.integrations._handle import BatonHandle, disabled_handle
-from baton.integrations._llm_text import build_server_instructions
+from baton.integrations._llm_text import build_server_instructions, drop_subagent_clause
 from baton.integrations._surface import build_server_meta
 from baton.integrations.official._registry import get_tool_manager
 from baton.integrations.standalone.annotation import register_annotation_tool
@@ -135,6 +135,15 @@ def _require_fastmcp_server(mcp: Any) -> None:
         "chain is the seam this adapter captures on. If this IS a fastmcp "
         "FastMCP, then it is a version problem: pin fastmcp>=2.14,<5."
     )
+
+
+def _set_instructions(mcp: Any, instructions: str) -> None:
+    # ``instructions`` is a read-only property on FastMCP >=1.10; the backing
+    # MCPServer attribute is the fallback.
+    try:
+        mcp.instructions = instructions
+    except AttributeError:
+        mcp._mcp_server.instructions = instructions
 
 
 def install_baton(
@@ -208,18 +217,18 @@ def install_baton(
         server_meta = {}
 
     # Server instructions — load-bearing on instruction-aware runtimes.
-    # FastMCP >=1.10 made `instructions` a read-only property; fall back to the
-    # backing MCPServer attribute when the public setter isn't available.
     instructions = build_server_instructions(
         vendor_display_name=vendor_display_name,
         annotation_tool_name=annotation_tool_name,
         proactive_mode=config.proactive_mode,
         intent_param_mode=config.intent_param_mode,
     )
-    try:
-        mcp.instructions = instructions
-    except AttributeError:
-        mcp._mcp_server.instructions = instructions
+    _set_instructions(mcp, instructions)
+
+    # This adapter sees a tool's schema only when tools are listed, so the
+    # sentence goes from the sessions that start after the first listing.
+    def on_native_overall_task(tool_name: str) -> None:
+        drop_subagent_clause(mcp, tool_name, _set_instructions)
 
     # Middleware emits tool_call_* events; skips them for the annotation tool
     # (the annotation handler emits its own annotation event).
@@ -238,6 +247,7 @@ def install_baton(
             proactive_tracker=proactive_tracker,
             resolve_principal_hook=config.resolve_principal,
             server_meta=server_meta,
+            on_native_overall_task=on_native_overall_task,
         )
     )
 

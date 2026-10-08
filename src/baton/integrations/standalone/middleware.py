@@ -102,6 +102,7 @@ class BatonMiddleware(Middleware):
         proactive_tracker: ProactiveTracker | None = None,
         server_meta: dict[str, Any] | None = None,
         resolve_principal_hook: ResolvePrincipalHook | None = None,
+        on_native_overall_task: Callable[[str], None] | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._vendor_id = vendor_id
@@ -115,6 +116,7 @@ class BatonMiddleware(Middleware):
         self._result_capture_mode = result_capture_mode
         self._proactive = proactive_tracker or ProactiveTracker()
         self._server_meta = server_meta or {}
+        self._on_native_overall_task = on_native_overall_task
         self._resolve_principal_hook = resolve_principal_hook
         # tool_name -> {param_name: "injected" | "native"}. Populated at
         # on_list_tools; read at on_call_tool to decide strip-vs-forward, per
@@ -162,6 +164,11 @@ class BatonMiddleware(Middleware):
                 continue
             if dispositions:
                 self._param_registry[tool.name] = dispositions
+            if (
+                dispositions.get(OVERALL_TASK_PARAM_NAME) == "native"
+                and self._on_native_overall_task is not None
+            ):
+                self._on_native_overall_task(tool.name)
             out.append(new_tool)
         return out
 

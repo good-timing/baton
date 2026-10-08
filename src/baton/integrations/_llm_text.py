@@ -41,6 +41,12 @@ to the SDK on 2026-06-16.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
 # The head differs by proactive_mode in what it promises the tool is for:
 # with proactive on it records intent AND outcomes, with it off the injected
 # params carry intent and the tool is the friction channel alone.
@@ -296,6 +302,27 @@ def build_overall_task_param_description(*, intent_param_mode: str = "optional")
     if intent_param_mode == "required":
         return _OVERALL_TASK_PARAM_DESCRIPTION_REQUIRED
     return _OVERALL_TASK_PARAM_DESCRIPTION
+
+
+def drop_subagent_clause(mcp: Any, tool_name: str, write: Callable[[Any, str], None]) -> None:
+    """Remove the subagent sentence from a server whose tool ``tool_name``
+    declares its own ``overall_task``: there the sentence would send the turn
+    number into the vendor's argument."""
+    # Never raises: it runs inside tool registration and tool listing, which
+    # must not fail over this.
+    try:
+        current = mcp.instructions
+        if not isinstance(current, str) or _INSTRUCTIONS_SUBAGENT_CLAUSE not in current:
+            return
+        write(mcp, current.replace(_INSTRUCTIONS_SUBAGENT_CLAUSE, ""))
+    except Exception:
+        logger.exception("baton: could not remove the subagent sentence from the instructions")
+        return
+    logger.warning(
+        "baton: tool %r declares its own overall_task, so the subagent sentence was "
+        "removed from the server instructions; a session that already started keeps it",
+        tool_name,
+    )
 
 
 def build_server_instructions(

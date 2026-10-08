@@ -106,6 +106,7 @@ from baton.integrations._llm_text import (
     build_expected_result_param_description,
     build_overall_task_param_description,
     build_user_goal_param_description,
+    drop_subagent_clause,
     required_param_names,
 )
 from baton.integrations._session import (
@@ -118,6 +119,7 @@ from baton.integrations.identity_adapter import (
     token_claims,
 )
 from baton.integrations.official import _auth
+from baton.integrations.official._compat import set_server_instructions
 from baton.integrations.official._registry import get_tool_manager, get_tool_registry
 from baton.integrations.runtime_adapter import UNKNOWN_AGENT_RUNTIME, detect_agent_runtime
 from baton.scrub import identity_scrub, scrub_or_none
@@ -242,6 +244,8 @@ def install_wraps(
             else:
                 if dispositions:
                     param_registry[name] = dispositions
+                if dispositions.get(OVERALL_TASK_PARAM_NAME) == "native":
+                    drop_subagent_clause(mcp, name, set_server_instructions)
         # mcp's Tool is a Pydantic BaseModel; `run` is a method, not a field,
         # so plain attribute assignment is rejected. Bypass Pydantic with
         # object.__setattr__ to install an instance-level shadow.
