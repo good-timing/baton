@@ -485,6 +485,8 @@ Different MCP clients populate `_meta` very differently. Observed behavior:
 
 **`VendorConfig.default_agent_runtime` is REMOVED** (2026-09-09). A vendor set it once at install, for every connection, so it could only be right in a single-client deployment — and with the declared tiers in place it would assert a runtime over a client that had just named itself. Nothing anywhere set it. When no tier answers, the event reports `"unknown"`, which is also what `surface_snapshot` carries: that event describes the SERVER and is captured outside any tool call, so it has no caller to name.
 
+**This ladder is LEGACY.** It describes what a producer that predates `client_observed` (§11.4) puts in `agent_runtime`. A producer that emits `client_observed` MUST NOT run it: it sends `agent_runtime: "unknown"` on every event and leaves naming the client to the consumer, which holds every input this ladder read — the declaration in `client_observed.info`, and the `claudecode/*` keys in `runtime_meta`. The field stays in the envelope, with that one value, so a consumer or schema that requires it keeps accepting the event.
+
 There remains no way for a caller **or a vendor** to *override* the resolved value — no key or config setting replaces it. That is not the same as trusting it: rungs 1 and 2 report a name the client chose for itself, so a client can call itself anything, including another product's name. Treat `agent_runtime` as self-reported, never as attested; attested identity is `principal` where `source` is exactly `attested` (§11.4), on a different condition. Both declared rungs are passed through `VendorConfig(scrubber=...)` and truncated at 128 characters, since they carry client-supplied text onto every event; rung 3 returns an SDK-owned constant and is neither.
 
 **Implementation note (from spike):** FastMCP exposes `_meta` as a structured `Meta(...)` pydantic-like object via `context.fastmcp_context.request_context.meta`, not as a plain dict. The SDK MUST call `.model_dump()` (or equivalent) before reading keys, and MUST treat the dict as forward-compatible (unknown keys ignored, no schema validation).
@@ -787,7 +789,7 @@ Every event has these fields:
   "captured_at": "2026-05-19T16:42:03Z",     // SDK timestamp at emission
   "consent_token": "...",                    // from VendorConfig; see §9
   "sdk_version": "0.1.0",
-  "agent_runtime": "claude-code",
+  "agent_runtime": "unknown",                // LEGACY: a producer that sends `client_observed` sends "unknown" here; see below
   "principal": {                             // optional; who the vendor resolved behind the call — absent as a WHOLE when nobody was; see below
     "id": "jane@example.com",                //   the value, exactly as the vendor's resolver returned it — UNTAGGED
     "source": "asserted",                    //   WHERE it came from — see the registry below
@@ -795,6 +797,10 @@ Every event has these fields:
     "display_name": "jane"                   //   optional; what a person reads — the vendor chose it; see below
   },
   "transport_observed": "http",              // optional; what the SDK OBSERVED beneath the call, never what it concluded; see below
+  "client_observed": {                       // optional; what the client said about itself, uninterpreted; see below
+    "info": {"name": "claude-code", "version": "2.1.292"},
+    "headers": {"user-agent": "claude-code/2.1.292 (sdk-cli)"}
+  },
   "runtime_meta": {"claudecode/toolUseId": "...", "progressToken": 1},  // optional; verbatim _meta from MCP request (PII-scrubbed); see §11.4.1
   "trace_context": {"traceparent": "...", "tracestate": null, "baggage": null},  // optional; from _meta if present
   "payload": { ... }                         // event-type-specific fields
@@ -923,6 +929,33 @@ Four rules, each of them a mistake this project has already made or nearly made:
 - The field is advisory and carries no security property. It is the producer's own report about its own process, is not attested, and MUST NOT be used for authorization or tenancy decisions.
 
 **It goes in its own envelope field, never inside `runtime_meta`.** That dict is the client's `_meta` forwarded verbatim (§11.4.1); an observation the producer made about itself must stay separable from text the client supplied.
+
+**`client_observed` — what the client said about itself (OPTIONAL object).** The raw signals a producer saw that identify the calling client, recorded without interpretation. **Absent or `null` when it would have no members**; as everywhere in this envelope the two are the same on the wire, and a consumer MUST NOT test for the key. Inside the object, a member with nothing to carry is omitted.
+
+| member | holds | present when |
+|---|---|---|
+| `info` | `{name, version}` exactly as the client declared them in `clientInfo` | the client declared it on this request's `_meta`, or in the handshake of this connection. Any transport |
+| `headers` | a map of request header name, lower-cased, to the value sent | an HTTP request is behind the call and carries at least one registered header |
+
+**Registered headers.** A producer copies only the headers named here, and MUST NOT forward any other: `user-agent`, `x-anthropic-client`. A header sent on several lines is joined with `", "` where the producer can see each line; a producer whose framework hands it one line sends that line. New names MAY be registered here without a major version.
+
+**`info` is what was declared, never what was inferred.** A producer that recognises a client some other way (§3.4's `claudecode/*` heuristic) reports that in `agent_runtime` and leaves `info` absent. Within `info`, `name` and `version` are each omitted when the client did not send one.
+
+**Every value is client-supplied text.** A producer passes each one through `VendorConfig(scrubber=...)`, as it does `_meta`, and truncates it: `info.name` and `info.version` at 128 characters, as §3.4 does the declared name, and each header value at 256.
+
+**Which events carry it.** Every event with a live request behind it (`tool_call_*`, `annotation`, `resource_list_*`). Never `surface_snapshot`, which describes the vendor's server and not a caller.
+
+**What it is for.** It replaces `agent_runtime` as the way a client is named. That field is one string a producer resolved, so it could not say whether a name was declared or guessed, carried no version, and ended at `unknown` on a server that never sees the handshake. This object gives a consumer the inputs, so the label is computed where it can be corrected without an SDK release. A producer that emits it stops resolving `agent_runtime` (§3.4).
+
+**Consumer rules.**
+
+- A consumer MUST ignore a member or header name it does not recognise, and MUST NOT reject the event for it.
+- A consumer MUST read a missing object, member or header as "not observed", never as "the client sent nothing".
+- Nothing here is verified. It MUST NOT be used for authorization, tenancy or identity, and it is not a principal.
+- A consumer computes its client label from this object and from `runtime_meta`. Which signal wins is the consumer's decision; this document does not rank them.
+- A consumer MAY use `agent_runtime` as the label only where it is not `"unknown"`. That value can only have come from a producer that predates this object and resolved the name itself.
+
+**It goes in its own envelope field, never inside `runtime_meta`.** That dict is the client's `_meta` forwarded verbatim (§11.4.1); a header is not `_meta`, and `info` may come from the handshake.
 
 **`tenant_id` vs `vendor_id`.** Both are required and they are not synonyms. `tenant_id` identifies the **account** the events belong to (the Baton customer). `vendor_id` identifies the **wrapped vendor** the SDK is instrumenting, and matches `VendorConfig.vendor_id`. In vendor-mode the account corresponds to a single wrapped vendor (the SDK currently sets `tenant_id` to the vendor's own id). In customer-mode a single account wraps several vendors under a distinct `tenant_id`, and the collector groups friction per wrapped vendor with `(tenant_id, vendor_id)`. Implementations MUST NOT assume `tenant_id == vendor_id` in general. The collector MUST reject envelopes missing either field.
 
@@ -1713,6 +1746,16 @@ unconditionally.
   **(1) ADDED: `transport_observed`** (§11.4), an optional nullable string recording what the producer OBSERVED beneath a call — `"http"`, `"no-http-request"`, `"read-failed"` — or absent where it did not look. Additive and optional, so a producer that never emits it stays conformant and no consumer has to change. It exists because §3.4 rung 5's terminus is correct on one deployment shape and a stranger-merging defect on another, and the two are identical on the wire; measured in production on 2026-09-15, where two clients of one HTTP server landed in one session. **The registered value set is open**: consumers MUST tolerate an unregistered value rather than reject the event, and MUST key any grouping rule on `no-http-request` positively. Specified here ahead of both SDKs deliberately, in the order the `call_id` and `principal_id` fields used — a collector whose ingest refuses unknown fields rejects the whole event otherwise, and the SDK drops a non-429 4xx without reading the body, so the call's other fields go with it.
 
   **(2) REMOVED: `correlation_mode`.** Specified since the envelope was written, **implemented by no producer, carried in no schema** (`baton-spec` reverted it) and read by no consumer. Dropped by decision on 2026-09-09 and removed from this document today. **The reason is that it could not do its one job**: it existed to tell a deliberate per-event stream apart from the rung-5 merge defect, and §3.4 defines per-event mode as "a freshly minted UUID per event" — byte-identical to what the defect emits. No consumer action: the field never appeared on a wire, so nothing can be reading it. ⚠ **This does not remove the two correlation MODES**, which remain in §3.4 as named behaviours. It removes the claim that the mode is carried on the wire. **Nothing signals the mode today**, which is tolerable only because per-event mode is itself unimplemented; how it is signalled is an open decision (D-2/D-3) and MUST be settled before any producer implements rung 5. Consumers MUST NOT infer the mode from `session_id` in the meantime.
+
+- **TS 0.5.3, Python in its next release (specified 2026-10-07, ahead of both SDKs)** — **ADDED: `client_observed`** (§11.4), an optional envelope object carrying the client's declared `clientInfo` and two registered request headers, uninterpreted. A producer that never sends it stays conformant. **A producer that does send it stops resolving `agent_runtime` and sends `"unknown"` there on every event** (§3.4), so a consumer MUST read `client_observed` before these producers ship, or every client it shows becomes unknown.
+
+  It exists for two reasons. On a stateless HTTP server the handshake lands on a different server object from the one serving the call, so `agent_runtime` ends at `unknown` for every client it cannot recognise from the request itself, while the headers are on every request. And `agent_runtime` folds a declared name and a guessed one into the same string and drops the version.
+
+  **Measured 2026-10-07 against a local stateless HTTP server.** Claude Code 2.1.292 sends `user-agent: claude-code/2.1.292 (sdk-cli)` on every request, `resources/list` included; Codex CLI 0.161.0 sends `codex-mcp-client/0.161.0`; Gemini CLI 0.58.0 and the bare MCP SDK client send `node`. Not measured: Claude web, ChatGPT, Cursor.
+
+  **Order:** SPEC → the collector reads `client_observed` → `baton-ts` 0.5.3 → `baton` (Python) → `events.schema.json` → `baton-spec` vectors → `baton-proxy`. `baton-ts` goes first, so until the vectors regenerate from a Python that emits the object, a conformance suite comparing envelope key sets against them has to exempt this one key.
+
+  **This also supersedes the 0.8.12 entry's sentence "baton-ts escalates nothing at all — it has no `tools/list` hook".** `baton-ts` already advertised `user_goal` as required through a `tools/list` seam, and from 0.5.3 it advertises `expected_result` too and emits `required_names`.
 
 - **0.8.12 (SDK-only, 2026-10-05; specified 2026-09-15)** — **`intent_param_mode="required"` now escalates `expected_result` as well as `user_goal`, and `seam_augmentations.intent_param` gains `required_names`.** One additive field; no envelope or event-shape change. **This supersedes the 0.8.7 entry's sentence "`expected_result` and `overall_task` stay optional in every mode", which is no longer true of this producer.** `overall_task` is still never escalated, and deliberately so: it is a grouping key whose value is worthless unless repeated verbatim, so forcing a label the agent does not have splits one task into several rather than leaving it blank — see the 2026-08-10 entry below, where a reworded variant fixed boundary detection (1.000) but over-split identical scripts 0.200 then 0.400 and was reverted. `required` keeps the meaning the 2026-09-01 entry defined for every producer, **advertised and never enforced**: a call omitting either name is served exactly as it would be unwrapped, with `call_intent` / `call_expected` arriving null. The standalone adapter appends the names to a *response* copy, never to the registered schema. The official adapter edits the registered tool's advertised schema in place, so there the guarantee rests on a test through a real client session on every pinned `mcp` version, not on structure. A tool that declares either name natively is untouched, per param. **Consumer consequence:** `surface_snapshot.seam_augmentations.intent_param.required_names: list[str]` records WHICH of `names` the mode advertises as required (per surface, not per tool: a tool that declares one of the names natively is not escalated and is still covered by the list), which `mode` alone cannot say — under `required` this producer escalated one param before this change and two after, and `sdk_version` separates *producers*, not versions within one producer. It is **absent from every event written before it existed, and from baton-proxy until that is ported, so a consumer MUST read a missing `required_names` as unknown rather than as an empty list.** Like `names` it is DATA and never shape: it does not feed `surface_hash`, which still hashes the vendor-true surface before injection (§11.4.2), so no surface identity moves and no recipe is invalidated. The expected effect is a larger share of `tool_call_start` events carrying `call_expected`; that is a prediction rather than a measurement, and the baseline to compare against is 46.8% fill after a success against 26.9% after a failure, measured on the Adobe C1 corpus under `optional`. **Tracked divergence, widened:** baton-proxy still escalates `user_goal` alone (`proxy.py:355`), and baton-ts escalates nothing at all — it has no `tools/list` hook, and neither zod major advertises required while accepting absence, so `required` and `optional` remain identical there. Same pattern as the 2026-08-06 entry below. Rationale, the cost accepted, and why `overall_task` was held: `baton-internal/docs/design-notes/intent_param_injection.md` §D8.
 
