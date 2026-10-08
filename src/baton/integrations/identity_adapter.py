@@ -1,10 +1,9 @@
 """End-user identity off a vendor's hook — resolve the principal and put it on
 the wire as the hook stated it.
 
-Shared by BOTH adapters, beside ``runtime_adapter.py`` and for the same reason:
-the last capture signal that lived under one adapter's package was the one the
-other adapter never called, and it shipped ``unknown`` on every event for two
-releases before anybody noticed.
+Shared by BOTH adapters, beside ``client_observed.py`` and for the same reason:
+a capture signal that lives under one adapter's package is one the other
+adapter can silently never call.
 
 **Identity comes from the vendor's ``resolve_principal`` hook and from nowhere
 else** (SPEC §11.4): who the person behind a call is, which claim names them,
@@ -13,7 +12,7 @@ the token's subject or email passes one of the ready-made hooks in
 ``oauth_hooks.py``; one who wants anything else writes their own. Every
 principal this module emits is ``source: "asserted"``.
 
-Keep all of it apart from ``agent_runtime``: that is what a client says it is,
+Keep all of it apart from ``client_observed``: that is what a client says it is,
 and this is who the vendor says the person is. They answer different questions.
 """
 
@@ -42,7 +41,7 @@ if TYPE_CHECKING:
 PRINCIPAL_SOURCE_ASSERTED = "asserted"
 
 #: Cap on ``principal.id``: it is external text copied onto every event of the
-#: call, so it gets a bound, the same one the declared ``agent_runtime`` has.
+#: call, so it gets a bound, the same one ``client_observed.info`` has.
 PRINCIPAL_ID_MAX_LEN = 128
 
 #: Cap on ``display_name``, in code points. Over it the name is DROPPED, not
@@ -224,8 +223,7 @@ async def resolve_call_principal(
     stay free.** ``hook_context`` is built by the caller only when ``hook`` is
     not ``None`` — the token read is not free on every tool call of every
     server that will never set this field. Headers are read on every call
-    regardless, for the session id: the official adapter shares that one
-    read with the hook, the standalone adapter makes a second one for it. A configured
+    regardless, and both adapters share that one read with the hook. A configured
     hook with a ``None`` context is treated as no hook rather than as an error.
 
     Fail-open throughout, like everything on this path: a hook that raises,

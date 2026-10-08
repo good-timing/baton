@@ -7,8 +7,10 @@ to an HttpSink pointing at pytest-httpserver; tests inspect what landed there.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+import mcp.types as mcp_types
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.server.http import set_http_request
@@ -16,11 +18,12 @@ from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Response
 
 from baton.events import Event
+from baton.integrations.standalone import VendorConfig, install_baton
 from baton.integrations.standalone._session import extract_headers
 from baton.integrations.standalone.middleware import BatonMiddleware
-from baton.sinks import HttpSink, Sink
+from baton.sinks import FileSink, HttpSink, Sink
 from tests._asgi import fake_http_request
-from tests._event_helpers import without_surface_snapshots
+from tests._event_helpers import read_events, without_surface_snapshots
 
 
 @pytest.fixture
@@ -378,52 +381,9 @@ class TestEnvelopeFields:
         for ev in captured:
             assert ev["sdk_version"].startswith("0.")
 
-    async def test_agent_runtime_default_unknown(
+    async def test_nothing_a_caller_or_vendor_passes_changes_agent_runtime(
         self, sink: Sink, captured: list[dict[str, Any]]
     ) -> None:
-        """When no _meta is supplied and no explicit override, agent_runtime
-        defaults to 'unknown'."""
-        mcp = _build_mcp(sink)
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            await client.call_tool("echo", {"text": "x"})
-
-        await sink.flush()
-        # ⚠ Two answers on purpose, and the split is the point. Since
-        # 2026-09-09 a tool call reports the client's DECLARED name — `mcp`
-        # here, the library, because the in-process client sets no
-        # `client_info` — while the surface snapshot keeps the default. The
-        # snapshot describes the SERVER and is captured outside any call
-        # (`on_list_tools`), so there is no caller to name; asserting one value
-        # across every event would have to pick one of those and be wrong
-        # about the other.
-        for ev in without_surface_snapshots(captured):
-            assert ev["agent_runtime"] == "mcp"
-        snapshots = [ev for ev in captured if ev["event_type"] == "surface_snapshot"]
-        assert snapshots, "no surface_snapshot captured — the split below is vacuous"
-        for ev in snapshots:
-            assert ev["agent_runtime"] == "unknown"
-
-    async def test_there_is_no_vendor_settable_default_runtime(self, sink: Sink) -> None:
-        """``default_agent_runtime`` was REMOVED 2026-09-09.
-
-        It let a vendor assert the runtime of every caller from a value set
-        ONCE at install, so it could only be right in a single-client
-        deployment — and with the declared tiers in place it would assert over
-        a client that had just named itself. Nobody ever set it: no example, no
-        fixture, no other repo. Same disposition, and the same reasoning, as
-        the ``io.baton/agent_runtime`` override removed alongside it.
-
-        Pinned as an executable record of the DECISION, not as a migration
-        aid — there are no customers, which is precisely what made deleting a
-        public config field safe. The ``TypeError`` is just what removing a
-        dataclass field does; the reason to assert it is that re-adding the
-        knob should require arguing with this test rather than passing it.
-        """
         with pytest.raises(TypeError, match="default_agent_runtime"):
             BatonMiddleware(  # type: ignore[call-arg]
                 tenant_id="t",
@@ -433,14 +393,37 @@ class TestEnvelopeFields:
                 default_agent_runtime="claude-code",
             )
 
-    async def test_detects_claude_code_from_meta(
+        mcp = _build_mcp(sink)
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        declared = mcp_types.Implementation(name="claude-ai", version="1.2.3")
+        async with Client(mcp, client_info=declared) as client:
+            await client.list_tools()
+            await client.call_tool(
+                "echo",
+                {"text": "x"},
+                meta={
+                    "io.baton/agent_runtime": "my-custom-runtime",
+                    "baton": {"agent_runtime": "my-custom-runtime"},
+                    "claudecode/toolUseId": "tu_1",
+                },
+            )
+
+        await sink.flush()
+        types = {ev["event_type"] for ev in captured}
+        assert {"surface_snapshot", "tool_call_start", "tool_call_end"} <= types, sorted(types)
+        assert {ev["agent_runtime"] for ev in captured} == {"unknown"}
+
+    async def test_a_claudecode_key_reaches_runtime_meta_and_names_nobody(
         self, sink: Sink, captured: list[dict[str, Any]]
     ) -> None:
-        """When the client supplies ``_meta.claudecode/toolUseId``, the
-        middleware MUST detect ``claude-code`` — not fall back to the
-        default. Regression: FastMCP 3.x strips ``_meta`` from the
-        middleware's ``CallToolRequestParams``; meta must be read from
-        ``fastmcp_context.request_context.meta`` instead."""
+        """FastMCP 3.x strips ``_meta`` from the middleware's
+        ``CallToolRequestParams``, so it is read from
+        ``fastmcp_context.request_context.meta``. The consumer recognises
+        Claude Code from this key; the SDK does not write it into ``info``."""
         mcp = _build_mcp(sink)
 
         @mcp.tool()
@@ -458,83 +441,10 @@ class TestEnvelopeFields:
         tool_events = without_surface_snapshots(captured)
         assert tool_events, "no events captured"
         for ev in tool_events:
-            # ⚠ `mcp`, not `claude-code`: the ladder is declared-first, so the
-            # client's own `clientInfo` outranks a carried `claudecode/` key —
-            # and this driver declares the LIBRARY name, setting no
-            # `client_info`. The heuristic is near-unreachable end-to-end for
-            # that reason; it is pinned in tests/test_runtime_adapter.py.
-            assert ev["agent_runtime"] == "mcp"
-
-    async def test_the_removed_override_cannot_suppress_the_heuristic(
-        self, sink: Sink, captured: list[dict[str, Any]]
-    ) -> None:
-        """``_meta["io.baton/agent_runtime"]`` was REMOVED 2026-09-09.
-
-        It carries the ``claudecode/`` prefix alongside it so this proves the
-        stronger half: not merely that the override is unread, but that a
-        client sending it cannot take a detection away from us.
-        """
-        mcp = _build_mcp(sink)
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            await client.call_tool(
-                "echo",
-                {"text": "x"},
-                meta={
-                    "io.baton/agent_runtime": "my-custom-runtime",
-                    "claudecode/toolUseId": "tu_1",
-                },
-            )
-
-        await sink.flush()
-        for ev in without_surface_snapshots(captured):
-            # ⚠ `mcp`, not `claude-code`: the ladder is declared-first, so the
-            # client's own `clientInfo` outranks a carried `claudecode/` key —
-            # and this driver declares the LIBRARY name, setting no
-            # `client_info`. The heuristic is near-unreachable end-to-end for
-            # that reason; it is pinned in tests/test_runtime_adapter.py.
-            assert ev["agent_runtime"] == "mcp"
-
-    async def test_nested_baton_dict_is_no_longer_an_override(
-        self, sink: Sink, captured: list[dict[str, Any]]
-    ) -> None:
-        """The pre-B5 nested ``_meta["baton"]["agent_runtime"]`` form is dead.
-
-        Pinned in the negative direction on purpose. The nested shape matched
-        no MCP convention and SPEC §5.2 contradicted itself about it — the key
-        table said ``io.baton/agent_runtime`` while a prose line in the same
-        section said ``_meta.baton.*``, and the code followed the prose, so a
-        vendor asserting its runtime the way the table documents was silently
-        ignored. Without this test, re-adding the nested read as a "harmless"
-        compatibility branch would go unnoticed, and two wire shapes for one
-        assertion is what B5 exists to remove.
-        """
-        mcp = _build_mcp(sink)
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            await client.call_tool(
-                "echo",
-                {"text": "x"},
-                meta={"baton": {"agent_runtime": "my-custom-runtime"}},
-            )
-
-        await sink.flush()
-        events = without_surface_snapshots(captured)
-        assert events, "no events captured — the assertion below would be vacuous"
-        # `mcp` (the client's declared name) rather than the asserted
-        # `my-custom-runtime`: the nested override loses to the declared tier
-        # now instead of falling to a default. Still the same proof — the
-        # value the client tried to assert is not the value reported.
-        for ev in events:
-            assert ev["agent_runtime"] == "mcp"
+            assert ev["runtime_meta"]["claudecode/toolUseId"] == "tool-use-abc-123"
+            assert ev["agent_runtime"] == "unknown"
+            # The in-process client declares the library's own name.
+            assert ev["client_observed"]["info"]["name"] == "mcp"
 
 
 # =============================================================================
@@ -594,3 +504,58 @@ class TestExtractHeaders:
         assert "X-Forwarded-User" in ctx.headers
         # The lowercased spelling keeps working — the change is additive.
         assert ctx.headers["x-forwarded-user"] == "employee-4417"
+
+
+@pytest.mark.parametrize("path", ["tool call", "annotation"])
+async def test_headers_are_read_once_per_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """``client_observed``, the identity hook and the session ladder share one
+    read, and each is handed its result."""
+    from baton.integrations.standalone import _session, annotation, middleware
+
+    reads = 0
+    seen_by_hook: list[Any] = []
+
+    def counting() -> Any:
+        nonlocal reads
+        reads += 1
+        return {"mcp-session-id": "from-header", "user-agent": "agent/1.0"}
+
+    for module in (_session, annotation, middleware):
+        monkeypatch.setattr(module, "extract_headers", counting)
+
+    mcp: Any = FastMCP("one-read")
+
+    @mcp.tool
+    def lookup() -> str:
+        return "ok"
+
+    handle = install_baton(
+        mcp,
+        VendorConfig(
+            vendor_id="v",
+            vendor_display_name="V",
+            consent_token="ct",
+            sink=FileSink(str(tmp_path / "e.jsonl")),
+            resolve_principal=lambda ctx: seen_by_hook.append(ctx.headers.get("user-agent")),
+        ),
+    )
+    try:
+        async with Client(mcp) as client:
+            if path == "tool call":
+                await client.call_tool("lookup", {})
+            else:
+                await client.call_tool(
+                    handle.annotation_tool_name, {"user_goal": "g", "signal_type": "failure"}
+                )
+    finally:
+        await handle.aclose()
+
+    assert reads == 1
+    assert seen_by_hook == ["agent/1.0"]
+    events = without_surface_snapshots(read_events(tmp_path / "e.jsonl"))
+    assert events
+    for ev in events:
+        assert ev["session_id"] == "from-header", ev["event_type"]
+        assert ev["client_observed"]["headers"] == {"user-agent": "agent/1.0"}, ev["event_type"]

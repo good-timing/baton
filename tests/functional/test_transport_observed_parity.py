@@ -1,8 +1,8 @@
 """Both MCP adapters must report the SAME ``transport_observed`` for the same
 transport — and must report the RIGHT one.
 
-The third file in the parity set, after ``test_agent_runtime_parity.py`` and
-``test_principal_id_parity.py``, and it exists for the same recorded reason:
+The third file in the parity set, after ``test_client_observed_parity.py`` and
+``test_principal_id_parity.py``, and it exists for the same reason:
 a fact each adapter derives for itself, from a DIFFERENT library call, where
 one adapter silently reporting the wrong thing is invisible to that adapter's
 own suite. Here the two reads have nothing in common —
@@ -60,7 +60,7 @@ def _transports(path: Path, *, include_snapshots: bool = False) -> set[str | Non
 
     Snapshots are excluded by default: ``surface_snapshot`` describes the
     SERVER, not a caller, and carries null by design — the same reason it
-    carries ``UNKNOWN_AGENT_RUNTIME`` rather than a detected runtime. Folding
+    carries no ``client_observed``. Folding
     it in would put a null in every set and make each assertion below pass for
     the wrong reason.
     """
@@ -158,8 +158,7 @@ async def test_both_adapters_report_no_http_request_off_the_wire(tmp_path: Path)
 async def test_the_surface_snapshot_carries_no_transport(tmp_path: Path) -> None:
     """A snapshot describes the SERVER, so there is no caller's transport to name.
 
-    The precedent is ``agent_runtime``, which the snapshot emits as
-    ``UNKNOWN_AGENT_RUNTIME`` rather than a detected value for the same reason.
+    ``client_observed`` is absent from the snapshot for the same reason.
     Pinned because the natural mistake when wiring a new envelope field is to
     set it at every emit site.
     """

@@ -29,15 +29,11 @@ from baton.integrations._annotation_name import derive_annotation_tool_name
 from baton.integrations._annotation_payload import build_annotation_payload
 from baton.integrations._config import SessionResolutionContext
 from baton.integrations._llm_text import build_annotation_tool_description
+from baton.integrations.client_observed import meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
     resolve_call_principal,
     token_claims,
-)
-from baton.integrations.runtime_adapter import (
-    UNKNOWN_AGENT_RUNTIME,
-    detect_agent_runtime,
-    meta_to_dict,
 )
 from baton.integrations.standalone import _auth
 from baton.integrations.standalone._session import (
@@ -120,13 +116,11 @@ def register_annotation_tool(
             }
 
         rc = ctx.request_context if ctx is not None else None
-        raw_meta = rc.meta if rc else None
-        meta_dict = meta_to_dict(raw_meta)
-        runtime = detect_agent_runtime(raw_meta, context=ctx, scrubber=scrubber) or (
-            UNKNOWN_AGENT_RUNTIME
-        )
+        meta_dict = meta_to_dict(rc.meta if rc else None)
+        call_headers = extract_headers()
+        client = observe_client(meta_dict, context=ctx, headers=call_headers, scrubber=scrubber)
         # Coordinates round before the vendor's scrubber, whatever it is
-        # (``_meta_coords``); the detect above read the raw meta.
+        # (``_meta_coords``).
         #
         # scrub_or_none, not a bare call: this is a plain statement OUTSIDE the
         # build thunk below, and it stays out there deliberately — it must keep
@@ -145,7 +139,9 @@ def register_annotation_tool(
         # tool-call path uses — an annotation that resolved differently from
         # the call it describes could never be joined to it downstream, which
         # is the one correlation this tool exists to produce.
-        session_id = await resolve_call_session_id(fallback=fallback_session_id)
+        session_id = await resolve_call_session_id(
+            headers=call_headers, fallback=fallback_session_id
+        )
         # A proactive annotation (no signal_type) claims the session's proactive
         # slot so the middleware won't also synthesise one from an injected param.
         if signal_type is None:
@@ -156,7 +152,7 @@ def register_annotation_tool(
         # must consult it too.
         identity_hook_context = (
             SessionResolutionContext(
-                headers=extract_headers(),
+                headers=call_headers,
                 meta=meta_dict,
                 tool_name=name,
                 arguments={},
@@ -187,7 +183,7 @@ def register_annotation_tool(
                 session_id=session_id,
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
-                agent_runtime=runtime,
+                client_observed=client,
                 principal=annotation_principal,
                 transport_observed=observe_transport(),
                 runtime_meta=scrubbed_meta,

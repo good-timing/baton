@@ -61,15 +61,11 @@ from baton.integrations._llm_text import (
     required_param_names,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
+from baton.integrations.client_observed import meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
     resolve_call_principal,
     token_claims,
-)
-from baton.integrations.runtime_adapter import (
-    UNKNOWN_AGENT_RUNTIME,
-    detect_agent_runtime,
-    meta_to_dict,
 )
 from baton.integrations.standalone import _auth
 from baton.integrations.standalone._session import (
@@ -288,7 +284,6 @@ class BatonMiddleware(Middleware):
                 session_id=self._fallback_session_id,
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
-                agent_runtime=UNKNOWN_AGENT_RUNTIME,
                 payload=SurfaceSnapshotPayload(
                     surface_hash=digest,
                     server_info=surface["server_info"],
@@ -441,27 +436,24 @@ class BatonMiddleware(Middleware):
         scrubbed_task = scrub_or_none(self._scrubber, call_task, OVERALL_TASK_PARAM_NAME, logger)
 
         params = dict(msg.arguments or {})
-        raw_meta = self._extract_request_meta(context)
-        meta_dict = meta_to_dict(raw_meta)
-        runtime = (
-            detect_agent_runtime(raw_meta, context=context.fastmcp_context, scrubber=self._scrubber)
-            or UNKNOWN_AGENT_RUNTIME
+        meta_dict = meta_to_dict(self._extract_request_meta(context))
+        call_headers = extract_headers()
+        client = observe_client(
+            meta_dict,
+            context=context.fastmcp_context,
+            headers=call_headers,
+            scrubber=self._scrubber,
         )
-        # Identity resolves here, beside the runtime detect: one place per
-        # call, producing the FINISHED wire value so the raw principal never
-        # reaches the event constructions below. ``None`` on any call where
+        # Identity resolves here, in one place per call, producing the
+        # FINISHED wire value so the raw principal never reaches the event
+        # constructions below. ``None`` on any call where
         # no hook is set or it has no answer, which is most of them.
         #
-        # ⚠ This comment used to read "``None`` on stdio and on any
-        # unauthenticated call". The stdio half stopped being true when
-        # ``resolve_principal`` landed — a hook is the one identity mechanism that
-        # works there, and it is the reason the hook exists.
-        #
-        # The context is built only when a hook exists: ``extract_headers`` is
-        # not free on every call of every server that will never set the field.
+        # The context is built only when a hook exists: the token read is not
+        # free on every call of every server that will never set the field.
         identity_hook_context = (
             SessionResolutionContext(
-                headers=extract_headers(),
+                headers=call_headers,
                 meta=meta_dict,
                 tool_name=tool_name,
                 arguments=params,
@@ -499,12 +491,10 @@ class BatonMiddleware(Middleware):
         # process-wide fallback below is the CORRECT answer on stdio and a
         # stranger-merging one on a hosted server, and the two are identical
         # in the resolved value.
-        #
-        # Unconditional, unlike the hook-gated ``extract_headers`` above. The
-        # cost argument in that comment is already spent here: the very next
-        # line resolves the session, which reads headers on every call anyway.
         call_transport = observe_transport()
-        session_id = await self._extract_session_id()
+        session_id = await resolve_call_session_id(
+            headers=call_headers, fallback=self._fallback_session_id
+        )
 
         # The session's FIRST injected-param intent also becomes a proactive
         # annotation, sequenced BEFORE the tool_call_start it explains (so
@@ -523,7 +513,7 @@ class BatonMiddleware(Middleware):
                     session_id=session_id,
                     sequence_number=seq_ann,
                     captured_at=datetime.now(UTC),
-                    agent_runtime=runtime,
+                    client_observed=client,
                     principal=call_principal,
                     transport_observed=call_transport,
                     runtime_meta=scrubbed_meta,
@@ -567,7 +557,7 @@ class BatonMiddleware(Middleware):
                     session_id=session_id,
                     sequence_number=seq_start,
                     captured_at=datetime.now(UTC),
-                    agent_runtime=runtime,
+                    client_observed=client,
                     principal=call_principal,
                     transport_observed=call_transport,
                     call_id=call_id,
@@ -614,7 +604,7 @@ class BatonMiddleware(Middleware):
                     session_id=session_id,
                     sequence_number=seq_err,
                     captured_at=datetime.now(UTC),
-                    agent_runtime=runtime,
+                    client_observed=client,
                     principal=call_principal,
                     transport_observed=call_transport,
                     call_id=call_id,
@@ -686,7 +676,7 @@ class BatonMiddleware(Middleware):
                     session_id=session_id,
                     sequence_number=seq_err,
                     captured_at=datetime.now(UTC),
-                    agent_runtime=runtime,
+                    client_observed=client,
                     principal=call_principal,
                     transport_observed=call_transport,
                     call_id=call_id,
@@ -724,7 +714,7 @@ class BatonMiddleware(Middleware):
                 session_id=session_id,
                 sequence_number=seq_end,
                 captured_at=datetime.now(UTC),
-                agent_runtime=runtime,
+                client_observed=client,
                 principal=call_principal,
                 transport_observed=call_transport,
                 call_id=call_id,
@@ -747,15 +737,6 @@ class BatonMiddleware(Middleware):
     async def _next_seq(self, session_id: str) -> int:
         """Atomically increment + return the per-session sequence counter."""
         return await self._counter.next(session_id)
-
-    async def _extract_session_id(self) -> str:
-        """Real per-call session id — SPEC §3.4's ladder, shared with the
-        annotation tool so an annotation and the call it describes always
-        resolve identically. See ``baton.integrations.standalone._session`` for
-        the rungs, including why fastmcp's own ``Context.session_id`` sits
-        BELOW the header and is gated to the versions where its cache survives.
-        """
-        return await resolve_call_session_id(fallback=self._fallback_session_id)
 
     @staticmethod
     def _extract_request_meta(context: MiddlewareContext[CallToolRequestParams]) -> Any:

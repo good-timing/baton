@@ -79,6 +79,7 @@ from baton._uuid import uuid7
 from baton.events import (
     AnnotationEvent,
     AnnotationPayload,
+    ClientObserved,
     PrincipalWire,
     SurfaceSnapshotEvent,
     SurfaceSnapshotPayload,
@@ -113,6 +114,7 @@ from baton.integrations._session import (
     session_id_from_headers,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
+from baton.integrations.client_observed import meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
     resolve_call_principal,
@@ -121,7 +123,6 @@ from baton.integrations.identity_adapter import (
 from baton.integrations.official import _auth
 from baton.integrations.official._compat import set_server_instructions
 from baton.integrations.official._registry import get_tool_manager, get_tool_registry
-from baton.integrations.runtime_adapter import UNKNOWN_AGENT_RUNTIME, detect_agent_runtime
 from baton.scrub import identity_scrub, scrub_or_none
 from baton.sinks import Sink, safe_emit
 
@@ -445,7 +446,7 @@ _EmitBefore = Callable[
         str | None,  # call_intent
         str | None,  # call_expected
         str | None,  # call_workflow
-        str,  # agent_runtime
+        ClientObserved | None,  # client_observed
         PrincipalWire | None,  # principal
         str,  # call_id
         str | None,  # transport_observed
@@ -460,7 +461,7 @@ _EmitAfter = Callable[
         Any,  # result
         float,  # duration_s
         dict[str, Any] | None,  # runtime_meta
-        str,  # agent_runtime
+        ClientObserved | None,  # client_observed
         PrincipalWire | None,  # principal
         str,  # call_id
         str | None,  # transport_observed
@@ -481,7 +482,7 @@ _EmitError = Callable[
         str,  # error_type
         float,  # duration_s
         dict[str, Any] | None,  # runtime_meta
-        str,  # agent_runtime
+        ClientObserved | None,  # client_observed
         PrincipalWire | None,  # principal
         str,  # call_id
         str | None,  # transport_observed
@@ -512,7 +513,7 @@ _EmitProactive = Callable[
         str | None,  # expected_outcome
         str | None,  # workflow
         dict[str, Any] | None,  # runtime_meta
-        str,  # agent_runtime
+        ClientObserved | None,  # client_observed
         PrincipalWire | None,  # principal
         str | None,  # transport_observed
     ],
@@ -624,21 +625,8 @@ def _wrap_tool_run(
 
         params = dict(arguments or {})
         meta_dict = _extract_meta_from_context(context)
-        # Detect from the RAW meta, BEFORE the scrub on the next line. NOT
-        # because the default scrubber is a no-op — it is ``Scrubber()``, the
-        # shipped ruleset — but because that ruleset happens to leave a
-        # realistic ``_meta`` untouched (nothing in it matches a pattern or a
-        # redacted field name). So detecting from ``scrubbed_meta`` — what the
-        # emitters receive — passes every test here and silently reports
-        # "unknown" for any vendor whose scrubber touches meta keys. The
-        # standalone adapter detects pre-scrub for the same reason
-        # (middleware.py, just above its own scrub call).
-        call_agent_runtime = (
-            detect_agent_runtime(meta_dict, context=context, scrubber=scrubber)
-            or UNKNOWN_AGENT_RUNTIME
-        )
-        # Identity resolves HERE, beside the runtime detect and for the same
-        # structural reason: one place per call, before anything is emitted.
+        # Identity resolves HERE, in one place per call, before anything is
+        # emitted.
         # ``resolve_call_principal`` returns the FINISHED wire value — a hash or
         # a deliberate raw principal — so the raw identity never travels past
         # this line into the emitters, mirroring baton-proxy's edge-hash
@@ -648,13 +636,14 @@ def _wrap_tool_run(
         # get ``None``". That stopped being true when ``resolve_principal`` landed:
         # the hook is the only identity mechanism stdio has, and carrying a
         # stdio principal is the reason it was built.
-        # ONE extraction per tool call, shared by the identity hook below and
-        # the session ladder further down (rung 4 reads ``mcp-session-id``).
-        # Unconditional, because the ladder reads headers on EVERY call
-        # already — an earlier version of this gated the read on "only if a
-        # hook is configured, it is not free", which was guarding a cost that
-        # had always been paid one line later.
+        # One read per call, shared by ``client_observed``, the identity hook
+        # and the session ladder.
         call_headers = _extract_headers_from_context(context)
+        # From the raw meta: the vendor's scrubber is applied to each value
+        # inside, so one that removes meta keys cannot hide the declaration.
+        call_client = observe_client(
+            meta_dict, context=context, headers=call_headers, scrubber=scrubber
+        )
         # Read from the same context, one line apart, and DELIBERATELY not from
         # ``call_headers`` above: that helper folds an AttributeError into the
         # same ``None`` as a real absence (register A6), and this field exists
@@ -677,7 +666,7 @@ def _wrap_tool_run(
             logger=logger,
         )
         # Coordinates round BEFORE the vendor's scrubber, so they round whatever
-        # scrubber is configured (``_meta_coords``); the detect above read raw.
+        # scrubber is configured (``_meta_coords``).
         scrubbed_meta = scrub_or_none(
             scrubber,
             round_meta_coordinates(meta_dict) if meta_dict is not None else None,
@@ -701,7 +690,7 @@ def _wrap_tool_run(
                 scrubbed_expected,
                 scrubbed_task,
                 scrubbed_meta,
-                call_agent_runtime,
+                call_client,
                 call_principal,
                 call_transport,
             )
@@ -754,7 +743,7 @@ def _wrap_tool_run(
                 scrubbed_intent,
                 scrubbed_expected,
                 scrubbed_task,
-                call_agent_runtime,
+                call_client,
                 call_principal,
                 call_id,
                 call_transport,
@@ -785,7 +774,7 @@ def _wrap_tool_run(
                 type(original_exc).__name__,
                 monotonic() - called_at,
                 scrubbed_meta,
-                call_agent_runtime,
+                call_client,
                 call_principal,
                 call_id,
                 call_transport,
@@ -813,7 +802,7 @@ def _wrap_tool_run(
                     TOOL_ERROR_TYPE,
                     monotonic() - called_at,
                     scrubbed_meta,
-                    call_agent_runtime,
+                    call_client,
                     call_principal,
                     call_id,
                     call_transport,
@@ -827,7 +816,7 @@ def _wrap_tool_run(
                     result,
                     monotonic() - called_at,
                     scrubbed_meta,
-                    call_agent_runtime,
+                    call_client,
                     call_principal,
                     call_id,
                     call_transport,
@@ -1025,15 +1014,7 @@ def _extract_meta_from_context(context: Any) -> dict[str, Any] | None:
         # mcp.call_tool() from test or programmatic code with no live wire).
         # Treat as "no meta available" — best-effort capture per SPEC §11.4.1.
         return None
-    if meta is None:
-        return None
-    # mcp's RequestParams.Meta is a pydantic model; dump as dict using aliases
-    # so namespaced keys (e.g., "claudecode/toolUseId") survive intact.
-    if isinstance(meta, dict):
-        return meta
-    if hasattr(meta, "model_dump"):
-        return meta.model_dump(by_alias=True)  # type: ignore[no-any-return]
-    return None
+    return meta_to_dict(meta)
 
 
 def _make_emitters(
@@ -1072,7 +1053,7 @@ def _make_emitters(
         expected_outcome: str | None,
         workflow: str | None,
         runtime_meta: dict[str, Any] | None,
-        agent_runtime: str,
+        client_observed: ClientObserved | None,
         principal: PrincipalWire | None,
         transport_observed: str | None,
     ) -> None:
@@ -1089,7 +1070,7 @@ def _make_emitters(
                 session_id=session_id,
                 sequence_number=_seq_n,
                 captured_at=datetime.now(UTC),
-                agent_runtime=agent_runtime,
+                client_observed=client_observed,
                 principal=principal,
                 transport_observed=transport_observed,
                 runtime_meta=runtime_meta,
@@ -1112,7 +1093,7 @@ def _make_emitters(
         call_intent: str | None,
         call_expected: str | None,
         call_workflow: str | None,
-        agent_runtime: str,
+        client_observed: ClientObserved | None,
         principal: PrincipalWire | None,
         call_id: str,
         transport_observed: str | None,
@@ -1131,7 +1112,7 @@ def _make_emitters(
                 session_id=session_id,
                 sequence_number=_seq_n,
                 captured_at=datetime.now(UTC),
-                agent_runtime=agent_runtime,
+                client_observed=client_observed,
                 principal=principal,
                 transport_observed=transport_observed,
                 call_id=call_id,
@@ -1154,7 +1135,7 @@ def _make_emitters(
         result: Any,
         duration_s: float,
         runtime_meta: dict[str, Any] | None,
-        agent_runtime: str,
+        client_observed: ClientObserved | None,
         principal: PrincipalWire | None,
         call_id: str,
         transport_observed: str | None,
@@ -1184,7 +1165,7 @@ def _make_emitters(
                 session_id=session_id,
                 sequence_number=_seq_n,
                 captured_at=datetime.now(UTC),
-                agent_runtime=agent_runtime,
+                client_observed=client_observed,
                 principal=principal,
                 transport_observed=transport_observed,
                 call_id=call_id,
@@ -1205,7 +1186,7 @@ def _make_emitters(
         error_type: str,
         duration_s: float,
         runtime_meta: dict[str, Any] | None,
-        agent_runtime: str,
+        client_observed: ClientObserved | None,
         principal: PrincipalWire | None,
         call_id: str,
         transport_observed: str | None,
@@ -1253,7 +1234,7 @@ def _make_emitters(
                 session_id=session_id,
                 sequence_number=_seq_n,
                 captured_at=datetime.now(UTC),
-                agent_runtime=agent_runtime,
+                client_observed=client_observed,
                 principal=principal,
                 transport_observed=transport_observed,
                 call_id=call_id,
@@ -1271,12 +1252,8 @@ def _make_emitters(
         await safe_emit(sink, build, logger)
 
     async def emit_surface(session_id: str, digest: str, snapshot: dict[str, Any]) -> None:
-        # Keeps the install-time default rather than a detected runtime, and
-        # that is deliberate parity, not an oversight: the standalone adapter
-        # captures the surface from ``on_list_tools``, which is not a tool call
-        # and has no per-call ``_meta`` to detect from, so it emits the default
-        # too. A surface snapshot describes the SERVER, not whoever happened to
-        # trigger the first capture.
+        # No ``client_observed``: a surface snapshot describes the SERVER, not
+        # whoever happened to trigger the first capture.
         # NOT safe_write — this deliberately lets a write failure propagate so
         # the caller (_wrap_tool_run) can tell success from failure and retry
         # on the next call rather than silently treating the surface as
@@ -1290,7 +1267,6 @@ def _make_emitters(
                 session_id=session_id,
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
-                agent_runtime=UNKNOWN_AGENT_RUNTIME,
                 payload=SurfaceSnapshotPayload(
                     surface_hash=digest,
                     server_info=snapshot["server_info"],

@@ -1,9 +1,8 @@
 """The official SDK's auth seam — one import, in one place.
 
 Separate from ``_tool_wrap.py`` because BOTH emit paths need it (the tool wrap
-and the annotation tool), and a private name re-exported through one of them is
-the kind of accidental coupling that made ``runtime_adapter`` live under the
-wrong package for two releases.
+and the annotation tool), and a private name re-exported through one of them
+would couple the two by accident.
 
 ``get_access_token()`` reads a contextvar that MCP's bearer-auth ASGI
 middleware sets, so it returns ``None`` outside an authenticated HTTP request —
@@ -37,8 +36,7 @@ def current_access_token() -> Any | None:
     when a vendor's ``TokenVerifier`` returns a non-fastmcp ``AccessToken``
     whose ``model_dump()`` is missing a key it wants. It is called while
     building the hook's ``SessionResolutionContext``, OUTSIDE the hook runner's
-    never-raise boundary, where a raise would reach the vendor's tool call —
-    the same fail-open hole the runtime detector had one layer over.
+    never-raise boundary, where a raise would reach the vendor's tool call.
     """
     if get_access_token_or_none is None:
         return None

@@ -19,7 +19,7 @@ from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Response
 
 from baton.integrations.standalone import _session
-from baton.integrations.standalone._session import resolve_call_session_id
+from baton.integrations.standalone._session import extract_headers, resolve_call_session_id
 from baton.integrations.standalone.middleware import BatonMiddleware
 from baton.sinks import HttpSink, Sink
 from tests._asgi import fake_http_request
@@ -124,7 +124,7 @@ async def _resolve(
     retired rungs are now asserted through the real middleware, below."""
 
     async def call() -> str:
-        return await resolve_call_session_id(fallback=fallback)
+        return await resolve_call_session_id(headers=extract_headers(), fallback=fallback)
 
     if headers is None:
         return await call()

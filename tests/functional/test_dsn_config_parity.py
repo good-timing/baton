@@ -5,12 +5,9 @@ The SDK now has four places a vendor configures capture: the two MCP adapters'
 accepts the same packed ``dsn``, and this file drives all four with one string
 and asserts they agree.
 
-**It exists because the absence of exactly this test shipped.**
-``detect_agent_runtime`` lived under one adapter, the other never called it,
-and every event that adapter emitted carried ``agent_runtime: "unknown"``
-through a rename, a release and a CI matrix — because each per-adapter suite
-asserted its own behaviour and nothing drove both with one input. Config
-resolution is the same shape of risk with a worse failure: a door that resolved
+Each per-door suite asserts only its own behaviour, so only a test that drives
+every door with one input can see one of them drift. For config resolution the
+failure is a bad one: a door that resolved
 the workspace differently would file a customer's events under the wrong
 account, and every per-door test would stay green.
 

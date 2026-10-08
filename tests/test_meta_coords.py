@@ -1,8 +1,8 @@
 """``round_meta_coordinates`` (``baton/_meta_coords.py``): the rule on its own.
 
-Where it runs (every adapter site that emits ``runtime_meta``, after detection
-and before the vendor's scrubber) is pinned by the adapter tests:
-``tests/integrations/official/test_agent_runtime.py`` and
+Where it runs (every adapter site that emits ``runtime_meta``, before the
+vendor's scrubber) is pinned by the adapter tests:
+``tests/integrations/official/test_observed_client.py`` and
 ``tests/integrations/standalone/test_meta_coords.py``.
 """
 
@@ -42,8 +42,8 @@ def test_chatgpt_meta_rounds_the_coordinates_and_nothing_else(
 
 
 def test_the_input_is_not_modified() -> None:
-    """The adapters read the raw meta for detection and the session ladder;
-    rounding must not reach back into it."""
+    """The adapters also read the raw meta for ``client_observed``; rounding
+    must not reach back into it."""
     sample = copy.deepcopy(CHATGPT_IPHONE_META)
     round_meta_coordinates(sample)
     assert sample == CHATGPT_IPHONE_META

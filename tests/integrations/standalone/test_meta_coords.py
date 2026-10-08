@@ -2,8 +2,8 @@
 sites: the middleware's tool-call events and the annotation tool. Plus the scope
 half: a vendor tool's own ``latitude`` is captured at full precision.
 
-The official adapter's twin, with the spy that pins detection reading the raw
-meta, is in ``tests/integrations/official/test_agent_runtime.py``.
+The official adapter's twin is in
+``tests/integrations/official/test_observed_client.py``.
 """
 
 from __future__ import annotations

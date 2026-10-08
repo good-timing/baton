@@ -40,6 +40,11 @@ def principal_of(ev: dict[str, Any]) -> dict[str, Any] | None:
     return None if principal is None else dict(principal)
 
 
+#: The event types one tool call or annotation produces, as opposed to the
+#: server's own ``surface_snapshot``.
+CALLER_EVENT_TYPES = {"tool_call_start", "tool_call_end", "tool_call_error", "annotation"}
+
+
 def read_events(path: Path | str) -> list[dict[str, Any]]:
     """Every event a ``FileSink`` wrote, in order.
 

@@ -5,15 +5,12 @@ read through the same ready-made hook.
 hook does, so every token test here passes ``principal_from_oauth_sub`` — and
 one test pins that a token with NO hook yields nothing on either adapter.
 
-The companion to ``test_agent_runtime_parity.py``, and it exists for the same
-recorded reason: ``detect_agent_runtime`` lived under one adapter's package,
-the other never called it, and every event that adapter emitted carried
-``"unknown"`` through a rename, a release and a CI matrix — because each
-adapter's own suite asserted only about itself. ``identity_adapter.py`` is
-shared from the first commit specifically so that cannot recur, and this file
-is what pins it.
+The companion to ``test_client_observed_parity.py``, and it exists for the same
+reason: each adapter's own suite asserts only about itself, so a signal one
+adapter silently never resolves is invisible to both. ``identity_adapter.py``
+is shared so that cannot happen, and this file is what pins it.
 
-It follows the same two rules as the runtime parity test:
+It follows the same two rules as that parity test:
 
 1. **Assert the EXPECTED value, not merely that the two agree.** Two adapters
    broken identically — both returning ``None``, which is precisely the state

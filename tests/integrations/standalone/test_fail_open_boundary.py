@@ -1,11 +1,8 @@
 """Capture must never fail the vendor's tool call (SPEC §11.2, CHARTER).
 
-Every test here reproduces a way that guarantee was actually broken, through
-the PUBLIC API a vendor would use — not by calling the guard directly. That
-distinction is the point: the unit test for the runtime detector's context
-guard passed the whole time the escape below was live, because it fed the guard
-a fake context that raised ``ValueError``. Only driving a real fastmcp server
-raises what fastmcp really raises.
+Each test drives the real library object or the public API a vendor would use,
+not a stub: a stub raises what its author expected, and only fastmcp raises
+what fastmcp really raises.
 """
 
 from __future__ import annotations
@@ -41,38 +38,22 @@ def _install(events_path: Path, **cfg: Any) -> tuple[Any, Any]:
     return mcp, handle
 
 
-def test_a_real_detached_context_does_not_raise_through_the_detector() -> None:
-    """The regression, against a REAL ``fastmcp.Context`` rather than a stub.
-
-    ``fastmcp``'s ``Context.session`` raises **RuntimeError** when no MCP
-    session is established; the detector's guard enumerated
-    ``(AttributeError, ValueError, TypeError)`` — the OFFICIAL SDK's spelling —
-    so it escaped ``detect_agent_runtime`` into ``BatonMiddleware``, which does
-    not guard it, and failed the vendor's tool call.
-
-    **A real Context is the whole point.** The detector already had a unit test
-    for a raising context, and it passed the entire time this was broken,
-    because it fed the guard a fake that raised the exception the guard already
-    handled. Only the actual library object raises what the library actually
-    raises — confirmed the same (``RuntimeError``) on fastmcp 2.14.7 and 4.0.2.
-
-    Driven directly rather than through a server-side tool call: the entry
-    point for invoking a tool without a session is ``call_tool`` on fastmcp 3+
-    and ``_call_tool`` with a different signature on the 2.14 floor, so an
-    end-to-end driver would have to skip the floor — and the floor is where a
-    vendor most plausibly is.
-    """
+def test_a_real_detached_context_costs_only_the_declaration() -> None:
+    """``fastmcp``'s ``Context.session`` raises ``RuntimeError`` when no MCP
+    session is established. Driven directly rather than through a server-side
+    tool call, whose entry point differs between fastmcp 2.14 and 3+."""
     from fastmcp import Context
 
-    from baton.integrations.runtime_adapter import detect_agent_runtime
+    from baton.integrations.client_observed import observe_client
 
     ctx = Context(FastMCP("detached"))
     with pytest.raises(RuntimeError):
-        _ = ctx.session  # the precondition: this really is the raising shape
+        _ = ctx.session
 
-    assert detect_agent_runtime({}, context=ctx) is None
-    # One tier lost, not the whole ladder.
-    assert detect_agent_runtime({"claudecode/toolUseId": "t"}, context=ctx) == "claude-code"
+    assert observe_client({}, context=ctx) is None
+    observed = observe_client({}, context=ctx, headers={"user-agent": "agent/1.0"})
+    assert observed is not None
+    assert observed.model_dump(mode="json") == {"headers": {"user-agent": "agent/1.0"}}
 
 
 async def test_identity_failures_cannot_fail_the_call_either(

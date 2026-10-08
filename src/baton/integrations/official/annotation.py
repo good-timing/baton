@@ -25,6 +25,7 @@ from baton.integrations._annotation_name import derive_annotation_tool_name
 from baton.integrations._annotation_payload import build_annotation_payload
 from baton.integrations._config import SessionResolutionContext
 from baton.integrations._llm_text import build_annotation_tool_description
+from baton.integrations.client_observed import observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
     resolve_call_principal,
@@ -38,7 +39,6 @@ from baton.integrations.official._tool_wrap import (
     _extract_meta_from_context,
     observe_transport,
 )
-from baton.integrations.runtime_adapter import UNKNOWN_AGENT_RUNTIME, detect_agent_runtime
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_emit
 
@@ -118,11 +118,9 @@ def register_annotation_tool(
                 ),
             }
 
-        # The MCP Context is threaded in for its ``_meta``, so this event
-        # reports the SAME agent_runtime as the tool calls around it. Without
-        # it this tool emitted the install-time default unconditionally, which
-        # made an annotation and the call it describes disagree about who was
-        # calling.
+        # The MCP Context is threaded in for its ``_meta`` and handshake, so
+        # this event carries the same ``client_observed`` as the tool calls
+        # around it.
         #
         # It is annotated as a BARE ``Context`` on purpose. The older objection
         # here was that mcp's ``Tool.from_function`` calls
@@ -156,14 +154,10 @@ def register_annotation_tool(
         # plain ``getattr(ctx, "request_context", None)`` does not save you —
         # getattr's default only swallows AttributeError.
         meta_dict = _extract_meta_from_context(ctx)
-        # Detect from the RAW meta — the scrubber runs on the values below, and
-        # a vendor scrubber that touches meta keys must not be able to turn
-        # runtime detection off. Same rule as both tool-call paths.
-        runtime = detect_agent_runtime(meta_dict, context=ctx, scrubber=scrubber) or (
-            UNKNOWN_AGENT_RUNTIME
-        )
-        # The meta is read for the RUNTIME and deliberately not emitted as
-        # ``runtime_meta`` on this event, unlike the tool-call path. It can
+        call_headers = _extract_headers_from_context(ctx)
+        client = observe_client(meta_dict, context=ctx, headers=call_headers, scrubber=scrubber)
+        # The meta is read for ``client_observed`` and deliberately not emitted
+        # as ``runtime_meta`` on this event, unlike the tool-call path. It can
         # carry ``io.baton/session_id`` and ``traceparent`` while ``session_id``
         # below is still the fallback, so emitting both would put a session
         # identifier on an event whose own envelope field disagrees with it —
@@ -194,7 +188,7 @@ def register_annotation_tool(
         # it cannot disagree with the envelope's ``session_id``.
         identity_hook_context = (
             SessionResolutionContext(
-                headers=_extract_headers_from_context(ctx),
+                headers=call_headers,
                 meta=meta_dict,
                 tool_name=name,
                 arguments={},
@@ -224,13 +218,13 @@ def register_annotation_tool(
         # `suggested_improvement` are one report and degrade together.
         #
         # No `scrub_or_none` statement above to pair with this, unlike the
-        # standalone surface: this path reads the meta for the RUNTIME only and
-        # deliberately emits no `runtime_meta` (see above), so there is no meta
-        # scrub out here to guard.
+        # standalone surface: this path reads the meta for ``client_observed``
+        # only and deliberately emits no `runtime_meta` (see above), so there
+        # is no meta scrub out here to guard.
         #
         # ⚠ NOT "every scrubber application here is inside the thunk" —
-        # `detect_agent_runtime` above applies the vendor's scrubber as a plain
-        # statement. It is safe for a DIFFERENT reason (`runtime_adapter._clean`
+        # `observe_client` above applies the vendor's scrubber as a plain
+        # statement. It is safe for a DIFFERENT reason (`client_observed._clean`
         # wraps it in `scrub_or_none` internally), and the distinction decides
         # whether a newly added statement needs guarding: a scrubber call out
         # here is only safe if something downstream guards it.
@@ -243,7 +237,7 @@ def register_annotation_tool(
                 session_id=session_id,
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
-                agent_runtime=runtime,
+                client_observed=client,
                 principal=annotation_principal,
                 transport_observed=observe_transport(ctx),
                 payload=build_annotation_payload(

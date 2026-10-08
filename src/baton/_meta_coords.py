@@ -11,8 +11,7 @@ or returns coordinates is the vendor's data and is captured at full precision.
 That is why this is not a Scrubber rule: the Scrubber walks params and results
 too.
 
-**After runtime detection, before the vendor's scrubber, regardless of it.**
-Each adapter calls this once ``detect_agent_runtime`` has read the raw meta and
+**Before the vendor's scrubber, regardless of it.** Each adapter calls this
 before ``VendorConfig(scrubber=...)`` runs, so a vendor who supplies their own
 scrubber, or opts out with ``identity_scrub``, still gets the rounding.
 """

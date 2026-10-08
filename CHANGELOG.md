@@ -8,6 +8,28 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Added
+
+- **`client_observed` on every event that has a caller.** It carries what
+  the client said about itself, uninterpreted: `info` is the `name` and
+  `version` it declared, and `headers` holds the request's `user-agent` and
+  `x-anthropic-client` when there is an HTTP request. No other header is ever
+  copied. Values pass through your scrubber. It is `null` when there is
+  nothing to carry.
+
+### Changed
+
+- **The MCP adapters no longer name the client: `agent_runtime` is always
+  `"unknown"`.** It used to hold the name the client declared, or
+  `claude-code` when a `claudecode/*` key was present. The collector now
+  names the client from `client_observed` and `runtime_meta`, so a new client
+  needs no SDK release. **A collector must read `client_observed` before it
+  receives events from this version**, or every client shows as unknown. The
+  hosted Console does. `baton.Client(agent_runtime=...)`, the library API, is
+  unchanged.
+
 ## 0.8.12: the hook states the principal, and results can be withheld
 
 ⚠ **This is a BREAKING release on a patch number.** `>=0.8.x` and `~=0.8.0`

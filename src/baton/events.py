@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from baton import __version__
 from baton._uuid import uuid7
@@ -293,6 +293,32 @@ this default describes is a builder instrumenting their own server.
 """
 
 
+class _OmitsUnset(BaseModel):
+    """A wire object whose members are omitted, never ``null``, when unset."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    @model_serializer(mode="wrap")
+    def _omit_none(self, handler: Any) -> dict[str, Any]:
+        return {key: value for key, value in handler(self).items() if value is not None}
+
+
+class ClientInfoObserved(_OmitsUnset):
+    """A client's ``clientInfo`` as it declared it."""
+
+    name: str | None = None
+    version: str | None = None
+
+
+class ClientObserved(_OmitsUnset):
+    """What the client said about itself, uninterpreted (SPEC §11.4)."""
+
+    info: ClientInfoObserved | None = None
+    headers: dict[str, str] | None = None
+    """Request header name, lower-cased, to the value sent. Only the headers
+    SPEC registers: ``integrations/client_observed.py`` holds the list."""
+
+
 class PrincipalWire(BaseModel):
     """The principal AS EMITTED — the finished envelope value (SPEC §11.4).
 
@@ -381,6 +407,11 @@ class _EventEnvelope(BaseModel):
     consent_token: str
     sdk_version: str = __version__
     agent_runtime: str = "unknown"
+    """Legacy (SPEC §3.4). The MCP adapters never set it: the consumer names
+    the client from ``client_observed``."""
+    client_observed: ClientObserved | None = None
+    """What the client said about itself (SPEC §11.4). ``None`` where nothing
+    was observed, and always on ``surface_snapshot``."""
     principal: PrincipalWire | None = None
     """Who the vendor resolved behind this event — a person, a service account
     or an organisation (SPEC §11.4).

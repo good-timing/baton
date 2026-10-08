@@ -196,7 +196,7 @@ def scrub_or_none(
     ``_meta`` line in another module was missed because of it.
 
     ``None`` on failure because every caller already treats ``None`` as "this
-    field is unavailable": runtime detection loses the TIER and falls through,
+    field is unavailable": a ``client_observed`` value is omitted,
     ``_meta`` becomes absent, an unscrubbed goal param becomes no captured
     intent. The field degrades and the call lives. ``None`` IN returns ``None``
     without calling the scrubber.
@@ -215,7 +215,7 @@ def scrub_or_none(
     except Exception:
         # Once per field per process. ``safe_write`` logs per event because a
         # sink failure is one write per event; this can fire five times per
-        # CALL, and runtime detection fires unconditionally — so the unbounded
+        # CALL, and ``client_observed`` scrubs on every call — so the unbounded
         # form would put a line on stderr for every tool call forever.
         #
         # ⚠ That reasoning is about SINK failures and no longer covers the

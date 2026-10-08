@@ -129,7 +129,7 @@ async def _emit(events_path: Path, *, programmatic: bool) -> list[dict[str, Any]
     real source of the ``ValueError`` branch — the library's documented answer
     to "is there a live request?" when nobody is on the other end. Otherwise a
     real in-memory client session, via ``connected_session`` (``mcp`` + ``anyio``
-    only, no fastmcp — the same helper ``test_agent_runtime.py`` uses here).
+    only, no fastmcp — the same helper ``test_observed_client.py`` uses here).
     """
     mcp = FastMCP("transport-wire")
 

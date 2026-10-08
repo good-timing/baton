@@ -8,10 +8,9 @@ an identical signature on every version we support — so the session is
 assembled from it here instead.
 
 Why a real session at all, when every other test in ``tests/integrations/official/``
-drives tools through ``mcp.call_tool(...)``: ``_meta`` only exists on the wire.
-``call_tool`` carries none, so a test built on it reads ``agent_runtime:
-"unknown"`` on a correct build and cannot tell detection working from detection
-missing — which is precisely the failure mode that shipped.
+drives tools through ``mcp.call_tool(...)``: ``_meta`` and the handshake only
+exist on the wire, so a test built on ``call_tool`` cannot tell a client's
+declaration being read from it being ignored.
 """
 
 from __future__ import annotations
@@ -27,6 +26,8 @@ from mcp.shared.memory import create_client_server_memory_streams
 
 from baton.integrations.official._compat import get_lowlevel_server
 
+DECLARED_VERSION = "9.9.9"
+
 
 @asynccontextmanager
 async def connected_session(
@@ -39,10 +40,8 @@ async def connected_session(
     was renamed in the same release.
 
     ``declared_name`` sets the ``clientInfo`` this session sends in its
-    ``initialize`` handshake — the carrier the SDK reads a client's identity
-    from. Left ``None``, ``ClientSession`` sends its own default, which names
-    the LIBRARY (``mcp``) rather than any agent; that is a realistic shape in
-    its own right, so both are worth driving.
+    ``initialize`` handshake, with ``DECLARED_VERSION``. Left ``None``,
+    ``ClientSession`` sends its own default, which names the library (``mcp``).
     """
     server = get_lowlevel_server(mcp)
     async with create_client_server_memory_streams() as (client_streams, server_streams):
@@ -61,7 +60,7 @@ async def connected_session(
 
             tg.start_soon(_run_server)
             client_info = (
-                mcp_types.Implementation(name=declared_name, version="9.9.9")
+                mcp_types.Implementation(name=declared_name, version=DECLARED_VERSION)
                 if declared_name is not None
                 else None
             )

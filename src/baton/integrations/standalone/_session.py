@@ -209,7 +209,7 @@ def observe_transport(*, _get_http_request: Callable[[], object] | None = None) 
     return "http"
 
 
-async def resolve_call_session_id(*, fallback: str) -> str:
+async def resolve_call_session_id(*, headers: Mapping[str, str] | None, fallback: str) -> str:
     """Real per-call session id, SPEC §3.4's layered fallback in priority
     order: (4) the ``mcp-session-id`` header; (4b) fastmcp's
     ``Context.session_id``, where its cache survives and the header was
@@ -246,7 +246,6 @@ async def resolve_call_session_id(*, fallback: str) -> str:
     deferred; retiring them makes both adapters even again, from the other
     end.
     """
-    headers = extract_headers()
     from_header = session_id_from_headers(headers)
     if from_header is not None:
         return from_header

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import mcp.types as mcp_types
 import pytest
 from fastmcp import Client, FastMCP
 from pytest_httpserver import HTTPServer
@@ -612,37 +613,33 @@ class TestAnnotationToolEndToEnd:
         assert "tool_call_end" not in types
 
 
-class TestAnnotationToolRuntimeDetection:
-    """The fastmcp adapter's annotation tool resolves the agent runtime the
-    same way the middleware path does. This class also held the rung-0
-    stitching test until ``VendorConfig.resolve_session_id`` was REMOVED
-    2026-09-12; the surviving test never concerned the hook."""
-
-    async def test_annotation_detects_claude_code_from_meta(
+class TestAnnotationToolObservedClient:
+    async def test_the_annotation_event_agrees_with_the_tool_call(
         self,
         configured_mcp: tuple[FastMCP, Any],
         captured: list[dict[str, Any]],
     ) -> None:
-        """Annotation events MUST honor the same runtime detection as the
-        middleware path — reading ``_meta.claudecode/toolUseId`` from the
-        request context."""
         mcp, handle = configured_mcp
 
-        async with Client(mcp) as client:
-            await client.call_tool(
-                handle.annotation_tool_name,
-                {"user_goal": "x"},
-                meta={"claudecode/toolUseId": "tool-use-xyz"},
-            )
+        @mcp.tool
+        def echo(text: str) -> str:
+            return text
+
+        meta = {"claudecode/toolUseId": "tool-use-xyz"}
+        declared = mcp_types.Implementation(name="claude-ai", version="1.2.3")
+        async with Client(mcp, client_info=declared) as client:
+            await client.call_tool("echo", {"text": "x"}, meta=meta)
+            await client.call_tool(handle.annotation_tool_name, {"user_goal": "x"}, meta=meta)
 
         await handle.flush()
-        annotation_events = [ev for ev in captured if ev["event_type"] == "annotation"]
-        assert len(annotation_events) == 1
-        # `mcp` since the ladder became declared-first — the driver's client
-        # declares the library name, which outranks the carried `claudecode/`
-        # key. The point of the assertion is unchanged: the annotation tool
-        # resolves the runtime the SAME way the tool-call path does.
-        assert annotation_events[0]["agent_runtime"] == "mcp"
+        by_type = {ev["event_type"]: ev for ev in without_surface_snapshots(captured)}
+        assert {"annotation", "tool_call_start", "tool_call_end"} <= set(by_type), sorted(by_type)
+        for event_type, ev in by_type.items():
+            assert ev["client_observed"] == {"info": {"name": "claude-ai", "version": "1.2.3"}}, (
+                event_type
+            )
+            assert ev["agent_runtime"] == "unknown", event_type
+            assert ev["runtime_meta"]["claudecode/toolUseId"] == "tool-use-xyz", event_type
 
 
 # =============================================================================

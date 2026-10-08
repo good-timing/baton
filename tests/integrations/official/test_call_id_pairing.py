@@ -12,7 +12,7 @@ the error leg reds ``test_every_leg_of_a_call_carries_a_call_id``, each on its
 own assertion rather than on a timeout or a ``TypeError``.
 
 Here rather than in ``tests/functional/`` for the reason ``test_principal_id.py`` and
-``test_agent_runtime.py`` are: **``mcp-matrix`` runs
+``test_observed_client.py`` are: **``mcp-matrix`` runs
 ``tests/integrations/official/`` and nothing else**, against mcp 1.20.0 /
 1.25.0 / 1.27.2 / 2.0.0. Whether one session even carries two concurrent
 ``tools/call`` requests is a per-version property of the server library, so a

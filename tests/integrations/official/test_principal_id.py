@@ -1,7 +1,7 @@
 """``principal_id`` on the OFFICIAL mcp SDK adapter, across the mcp matrix.
 
 Here rather than in ``tests/functional/`` for the same reason
-``test_agent_runtime.py`` is: ``mcp-matrix`` runs
+``test_observed_client.py`` is: ``mcp-matrix`` runs
 ``tests/integrations/official/`` against mcp 1.20.0 / 1.25.0 / 1.27.2 / 2.0.0
 and nothing else, and this field is version-sensitive in a way nothing else in
 the suite is — ``AccessToken`` gained ``claims`` and ``subject`` somewhere in

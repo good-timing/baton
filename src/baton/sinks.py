@@ -404,7 +404,7 @@ class HttpSink(Sink):
 
     #: Cap on the collector's refusal text copied into the vendor's log. A
     #: remote server's message landing in someone else's log file gets a
-    #: bound, the same posture the declared ``agent_runtime`` tiers take.
+    #: bound, the same posture ``client_observed`` values take.
     _REFUSAL_BODY_MAX_LEN = 500
 
     @staticmethod

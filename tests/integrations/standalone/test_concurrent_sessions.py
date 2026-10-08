@@ -72,7 +72,7 @@ def _free_port() -> int:
 
 @contextlib.contextmanager
 def _running_server(
-    transport: str, *, stateless: bool = False
+    transport: str, *, stateless: bool = False, **config: Any
 ) -> Iterator[tuple[_CapturingSink, str]]:
     sink = _CapturingSink()
     mcp: FastMCP[Any] = FastMCP("concurrency-probe")
@@ -92,6 +92,7 @@ def _running_server(
             vendor_display_name="Concurrency Probe",
             consent_token="test-token",
             sink=sink,
+            **config,
         ),
     )
 

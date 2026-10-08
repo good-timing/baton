@@ -1,12 +1,10 @@
 """``call_id`` must pair a call's legs when completion order INVERTS —
 standalone ``fastmcp`` adapter.
 
-The sibling of ``tests/integrations/official/test_call_id_pairing.py``, and it
-exists as a separate file for the reason ``test_agent_runtime_parity.py``
-records: a capability that lives in one adapter's package and is never called
-by the other survived a rename, a release and the CI matrix, because each
-adapter's suite asserted only about itself. The mint lands on both emit paths
-or it has not landed. **``fastmcp-matrix`` runs this directory** against fastmcp
+The sibling of ``tests/integrations/official/test_call_id_pairing.py``. A
+separate file because each adapter's suite asserts only about itself, so a
+capability one adapter never calls passes the other's tests. The mint lands on
+both emit paths or it has not landed. **``fastmcp-matrix`` runs this directory** against fastmcp
 2.14.7 / 3.4.2 / 4.0.2, which is the only place the floor's mcp 1.30 and
 fastmcp 4's mcp 2.2 are exercised.
 

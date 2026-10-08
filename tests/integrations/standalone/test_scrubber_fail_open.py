@@ -143,7 +143,7 @@ async def test_control_a_failing_tool_surfaces_the_vendors_own_message(
 
 
 async def test_a_throwing_scrubber_does_not_break_a_working_call(tmp_path: Path) -> None:
-    """`scrub_or_none` at `runtime_adapter._clean` — fires on EVERY call."""
+    """`scrub_or_none` at `client_observed._clean` — fires on EVERY call."""
     thrower = _Thrower(CLIENT_NAME)
     res = await _call(tmp_path / "p1.jsonl", thrower, fail=False)
     assert thrower.tripped, "the probe never reached its target; the test proves nothing"
