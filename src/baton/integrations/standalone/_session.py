@@ -1,7 +1,7 @@
 """SPEC §3.4 session-id resolution for the standalone ``fastmcp`` adapter.
 
-One resolver, used by BOTH capture paths — ``BatonMiddleware`` (tool calls) and
-the registered annotation tool. That sharing is load-bearing rather than tidy:
+One resolver, used by every capture path — ``BatonMiddleware`` (tool calls),
+the registered annotation tool and the tool list capture. That sharing is load-bearing rather than tidy:
 an annotation whose ``session_id`` disagrees with the tool call it describes can
 never be joined to it downstream, which is the single correlation the sensor
 exists to produce. Two ladders would let each path's tests pass while the
@@ -70,6 +70,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from importlib.metadata import PackageNotFoundError, version
+from typing import Any
 
 from fastmcp.server.dependencies import get_context, get_http_headers
 
@@ -110,8 +111,13 @@ def _session_cache_survives() -> bool:
 _SESSION_CACHE_SURVIVES = _session_cache_survives()
 
 
-def session_id_from_fastmcp_context(headers: Mapping[str, str] | None) -> str | None:
+def session_id_from_fastmcp_context(
+    headers: Mapping[str, str] | None, context: Any = None
+) -> str | None:
     """SPEC §3.4 rung 4b — fastmcp's own per-connection id, where it is stable.
+
+    ``context`` is the fastmcp context to read it from, for a caller that runs
+    where none is current.
 
     Fires only on an HTTP transport that did not carry ``mcp-session-id`` — in
     practice SSE, and also stateless streamable HTTP, where it degrades to a
@@ -136,7 +142,7 @@ def session_id_from_fastmcp_context(headers: Mapping[str, str] | None) -> str | 
     if not headers:
         return None
     try:
-        session_id = get_context().session_id
+        session_id = (context if context is not None else get_context()).session_id
     except Exception:  # best-effort rung; see docstring
         return None
     return session_id or None
@@ -209,7 +215,9 @@ def observe_transport(*, _get_http_request: Callable[[], object] | None = None) 
     return "http"
 
 
-async def resolve_call_session_id(*, headers: Mapping[str, str] | None, fallback: str) -> str:
+async def resolve_call_session_id(
+    *, headers: Mapping[str, str] | None, fallback: str, context: Any = None
+) -> str:
     """Real per-call session id, SPEC §3.4's layered fallback in priority
     order: (4) the ``mcp-session-id`` header; (4b) fastmcp's
     ``Context.session_id``, where its cache survives and the header was
@@ -249,5 +257,5 @@ async def resolve_call_session_id(*, headers: Mapping[str, str] | None, fallback
     from_header = session_id_from_headers(headers)
     if from_header is not None:
         return from_header
-    from_context = session_id_from_fastmcp_context(headers)
+    from_context = session_id_from_fastmcp_context(headers, context)
     return from_context if from_context is not None else fallback

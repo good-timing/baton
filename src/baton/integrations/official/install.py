@@ -1,7 +1,7 @@
 """``install_baton`` — vendor entry point for the official mcp SDK.
 
-Wires together a ``Sink``, the tool-handler wrap layer, and the
-vendor-namespaced annotation tool against the official Anthropic
+Wires together a ``Sink``, the tool-handler wrap layer, the tool list
+capture, and the vendor-namespaced annotation tool against the official Anthropic
 ``mcp.server.fastmcp.FastMCP`` class.
 
 ```python
@@ -45,6 +45,7 @@ this call. See ``baton._optout``.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from baton._optout import capture_disabled
 from baton._state import ProactiveTracker, SessionCounter
@@ -60,6 +61,8 @@ from baton.integrations._config import (
 from baton.integrations._handle import BatonHandle, disabled_handle
 from baton.integrations._llm_text import build_server_instructions
 from baton.integrations._surface import build_server_meta
+from baton.integrations._tool_list import ListingRequest, install_tool_list_capture
+from baton.integrations.official import _auth
 from baton.integrations.official._compat import (
     MCPServerClass as FastMCP,
 )
@@ -68,11 +71,25 @@ from baton.integrations.official._compat import (
     require_high_level_server,
     set_server_instructions,
 )
-from baton.integrations.official._tool_wrap import install_wraps
+from baton.integrations.official._tool_wrap import (
+    _extract_headers_from_context,
+    _extract_meta_from_context,
+    _resolve_call_session_id,
+    install_wraps,
+    observe_transport,
+)
 from baton.integrations.official.annotation import register_annotation_tool
 from baton.scrub import Scrubber
 
 logger = logging.getLogger(__name__)
+
+
+class _RequestOnly:
+    """Stands in for the ``Context`` a tool call has; a list request has none."""
+
+    def __init__(self, request_context: Any) -> None:
+        self.request_context = request_context
+        self.session = getattr(request_context, "session", None)
 
 
 def install_baton(
@@ -173,6 +190,32 @@ def install_baton(
         proactive_tracker=proactive_tracker,
         resolve_principal_hook=config.resolve_principal,
         server_meta=server_meta,
+    )
+
+    async def read_listing_request(request_context: Any) -> ListingRequest:
+        context = _RequestOnly(request_context)
+        headers = _extract_headers_from_context(context)
+        return ListingRequest(
+            meta=_extract_meta_from_context(context),
+            headers=headers,
+            handshake_context=context,
+            transport_observed=observe_transport(context),
+            session_id=await _resolve_call_session_id(
+                headers=headers, fallback=fallback_session_id
+            ),
+        )
+
+    install_tool_list_capture(
+        lambda: get_lowlevel_server(mcp),
+        tenant_id=tenant_id,
+        vendor_id=config.vendor_id,
+        consent_token=config.consent_token,
+        sink=sink,
+        counter=counter,
+        scrubber=scrubber,
+        resolve_principal_hook=config.resolve_principal,
+        read_request=read_listing_request,
+        read_access_token=_auth.current_access_token,
     )
 
     # Register the annotation tool LAST so the wrap layer's add_tool patch

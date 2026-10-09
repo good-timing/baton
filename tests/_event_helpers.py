@@ -19,6 +19,15 @@ def without_surface_snapshots(events: list[dict[str, Any]]) -> list[dict[str, An
     return [ev for ev in events if ev["event_type"] != "surface_snapshot"]
 
 
+#: What a ``tools/list`` request produces (SPEC §11.4.5). The client libraries
+#: send one on their own after a tool call, to check the result's shape.
+TOOL_LIST_EVENT_TYPES = {"tool_list_start", "tool_list_end", "tool_list_error"}
+
+
+def without_tool_listings(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [ev for ev in events if ev["event_type"] not in TOOL_LIST_EVENT_TYPES]
+
+
 def principal_of(ev: dict[str, Any]) -> dict[str, Any] | None:
     """An event's ``principal`` object, or ``None`` when it carried none.
 

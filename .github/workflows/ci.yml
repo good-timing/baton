@@ -273,7 +273,12 @@ jobs:
         # job cannot swing it. That is covered by `fastmcp-matrix` below, whose
         # absence is exactly how a `surface_snapshot` wire-format break on
         # mcp 2.x survived a green `mcp-matrix` (see CHANGELOG, `## 0.8.0`).
-        run: pytest tests/integrations/official/ -q
+        #
+        # The tool list tests live in `tests/functional/` because they drive
+        # both adapters; this job runs their official half.
+        run: |
+          pytest tests/integrations/official/ -q
+          pytest tests/functional/test_tool_list_parity.py -q -k official
 
   fastmcp-matrix:
     # On pip + setup-python because the leg's value is testing the floor a

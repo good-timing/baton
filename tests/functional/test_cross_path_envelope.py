@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 
-from tests._event_helpers import without_surface_snapshots
+from tests._event_helpers import TOOL_LIST_EVENT_TYPES, without_surface_snapshots
 from tests.functional.envelope_assertions import (
     assert_envelope_shape,
     assert_sequence_monotonic_per_session,
@@ -179,7 +179,7 @@ async def test_mcp_family_envelope_invariants_hold(path_name: str, tmp_path: Pat
         f"{path_name}: expected a non-library agent_runtime, got "
         f"{ {e['agent_runtime'] for e in events} }"
     )
-    assert {e["event_type"] for e in events} == EXPECTED_EVENT_TYPES
+    assert {e["event_type"] for e in events} - TOOL_LIST_EVENT_TYPES == EXPECTED_EVENT_TYPES
 
 
 # =============================================================================

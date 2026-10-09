@@ -1,7 +1,7 @@
 """``install_baton`` — the vendor's MCP integration entry point.
 
-Wires together a ``Sink``, the ``BatonMiddleware``, and the vendor-namespaced
-annotation tool. Vendor calls this once after constructing their FastMCP
+Wires together a ``Sink``, the ``BatonMiddleware``, the tool list capture, and
+the vendor-namespaced annotation tool. Vendor calls this once after constructing their FastMCP
 server; everything downstream (event capture, sink-specific egress, dispatch
 back at the destination) is handled by the SDK.
 
@@ -52,6 +52,7 @@ import logging
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.server.context import Context
 
 from baton._optout import capture_disabled
 from baton._state import ProactiveTracker, SessionCounter
@@ -67,7 +68,15 @@ from baton.integrations._config import (
 from baton.integrations._handle import BatonHandle, disabled_handle
 from baton.integrations._llm_text import build_server_instructions, drop_subagent_clause
 from baton.integrations._surface import build_server_meta
+from baton.integrations._tool_list import ListingRequest, install_tool_list_capture
+from baton.integrations.client_observed import meta_to_dict
 from baton.integrations.official._registry import get_tool_manager
+from baton.integrations.standalone import _auth
+from baton.integrations.standalone._session import (
+    extract_headers,
+    observe_transport,
+    resolve_call_session_id,
+)
 from baton.integrations.standalone.annotation import register_annotation_tool
 from baton.integrations.standalone.middleware import BatonMiddleware
 from baton.scrub import Scrubber
@@ -249,6 +258,35 @@ def install_baton(
             server_meta=server_meta,
             on_native_overall_task=on_native_overall_task,
         )
+    )
+
+    async def read_listing_request(_request_context: Any) -> ListingRequest:
+        # The handler runs below fastmcp, where no fastmcp context is current.
+        # A tool call reads its request through one, so a listing does too:
+        # ``test_a_listing_reads_the_requests_meta_as_a_call_does``.
+        context = Context(fastmcp=mcp)
+        headers = extract_headers()
+        return ListingRequest(
+            meta=meta_to_dict(getattr(context.request_context, "meta", None)),
+            headers=headers,
+            handshake_context=context,
+            transport_observed=observe_transport(),
+            session_id=await resolve_call_session_id(
+                headers=headers, fallback=fallback_session_id, context=context
+            ),
+        )
+
+    install_tool_list_capture(
+        lambda: mcp._mcp_server,
+        tenant_id=tenant_id,
+        vendor_id=config.vendor_id,
+        consent_token=config.consent_token,
+        sink=sink,
+        counter=counter,
+        scrubber=scrubber,
+        resolve_principal_hook=config.resolve_principal,
+        read_request=read_listing_request,
+        read_access_token=_auth.current_access_token,
     )
 
     register_annotation_tool(

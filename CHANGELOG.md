@@ -10,6 +10,27 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+### Added
+
+- **Both adapters send the tool list events (SPEC §11.4.5).** Each
+  `tools/list` request a client sends produces a `tool_list_start` and then a
+  `tool_list_end` with `count`, the number of tools in that response, or a
+  `tool_list_error`. They carry the same envelope a tool call does:
+  `client_observed`, the session id, and `principal` when you set
+  `resolve_principal`. No tool name, description or schema is on them. A
+  session that holds only these events is a client that connected, looked at
+  your tools and called none.
+  The server a client connects to sends them: a FastMCP server that is
+  mounted inside another sends none of its own.
+
+### Changed
+
+- **`resolve_principal` now also runs on every `tools/list` request**, so a
+  listing can be tied to the person's calls. On a listing
+  `SessionResolutionContext.tool_name` is `None` and `arguments` is empty. If
+  your hook reads `tool_name` as a string, handle `None`. The two ready-made
+  OAuth hooks need no change.
+
 ## 0.8.13: the client as observed, and the turn number
 
 Nothing in your code has to change unless you pin `mcp` to 1.20.0 or 1.21.0,

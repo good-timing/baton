@@ -507,12 +507,12 @@ class TestExtractHeaders:
 
 
 @pytest.mark.parametrize("path", ["tool call", "annotation"])
-async def test_headers_are_read_once_per_call(
+async def test_headers_are_read_once_per_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
 ) -> None:
     """``client_observed``, the identity hook and the session ladder share one
-    read, and each is handed its result."""
-    from baton.integrations.standalone import _session, annotation, middleware
+    read per request, and each is handed its result."""
+    from baton.integrations.standalone import _session, annotation, install, middleware
 
     reads = 0
     seen_by_hook: list[Any] = []
@@ -522,7 +522,7 @@ async def test_headers_are_read_once_per_call(
         reads += 1
         return {"mcp-session-id": "from-header", "user-agent": "agent/1.0"}
 
-    for module in (_session, annotation, middleware):
+    for module in (_session, annotation, install, middleware):
         monkeypatch.setattr(module, "extract_headers", counting)
 
     mcp: Any = FastMCP("one-read")
@@ -552,10 +552,11 @@ async def test_headers_are_read_once_per_call(
     finally:
         await handle.aclose()
 
-    assert reads == 1
-    assert seen_by_hook == ["agent/1.0"]
     events = without_surface_snapshots(read_events(tmp_path / "e.jsonl"))
     assert events
+    requests = 1 + sum(ev["event_type"] == "tool_list_start" for ev in events)
+    assert reads == requests
+    assert seen_by_hook == ["agent/1.0"] * requests
     for ev in events:
         assert ev["session_id"] == "from-header", ev["event_type"]
         assert ev["client_observed"]["headers"] == {"user-agent": "agent/1.0"}, ev["event_type"]

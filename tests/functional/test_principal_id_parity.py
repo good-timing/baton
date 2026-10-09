@@ -427,7 +427,12 @@ async def test_the_hook_sees_the_calls_own_context_not_an_install_time_value(
     annotate = await _run_official_path(
         official_path, None, monkeypatch, resolve_principal=per_call
     )
-    assert _principal_ids(official_path) == {"user-of-lookup", f"user-of-{annotate}"}
+    # The client lists the tools once, and a listing names no tool.
+    assert _principal_ids(official_path) == {
+        "user-of-lookup",
+        f"user-of-{annotate}",
+        "user-of-None",
+    }
 
 
 async def test_source_stays_asserted_in_every_form(

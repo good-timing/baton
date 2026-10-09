@@ -272,3 +272,40 @@ async def test_stateless_http_clients_do_not_merge() -> None:
         "rung 4b was narrowed and they fell through to the process-wide "
         "fallback, which merges strangers instead of merely losing their joins"
     )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("transport", ["http", "sse"])
+async def test_a_listing_shares_the_calls_session(transport: str) -> None:
+    """SPEC §11.4.5: a listing carries the session id any other request from
+    that client would carry. The list handler runs below fastmcp, so this is
+    the ladder's fastmcp rung reached from outside a fastmcp context."""
+    from fastmcp.client.transports import SSETransport, StreamableHttpTransport
+
+    connect = SSETransport if transport == "sse" else StreamableHttpTransport
+
+    with _running_server(transport) as (sink, url):
+
+        async def list_then_call_as(caller: str) -> None:
+            async with Client(connect(url, headers={"User-Agent": caller})) as client:
+                await client.list_tools()
+                await client.call_tool("work", {"caller": caller})
+
+        await asyncio.gather(list_then_call_as("alice"), list_then_call_as("bob"))
+
+    def sessions_of(caller: str, event_type: str) -> set[str]:
+        return {
+            e.session_id
+            for e in sink.events
+            if e.event_type == event_type
+            and e.client_observed is not None
+            and (e.client_observed.headers or {}).get("user-agent") == caller
+        }
+
+    for caller in ("alice", "bob"):
+        called_in = sessions_of(caller, "tool_call_start")
+        assert len(called_in) == 1, caller
+        assert sessions_of(caller, "tool_list_start") == called_in, caller
+        assert sessions_of(caller, "tool_list_end") == called_in, caller
+    if MCP_MAJOR < 2:
+        assert sessions_of("alice", "tool_call_start") != sessions_of("bob", "tool_call_start")

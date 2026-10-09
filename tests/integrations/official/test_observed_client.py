@@ -23,7 +23,12 @@ from baton.integrations.official._compat import MCPServerClass as FastMCP
 from baton.scrub import identity_scrub
 from baton.sinks import FileSink
 from tests._chatgpt_meta import CHATGPT_MAC_META
-from tests._event_helpers import CALLER_EVENT_TYPES, read_events, without_surface_snapshots
+from tests._event_helpers import (
+    CALLER_EVENT_TYPES,
+    read_events,
+    without_surface_snapshots,
+    without_tool_listings,
+)
 from tests._mcp_session import DECLARED_VERSION, connected_session
 from tests.integrations.official.test_iserror_reclassify import _error_result
 
@@ -85,7 +90,9 @@ async def _drive_all(
 async def _drive(
     events_path: Path, meta: dict[str, Any] | None, **kwargs: Any
 ) -> list[dict[str, Any]]:
-    return without_surface_snapshots(await _drive_all(events_path, meta, **kwargs))
+    return without_tool_listings(
+        without_surface_snapshots(await _drive_all(events_path, meta, **kwargs))
+    )
 
 
 @pytest.mark.parametrize(

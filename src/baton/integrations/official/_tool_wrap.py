@@ -137,11 +137,12 @@ _WRAPPED_SENTINEL = "_baton_wrapped"
 class _SurfaceState:
     """Tracks the vendor-true (pre-injection) tool surface for this install,
     for ``surface_snapshot`` capture. Unlike the FastMCP middleware — which
-    has a live ``tools/list`` hook — the official SDK exposes no such
-    interception point (see ``project_sdk_sensor_parity_gap`` memory), so
-    this is built from data already in hand at install/add_tool time and
-    lazily hashed+emitted on the next tool call, the first point execution
-    is guaranteed to be inside an async context.
+    sees each listing's tools before it injects into them — this adapter
+    injects into the registered schema in place, so a listing only ever
+    shows the injected shape. The vendor-true one is built from data already
+    in hand at install/add_tool time and lazily hashed+emitted on the next
+    tool call, the first point execution is guaranteed to be inside an async
+    context.
 
     ``raw_tools`` is keyed by tool name, capturing each tool's wire shape
     BEFORE ``_inject_goal_params`` mutates ``tool.parameters`` in place —
@@ -557,9 +558,8 @@ def _wrap_tool_run(
         context: Any = None,
         convert_result: bool = False,
     ) -> Any:
-        # Surface snapshot — lazy: the official SDK has no tools/list hook to
-        # capture on (see _SurfaceState docstring), so this is the first point
-        # every install is guaranteed to reach an async context. ``dirty``
+        # Surface snapshot — lazy (see _SurfaceState docstring): this is the
+        # first point every install is guaranteed to reach an async context. ``dirty``
         # keeps this a no-op on every call after the first stable surface.
         # Fail-open, mirroring the fastmcp adapter's on_list_tools capture —
         # this must never block the vendor's tool call. ``dirty`` is cleared

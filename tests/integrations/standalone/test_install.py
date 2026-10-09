@@ -24,7 +24,7 @@ from werkzeug.wrappers import Response
 from baton.integrations._llm_text import build_user_goal_param_description
 from baton.integrations.standalone import VendorConfig, install_baton
 from baton.sinks import HttpSink
-from tests._event_helpers import without_surface_snapshots
+from tests._event_helpers import without_surface_snapshots, without_tool_listings
 
 
 @pytest.fixture
@@ -635,7 +635,10 @@ class TestAnnotationToolObservedClient:
             await client.call_tool(handle.annotation_tool_name, {"user_goal": "x"}, meta=meta)
 
         await handle.flush()
-        by_type = {ev["event_type"]: ev for ev in without_surface_snapshots(captured)}
+        by_type = {
+            ev["event_type"]: ev
+            for ev in without_tool_listings(without_surface_snapshots(captured))
+        }
         assert {"annotation", "tool_call_start", "tool_call_end"} <= set(by_type), sorted(by_type)
         for event_type, ev in by_type.items():
             assert ev["client_observed"] == {"info": {"name": "claude-ai", "version": "1.2.3"}}, (
@@ -727,7 +730,7 @@ class TestRuntimeMetaCapture:
             await client.call_tool("echo", {"text": "hi"})
 
         await handle.flush()
-        for ev in without_surface_snapshots(captured):
+        for ev in without_tool_listings(without_surface_snapshots(captured)):
             # progressToken is always present on the wire even without
             # caller-supplied meta — captures the MCP runtime's own
             # bookkeeping. Vendor-supplied runtime IDs would also land here.

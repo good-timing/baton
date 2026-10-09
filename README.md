@@ -77,7 +77,7 @@ install_baton(mcp, VendorConfig(
 
 ## Who is calling
 
-**Nothing is captured about the person behind a call unless you say how to find them.** Pass a `resolve_principal` hook: it receives the call's headers, `_meta`, tool name, arguments and verified OAuth token claims, and returns a `Principal` or `None`. Two ready-made hooks cover OAuth:
+**Nothing is captured about the person behind a call unless you say how to find them.** Pass a `resolve_principal` hook: it receives the request's headers, `_meta`, tool name, arguments and verified OAuth token claims, and returns a `Principal` or `None`. It runs on every tool call and on every `tools/list` request; on a listing the tool name is `None` and the arguments are empty. Two ready-made hooks cover OAuth:
 
 ```python
 from baton import install_baton, VendorConfig, principal_from_oauth_email

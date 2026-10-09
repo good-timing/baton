@@ -70,7 +70,9 @@ async def test_the_surface_snapshot_carries_no_client_and_caller_events_do(
         await handle.aclose()
 
     events = read_events(events_path)
-    assert {ev["event_type"] for ev in events} == CALLER_EVENT_TYPES | {"surface_snapshot"}
+    assert {ev["event_type"] for ev in events} == (
+        CALLER_EVENT_TYPES | {"surface_snapshot", "tool_list_start", "tool_list_end"}
+    )
     errors = [ev for ev in events if ev["event_type"] == "tool_call_error"]
     assert len(errors) == len(failing)
     for ev in events:
@@ -115,6 +117,8 @@ async def test_a_user_agent_sent_over_http_is_observed_and_scrubbed() -> None:
         "tool_call_start",
         "tool_call_end",
         "annotation",
+        "tool_list_start",
+        "tool_list_end",
     }
     for ev in callers:
         assert ev["client_observed"]["headers"] == {

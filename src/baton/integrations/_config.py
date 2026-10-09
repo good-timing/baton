@@ -193,7 +193,9 @@ class SessionResolutionContext:
     header, ``Authorization: Bearer …`` included, and a hook that logs its
     context would otherwise write a live credential out."""
     meta: dict[str, Any] | None
-    tool_name: str
+    tool_name: str | None
+    """``None`` on a ``tools/list`` request, which names no tool. ``arguments``
+    is then empty."""
     arguments: dict[str, Any]
     claims: Mapping[str, Any] | None = field(default=None, repr=False)
     """The verified OAuth access token's claims for this request, or ``None``.
@@ -434,6 +436,9 @@ class VendorConfig:
     ``None``, a wrong type, or a raised exception (logged, never propagated)
     means the event ships without a ``principal``. Sync or async. Import the
     return type as ``from baton import Principal``.
+
+    Called once per tool call and once per ``tools/list`` request. On a
+    listing ``tool_name`` is ``None`` and ``arguments`` is empty.
 
     The SDK sends what the hook returns and does nothing else to it: the id
     as given, ``Principal.form`` to say whether the hook hashed it, and

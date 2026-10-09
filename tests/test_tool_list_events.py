@@ -58,3 +58,29 @@ def test_the_end_event_must_say_how_many() -> None:
         ToolListEndEvent.model_validate({**_ENVELOPE, "payload": {"duration_ms": 4}})
 
     assert [(e["type"], e["loc"][-1]) for e in refused.value.errors()] == [("missing", "count")]
+
+
+def test_a_server_with_no_known_list_handler_installs_without_the_events(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from baton._state import SessionCounter
+    from baton.integrations._tool_list import install_tool_list_capture
+    from baton.sinks import StdoutSink
+
+    async def read_request(request_context: Any) -> Any:
+        raise AssertionError("no handler was wrapped, so nothing calls this")
+
+    install_tool_list_capture(
+        lambda: object(),
+        tenant_id="ten_1",
+        vendor_id="acme",
+        consent_token="ct",
+        sink=StdoutSink(),
+        counter=SessionCounter(),
+        scrubber=lambda value: value,
+        resolve_principal_hook=None,
+        read_request=read_request,
+        read_access_token=lambda: None,
+    )
+
+    assert "no tool list events" in caplog.text
