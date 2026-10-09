@@ -276,18 +276,8 @@ jobs:
         run: pytest tests/integrations/official/ -q
 
   fastmcp-matrix:
-    # ⚠ STAYS ON pip + setup-python, and that is a decision, not an oversight.
-    # Moving this job to `uv venv` + `uv pip install` (2026-09-10) reddened the
-    # 2.14.7 leg: 25+ failures across test_install.py and test_intent_injection.py,
-    # each burning ~20 s, where the same commit on pip ran 128 passed in 6 s.
-    # The resolved tree was IDENTICAL — fastmcp 2.14.7, mcp 1.30.0, pydantic
-    # 2.13.5 — so it is not a resolver difference; what changes is the
-    # INTERPRETER, since `uv venv` uses uv's own standalone CPython rather than
-    # setup-python's, and the per-test duration says timeout. `core` and
-    # `perf-timing` run fine on that interpreter, so it is specific to this
-    # job's fastmcp paths. Not diagnosed — reverted, because the leg's value is
-    # testing the floor a customer gets and a customer's pip tree works.
-    # If you move it, run the 2.14.7 leg before merging; it fails slowly, not loudly.
+    # On pip + setup-python because the leg's value is testing the floor a
+    # customer gets, and a customer installs with pip.
     #
     # Verifies the baton.integrations.standalone adapter against each major of the
     # standalone `fastmcp` library. This job exists because its absence hid a

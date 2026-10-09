@@ -374,17 +374,20 @@ class TestInstallation:
                 sink=HttpSink(url=httpserver.url_for(""), api_key="k"),
             ),
         )
-        async with Client(mcp) as client:
-            names = [t.name for t in await client.list_tools()]
-            assert handle.annotation_tool_name in names
-            await client.call_tool(
-                handle.annotation_tool_name,
-                {
-                    "user_goal": "find the thing",
-                    "signal_type": "failure",
-                    "suggested_improvement": "return a typed error",
-                },
-            )
+        try:
+            async with Client(mcp) as client:
+                names = [t.name for t in await client.list_tools()]
+                assert handle.annotation_tool_name in names
+                await client.call_tool(
+                    handle.annotation_tool_name,
+                    {
+                        "user_goal": "find the thing",
+                        "signal_type": "failure",
+                        "suggested_improvement": "return a typed error",
+                    },
+                )
+        finally:
+            await handle.aclose()
 
     async def test_proactive_annotation_is_rejected_by_default(
         self, httpserver: HTTPServer

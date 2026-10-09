@@ -35,8 +35,10 @@ will rely on.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 
 import pytest
+from pytest_httpserver import HTTPServer
 
 
 @pytest.fixture(autouse=True)
@@ -45,3 +47,23 @@ def _no_ambient_baton_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     with ``monkeypatch.setenv`` afterwards, which wins — this runs first."""
     for name in [name for name in os.environ if name.startswith("BATON_")]:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(scope="session")
+def make_httpserver(
+    httpserver_listen_address: tuple[str | None, int | None],
+) -> Iterator[HTTPServer]:
+    # Threaded: the default server takes one connection at a time, so a test
+    # that leaves a connection open stalls every later test's events:
+    # `test_event_server.py`.
+    host, port = httpserver_listen_address
+    server = HTTPServer(
+        host=host or HTTPServer.DEFAULT_LISTEN_HOST,
+        port=port or HTTPServer.DEFAULT_LISTEN_PORT,
+        threaded=True,
+    )
+    server.start()
+    yield server
+    server.clear()
+    if server.is_running():
+        server.stop()
