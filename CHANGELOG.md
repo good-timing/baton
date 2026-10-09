@@ -10,6 +10,29 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+Nothing in your code has to change. If your server has resources or prompts,
+your `resolve_principal` hook is now also asked on those requests, with
+`tool_name` set to `None`, as on a `tools/list` request.
+
+### Added
+
+- **Both adapters send the resource and prompt events (SPEC §11.4.4).** Each
+  `resources/list`, `resources/read`, `prompts/list` and `prompts/get` request
+  produces a start event and then an end or an error event: twelve event
+  types. A list records how many items that response held. A read records the
+  URI and a prompt get records the name and its arguments. No resource
+  content and no rendered prompt is captured. They carry the same envelope a
+  tool call does, and `principal` when you set `resolve_principal`.
+  The server a client connects to sends them: a FastMCP server that is
+  mounted inside another sends none of its own.
+
+### Changed
+
+- **`result_capture_mode="off"` warns once at install.** A failed
+  resource or prompt request sends the message of the exception your handler
+  raised, in both modes. Raise a message that names the resource, not its
+  contents.
+
 ## 0.8.14: tool list events
 
 Nothing in your code has to change unless your `resolve_principal` hook reads

@@ -28,6 +28,14 @@ def without_tool_listings(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [ev for ev in events if ev["event_type"] not in TOOL_LIST_EVENT_TYPES]
 
 
+#: What a resource or prompt request produces (SPEC §11.4.4).
+LIFECYCLE_EVENT_TYPES = {
+    f"{family}_{leg}"
+    for family in ("resource_list", "resource_read", "prompt_list", "prompt_get")
+    for leg in ("start", "end", "error")
+}
+
+
 def principal_of(ev: dict[str, Any]) -> dict[str, Any] | None:
     """An event's ``principal`` object, or ``None`` when it carried none.
 

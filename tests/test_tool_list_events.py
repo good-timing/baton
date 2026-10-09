@@ -64,13 +64,13 @@ def test_a_server_with_no_known_list_handler_installs_without_the_events(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     from baton._state import SessionCounter
-    from baton.integrations._tool_list import install_tool_list_capture
+    from baton.integrations._lifecycle import install_lifecycle_capture
     from baton.sinks import StdoutSink
 
     async def read_request(request_context: Any) -> Any:
         raise AssertionError("no handler was wrapped, so nothing calls this")
 
-    install_tool_list_capture(
+    install_lifecycle_capture(
         lambda: object(),
         tenant_id="ten_1",
         vendor_id="acme",
@@ -83,4 +83,4 @@ def test_a_server_with_no_known_list_handler_installs_without_the_events(
         read_access_token=lambda: None,
     )
 
-    assert "no tool list events" in caplog.text
+    assert "no known request handler layout" in caplog.text

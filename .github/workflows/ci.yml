@@ -270,15 +270,13 @@ jobs:
       - name: Test (mcp adapter only)
         # Scope to the official-mcp-SDK adapter tests. The fastmcp adapter is
         # NOT covered here — it pins its own mcp version transitively, so this
-        # job cannot swing it. That is covered by `fastmcp-matrix` below, whose
-        # absence is exactly how a `surface_snapshot` wire-format break on
-        # mcp 2.x survived a green `mcp-matrix` (see CHANGELOG, `## 0.8.0`).
+        # job cannot swing it. That is covered by `fastmcp-matrix` below.
         #
-        # The tool list tests live in `tests/functional/` because they drive
-        # both adapters; this job runs their official half.
+        # The tool list, resource and prompt tests live in `tests/functional/`
+        # because they drive both adapters; this job runs their official half.
         run: |
           pytest tests/integrations/official/ -q
-          pytest tests/functional/test_tool_list_parity.py -q -k official
+          pytest tests/functional/test_tool_list_parity.py tests/functional/test_lifecycle_parity.py -q -k official
 
   fastmcp-matrix:
     # On pip + setup-python because the leg's value is testing the floor a

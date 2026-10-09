@@ -194,8 +194,8 @@ class SessionResolutionContext:
     context would otherwise write a live credential out."""
     meta: dict[str, Any] | None
     tool_name: str | None
-    """``None`` on a ``tools/list`` request, which names no tool. ``arguments``
-    is then empty."""
+    """``None`` on a request that is not a tool call. ``arguments`` is then
+    empty."""
     arguments: dict[str, Any]
     claims: Mapping[str, Any] | None = field(default=None, repr=False)
     """The verified OAuth access token's claims for this request, or ``None``.
@@ -366,7 +366,9 @@ class VendorConfig:
     the highest-value diagnostic the product has. Exception messages are a
     classic leak channel (a failed query echoed back, a record id in a
     ``KeyError``), so if that is also a problem the mode grows a stricter
-    value then.
+    value then. The same holds for a failed resource or prompt request: its
+    four error events carry the error's message in both modes, and
+    installing with ``"off"`` warns once to say so.
 
     **A mode string, not a boolean**, matching ``intent_param_mode`` /
     ``proactive_mode``, and leaving room for the
@@ -437,8 +439,9 @@ class VendorConfig:
     means the event ships without a ``principal``. Sync or async. Import the
     return type as ``from baton import Principal``.
 
-    Called once per tool call and once per ``tools/list`` request. On a
-    listing ``tool_name`` is ``None`` and ``arguments`` is empty.
+    Called once per tool call, and once per ``tools/list``, resource and
+    prompt request. On a request that is not a tool call ``tool_name`` is
+    ``None`` and ``arguments`` is empty.
 
     The SDK sends what the hook returns and does nothing else to it: the id
     as given, ``Principal.form`` to say whether the hook hashed it, and

@@ -66,9 +66,13 @@ from baton.integrations._config import (
     resolve_sink,
 )
 from baton.integrations._handle import BatonHandle, disabled_handle
+from baton.integrations._lifecycle import (
+    CapturedRequest,
+    install_lifecycle_capture,
+    warn_if_results_are_withheld,
+)
 from baton.integrations._llm_text import build_server_instructions, drop_subagent_clause
 from baton.integrations._surface import build_server_meta
-from baton.integrations._tool_list import ListingRequest, install_tool_list_capture
 from baton.integrations.client_observed import meta_to_dict
 from baton.integrations.official._registry import get_tool_manager
 from baton.integrations.standalone import _auth
@@ -187,6 +191,7 @@ def install_baton(
     display_name_given = config is not None and bool(config.vendor_display_name)
     config = build_config(config, dsn)
     _validate_vendor_config(config)
+    warn_if_results_are_withheld(config.result_capture_mode)
 
     # Default to a fresh Scrubber per install so PII redaction is on out
     # of the box; vendors needing raw payloads pass ``identity_scrub``
@@ -260,13 +265,14 @@ def install_baton(
         )
     )
 
-    async def read_listing_request(_request_context: Any) -> ListingRequest:
+    async def read_request(_request_context: Any) -> CapturedRequest:
         # The handler runs below fastmcp, where no fastmcp context is current.
-        # A tool call reads its request through one, so a listing does too:
-        # ``test_a_listing_reads_the_requests_meta_as_a_call_does``.
+        # A tool call reads its request through one, so these requests do too:
+        # ``test_a_listing_reads_the_requests_meta_as_a_call_does``,
+        # ``test_the_requests_meta_is_on_the_envelope_and_not_in_params``.
         context = Context(fastmcp=mcp)
         headers = extract_headers()
-        return ListingRequest(
+        return CapturedRequest(
             meta=meta_to_dict(getattr(context.request_context, "meta", None)),
             headers=headers,
             handshake_context=context,
@@ -276,7 +282,7 @@ def install_baton(
             ),
         )
 
-    install_tool_list_capture(
+    install_lifecycle_capture(
         lambda: mcp._mcp_server,
         tenant_id=tenant_id,
         vendor_id=config.vendor_id,
@@ -285,7 +291,7 @@ def install_baton(
         counter=counter,
         scrubber=scrubber,
         resolve_principal_hook=config.resolve_principal,
-        read_request=read_listing_request,
+        read_request=read_request,
         read_access_token=_auth.current_access_token,
     )
 
