@@ -10,6 +10,11 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+## 0.8.14: tool list events
+
+Nothing in your code has to change unless your `resolve_principal` hook reads
+`tool_name` as a string: on a `tools/list` request it is now `None`.
+
 ### Added
 
 - **Both adapters send the tool list events (SPEC §11.4.5).** Each
