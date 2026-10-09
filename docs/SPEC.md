@@ -1338,6 +1338,8 @@ nulls `result` on this event type drops the body this change exists to keep.
 
 **The envelope is §11.4's, unchanged.** That is what lets one collector endpoint accept every event type and one worker order them on `(session_id, sequence_number)`. A conforming producer MUST fill the same required envelope fields it fills on a tool call.
 
+**`principal` is carried.** A producer that has a resolver (§11.4) calls it once for each of these requests and puts what it returns on the start and on the terminal event of that request, as §11.4.5 states for a `tools/list` request. The resolver is given the request with no tool name and no arguments: the URI, the prompt name and the prompt arguments are not passed to it. A producer with no resolver sends none, so a consumer MUST read the value and MUST NOT expect one on these types.
+
 **No payload here carries a BODY, and that is normative rather than an omission.**
 
 - A `resource_read` records its URI and its timing, never the content it fetched. A `prompt_get` records the prompt's name, never the messages it rendered.
@@ -1534,6 +1536,8 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **ts 0.5.4 — CHANGED: the twelve resource and prompt events carry `principal` (§11.4.4).** The resolver now runs once for each `resources/list`, `resources/read`, `prompts/list` and `prompts/get` request, as it does for a tool call and a `tools/list` request. No envelope, payload or schema change: `principal` was already optional on these types. `baton-ts` 0.5.4 sends it. `baton-proxy` has no resolver on its stdio path and sends none. `baton-sdk` emits none of the twelve.
 
 - **0.8.14 (2026-10-08) — `baton-sdk` emits the three tool list events (§11.4.5), from both adapters.** No shape change: the types and the envelope are the ones the ts 0.5.3 entry below added. Both adapters capture on the low-level server's `tools/list` handler, so the pair is per request and `count` is the page the client received. `mcp` 1.x lists its own tools while it serves a call to a tool it has not cached; that listing has no client request behind it and gets no events, which §11.4.5 now states. The resolver's tool name is `None` on a listing, so a resolver that reads it as a string must handle `None`. `baton-proxy` does not emit these events yet.
 
