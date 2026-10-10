@@ -24,6 +24,7 @@ from baton.events import AnnotationEvent
 from baton.integrations._annotation_name import derive_annotation_tool_name
 from baton.integrations._annotation_payload import (
     build_annotation_payload,
+    is_report,
     with_tool_name_required,
 )
 from baton.integrations._config import SessionResolutionContext
@@ -110,8 +111,8 @@ def register_annotation_tool(
         # keeps the agent from inventing a problem just to get the call
         # through — that would corrupt the reports, which are the signal
         # worth protecting.
-        is_report = bool(what_happened and what_happened.strip())
-        if proactive_mode == "off" and not is_report:
+        reporting = is_report(what_happened)
+        if proactive_mode == "off" and not reporting:
             return {
                 "ok": False,
                 "error": (
@@ -211,7 +212,7 @@ def register_annotation_tool(
         session_id = fallback_session_id
         # A proactive annotation (not a report) claims the session's proactive
         # slot so the wrap layer won't also synthesise one from an injected param.
-        if not is_report:
+        if not reporting:
             tracker.mark(session_id)
         seq = await counter.next(session_id)
         # safe_emit, not safe_write: `build_annotation_payload` runs the

@@ -49,9 +49,7 @@ def build_annotation_payload(
     return AnnotationPayload(
         intent=scrubber(user_goal) if user_goal else None,
         expected_outcome=scrubber(expected_result) if expected_result else None,
-        what_happened=(
-            scrubber(what_happened) if what_happened and what_happened.strip() else None
-        ),
+        what_happened=scrubber(what_happened) if is_report(what_happened) else None,
         tool_name=scrubber(tool_name) if tool_name else tool_name,
         # Agent-facing param `overall_task` -> wire key `workflow`, the same
         # split the injected params use (`overall_task` -> `call_workflow`):
@@ -69,6 +67,11 @@ def build_annotation_payload(
         suggested_improvement=(scrubber(suggested_improvement) if suggested_improvement else None),
         context=scrubber(context) if context else None,
     )
+
+
+def is_report(what_happened: str | None) -> bool:
+    """SPEC §11.4: an annotation is a report when its account is filled."""
+    return bool(what_happened and what_happened.strip())
 
 
 def with_tool_name_required(schema: dict[str, Any]) -> dict[str, Any]:
