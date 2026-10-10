@@ -1,4 +1,4 @@
-"""Shared LLM-facing text — server instructions + annotation tool description.
+"""Shared LLM-facing text — server instructions, annotation tool description, refusal.
 
 Two adapters (``baton.integrations.standalone``, ``baton.integrations.official``)
 surface identical text to the calling agent; this module owns the canonical
@@ -362,4 +362,18 @@ def build_annotation_tool_description(
     return _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
         vendor_display_name=vendor_display_name,
         lead=lead,
+    )
+
+
+def build_refusal_text(*, annotation_tool_name: str) -> str:
+    """What a reports-only tool answers when a call has no account (SPEC §5.1.1)."""
+    return (
+        f"{annotation_tool_name} is reactive-only on this server. Call it only "
+        "AFTER a tool call returns an unhelpful, empty, failed or contradictory "
+        "result, or when no tool covers what the user asked for. What the user is "
+        "trying to do is already recorded on each tool call, so no pre-call "
+        "annotation is needed — nothing was lost. If a tool call really went "
+        "wrong, or no tool covers the request, call this again and say "
+        "what_happened. If neither is true, do NOT re-send: that would file a "
+        "report for a call that did not go wrong."
     )

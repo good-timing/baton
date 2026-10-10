@@ -28,7 +28,10 @@ from baton.events import AnnotationEvent
 from baton.integrations._annotation_name import derive_annotation_tool_name
 from baton.integrations._annotation_payload import build_annotation_payload, is_report
 from baton.integrations._config import SessionResolutionContext
-from baton.integrations._llm_text import build_annotation_tool_description
+from baton.integrations._llm_text import (
+    build_annotation_tool_description,
+    build_refusal_text,
+)
 from baton.integrations.client_observed import meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
@@ -107,14 +110,7 @@ def register_annotation_tool(
         if proactive_mode == "off" and not reporting:
             return {
                 "ok": False,
-                "error": (
-                    f"{name} is reactive-only on this server. Call it only AFTER "
-                    "a tool call returns an unhelpful, empty, failed or "
-                    "contradictory result, or when no tool covers what the user "
-                    "asked for — and say what_happened. What the user is trying to "
-                    "do is already recorded on each tool call, so no pre-call "
-                    "annotation is needed."
-                ),
+                "error": build_refusal_text(annotation_tool_name=name),
             }
 
         rc = ctx.request_context if ctx is not None else None

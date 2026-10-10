@@ -47,6 +47,10 @@ your `resolve_principal` hook is now also asked on those requests, with
 - `tool_name` on an annotation has three states: a name, `none` (or `""`)
   for "no tool exists", and null for not stated. The SDK sends what it was
   given.
+- **The refusal says what to do next.** An agent with a failed call or a
+  missing tool is told to call again and say `what_happened`. Any other
+  agent is told not to re-send. The text is the same in `baton-sdk`,
+  `baton-proxy` and `baton-ts`.
 - **A reports-only annotation tool lists `tool_name` as required** in its
   advertised schema (both adapters, `proactive_mode="off"`, the default). A
   report that leaves it out is still taken. Without the listing, agents with

@@ -11,6 +11,7 @@ from fastmcp import Client
 from fastmcp import FastMCP as StandaloneServer
 
 from baton.integrations import official, standalone
+from baton.integrations._llm_text import build_refusal_text
 from baton.integrations.official._compat import MCPServerClass as OfficialServer
 from baton.sinks import FileSink
 
@@ -25,18 +26,22 @@ def _config(module: Any, path: str, proactive_mode: str) -> Any:
     )
 
 
-async def _official(path: str, proactive_mode: str, report: dict[str, Any]) -> list[str]:
+async def _official(
+    path: str, proactive_mode: str, report: dict[str, Any]
+) -> tuple[list[str], str]:
     mcp = OfficialServer("srv")
     handle = official.install_baton(mcp, _config(official, path, proactive_mode))
     try:
         tool = next(t for t in await mcp.list_tools() if t.name == handle.annotation_tool_name)
-        await mcp.call_tool(handle.annotation_tool_name, report)
-        return list(tool.model_dump(by_alias=True)["inputSchema"].get("required", []))
+        answer = await mcp.call_tool(handle.annotation_tool_name, report)
+        return list(tool.model_dump(by_alias=True)["inputSchema"].get("required", [])), str(answer)
     finally:
         await handle.aclose()
 
 
-async def _standalone(path: str, proactive_mode: str, report: dict[str, Any]) -> list[str]:
+async def _standalone(
+    path: str, proactive_mode: str, report: dict[str, Any]
+) -> tuple[list[str], str]:
     mcp = StandaloneServer("srv")
     handle = standalone.install_baton(mcp, _config(standalone, path, proactive_mode))
     try:
@@ -44,8 +49,11 @@ async def _standalone(path: str, proactive_mode: str, report: dict[str, Any]) ->
             tool = next(
                 t for t in await client.list_tools() if t.name == handle.annotation_tool_name
             )
-            await client.call_tool(handle.annotation_tool_name, report)
-        return list(tool.model_dump(by_alias=True)["inputSchema"].get("required", []))
+            answer = await client.call_tool(handle.annotation_tool_name, report)
+        return (
+            list(tool.model_dump(by_alias=True)["inputSchema"].get("required", [])),
+            str(answer.content),
+        )
     finally:
         await handle.aclose()
 
@@ -57,7 +65,7 @@ REPORT = {"user_goal": "remove the milk", "what_happened": "nothing removes an i
 async def test_a_reports_only_tool_lists_tool_name_as_required(adapter: Any, tmp_path: Any) -> None:
     path = str(tmp_path / "events.jsonl")
 
-    required = await adapter(path, "off", REPORT)
+    required, _ = await adapter(path, "off", REPORT)
 
     assert "tool_name" in required
     assert "what_happened" not in required
@@ -74,7 +82,7 @@ async def test_a_reports_only_tool_lists_tool_name_as_required(adapter: Any, tmp
 async def test_a_tool_that_also_takes_notes_leaves_tool_name_optional(
     adapter: Any, tmp_path: Any
 ) -> None:
-    required = await adapter(str(tmp_path / "events.jsonl"), "on", REPORT)
+    required, _ = await adapter(str(tmp_path / "events.jsonl"), "on", REPORT)
 
     assert "tool_name" not in required
 
@@ -86,7 +94,9 @@ async def test_a_reports_only_tool_refuses_a_call_with_no_account(
 ) -> None:
     path = tmp_path / "events.jsonl"
 
-    await adapter(str(path), "off", {"user_goal": "about to look", **account})
+    _, answer = await adapter(str(path), "off", {"user_goal": "about to look", **account})
 
+    refusal = build_refusal_text(annotation_tool_name="v_annotate")
+    assert refusal in answer
     events = map(json.loads, path.read_text().splitlines()) if path.exists() else []
     assert [e for e in events if e["event_type"] == "annotation"] == []

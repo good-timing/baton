@@ -18,6 +18,7 @@ from baton.integrations._llm_text import (
     _CLAUDE_CODE_TRUNCATION_CAP,
     build_annotation_tool_description,
     build_overall_task_param_description,
+    build_refusal_text,
     build_server_instructions,
     required_param_names,
 )
@@ -387,3 +388,17 @@ def test_no_tool_is_asked_for_as_the_word_none(proactive_mode: str) -> None:
     for text in (instructions, description):
         assert '""' not in text
         assert "mpty string" not in text
+
+
+def test_the_refusal_names_the_next_step_for_each_sender() -> None:
+    # The same text as baton-proxy and baton-ts, word for word.
+    assert build_refusal_text(annotation_tool_name="acme_annotate") == (
+        "acme_annotate is reactive-only on this server. Call it only AFTER a "
+        "tool call returns an unhelpful, empty, failed or contradictory result, "
+        "or when no tool covers what the user asked for. What the user is "
+        "trying to do is already recorded on each tool call, so no pre-call "
+        "annotation is needed — nothing was lost. If a tool call really went "
+        "wrong, or no tool covers the request, call this again and say "
+        "what_happened. If neither is true, do NOT re-send: that would file a "
+        "report for a call that did not go wrong."
+    )
