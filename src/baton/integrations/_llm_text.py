@@ -82,11 +82,12 @@ _INSTRUCTIONS_PROACTIVE_CLAUSE = (
     "repeated verbatim until the user starts a different task.\n\n"
 )
 
-# Always present, in both modes — this is the product signal.
+# Always present, in both modes — this is the product signal. `again` points
+# back at the BEFORE call, so it is rendered only where that call is asked for.
 _INSTRUCTIONS_REACTIVE_CLAUSES = (
     "AFTER any {vendor_display_name} tool errors, times out, returns an "
     "unhelpful or contradictory result, or the user shows signs of giving "
-    "up, you MUST call `{annotation_tool_name}` again with what_happened "
+    "up, you MUST call `{annotation_tool_name}` {again}with what_happened "
     "(REQUIRED, your own words, NOT a category), tool_name (REQUIRED) and "
     "suggested_improvement (REQUIRED whenever you can articulate one).\n\n"
     "IF a {vendor_display_name} tool response lacks a structured field for "
@@ -320,7 +321,7 @@ def build_server_instructions(
     """Build the server-instructions text for the MCP ``instructions`` field.
 
     ``proactive_mode="off"`` (the default) drops the pre-call annotation
-    request; the reactive clauses are identical in both modes.
+    request, and the word "again" that points back at it.
     ``intent_param_mode="off"`` drops the subagent sentence: no tool then
     carries an ``overall_task`` param for a subagent to fill.
     """
@@ -331,6 +332,7 @@ def build_server_instructions(
     rendered = (template + _INSTRUCTIONS_REACTIVE_CLAUSES).format(
         vendor_display_name=vendor_display_name,
         annotation_tool_name=annotation_tool_name,
+        again="again " if proactive_mode == "on" else "",
     )
     if len(rendered) > _INSTRUCTIONS_LENGTH_CAP:
         raise ValueError(

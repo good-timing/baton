@@ -50,6 +50,8 @@ your `resolve_principal` hook is now also asked on those requests, with
 - **A reports-only tool's description no longer mentions a note.** Two field
   lines said "omit on a proactive", which reads as if a note before a call
   were allowed. A tool that also takes notes keeps the earlier text.
+- **The reports-only instructions no longer say "call … again".** No earlier
+  call exists in that mode. `baton-proxy` already left the word out.
 - **The refusal says what to do next.** An agent with a failed call or a
   missing tool is told to call again and say `what_happened`. Any other
   agent is told not to re-send. The text is the same in `baton-sdk`,

@@ -178,10 +178,10 @@ def test_a_reports_only_tool_does_not_describe_a_note() -> None:
 
 
 class TestProactiveMode:
-    """``VendorConfig.proactive_mode`` gates ONLY the pre-call annotation
-    request. The reactive channel is the product signal and must survive
-    unchanged in both modes — a regression here silently deletes the friction
-    capture the whole SDK exists to produce.
+    """``VendorConfig.proactive_mode`` gates the pre-call annotation request
+    and the one word that points back at it. The reactive channel is the product signal and must survive in
+    both modes — a regression here silently deletes the friction capture the
+    whole SDK exists to produce.
     """
 
     def test_off_is_the_default(self) -> None:
@@ -193,7 +193,7 @@ class TestProactiveMode:
             proactive_mode="off",
         )
 
-    def test_off_drops_only_the_pre_call_request(self) -> None:
+    def test_off_drops_the_pre_call_request(self) -> None:
         off = build_server_instructions(
             vendor_display_name="Acme",
             annotation_tool_name="acme_annotate",
@@ -208,12 +208,15 @@ class TestProactiveMode:
         assert "no tool matched" in off
         assert "NOT replace answering" in off
 
-    def test_reactive_text_is_byte_identical_across_modes(self) -> None:
+    def test_reactive_text_differs_across_modes_by_one_back_reference(self) -> None:
+        """The word "again" points at the BEFORE call, which one mode asks for."""
         kw = {"vendor_display_name": "Acme", "annotation_tool_name": "acme_annotate"}
         on = build_server_instructions(**kw, proactive_mode="on")
         off = build_server_instructions(**kw, proactive_mode="off")
         marker = "AFTER any Acme tool errors"
-        assert on[on.index(marker) :] == off[off.index(marker) :]
+        on_tail, off_tail = on[on.index(marker) :], off[off.index(marker) :]
+        assert "`acme_annotate` again with" in on_tail
+        assert on_tail.replace("`acme_annotate` again with", "`acme_annotate` with") == off_tail
 
     def test_off_is_shorter_and_still_under_cap(self) -> None:
         kw = {"vendor_display_name": "Acme", "annotation_tool_name": "acme_annotate"}
