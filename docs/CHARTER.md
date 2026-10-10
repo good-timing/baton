@@ -59,9 +59,19 @@ Start with vendor-issued API key + per-end-user consent token; upgrade to OAuth/
 
 Layered approach (full mechanism in SPEC §5): agent-emitted values ride a vendor-namespaced annotation tool; client-attached values ride the MCP `_meta` field; nulls fall back. **Server-level `instructions` are an SDK requirement, not optional** (SPEC §5.1.2) — empirically validated: the annotation tool alone is insufficient to trigger agent behavior on the runtimes that honor server instructions (Claude Code, Cursor). Per-runtime support matrix in SPEC §5.1.3.
 
+**Amended 2026-10-09: the agent no longer supplies `signal_type`.** It describes the problem in its own words (`what_happened`) and names the tool (`tool_name`); the Console worker assigns one of seven groups (SPEC §11.5.5). The rest of this entry stands: the annotation tool, the server instructions, and `_meta`. Why:
+
+- An agent asked to pick one of eight words picks at the moment it understands the failure least. On 191 real reports, the two words for a slow call and a retry loop were never used. In test sessions, a result that was wrong without an error was filed as `other` six times of six.
+- A classifier reading the agent's plain account agreed with the readers' labels on 28 real reports (κ above the 0.6 bar, two different models) and found the missing-capability reports 14 of 15 times; the agents' own `feature_gap` found 13 of 15.
+- The group is the worker's judgement and is never read from the agent, which is the thin-emitter split of ADR-4 applied to classification. The agent's words are kept and shown beside it.
+
+Limits recorded with the decision: no human labelled the reference sets, and four wording fixes in the group table were untested when it was signed off. Evidence and method: `baton-internal/spikes/friction_params/RESULTS.md` and `docs/design-notes/report_free_text_and_groups.md`.
+
 ### ADR-3: Signal detection threshold — **RESOLVED in SPEC §6**
 
 The SDK auto-detects only conservative cases (`signal_type=failure` on tool exception; `signal_type=retry_loop` on ≥3 same-params retries). The other six signal types are agent-raised via the annotation tool. Mechanism + roadmap items (auto-detection for `slow_performance` / `abandonment` / `dead_end`) in SPEC §6.
+
+**Amended 2026-10-09:** no signal type is agent-raised any more (ADR-2). An agent files a report, and the worker groups it. Slowness has no group: the worker measures it from `duration_ms`.
 
 ### ADR-4: SDK shape — fat capture vs thin emit-only — **RESOLVED: thin emit-only SDK + fat Console worker**
 
@@ -108,6 +118,7 @@ Architectural decisions baked into the current SPEC, dated for traceability.
 | `workflow` + `suggested_improvement` promoted to top-level annotation fields | 2026-05-13 | Free-form `context` testing showed two keys with consistent recurrence: `workflow` (proactive — session-stable broader-task label) and `suggested_improvement` (reactive — agent-authored product feedback; the moat field). Both promoted to top-level in the annotation signature and signal payload (SPEC §3.1, §5.1.1). |
 | Server-instructions framing: explicit MUST + (REQUIRED) markers | 2026-05-13 | Empirical iteration: anti-duplication framing ("do NOT duplicate") backfired (agents stopped populating top-level fields). Explicit MUST + (REQUIRED…) markers on each top-level field plus positive "supplementary" framing for `context` produced reliable structured output without duplication. The validated text is the SPEC §5.4 `server_instructions` default template. |
 | Per-runtime support matrix added (SPEC §5.1.3) | 2026-05-13 | **Key finding: Claude Desktop does NOT surface MCP server `instructions` to the LLM** — the load-bearing motivation mechanism for §5.1.2 is honored by Claude Code and Cursor but not Desktop. Desktop CAN call annotate when explicitly prompted (workflow + signal_type populate correctly; suggested_improvement stays null unless told). `_meta` is absent on Desktop entirely. Documented for honest cross-runtime expectations. |
+| Reports in the agent's own words; the worker assigns the group | 2026-10-09 | The annotation tool takes `what_happened` + `tool_name` and no `signal_type` (`baton-sdk` 0.8.15, `baton-proxy` 0.6.16, `baton-ts` 0.5.4). Seven groups in SPEC §11.5.5, signed off 2026-10-09. "No tool" is asked for as the word `none`: asked for an empty string, no agent sent one in twelve test sessions; asked for `none`, six of six did. ADR-2 and ADR-3 amended. |
 | Cursor validated as equivalent to Claude Code | 2026-05-13 | Cursor surfaces `instructions` to the LLM identically to Claude Code — proactive + reactive annotation fires unprompted with all top-level fields populated. `_meta` carries only `progressToken` (no Cursor-specific stable correlation key like Claude Code's `claudecode/toolUseId`). Both runtimes validate the SPEC §5.1.2 design. |
 
 ---
