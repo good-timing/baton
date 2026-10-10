@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.8.15: resource and prompt events
 
 Nothing in your code has to change. If your server has resources or prompts,
 your `resolve_principal` hook is now also asked on those requests, with
