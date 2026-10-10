@@ -1525,7 +1525,7 @@ Rules that go with the table:
 
 **What the worker may read.** The technique is implementation-defined and MUST be recorded with the result (which method, and for a model, which model and settings), so a reader can tell two methods' answers apart. It MAY use, in rising order of how much it helps:
 
-1. the report's own text and `tool_name`, including the fact that the agent named no tool (`""`);
+1. the report's own text and `tool_name`, including the fact that the agent named no tool (see below);
 2. the tool descriptions and schemas of the surface (`surface_snapshot`, §11.4);
 3. the call the report is about: its params, and its result or error (§11.5.2);
 4. the other calls of the same turn.
