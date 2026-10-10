@@ -126,8 +126,8 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
     "Fields:\n"
     "  - user_goal: one sentence on what the user is trying to "
     "accomplish.\n"
-    "  - what_happened: REQUIRED on a report — omit on a proactive "
-    "annotation. 1-2 plain sentences in YOUR OWN WORDS: what you asked for, "
+    "  - what_happened: REQUIRED on a report{omit_on_a_note}. "
+    "1-2 plain sentences in YOUR OWN WORDS: what you asked for, "
     "what came back, and why it was unusable. Do NOT pick a category or "
     "invent a label — describe it.\n"
     "  - tool_name: REQUIRED on a report. The {vendor_display_name} tool that "
@@ -138,7 +138,7 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
     "serves, e.g., 'morning meeting prep', 'pre-outreach research'. "
     "REPEAT the exact same string on every call serving the same task; "
     "change it only when the user starts a different task.\n"
-    "  - suggested_improvement: reactive-only — omit on a proactive. "
+    "  - suggested_improvement: {report_only}"
     "A concrete sentence about what product change would have helped.\n"
     "  - context: supplementary info not covered above. Common keys: plan, "
     "alternatives_considered, likely_cause, user_impact, error_class, "
@@ -353,15 +353,19 @@ def build_annotation_tool_description(
     """Build the annotation tool's ``description``.
 
     ``proactive_mode="off"`` (the default) reframes the tool as reactive-only:
-    same fields, but the agent is told to call it after a bad result rather
-    than before every call.
+    the same fields, but the agent is told to call it after a bad result
+    rather than before every call. It refuses a note, so no field's text
+    describes one.
     """
-    lead = (
-        _ANNOTATION_LEAD_PROACTIVE if proactive_mode == "on" else _ANNOTATION_LEAD_REACTIVE_ONLY
-    ).format(vendor_display_name=vendor_display_name)
+    takes_notes = proactive_mode == "on"
+    lead = (_ANNOTATION_LEAD_PROACTIVE if takes_notes else _ANNOTATION_LEAD_REACTIVE_ONLY).format(
+        vendor_display_name=vendor_display_name
+    )
     return _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
         vendor_display_name=vendor_display_name,
         lead=lead,
+        omit_on_a_note=" — omit on a proactive annotation" if takes_notes else "",
+        report_only="reactive-only — omit on a proactive. " if takes_notes else "",
     )
 
 

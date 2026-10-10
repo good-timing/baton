@@ -161,12 +161,20 @@ def test_missing_tool_case_is_mandatory_in_both_modes_and_headlined_when_off() -
     assert "so Acme can improve their product" in head
 
 
-def test_annotation_description_marks_the_report_fields_reactive_only() -> None:
+def test_a_tool_that_takes_notes_marks_the_report_fields_report_only() -> None:
     """Filling a report field on a proactive annotation makes it read as a
     report it is not, so the description says which fields are report-only."""
+    rendered = build_annotation_tool_description(vendor_display_name="Acme", proactive_mode="on")
+    assert "what_happened: REQUIRED on a report — omit on a proactive annotation. 1-2" in rendered
+    assert "suggested_improvement: reactive-only — omit on a proactive. A concrete" in rendered
+
+
+def test_a_reports_only_tool_does_not_describe_a_note() -> None:
+    """It refuses a note, and a field that says how to send one invites it."""
     rendered = build_annotation_tool_description(vendor_display_name="Acme")
-    assert "what_happened: REQUIRED on a report — omit on a proactive" in rendered
-    assert "suggested_improvement: reactive-only" in rendered
+    assert "proactive" not in rendered
+    assert "what_happened: REQUIRED on a report. 1-2 plain sentences" in rendered
+    assert "suggested_improvement: A concrete sentence" in rendered
 
 
 class TestProactiveMode:
