@@ -256,6 +256,7 @@ def install_baton(
             fallback_session_id=fallback_session_id,
             scrubber=scrubber,
             annotation_tool_name=annotation_tool_name,
+            annotation_requires_tool_name=config.proactive_mode == "off",
             intent_param_mode=config.intent_param_mode,
             result_capture_mode=config.result_capture_mode,
             proactive_tracker=proactive_tracker,

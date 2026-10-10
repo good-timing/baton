@@ -8,7 +8,7 @@ copy so they cannot drift.
 truncation cap):**
 
 - *Server instructions* carry the MUST/REQUIRED behavioral framing —
-  the BEFORE/AFTER/IF triggers, the signal_type enum, and the
+  the BEFORE/AFTER/IF triggers, the report fields, and the
   "annotation doesn't replace answering" guardrail. Claude Code
   truncates ``InitializeResult.instructions`` at ~2087 chars, so the
   template is kept under ~1500 chars and the fixed subagent sentence
@@ -86,17 +86,17 @@ _INSTRUCTIONS_PROACTIVE_CLAUSE = (
 _INSTRUCTIONS_REACTIVE_CLAUSES = (
     "AFTER any {vendor_display_name} tool errors, times out, returns an "
     "unhelpful or contradictory result, or the user shows signs of giving "
-    "up, you MUST call `{annotation_tool_name}` again with signal_type "
-    "(REQUIRED) — one of failure, retry_loop, dead_end, parameter_confusion, "
-    "slow_performance, abandonment, feature_gap, other — and "
+    "up, you MUST call `{annotation_tool_name}` again with what_happened "
+    "(REQUIRED, your own words, NOT a category), tool_name (REQUIRED) and "
     "suggested_improvement (REQUIRED whenever you can articulate one).\n\n"
     "IF a {vendor_display_name} tool response lacks a structured field for "
     "what the user asked about, OR you satisfied the user's intent via a "
     "workaround because no tool matched what they asked for, OR the user "
     "asked for something this server can't do — you MUST call "
-    "`{annotation_tool_name}` with signal_type='feature_gap' AND still "
-    "answer the user with your best inference. Filing the annotation does "
-    "NOT replace answering."
+    "`{annotation_tool_name}` once per user request, not per call, with "
+    "what_happened and tool_name (none if no tool) AND still answer the "
+    "user with your best inference. Filing the annotation does NOT replace "
+    "answering."
 )
 
 
@@ -105,7 +105,8 @@ _ANNOTATION_LEAD_PROACTIVE = (
     "what the user is trying to do, and how it went. Populate proactively "
     "before the call (user_goal + expected_result + overall_task) and "
     "reactively "
-    "after if the result was unhelpful (signal_type + suggested_improvement).\n"
+    "after if the result was unhelpful (what_happened + tool_name + "
+    "suggested_improvement).\n"
 )
 
 # proactive_mode="off": the injected params already carry intent on every
@@ -125,22 +126,24 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
     "Fields:\n"
     "  - user_goal: one sentence on what the user is trying to "
     "accomplish.\n"
+    "  - what_happened: REQUIRED on a report — omit on a proactive "
+    "annotation. 1-2 plain sentences in YOUR OWN WORDS: what you asked for, "
+    "what came back, and why it was unusable. Do NOT pick a category or "
+    "invent a label — describe it.\n"
+    "  - tool_name: REQUIRED on a report. The {vendor_display_name} tool that "
+    "went wrong. Write none if no tool exists for the request.\n"
     "  - expected_result: what a successful result should look like, so "
     "a silent/thin failure can be told apart from success.\n"
     "  - overall_task: short stable label for the broader task this call "
     "serves, e.g., 'morning meeting prep', 'pre-outreach research'. "
     "REPEAT the exact same string on every call serving the same task; "
     "change it only when the user starts a different task.\n"
-    "  - signal_type: reactive-only — omit on a proactive annotation. "
-    "Set only once a tool call has returned an unhelpful result. One of "
-    "failure, retry_loop, dead_end, parameter_confusion, "
-    "slow_performance, abandonment, feature_gap, other.\n"
     "  - suggested_improvement: reactive-only — omit on a proactive. "
     "A concrete sentence about what product change would have helped.\n"
     "  - context: supplementary info not covered above. Common keys: plan, "
     "alternatives_considered, likely_cause, user_impact, error_class, "
-    "downstream_blocked, confidence_in_intent. For signal_type='feature_gap' "
-    "also missing_capability_field and requested_capability."
+    "downstream_blocked, confidence_in_intent. When no tool covers the "
+    "request also missing_capability_field and requested_capability."
 )
 
 
@@ -148,24 +151,6 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
 # The cap below it leaves room for ``_INSTRUCTIONS_SUBAGENT_CLAUSE``.
 _CLAUDE_CODE_TRUNCATION_CAP = 2087
 _INSTRUCTIONS_LENGTH_CAP = 1500
-
-
-# Canonical signal_type values per SPEC §3.1. Stable and additive-only
-# until v1.0 (SPEC §13). The annotation tool's inputSchema enum and the
-# instructions text reference the same eight values; downstream
-# escalation taxonomies (e.g., the priority mapping in the report
-# synthesizer) key off these strings. Ported from baton-proxy on
-# 2026-06-16 so both surfaces share one source of truth.
-SIGNAL_TYPES: tuple[str, ...] = (
-    "failure",
-    "retry_loop",
-    "dead_end",
-    "parameter_confusion",
-    "slow_performance",
-    "abandonment",
-    "feature_gap",
-    "other",
-)
 
 
 # Per-tool intent-param injection. Three reserved parameters are injected into

@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import sys
 
-from baton import Client, SignalType
+from baton import Client
 from baton.sinks import HttpSink
 
 
@@ -30,9 +30,7 @@ def main() -> int:
         api_key = os.environ["BATON_API_KEY"]
     except KeyError as missing:
         print(f"error: missing env var {missing}", file=sys.stderr)
-        print(
-            "set BATON_INGEST_URL and BATON_API_KEY, then re-run", file=sys.stderr
-        )
+        print("set BATON_INGEST_URL and BATON_API_KEY, then re-run", file=sys.stderr)
         return 1
 
     client = Client(
@@ -59,7 +57,11 @@ def main() -> int:
         pass
 
     client.annotate(
-        signal_type=SignalType.DEAD_END,
+        what_happened=(
+            "search_orders returned the order with no refund-window field, so "
+            "I recommended a refund the user could not get"
+        ),
+        tool_name="search_orders",
         suggested_improvement=(
             "surface refund-window expiry in search_orders result so the "
             "agent doesn't recommend a refund it can't fulfill"

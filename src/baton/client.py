@@ -13,7 +13,7 @@ Sync usage (drives the async ``Sink`` via a background daemon thread
 running a persistent event loop; standard pattern for sync-over-async SDKs
 like Sentry):
 
-    from baton import Client, SignalType
+    from baton import Client
 
     client = Client(dsn="https://baton_pk_...@ingest.example.com/ten_.../acme")
     try:
@@ -27,15 +27,16 @@ like Sentry):
             trace.observed(result)
         # ...later, if friction:
         client.annotate(
-            signal_type=SignalType.DEAD_END,
-            suggested_improvement="model doesn't expose latency metadata",
+            what_happened="asked for the answer's latency; the response carries none",
+            tool_name="chat.completions.create",
+            suggested_improvement="expose latency metadata on the response",
         )
     finally:
         client.close()
 
 Async usage (no thread bridge; directly drives the async ``Sink``):
 
-    from baton import AsyncClient, SignalType
+    from baton import AsyncClient
     from baton.sinks import HttpSink
 
     client = AsyncClient(
@@ -48,7 +49,7 @@ Async usage (no thread bridge; directly drives the async ``Sink``):
             trace.with_params({...})
             result = await vendor_client.chat.completions.create(...)
             trace.observed(result)
-        await client.annotate(signal_type=SignalType.DEAD_END, ...)
+        await client.annotate(what_happened=..., tool_name=..., ...)
     finally:
         await client.aclose()
 
@@ -94,7 +95,6 @@ import traceback
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from enum import StrEnum
 from time import monotonic
 from types import TracebackType
 from typing import Any, Self, TypeVar, cast
@@ -135,7 +135,6 @@ __all__ = [
     "AsyncClient",
     "AsyncTrace",
     "Client",
-    "SignalType",
     "Trace",
 ]
 
@@ -223,28 +222,6 @@ def _end_result_fields(observed: Any) -> ResultFields:
     if observed is _UNSET:
         return ResultFields(result=None)
     return ResultFields(result=observed)
-
-
-# =============================================================================
-# SignalType — mirrors the SPEC §3.1 enum
-# =============================================================================
-
-
-class SignalType(StrEnum):
-    """Classification of a friction signal per SPEC §3.1.
-
-    Used as the ``signal_type`` field on reactive ``annotate()`` calls. The
-    eight values are stable and additive-only until v1.0 (SPEC §13).
-    """
-
-    FAILURE = "failure"
-    RETRY_LOOP = "retry_loop"
-    DEAD_END = "dead_end"
-    PARAMETER_CONFUSION = "parameter_confusion"
-    SLOW_PERFORMANCE = "slow_performance"
-    ABANDONMENT = "abandonment"
-    FEATURE_GAP = "feature_gap"
-    OTHER = "other"
 
 
 # =============================================================================
@@ -469,29 +446,6 @@ def _resolve_consent_token(explicit: str | None) -> str:
     return resolved or DEFAULT_CONSENT_TOKEN
 
 
-def _resolve_signal_type(signal_type: SignalType | str | None) -> str | None:
-    """Validate + normalize ``signal_type`` to its canonical string form.
-
-    Enum instance → ``.value``. Bare string → validated against the enum's
-    member values (raises ``ValueError`` on miss to surface typos like
-    ``"dead-end"`` instead of ``"dead_end"`` immediately, rather than silently
-    shipping a non-standard signal that the Console worker will bucket as
-    "other" or drop).
-    """
-    if signal_type is None:
-        return None
-    if isinstance(signal_type, SignalType):
-        return signal_type.value
-    valid = {m.value for m in SignalType}
-    if signal_type not in valid:
-        raise ValueError(
-            f"signal_type {signal_type!r} is not a valid SignalType. "
-            f"Valid values: {sorted(valid)}. Pass the SignalType enum (e.g., "
-            f"SignalType.DEAD_END) for type-safety."
-        )
-    return signal_type
-
-
 # =============================================================================
 # Internal — sync-over-async bridge (Sentry/Datadog pattern)
 # =============================================================================
@@ -668,7 +622,8 @@ class Trace:
     def annotate(
         self,
         *,
-        signal_type: SignalType | str | None = None,
+        what_happened: str | None = None,
+        tool_name: str | None = None,
         intent: str | None = None,
         expected_outcome: str | None = None,
         workflow: str | None = None,
@@ -687,7 +642,8 @@ class Trace:
         lands in correct order after the trace's ``end``/``error`` event.
         """
         self._client.annotate(
-            signal_type=signal_type,
+            what_happened=what_happened,
+            tool_name=tool_name,
             intent=intent,
             expected_outcome=expected_outcome,
             workflow=workflow,
@@ -1060,7 +1016,8 @@ class Client:
     def annotate(
         self,
         *,
-        signal_type: SignalType | str | None = None,
+        what_happened: str | None = None,
+        tool_name: str | None = None,
         intent: str | None = None,
         expected_outcome: str | None = None,
         workflow: str | None = None,
@@ -1082,7 +1039,6 @@ class Client:
         resolved_session = session_id or str(uuid7())
         resolved_consent = consent_token or self._consent_token
         seq = self._next_seq(resolved_session)
-        signal_type_str = _resolve_signal_type(signal_type)
         self._emit_sync(
             lambda: AnnotationEvent(
                 tenant_id=self._tenant_id,
@@ -1095,7 +1051,10 @@ class Client:
                 payload=AnnotationPayload(
                     intent=_scrubbed_text(self._scrubber, intent),
                     expected_outcome=_scrubbed_text(self._scrubber, expected_outcome),
-                    signal_type=signal_type_str,
+                    what_happened=_scrubbed_text(self._scrubber, what_happened)
+                    if what_happened and what_happened.strip()
+                    else None,
+                    tool_name=_scrubbed_text(self._scrubber, tool_name) if tool_name else tool_name,
                     workflow=_scrubbed_text(self._scrubber, workflow),
                     suggested_improvement=_scrubbed_text(self._scrubber, suggested_improvement),
                     # scrub_or_none, unlike the text fields above: a throw on
@@ -1291,7 +1250,8 @@ class AsyncTrace:
     async def annotate(
         self,
         *,
-        signal_type: SignalType | str | None = None,
+        what_happened: str | None = None,
+        tool_name: str | None = None,
         intent: str | None = None,
         expected_outcome: str | None = None,
         workflow: str | None = None,
@@ -1302,7 +1262,8 @@ class AsyncTrace:
         ``session_id`` to the emitted annotation event.
         """
         await self._client.annotate(
-            signal_type=signal_type,
+            what_happened=what_happened,
+            tool_name=tool_name,
             intent=intent,
             expected_outcome=expected_outcome,
             workflow=workflow,
@@ -1633,7 +1594,8 @@ class AsyncClient:
     async def annotate(
         self,
         *,
-        signal_type: SignalType | str | None = None,
+        what_happened: str | None = None,
+        tool_name: str | None = None,
         intent: str | None = None,
         expected_outcome: str | None = None,
         workflow: str | None = None,
@@ -1647,7 +1609,6 @@ class AsyncClient:
         resolved_session = session_id or str(uuid7())
         resolved_consent = consent_token or self._consent_token
         seq = self._next_seq(resolved_session)
-        signal_type_str = _resolve_signal_type(signal_type)
         await self._emit(
             lambda: AnnotationEvent(
                 tenant_id=self._tenant_id,
@@ -1660,7 +1621,10 @@ class AsyncClient:
                 payload=AnnotationPayload(
                     intent=_scrubbed_text(self._scrubber, intent),
                     expected_outcome=_scrubbed_text(self._scrubber, expected_outcome),
-                    signal_type=signal_type_str,
+                    what_happened=_scrubbed_text(self._scrubber, what_happened)
+                    if what_happened and what_happened.strip()
+                    else None,
+                    tool_name=_scrubbed_text(self._scrubber, tool_name) if tool_name else tool_name,
                     workflow=_scrubbed_text(self._scrubber, workflow),
                     suggested_improvement=_scrubbed_text(self._scrubber, suggested_improvement),
                     # scrub_or_none, unlike the text fields above: a throw on

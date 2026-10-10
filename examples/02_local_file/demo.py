@@ -12,7 +12,7 @@ standing up any infrastructure.
 
 from __future__ import annotations
 
-from baton import Client, SignalType
+from baton import Client
 from baton.sinks import FileSink
 
 
@@ -41,7 +41,11 @@ def main() -> None:
         pass
 
     client.annotate(
-        signal_type=SignalType.DEAD_END,
+        what_happened=(
+            "search_orders returned the order with no refund-window field, so "
+            "I recommended a refund the user could not get"
+        ),
+        tool_name="search_orders",
         suggested_improvement=(
             "surface refund-window expiry in search_orders result so the "
             "agent doesn't recommend a refund it can't fulfill"

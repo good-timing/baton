@@ -28,7 +28,6 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from baton import SignalType
 from baton.events import ToolCallStartEvent
 
 
@@ -72,14 +71,9 @@ def assert_sequence_monotonic_per_session(events: list[dict[str, Any]]) -> None:
         )
 
 
-def assert_signal_types_valid(events: list[dict[str, Any]]) -> None:
-    """Any populated ``annotation.payload.signal_type`` is one of the eight
-    canonical SPEC §3.1 values — a typo'd or adapter-specific value here
-    would silently bucket as "other" (or drop) on the Console side."""
-    valid = {m.value for m in SignalType}
+def assert_no_signal_type_sent(events: list[dict[str, Any]]) -> None:
+    """No capture path sends ``signal_type``: the worker assigns the group
+    (SPEC §11.5.5), and the field stays in the schema for older producers only."""
     for e in events:
-        if e["event_type"] != "annotation":
-            continue
-        signal_type = e["payload"].get("signal_type")
-        if signal_type is not None:
-            assert signal_type in valid, f"unknown signal_type {signal_type!r}: {e}"
+        if e["event_type"] == "annotation":
+            assert e["payload"].get("signal_type") is None, e

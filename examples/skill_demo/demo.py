@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from baton import Client, SignalType
+from baton import Client
 
 # Stubbed vendor SDK with OpenAI-compatible chat completions. Real customer
 # code would import the actual vendor's client class instead.
@@ -178,7 +178,8 @@ def _run_demo(baton: Client, vendor: VendorClient) -> None:
         log.info("[demo] Step 3 — agent raises dead_end signal (this becomes the ticket)")
         log.info("[demo]   binding to extraction trace session_id=%s", extraction_trace.session_id)
         extraction_trace.annotate(
-            signal_type=SignalType.DEAD_END,
+            what_happened="asked for JSON matching the schema; the call was rejected",
+            tool_name="vendor.chat.completions.create",
             intent="strict-json extraction with json_schema response_format",
             expected_outcome="successful 200 with parseable JSON matching the schema",
             workflow="structured-output-extraction",
@@ -199,7 +200,7 @@ def _run_demo(baton: Client, vendor: VendorClient) -> None:
                 "user_prompt_summary": "extract product attributes as strict JSON",
             },
         )
-        log.info("[demo]   ticket emitted (signal_type=dead_end)")
+        log.info("[demo]   ticket emitted (a report)")
 
     log.info("[demo] done — flushing and closing")
 

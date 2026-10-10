@@ -71,24 +71,30 @@ def test_instructions_carry_must_required_framing() -> None:
     assert "REQUIRED" in default
 
 
-def test_instructions_carry_full_signal_type_enum() -> None:
-    """All 8 signal_type enum values must remain in the rendered text — vendor
-    patches downstream key escalation behavior off this enum."""
-    rendered = build_server_instructions(
+@pytest.mark.parametrize("proactive_mode", ["off", "on"])
+def test_no_agent_facing_text_offers_a_category_to_pick(proactive_mode: str) -> None:
+    """The agent describes and the worker groups (SPEC §11.5.5): neither text
+    names ``signal_type`` or any of its eight values as something to fill in."""
+    instructions = build_server_instructions(
         vendor_display_name="Acme",
         annotation_tool_name="acme_annotate",
+        proactive_mode=proactive_mode,
     )
-    for value in (
-        "failure",
-        "retry_loop",
-        "dead_end",
-        "parameter_confusion",
-        "slow_performance",
-        "abandonment",
-        "feature_gap",
-        "other",
-    ):
-        assert value in rendered, f"signal_type value {value!r} missing"
+    description = build_annotation_tool_description(
+        vendor_display_name="Acme", proactive_mode=proactive_mode
+    )
+    for text in (instructions, description):
+        for word in ("signal_type", "retry_loop", "dead_end", "parameter_confusion", "feature_gap"):
+            assert word not in text, word
+    assert "what_happened (REQUIRED, your own words, NOT a category)" in instructions
+    assert "tool_name (REQUIRED)" in instructions
+
+
+def test_a_missing_tool_is_reported_once_per_request() -> None:
+    rendered = build_server_instructions(
+        vendor_display_name="Acme", annotation_tool_name="acme_annotate"
+    )
+    assert "once per user request, not per call" in rendered
 
 
 def test_instructions_carry_dont_replace_answering_guardrail() -> None:
@@ -107,7 +113,8 @@ def test_annotation_description_lists_all_fields() -> None:
         "user_goal",
         "expected_result",
         "overall_task",
-        "signal_type",
+        "what_happened",
+        "tool_name",
         "suggested_improvement",
         "context",
     ):
@@ -153,32 +160,12 @@ def test_missing_tool_case_is_mandatory_in_both_modes_and_headlined_when_off() -
     assert "so Acme can improve their product" in head
 
 
-def test_annotation_description_marks_signal_type_reactive_only() -> None:
-    """``signal_type`` and ``suggested_improvement`` are reactive-only
-    fields — populating them on a proactive annotation makes the
-    annotation read as a friction signal it isn't. Proxy 0.1.3 made
-    this explicit in the description; SDK must match so the same
-    discipline lands in SDK-instrumented vendors' agent transcripts."""
+def test_annotation_description_marks_the_report_fields_reactive_only() -> None:
+    """Filling a report field on a proactive annotation makes it read as a
+    report it is not, so the description says which fields are report-only."""
     rendered = build_annotation_tool_description(vendor_display_name="Acme")
-    assert "signal_type: reactive-only" in rendered
+    assert "what_happened: REQUIRED on a report — omit on a proactive" in rendered
     assert "suggested_improvement: reactive-only" in rendered
-
-
-def test_signal_types_constant_matches_spec() -> None:
-    """Canonical SPEC §3.1 enum tuple — annotation tool schemas key off
-    this constant so they can't drift from the rendered prose."""
-    from baton.integrations._llm_text import SIGNAL_TYPES
-
-    assert SIGNAL_TYPES == (
-        "failure",
-        "retry_loop",
-        "dead_end",
-        "parameter_confusion",
-        "slow_performance",
-        "abandonment",
-        "feature_gap",
-        "other",
-    )
 
 
 class TestProactiveMode:
@@ -207,9 +194,9 @@ class TestProactiveMode:
         assert "expected_outcome" not in off
         # Reactive clauses verbatim, both of them.
         assert "AFTER any Acme tool errors" in off
-        assert "signal_type" in off
+        assert "what_happened" in off
         assert "suggested_improvement" in off
-        assert "feature_gap" in off
+        assert "no tool matched" in off
         assert "NOT replace answering" in off
 
     def test_reactive_text_is_byte_identical_across_modes(self) -> None:
@@ -237,7 +224,8 @@ class TestProactiveMode:
                 "user_goal",
                 "expected_result",
                 "overall_task",
-                "signal_type",
+                "what_happened",
+                "tool_name",
                 "suggested_improvement",
             ):
                 assert field in desc, (mode, field)
@@ -380,3 +368,22 @@ def _renders(**kwargs: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+@pytest.mark.parametrize("proactive_mode", ["off", "on"])
+def test_no_tool_is_asked_for_as_the_word_none(proactive_mode: str) -> None:
+    """Shown ``""`` or told "empty string", agents send the quote characters."""
+    instructions = build_server_instructions(
+        vendor_display_name="Acme",
+        annotation_tool_name="acme_annotate",
+        proactive_mode=proactive_mode,
+    )
+    description = build_annotation_tool_description(
+        vendor_display_name="Acme", proactive_mode=proactive_mode
+    )
+
+    assert "tool_name (none if no tool)" in instructions
+    assert "Write none if no tool exists" in description
+    for text in (instructions, description):
+        assert '""' not in text
+        assert "mpty string" not in text

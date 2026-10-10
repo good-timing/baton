@@ -30,10 +30,12 @@ If you want events in two places at once (e.g., stderr for live debugging + Cons
 ```python
 from baton.sinks import HttpSink, MultiSink, StdoutSink
 
-sink = MultiSink([
-    StdoutSink(),
-    HttpSink(url=os.environ["BATON_INGEST_URL"], api_key=os.environ["BATON_API_KEY"]),
-])
+sink = MultiSink(
+    [
+        StdoutSink(),
+        HttpSink(url=os.environ["BATON_INGEST_URL"], api_key=os.environ["BATON_API_KEY"]),
+    ]
+)
 ```
 
 A failure in one sink doesn't prevent the others from being called.

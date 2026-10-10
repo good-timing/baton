@@ -91,7 +91,7 @@ async def _run_official_path(
             await client.call_tool("lookup", {"name": "alice"}, meta=meta)
             await client.call_tool(
                 handle.annotation_tool_name,
-                {"user_goal": "look something up", "signal_type": "failure"},
+                {"user_goal": "look something up", "what_happened": "the call came back unusable"},
                 meta=meta,
             )
     finally:
@@ -133,7 +133,7 @@ async def _run_standalone_path(
             await client.call_tool("lookup", {"name": "alice"}, meta=meta)
             await client.call_tool(
                 handle.annotation_tool_name,
-                {"user_goal": "look something up", "signal_type": "failure"},
+                {"user_goal": "look something up", "what_happened": "the call came back unusable"},
                 meta=meta,
             )
     finally:

@@ -439,14 +439,14 @@ class TestTheLibraryDoor:
     ) -> None:
         """The vendor's code holds these objects and calls methods on them.
         Emitting nothing must not mean returning nothing."""
-        from baton import Client, SignalType
+        from baton import Client
 
         monkeypatch.setenv(SWITCH, "1")
         client = Client()
         try:
             with client.trace(tool_name="work", intent="do a thing", params={"a": 1}) as trace:
                 trace.observed({"result": "ok"})
-            client.annotate(signal_type=SignalType.DEAD_END, suggested_improvement="x")
+            client.annotate(what_happened="it failed", suggested_improvement="x")
         finally:
             client.close()
 

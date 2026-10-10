@@ -204,16 +204,18 @@ class ToolCallErrorPayload(BaseModel):
 
 
 class AnnotationPayload(BaseModel):
-    """Agent-supplied context. All fields nullable per SPEC §5.1.1 — agent
-    populates what it has. Proactive annotations typically populate
-    ``intent``/``expected_outcome``/``workflow``; reactive annotations
-    typically populate ``signal_type``/``suggested_improvement``."""
+    """Agent-supplied context. All fields nullable per SPEC §5.1.1. A filled
+    ``what_happened`` makes the annotation a report (SPEC §11.4); without it
+    the annotation is a note carrying ``intent``/``expected_outcome``/``workflow``."""
 
     model_config = ConfigDict(extra="forbid")
 
     intent: str | None = None
     expected_outcome: str | None = None
+    what_happened: str | None = None
     signal_type: str | None = None
+    """Deprecated: never set by this SDK. Kept so a report from an older
+    producer still validates (SPEC §11.4)."""
     workflow: str | None = None
     suggested_improvement: str | None = None
     context: dict[str, Any] | None = None
@@ -223,8 +225,9 @@ class AnnotationPayload(BaseModel):
     param rather than a real annotation-tool call. Null for agent-authored
     annotations. Mirrors the proxy's ``enqueue_annotation`` output."""
     tool_name: str | None = None
-    """The tool whose injected intent seeded this synthesised proactive. Null
-    for agent-authored annotations."""
+    """The tool the annotation is about. On a report, ``"none"`` (or ``""``) is
+    the agent saying no tool exists and ``None`` is nothing stated; the value
+    is sent as given (SPEC §5.1.1)."""
 
 
 class SurfaceSnapshotPayload(BaseModel):

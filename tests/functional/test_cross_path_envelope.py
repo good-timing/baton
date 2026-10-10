@@ -1,5 +1,5 @@
 """Cross-path functional correctness: the same event envelope shape,
-sequencing, and signal_type validity holds across all three capture paths
+sequencing, and the absence of signal_type holds across all three capture paths
 (mcp adapter, fastmcp adapter, library API) — asserted against ONE shared
 core (``envelope_assertions.py``) so a divergence in any one adapter's
 emission (e.g. a forgotten field on the error path) fails loudly instead of
@@ -28,8 +28,8 @@ import pytest
 from tests._event_helpers import TOOL_LIST_EVENT_TYPES, without_surface_snapshots
 from tests.functional.envelope_assertions import (
     assert_envelope_shape,
+    assert_no_signal_type_sent,
     assert_sequence_monotonic_per_session,
-    assert_signal_types_valid,
 )
 
 pytestmark = pytest.mark.functional
@@ -71,7 +71,7 @@ async def _run_mcp_path(events_path: str) -> None:
             handle.annotation_tool_name,
             {
                 "user_goal": "look something up",
-                "signal_type": "failure",
+                "what_happened": "the call came back unusable",
                 "suggested_improvement": "return a typed not-found result",
             },
         )
@@ -117,7 +117,7 @@ async def _run_fastmcp_path(events_path: str) -> None:
                 handle.annotation_tool_name,
                 {
                     "user_goal": "look something up",
-                    "signal_type": "failure",
+                    "what_happened": "the call came back unusable",
                     "suggested_improvement": "return a typed not-found result",
                 },
             )
@@ -172,7 +172,7 @@ async def test_mcp_family_envelope_invariants_hold(path_name: str, tmp_path: Pat
 
     assert_envelope_shape(events)
     assert_sequence_monotonic_per_session(events)
-    assert_signal_types_valid(events)
+    assert_no_signal_type_sent(events)
 
     # Path-specific: MCP-family agent_runtime is never the library sentinel.
     assert all(e["agent_runtime"] != "python-library" for e in events), (
@@ -194,7 +194,7 @@ async def test_library_path_envelope_invariants_hold(tmp_path: Path) -> None:
 
     assert_envelope_shape(events)
     assert_sequence_monotonic_per_session(events)
-    assert_signal_types_valid(events)
+    assert_no_signal_type_sent(events)
 
     assert all(e["agent_runtime"] == "python-library" for e in events)
     assert {e["event_type"] for e in events} == EXPECTED_EVENT_TYPES

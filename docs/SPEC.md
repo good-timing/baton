@@ -4,7 +4,7 @@
 
 *Stability: **exploratory**. Breaking changes are expected until v1.0. Read `CHARTER.md` for project disciplines and open decisions.*
 
-*Vocabulary: **failures are one of eight signal types** — alongside silent abandonment, retry loops, dead-end attempts, parameter confusion, slow performance, edge cases, and feature gaps. See §3.1 `signal_type` for the full enum.*
+*Vocabulary: a **report** is what an agent files, in its own words, when a tool call goes wrong or no tool fits (§5.1). A **signal** is what the worker builds from a report or from a failure it detected (§3). The worker puts each report in one of seven **groups**, which say HOW the friction happened (§11.5.5). The eight `signal_type` values (§3.1) are words an agent used to pick; from `baton-sdk` 0.8.15 no agent picks one and the worker does not fill one in.*
 
 > **"Console" vs "collector".** This spec describes the **HTTPS wire contract** that an `HttpSink` ships events to. The receiver is called the **Console** throughout for brevity, but it's just whatever HTTP collector the vendor points the sink at — a self-hosted ingest service, a hosted Good Timing Console, or a third-party-built one. Vendors who only need local capture can use `StdoutSink` / `FileSink` and ignore this spec entirely; the event envelope (§11.4) is sink-agnostic.
 
@@ -87,7 +87,10 @@ This is the canonical signal schema the collector worker produces by stitching e
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `signal_id` | string (UUIDv7) | yes | Client-generated. Idempotency key. |
-| `signal_type` | enum (see below) | yes | Classification of the signal. Eight signal types (failures + seven friction categories). |
+| `signal_type` | enum (see below) \| null | no | One of eight values, or null. A report from a producer older than `baton-sdk` 0.8.15 carries the value its agent picked, and the worker keeps it. A report from 0.8.15 on has none: the field is null and `group` describes the signal. The worker does not fill it in. |
+| `group` | enum \| null | no | HOW the friction happened: one of the seven groups of §11.5.5, or `none`. The worker's judgement, never the agent's. Null on a signal the worker has not grouped. |
+| `what_happened` | string \| null | yes (nullable) | The agent's own account of the problem, as filed (§5.1.1), after scrubbing (§7). Always kept beside `group`, so a reader can check the group against the words it came from. Null on a signal not built from a report, and on a report from a producer older than 0.8.15. |
+| `reported_tool` | string \| null | no | The report's `tool_name`, as filed, with its three states kept (§5.1.1): a name, `""` for "the agent said no tool exists", null for not stated. Kept apart from `tool_calls`, which is the call the worker matched: the two can differ, and `""` is a fact a consumer can count without a model. |
 | `vendor_id` | string | yes | Stable vendor identifier; matches `VendorConfig.vendor_id`. Lowercase ASCII, `[a-z0-9-]+`. |
 | `session_id` | string | yes | Session correlation ID. Stable across tool calls in one agent session where a session-scoped identifier is observable; an opaque per-event UUID where none is. See §3.4 for the correlation modes and the layered resolution fallback. |
 | `consent_token` | string | yes | Proof of end-user consent. See §2.3. |
@@ -96,7 +99,7 @@ This is the canonical signal schema the collector worker produces by stitching e
 | `expected_outcome` | string \| null | yes (nullable) | What the agent thought should happen. Source: see §5. May be null. |
 | `workflow` | string \| null | yes (nullable) | Short label for the task the user is working on **at the time of this signal** — not the overall theme of the conversation (e.g., "morning meeting prep", "pre-outreach research"). Carries a string-stability contract of the same kind as the injected `overall_task` param (§11.4.2) — repeated verbatim while one task continues, replaced when the user switches (a leading turn number, §11.5.1 rule 2, is removed first and is not part of the label) — though the two descriptions are deliberately not identical: the param's wording was measured and kept, this field's was reworded (see §13, 2026-08-10). Correlation keys on it (§11.5), so stability is load-bearing. Promoted from `context.workflow` after empirical validation across proactive annotations. Source: agent via annotation tool. May be null. **Measured caveat (2026-08-10, reconfirmed 2026-08-11):** agents supply conversation-scoped umbrella labels here far more often than they do on the injected param, and matched wording did not close the gap; on a 20-session paired corpus the param scored 9/10 correct task counts against this field's 8/10, and the one session where they diverged had this field relabelling mid-task while the param held. Treat annotation-sourced `workflow` as weaker evidence than `call_workflow`. |
 | `suggested_improvement` | string \| null | yes (nullable) | Agent-authored suggestion for what product change would have helped — e.g., "distinguish transport errors from not-found results so the agent can decide whether to retry vs. tell the user the person isn't on file." Promoted from `context.suggested_improvement` after empirical validation across reactive annotations. The product-team-feedback channel. Source: agent via annotation tool. May be null. |
-| `tool_calls` | array<ToolCall> | yes | Ordered list of MCP tool invocations in this signal's context. Zero entries permitted for `signal_type=feature_gap` (the tool didn't exist to call). |
+| `tool_calls` | array<ToolCall> | yes | Ordered list of MCP tool invocations in this signal's context. Zero entries permitted when a report names no tool and its turn holds no call (the tool didn't exist to call; §11.5.2). |
 | `observed_outcomes` | array<ToolOutcome> | yes | Parallel array to `tool_calls` (same length, same order). Carries outcome/error/result-content per call. Empty when `tool_calls` is empty. |
 | `friction_signals` | FrictionSignals \| null | no | Retry count, abandonment flag, frustration indicators. Populated when relevant; null otherwise. |
 | `retry_pattern` | RetryPattern \| null | no | Populated if detection was retry-based (§6) or `signal_type=retry_loop`. |
@@ -115,6 +118,8 @@ This is the canonical signal schema the collector worker produces by stitching e
 | `abandonment` | Session ended without success after attempted use. | SDK auto-detection (future) or agent-raised |
 | `feature_gap` | User wanted a capability that doesn't exist as a tool. | Agent-raised via annotation tool (§5.1) |
 | `other` | Anything that doesn't fit above. Use `intent` + `expected_outcome` to describe. | Agent-raised |
+
+**Who sets it.** From `baton-sdk` 0.8.15 an agent neither sees nor sends these words (§5.1.1). The "Typical source" column above describes producers older than that. A signal built from such a report carries no agent-picked word: its `signal_type` is null, and `group` is the field to read. The worker does not translate a group back into one of the eight words. A consumer SHOULD read `group` for every report, old or new, once the worker has grouped the stored ones (§11.5.5).
 
 ### 3.2 Nested types
 
@@ -260,7 +265,7 @@ There are two correlation modes. The mode determines how the worker correlates e
 
 **Implications for the Console worker:**
 
-- Per-event events: each signal-worthy event (annotation with `signal_type`, or `tool_call_error`) MAY be promoted to its own SignalPayload. Single-event signal types (`failure`, `dead_end`, `feature_gap`) work fully.
+- Per-event events: each signal-worthy event (a report per §11.4, or `tool_call_error`) MAY be promoted to its own SignalPayload. Single-event signal types (`failure`, `dead_end`, `feature_gap`) work fully.
 - Session-stitched events: correlation rules in §11.5 apply normally.
 
 **`TraceContext` nested type:**
@@ -345,18 +350,18 @@ The Console returns this in response to a return-channel query (§8). It is also
 
 ---
 
-## 5. How the SDK obtains intent, expected_outcome, signal_type, and runtime context
+## 5. How the SDK obtains intent, expected_outcome, reports, and runtime context
 
 **Two emission surfaces.** The SDK exposes two parallel paths that emit the same event envelope (§11.4) to the same sink:
 
-1. **MCP middleware** (`install_baton(mcp, VendorConfig(...))`) — for vendors who expose their API as MCP tools. Intent / expected_outcome / signal_type come from the agent via the annotation tool described below; runtime context comes from the MCP `_meta` field.
-2. **Library API** (`baton.Client` / `AsyncClient`) — for vendors whose customers reach the vendor API via agent-generated code (Skills pattern, not MCP). Intent / expected_outcome come from the developer as kwargs on `client.trace(intent=..., expected_outcome=..., workflow=...)`; signal_type and reactive annotations come via `client.annotate(...)` or `trace.annotate(...)`.
+1. **MCP middleware** (`install_baton(mcp, VendorConfig(...))`) — for vendors who expose their API as MCP tools. Intent / expected_outcome / reports come from the agent via the annotation tool described below; runtime context comes from the MCP `_meta` field.
+2. **Library API** (`baton.Client` / `AsyncClient`) — for vendors whose customers reach the vendor API via agent-generated code (Skills pattern, not MCP). Intent / expected_outcome come from the developer as kwargs on `client.trace(intent=..., expected_outcome=..., workflow=...)`; reports come via `client.annotate(what_happened=..., tool_name=...)` or `trace.annotate(...)`.
 
 Everything downstream — event envelope, sink behavior, worker assembly, signal classification — is identical across both paths. The rest of this section describes the **MCP path** mechanism; the library API path is the same data captured via direct function arguments, so it does not need a separate intent-capture spec.
 
 ADR-2 in CHARTER. On the MCP path, the spec separates two distinct sources, plumbed differently:
 
-- **Agent-emitted** (`intent`, `expected_outcome`, `signal_type` for agent-raised types): things only the LLM knows. The LLM's only structured output channel is tool calls, so the SDK exposes a dedicated annotation tool the agent calls.
+- **Agent-emitted** (`intent`, `expected_outcome`, and the report fields `what_happened` / `tool_name`): things only the LLM knows. The LLM's only structured output channel is tool calls, so the SDK exposes a dedicated annotation tool the agent calls.
 - **Client-attached** (`session_id`, `runtime_metadata`): things the MCP client orchestrator knows out-of-band. MCP already provides a standard channel for this: the `_meta` JSON-RPC field, used in production by Databricks, OpenAI Agents SDK, and the C# MCP SDK.
 
 Conflating these costs us in both directions. They are separate sections below.
@@ -374,23 +379,26 @@ The SDK MUST register an annotation tool on the vendor's MCP server AND MUST set
   <vendor>_annotate(
     intent: string | null = null,
     expected_outcome: string | null = null,
-    signal_type: string | null = null,
+    what_happened: string | null = null,
+    tool_name: string | null = null,
     workflow: string | null = null,
     suggested_improvement: string | null = null,
     context: object | null = null,
   ) -> { ok: true }
   ```
-  - `signal_type`, if supplied, MUST be one of the §3.1 enum values. The SDK uses it when packaging a signal raised via this tool (e.g., agent calls annotation with `signal_type="feature_gap"` after determining no tool fits the user's intent).
+  - `what_happened` is the report: one or two plain sentences in the agent's own words saying what it asked for, what came back, and why that was unusable. **A filled `what_happened` is what makes an annotation a report (§11.4).** A value that is empty or only whitespace counts as absent. The tool text MUST ask for the agent's own words and MUST NOT offer a list of categories to pick from: the category is the worker's to assign (§11.5.5).
+  - `tool_name` is the ONE tool the report is about. It has three states: a name; "no tool", which is the agent SAYING no tool exists for what the user asked; and null, which is nothing stated (every report from a producer older than 0.8.15). The agent-facing text asks for the word `none` for "no tool", and a producer sends what the agent wrote: it MUST NOT rewrite the value, and MUST NOT turn an empty string into null. The worker reads `none` and its variants as "no tool" (§11.5.5) and stores that as `""` in `reported_tool`. A producer that only asks for reports MUST list `tool_name` under `required` in the annotation tool's advertised schema, so that an agent with no tool to name says so rather than leaving the field out; it MUST still take a report that omits it. A description that says "required" is not enough: measured 2026-10-09, with the field described as required but not listed, no agent sent `""` in six sessions with no tool to name and four left the field out; with it listed, one of six left it out. Asked for an empty string, no agent sent one in twelve sessions (three sent two quote characters, four sent `none`), which is why the text asks for the word `none` and the worker normalises (§11.5.5). It is never a list: an agent with a problem on two tools files two reports, and each becomes its own signal. The worker uses it to pick the call the report is about (§11.5.2).
+  - There is no `signal_type` parameter. A producer from `baton-sdk` 0.8.15 MUST NOT advertise one and MUST NOT send one. A producer that only asks for reports (§5.1.2, the default) MUST refuse a call with no `what_happened`, and the refusal text MUST name only parameters the agent can see.
   - `workflow` and `suggested_improvement` map directly to the same-named top-level fields in the signal payload (§3.1). Both were originally free-form `context.*` keys; promoted to top-level after empirical validation showed consistent recurrence across their relevant signal types.
   - `context` is a free-form JSON object for any other structured information the agent thinks would help. It is the discovery surface for future structured fields — keys that recur across many signals are candidates for promotion. The SDK records `context` verbatim (subject to PII scrubbing per §7) and surfaces it on the wire as part of the signal payload (§3.1 — see "Implementation note" below).
   - **Informative — common `context` keys observed in the wild (validated 2026-05-13 spike, single-data-point caveat):**
-    - For `signal_type=feature_gap`: `requested_capability` (what the agent wished existed), `suggested_tool_signature` (a typed function signature the agent proposes), `why_existing_tools_dont_fit` (the agent's reasoning about gaps in the current tool surface).
-    - For failure / dead_end / parameter_confusion signals: `likely_cause`, `user_impact`, `error_class`, `downstream_blocked`.
+    - When no tool covers the request: `requested_capability` (what the agent wished existed), `suggested_tool_signature` (a typed function signature the agent proposes), `why_existing_tools_dont_fit` (the agent's reasoning about gaps in the current tool surface).
+    - When a call went wrong: `likely_cause`, `user_impact`, `error_class`, `downstream_blocked`.
     - For multi-step workflows: `plan`, `target_date`, `confidence_in_intent`.
   - `note` is **not a recognized field** — it was considered and rejected because `context.*` keys (`likely_cause`, `user_impact`, etc.) subsume it.
 - The calling agent MAY call the annotation tool at any time during a session. The SDK stores annotations keyed by `session_id`.
-- When a signal is packaged, the SDK MUST attach the most-recent annotation for the session as `intent` / `expected_outcome` and SHOULD use the annotation's `signal_type` over its own auto-detection when set.
-- Calling annotation with `signal_type` set and no recent failing tool call triggers an **agent-raised signal**: the SDK packages the payload with `tool_calls=[]` and `observed_outcomes=[]` (for `feature_gap`) or with the most-recent tool call context (for `dead_end` / `parameter_confusion`), then proceeds to consent (§9).
+- When a signal is built, the most-recent annotation of the turn supplies `intent` / `expected_outcome` (§11.5.2).
+- A report needs no failing tool call before it. A report that names no tool (§11.5.5) and has no call in its turn builds a signal with `tool_calls=[]` and `observed_outcomes=[]`: the missing-tool case.
 
 #### 5.1.2 Server-level instructions (load-bearing)
 
@@ -408,7 +416,7 @@ The instructions text MUST be templated from `VendorConfig.vendor_display_name`.
 **Why both pieces are required (empirically validated):**
 - Tool description alone: in the spike, Claude Code did not call the annotation tool across multiple unprompted attempts. Tool descriptions are read at tool-selection time, not at tool-use-decision time.
 - Server-level instructions alone (no annotation tool): nothing to call.
-- Both together (on a client that surfaces `instructions`): agent calls annotation proactively before vendor tool calls AND reactively after errors, with high-quality content (correct `signal_type`, useful `suggested_improvement`).
+- Both together (on a client that surfaces `instructions`): agent calls annotation proactively before vendor tool calls AND reactively after errors, with high-quality content (a usable account of what happened, a useful `suggested_improvement`).
 
 **Why this shape:** the annotation tool is discoverable via standard `tools/list`; the instructions provide the use-time motivation; LLMs interact with tools as their only structured output channel; both mechanisms are standard MCP primitives requiring no transport extensions; vendor-controlled (whitelabel preserved); works across all MCP clients that respect the spec's `instructions` field.
 
@@ -525,8 +533,11 @@ annotate_tool_description:
 
    - intent: brief description of what the user is trying to accomplish
    - expected_outcome: what you expect to receive back
-   - signal_type: optional; one of failure, retry_loop, dead_end, parameter_confusion,
-                  slow_performance, abandonment, feature_gap, other
+   - what_happened: REQUIRED on a report. 1-2 plain sentences in YOUR OWN
+                WORDS: what you asked for, what came back, and why it was
+                unusable. Do NOT pick a category or invent a label
+   - tool_name: REQUIRED on a report. The {vendor_display_name} tool that
+                went wrong. Write none if no tool exists for the request
    - workflow: optional; short label for the user's current task, repeated
                 verbatim until they switch tasks
    - suggested_improvement: optional; what product change would help
@@ -549,8 +560,8 @@ server_instructions:
    AFTER any {vendor_display_name} tool errors, times out, returns an unhelpful
    result, or the user shows signs of giving up, you MUST call
    `{annotation_tool_name}` again and populate these top-level fields:
-     - signal_type (REQUIRED): one of failure, retry_loop, dead_end,
-       parameter_confusion, slow_performance, abandonment, feature_gap, other
+     - what_happened (REQUIRED, your own words, NOT a category)
+     - tool_name (REQUIRED): the tool that went wrong
      - suggested_improvement (REQUIRED whenever you can articulate one): what
        specific product change would have helped — a concrete sentence about
        what would have made this work
@@ -559,13 +570,15 @@ server_instructions:
    (they ask to schedule, mutate, or take an action and no matching tool exists
    in your available tools list), DO NOT just say 'I can't do that.' Instead,
    call `{annotation_tool_name}` IMMEDIATELY with:
-     - signal_type: 'feature_gap'
+     - what_happened: what the user wanted and that no tool does it
+     - tool_name: none (no tool exists)
      - intent: what the user wanted
      - workflow: the user's current-task label
      - suggested_improvement: a sentence about what tool/integration would help
      - context: object with `requested_capability`, plus optionally
        `suggested_tool_signature` and `why_existing_tools_dont_fit`
-   Then tell the user what you can't do.
+   Then tell the user what you can't do. Do this once per user request, not
+   once per call you make to work around the missing tool.
 
    `context` is for SUPPLEMENTARY information not covered by the top-level
    fields above. Always populate top-level fields when you have a value for
@@ -584,11 +597,13 @@ response_surfacing:
   "{vendor_display_name} responded to a recent issue with this tool. {human_explanation}"
 ```
 
+The templates above give the shape and the required content; the exact strings a producer ships are its own and are held under the length cap of §5.1.2. The instructions name the report fields and say REQUIRED; the full wording of each field ("1-2 plain sentences in your own words: what you asked for, what came back, and why it was unusable") lives in the tool's field descriptions, which have no such cap.
+
 The `server_instructions` template is load-bearing for §5.1.2. When set as the FastMCP server's `instructions`, Claude Code reliably calls the annotation tool proactively + reactively without per-prompt prompting. Without it, agents do not call the annotation tool unprompted even with a strong tool description.
 
 Two framing notes empirically isolated:
 
-1. **"You MUST" + "(REQUIRED…)" markers** on each top-level field are load-bearing. Milder framing ("call with …", "should populate …") yielded inconsistent field population — agents inferred the fields were optional and defaulted to filling `context` instead. Explicit MUST/REQUIRED markers produced full population on `workflow` (including for `feature_gap` signals) and `suggested_improvement` (reactive + feature_gap), with no duplication between top-level and `context`.
+1. **"You MUST" + "(REQUIRED…)" markers** on each top-level field are load-bearing. Milder framing ("call with …", "should populate …") yielded inconsistent field population — agents inferred the fields were optional and defaulted to filling `context` instead. Explicit MUST/REQUIRED markers produced full population on `workflow` (including on missing-tool reports) and `suggested_improvement` (on every kind of report), with no duplication between top-level and `context`.
 2. **Anti-duplication framing backfires.** An earlier instructions variant said *"do NOT duplicate top-level field values inside `context`"* — this caused agents to skip top-level fields entirely. The validated text instead frames `context` positively as "supplementary" and emphasizes top-level fields as required-when-applicable. This is the difference between making the right thing easy versus making the wrong thing forbidden — the former works, the latter doesn't.
 
 **Workflow semantics:** observed that agents treat `workflow` as session-stable — they carry the same `workflow` value across the proactive call and the corresponding reactive call within a prompt. This is the right semantic; SDK implementations and collector-side aggregations SHOULD assume `workflow` is stable across all signals from one user-request session, not per-call.
@@ -598,7 +613,7 @@ Two framing notes empirically isolated:
 - Inferring intent from agent chain-of-thought or runtime reasoning channels.
 - Pulling intent from agent-runtime memory stores.
 - Auto-prompting the agent for intent when an unannotated tool call enters middleware.
-- Auto-detection of `slow_performance`, `abandonment`, `dead_end`, `parameter_confusion`, `feature_gap` (the SDK auto-detects only `failure` and `retry_loop`; the rest must be agent-raised via the annotation tool — see §6).
+- Auto-detection of `slow_performance`, `abandonment`, `dead_end`, `parameter_confusion`, `feature_gap` (the SDK emits what it sees and detects nothing that needs more than one event; the worker detects `failure`, and anything else reaches it as a report — see §6).
 
 These are future candidates if the layered approach proves insufficient in practice.
 
@@ -606,7 +621,7 @@ These are future candidates if the layered approach proves insufficient in pract
 
 ## 6. Signal detection rules
 
-Signal classification splits responsibilities between the SDK and the collector's worker. The SDK emits events at the MCP transport boundary regardless of "signal-worthiness"; the worker assembles those events into SignalPayloads (§3) and assigns the `signal_type` during assembly per §11.5.
+Signal classification splits responsibilities between the SDK and the collector's worker. The SDK emits events at the MCP transport boundary regardless of "signal-worthiness"; the worker assembles those events into SignalPayloads (§3) per §11.5, and assigns each report's `group` (§11.5.5).
 
 ### 6.1 SDK-emitted conditions (mechanical, narrow)
 
@@ -619,14 +634,16 @@ The SDK does NOT do state-dependent detection (retry-loop, dead-end pattern matc
 
 ### 6.2 Agent-raised signals
 
-The calling agent MAY raise a signal of any type by calling the annotation tool (§5.1) with `signal_type` set. Common patterns:
+The calling agent raises a signal by filing a report: a call to the annotation tool (§5.1) with `what_happened` filled. The agent describes; it does not classify. The worker assigns the group (§11.5.5). It does not derive a `signal_type` from it (§3.1).
 
-- `feature_gap` — agent has determined no available tool fits the user's intent.
-- `dead_end` — a tool returned `ok` but the result is unusable for the user's goal.
-- `parameter_confusion` — agent recognizes it has been mis-using a tool's schema after the fact.
-- `abandonment` — agent infers (or is told) the user has given up.
-- `slow_performance` — agent decides accumulated latency is past acceptable.
-- `other` — anything else.
+What agents report, in practice:
+
+- no available tool fits what the user asked for;
+- a tool returned `ok` but the result is unusable for the user's goal;
+- the agent sees, after the fact, that it called a tool wrongly;
+- an error came back with no usable reason.
+
+Slowness is not one of the seven groups, and a report about it is grouped `none`. Every tool-call event already carries `duration_ms`, so slowness is the worker's to measure, not the agent's to judge (§6.4).
 
 The annotation event ships with the static `consent_token` from `VendorConfig` (§9), like every other event.
 
@@ -966,7 +983,7 @@ Event types and their payload shapes:
 | `tool_call_start` | `{tool_name, params, call_intent?, call_expected?, call_workflow?, intent_source?}` (params PII-scrubbed; the optional fields carry the injected per-call params when present — §13 changelog) | SDK middleware before vendor handler |
 | `tool_call_end` | `{tool_name, result, duration_ms, result_capture?}` (result PII-scrubbed; `result_capture` present only when results are withheld — see below) | SDK middleware after vendor handler returns |
 | `tool_call_error` | `{tool_name, error_type, error_body, duration_ms, result?, result_capture?, failure_kind?}` (`result` PII-scrubbed; present only for the returned-flag shape — §11.4.3; `result_capture` present only when results are withheld — see below; `failure_kind` present only when the PRODUCER manufactured the failure above the vendor's handler — §11.4.3) | SDK middleware **on exception, or on a returned result whose MCP error flag is set** |
-| `annotation` | `{intent?, expected_outcome?, signal_type?, workflow?, suggested_improvement?, context?}` (all nullable; agent populates what it has) | SDK annotation tool handler / library `client.annotate(...)` / `trace.annotate(...)` |
+| `annotation` | `{intent?, expected_outcome?, what_happened?, tool_name?, workflow?, suggested_improvement?, context?, signal_type?}` (all nullable; agent populates what it has) | SDK annotation tool handler / library `client.annotate(...)` / `trace.annotate(...)` |
 | `surface_snapshot` | `{surface_hash, server_info?, capabilities?, instructions?, tools, seam_augmentations}` — top-level fields mirror baton-proxy's `enqueue_surface_snapshot`; `seam_augmentations.intent_param` shape differs (§11.4.2) | SDK middleware/wrap layer, once per observed `surface_hash` per process; see §11.4.2 |
 
 ⚠ **These five are the TOOL-call and annotation types, and they are not the whole enum.** Fifteen more are specified below: the twelve resource and prompt lifecycle types in **§11.4.4**, and the three tool list types in **§11.4.5**. `EventType` has twenty values; a consumer reading this table as exhaustive will reject conforming traffic, which §11.4.4 forbids outright.
@@ -988,12 +1005,18 @@ Event types and their payload shapes:
 - A consumer MAY report coverage from it: these events are outside the denominator of body-level analysis rather than passes or failures within it.
 - `error_type`, `tool_name` and `duration_ms` are unaffected, so failure classification, pairing and timing all still work. What is lost is body-level analysis, and that loss is the vendor's declared choice.
 
-**Annotation event sub-types.** A single `event_type=annotation` carries two semantically distinct flavors, discriminated by whether `payload.signal_type` is populated:
+**Annotation event sub-types.** A single `event_type=annotation` carries two semantically distinct flavors. The test is one rule, and every consumer MUST use this same rule wherever it tells the two apart:
 
-- **Proactive annotation** — `signal_type` is `null`. Emitted at the *start* of a logical operation (e.g., automatically from `client.trace(intent=..., expected_outcome=..., workflow=...)`'s constructor kwargs) to capture what the agent is about to attempt. Carries `intent` / `expected_outcome` / `workflow`.
-- **Reactive annotation** — `signal_type` is non-null (one of the §3.1 enum values). Emitted *after* a tool call's outcome is known to flag friction. Carries `signal_type` / `suggested_improvement` / `context` (and may also carry `intent` / `expected_outcome` / `workflow` for self-describing context). This is the "ticket" the Console egresses.
+> **An annotation is a REPORT when `payload.what_happened` is filled** (non-null and not only whitespace) **OR `payload.signal_type` is non-null. Otherwise it is a NOTE.**
 
-Worker dispatches on `signal_type`'s presence per §11.5 (`Annotation correlation rules`). The wire format is intentionally unified — both flavors share the same envelope so order-preserving stream processors handle them identically — but the semantic split is load-bearing for Console-side correlation and egress routing.
+- **Note** (proactive annotation). Emitted at the *start* of a logical operation (e.g., automatically from `client.trace(intent=..., expected_outcome=..., workflow=...)`'s constructor kwargs, or synthesised from the injected params) to capture what the agent is about to attempt. Carries `intent` / `expected_outcome` / `workflow`.
+- **Report** (reactive annotation). Emitted *after* a tool call's outcome is known, or when no tool fits, to flag friction. Carries `what_happened` / `tool_name` / `suggested_improvement` / `context` (and may also carry `intent` / `expected_outcome` / `workflow` for self-describing context). This is the "ticket" the Console egresses.
+
+The second half of the test exists for producers older than `baton-sdk` 0.8.15, whose reports carry `signal_type` and no `what_happened`, and for every such report already stored. `signal_type` on an annotation is DEPRECATED: a producer from 0.8.15 never sends it, and it leaves the schema once no older producer is live (§13).
+
+`tool_name` on an annotation names the tool the annotation is about: on a note synthesised from injected params, the tool whose call carried them; on a report, the tool the agent named, or the word `none` when no tool exists (§5.1.1). It is not evidence of who wrote the annotation; `intent_source` is.
+
+The wire format is intentionally unified — both flavors share the same envelope so order-preserving stream processors handle them identically — but the semantic split is load-bearing for Console-side correlation (§11.5) and egress routing.
 
 #### 11.4.1 `runtime_meta` (optional) — for worker-side correlation
 
@@ -1015,7 +1038,7 @@ The SDK does NOT interpret `runtime_meta` beyond capture; it remains "what the r
 Worker derives the canonical SignalPayload (§3) by:
 - Grouping events by `(tenant_id, session_id)`
 - Sorting by `sequence_number`
-- Identifying signal-worthy windows (annotation event with `signal_type` set, or SDK-classified `tool_call_error`, or worker-detected retry_loop pattern)
+- Identifying signal-worthy windows (a report per §11.4, or SDK-classified `tool_call_error`, or worker-detected retry_loop pattern)
 - Stitching the preceding/following events into the SignalPayload's `tool_calls` + `observed_outcomes` + agent annotation fields
 
 #### 11.4.2 `surface_snapshot` — vendor-true tool surface, for identity + drift
@@ -1426,7 +1449,7 @@ The worker derives turn boundaries using this hierarchy (most-authoritative firs
 
    A label counts as numbered only when an integer of at most six digits is followed by a separator (`:`, `.`, `)` or a dash) and then a space or the end of the label, so `2024 tax prep`, `3-day forecast` and `10:30 standup` are plain labels. Known error: an agent sometimes repeats one number on two messages in a row, which merges them into one turn.
 
-3. **Proactive-annotation boundaries** (§5.1.2). When neither rule above applies, each proactive annotation (`signal_type` null, `intent` populated) marks the start of a new turn. The turn extends until the next proactive annotation or end-of-session, whichever comes first.
+3. **Proactive-annotation boundaries** (§5.1.2). When neither rule above applies, each note (§11.4: an annotation that is not a report) with `intent` populated marks the start of a new turn. A report never opens a turn. The turn extends until the next proactive annotation or end-of-session, whichever comes first.
 
 4. **Time-gap heuristic.** When none of the above applies, a contiguous run of events with `captured_at` deltas under N seconds (default N=120) is one turn; a gap ≥ N seconds breaks into a new turn. Workers SHOULD make N configurable per tenant and document it. This rule is brittle (long-running tools, human-in-loop pauses) and is the last resort.
 
@@ -1444,8 +1467,10 @@ Turns are assembled at correlation time, not at emit time — the SDK does not i
 
 Per SPEC §5.1.1, the worker MUST attach the most-recent annotation to each signal *within the turn*. Concretely:
 
-- **Proactive annotation:** an `annotation` event with no `signal_type` populated. Its `intent` / `expected_outcome` / `workflow` fields attach to the resulting signal.
-- **Reactive annotation:** an `annotation` event with `signal_type` populated, occurring AFTER a `tool_call_end` or `tool_call_error` **in the same turn**. Its `signal_type` / `suggested_improvement` / `context` fields create the signal; the preceding tool call in the same turn provides the `tool_calls[0]` + `observed_outcomes[0]`.
+- **Note (proactive annotation):** an `annotation` event that is not a report (§11.4). Its `intent` / `expected_outcome` / `workflow` fields attach to the resulting signal.
+- **Report (reactive annotation):** an `annotation` event that is a report (§11.4). Its `what_happened` / `suggested_improvement` / `context` fields create the signal. **The call it is about** provides `tool_calls[0]` + `observed_outcomes[0]`, chosen in this order: (1) the latest call in the same turn, before the report, to the tool the report names in `tool_name`; (2) when `tool_name` is empty or names no call in the turn, the latest call in the turn before the report; (3) when the turn holds no call before the report, none (`tool_calls=[]`). A worker MUST NOT attach the last call of the turn regardless of the report's position: a call made after the report is not what the report describes.
+- **Several reports in one turn** each build their own signal, each with its own call by the rule above.
+- **What came back is read from the call, not from the report.** `observed_outcomes` is the record of what the tool returned; `what_happened` is the agent's account of what was wrong with it. A consumer SHOULD show both, and where they disagree the call is the fact. An agent has reported "no reason given" for an error whose captured body named the reason.
 
 **The critical rule:** the proactive annotation and the tool reference attached to a reactive annotation MUST come from the SAME TURN as the reactive annotation. Sessions can contain many turns; treating "first proactive in session" or "first tool call in session" as the pair is incorrect and produces semantically incoherent signals (demonstrated in an early v0.2 Console ticketing Channel — bug fixed by switching from "first in session" to "latest preceding the reactive" within the turn).
 
@@ -1459,7 +1484,7 @@ Migration note: Console implementations that currently do correlation in Channel
 
 **Per-event mode (§3.4, the mode formerly selected by `correlation_mode=per-event`; see §13):** the correlation rules above do not apply. Each signal-worthy event becomes its own SignalPayload directly:
 
-- An `annotation` event with `signal_type` populated → SignalPayload with `intent` / `expected_outcome` / `signal_type` / `suggested_improvement` / `workflow` / `context` populated from the annotation; `tool_calls=[]` and `observed_outcomes=[]` (the worker cannot safely correlate with surrounding tool calls — adjacent events may originate from different customers sharing the server instance).
+- A report (§11.4) → SignalPayload with `intent` / `expected_outcome` / `what_happened` / `suggested_improvement` / `workflow` / `context` populated from the annotation; `tool_calls=[]` and `observed_outcomes=[]` (the worker cannot safely correlate with surrounding tool calls — adjacent events may originate from different customers sharing the server instance).
 - A `tool_call_error` event → SignalPayload with `signal_type=failure`, `tool_calls=[{tool_name, params, called_at, attempt: 1}]`, and `observed_outcomes=[{status: "error", error_type, error_body, duration_ms, responded_at}]` derived from the single event.
 - Multi-event signal types (`retry_loop`, `parameter_confusion`, derived `slow_performance` from cross-call duration patterns, `abandonment`) MUST NOT be attempted in per-event mode — they require session-scoped correlation that per-event mode does not support.
 
@@ -1470,6 +1495,46 @@ Pairing a `tool_call_start` with its `tool_call_end` / `tool_call_error` is a se
 **A consumer SHOULD key on `(call_id, tool_name)`, not on `call_id` alone**, even though a correct mint makes the id unique by itself. Nothing on the wire enforces that uniqueness. A mint hoisted out of per-call scope — onto a module-level or per-session variable — sends one constant id for a whole session, and a key on the id alone would then queue every call in that session together ACROSS TOOLS, letting one tool's end answer another tool's start. A mispair is a permutation, so every total holds and nothing shows it. With `tool_name` in the key a collapsed id degrades to first-in-first-out within one tool, and a correct mint pays nothing — both legs of a real call carry the same `tool_name`. Pinned in `baton-console`'s `tests/test_call_id_pairing.py`.
 
 **Events stored before a producer minted the id carry none.** A consumer holding such history either leaves those calls unpaired or writes ids onto them once, from whatever pairing it used at the time, and marks them as its own.
+
+#### 11.5.5 Report grouping (worker-side)
+
+The agent says what happened. The worker says which kind of problem it is. An agent that picks its own category picks from words it half understands, at the moment it understands the failure least; the worker can read the same report beside the call it is about.
+
+**The groups.** A group is a mechanism: HOW the friction happened. Each report gets exactly one, or `none`.
+
+| Group | Definition |
+|---|---|
+| `guessed_value` | agent guessed a field path, entity id or type, URI or enum value the surface documents |
+| `wrong_argument_shape` | agent used a wrong argument name that is a near match of a real one (`projectId` for `project_id`), a missing wrapper, JSON-encoded strings, or omitted a required argument |
+| `server_contract_contradiction` | schema, description or example contradicts what the server accepts, or a precondition is undocumented |
+| `opaque_upstream_failure` | upstream error or outage with no usable reason |
+| `silently_wrong_result` | ok result that misleads: wrong matches, masked empty, missing content, dropped write, or content that is right but badly formed (e.g. HTML-encoded text) |
+| `missing_capability` | the surface does not expose what the task needs. Includes an argument the tool rejects as unknown that is NOT a near match of any real one: the agent asked for a control the tool does not have |
+| `environment_or_access` | fixture not ready, permission or role missing, or blocked outside the server |
+
+Rules that go with the table:
+
+- **`none` is an answer.** When no group fits, the worker MUST say `none` and SHOULD record what is missing. It MUST NOT force the nearest group. A consumer shows such a report as not grouped, with the agent's words.
+- **A "not found" that may be true is `none`** unless the report or the call shows the thing should exist. A 404 for a release that was never published is the right answer, not friction.
+- **A report that does not say why** is grouped from the call it is about (§11.5.2). If the cause is still unknown, `none`.
+- **Slowness has no group.** The worker measures it from `duration_ms`.
+- **Stored reports are grouped too.** A report filed before this section existed is grouped by the same method from the text it carries; its `signal_type` stays as the agent sent it and is not the group. A worker MAY group reports before any consumer reads the result, to compare the two.
+- The set is additive-only until v1.0 (§13). `missing_capability` is the group a product team reads as a feature request, and a consumer MAY label it so.
+
+**Who decides.** `group` is the worker's judgement and is never read from the agent. The agent's words stay on the signal as `what_happened` (§3.1), and a consumer SHOULD show them beside the group.
+
+**What the worker may read.** The technique is implementation-defined and MUST be recorded with the result (which method, and for a model, which model and settings), so a reader can tell two methods' answers apart. It MAY use, in rising order of how much it helps:
+
+1. the report's own text and `tool_name`, including the fact that the agent named no tool (`""`);
+2. the tool descriptions and schemas of the surface (`surface_snapshot`, §11.4);
+3. the call the report is about: its params, and its result or error (§11.5.2);
+4. the other calls of the same turn.
+
+**A report that names no tool** is one whose `tool_name` is `none` or `""`. Agents spell it several ways, so the worker SHOULD strip surrounding spaces, brackets and quote marks, and then read an empty result, `none`, `n/a` or `null`, in any letter case, as `""`. This covers `(none)` and a value that is itself two quote characters, which agents send when told to pass an empty string. A null `tool_name` stays "not stated" and is not read this way. Such a report is strong evidence for `missing_capability` and the worker SHOULD pass that fact to whatever does the grouping. It is evidence in one direction only: a report that names a tool can still be a missing capability, as when the agent loops over a single-item tool for want of a bulk one, or passes an argument the tool does not have. The worker MUST NOT decide the group from `tool_name` alone. For such reports `context.requested_capability`, when present, is the text to compare when counting how many reports ask for the same thing.
+
+It MUST NOT use the report's `signal_type`, when an older producer sent one, as the group. A producer's capture settings bound all of this: where a result was withheld (`result_capture`, §11.4.3) the worker groups without it, and never treats a withheld result as an empty one.
+
+**Repeats.** An agent working around one missing tool can file the same report on every call of the loop. Reports in one turn that say the same thing are one problem: a consumer SHOULD show and count them once, with the number of times filed. Each stays its own stored signal.
 
 ### 11.6 Action vocabulary (additive-only)
 
@@ -1536,6 +1601,22 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **0.8.15 (2026-10-09) — BREAKING at the agent surface and the library API, on a PATCH number: an agent reports in its own words, and the worker assigns the group (§5.1.1, §11.4, §11.5.2, §11.5.5).**
+
+  **ADDED on the `annotation` payload:** `what_happened` (OPTIONAL, nullable string), the agent's own account of the problem. **CHANGED:** `tool_name` on an annotation was null for anything an agent wrote; on a report it now names the tool the report is about. **DEPRECATED:** `signal_type` on an annotation. It stays in the schema, optional, so a report from an older producer still validates; a producer from 0.8.15 never sends it.
+
+  **REMOVED from the producer:** the `signal_type` parameter of the annotation tool, the eight words in the tool description and the server instructions, and `SignalType` with the `signal_type=` argument of `client.annotate(...)` / `trace.annotate(...)` in the library API, which take `what_happened=` and `tool_name=` instead.
+
+  **ADDED on the signal (§3.1):** `group`, `what_happened` and `reported_tool`. `signal_type` stays and becomes nullable: it is null for a report whose agent picked no word.
+
+  **Why.** Asked to pick one of eight words, an agent picks at the moment it understands the failure least, and the word it picks is the agent's view of who was at fault. Its plain account carries more, and a worker that reads the account beside the call can name the mechanism.
+
+  **Consumer consequence — the rule that tells a report from a note changed (§11.4).** It was "`signal_type` is non-null". It is now "`what_happened` is filled OR `signal_type` is non-null". A consumer still on the old rule reads every report from a 0.8.15 producer as a note: it builds no signal from it, and under §11.5.1 rule 3 it opens a new turn at each one.
+
+  **Ordering constraint.** The published schema's `AnnotationPayload` is closed, so a collector that validates payloads against the earlier schema refuses every report, and a non-429 4xx is not retried. A collector that keeps the payload open, as the one this is developed against does, stores the report but reads it as a note under the earlier §11.4 rule: it opens a turn and no report count includes it. Either way the report is missing from every count, without a sound. The collector MUST therefore deploy the new schema AND the new §11.4 rule before any producer at 0.8.15 is installed against it. Releasing the producer is safe; installing it against an older collector is not.
+
+  **When `signal_type` leaves the annotation schema:** when no producer older than 0.8.15, `baton-proxy`'s matching release and `baton-ts`'s matching release is live against any collector. Not before.
 
 - **0.8.15 (2026-10-09) — `baton-sdk` emits the twelve resource and prompt events (§11.4.4), from both adapters.** No shape change: the types are the ones the ts 0.5.0 entry below specified. Both adapters capture on the low-level server's request handlers, as they do for `tools/list`, so `count` is the page the client received. `error_type` is the exception's class name. Setting `result_capture_mode="off"` now emits the `UserWarning` §11.4.4 requires, naming the four error legs.
 
@@ -1841,7 +1922,7 @@ Open spec-level design questions. Resolutions land in subsequent minor versions 
 - **Vendor signal enrichment from vendor app context.** Mechanism for vendors to attach extra structured context (logs, traces) without breaking the "Baton only sees MCP transport" boundary — probably a `vendor_context` field with a vendor-defined schema, scrubbed and bounded.
 - **Detection extensibility.** Vendor-configurable thresholds + optional vendor-supplied detectors for `slow_performance`, `abandonment`, `dead_end`, `parameter_confusion` (§6.4).
 - **Console responsibility spec.** §10 is currently informative; future revisions should make it normative.
-- **Signal-type taxonomy stability.** The eight `signal_type` values are best-effort; future integrator feedback may add / merge / split categories. The enum is additive-only until v1.0 per §13.
+- **Group taxonomy stability.** The seven groups of §11.5.5 were drawn from a few hundred reports on a handful of surfaces; integrator data may add, merge or split them. The set is additive-only until v1.0 per §13. The eight `signal_type` values are frozen: nothing new is added to a field no agent fills.
 - **Background dispatch.** Dispatch is currently synchronous on the agent's hot path. Moving it off the critical path (background task / queue worker) is a future improvement; the SDK's bounded local buffer + retry-with-backoff is the substrate.
 - **Per-signal end-user consent flow.** Today (§9) the vendor supplies a single static `consent_token` at SDK init and every event ships with the same token — workable for single-end-user deployments, but not for multi-end-user vendor MCP servers. The planned design: on detection of a signal-worthy event (failure / dead-end / friction), the SDK emits an MCP **elicitation prompt** (or, on transports without elicitation support, surfaces a synthetic tool response asking the user to call a vendor-namespaced `<vendor_id>_consent` tool) describing what happened, who will receive the report (vendor display name), what will be sent (high-level summary), and a Y/N choice with an optional "always for this session." On refusal, the SDK MUST discard the payload and MUST NOT retry sending it unless a new signal occurs. Open: which signal types warrant a prompt vs. which can ride on session-level consent? How does this compose with the per-end-user OAuth/DID upgrade path (CHARTER ADR-1)?
 - **Richer PII scrub interface.** The current `VendorConfig.scrubber: Callable` (§7) puts all the burden on the vendor — they have to know what shapes to expect, recursively walk dicts, and reimplement common patterns (emails, API-key shapes, credential param keys). A richer interface would ship declarative rules — `scrub_rules: list[Rule]` with rule kinds `redact_key` / `mask_key` / `regex_mask`, targeting `params` / `error_body` / `result_content` / `intent` / `expected_outcome` — plus sensible defaults for common patterns. A typed `Scrubber` protocol (`scrub_params(tool_name, params)` / `scrub_result(tool_name, result)` / etc.) and a `DefaultScrubber(extra_key_denylist=..., extra_regex_rules=...)` baseline would let most vendors say `VendorConfig(scrub_keys=["password", "email"])` and be done. Sentry / OpenTelemetry pattern. The current `Callable` shape would become an escape hatch alongside the richer surface. **Its relationship to `result_capture` (§11.4) is settled and should not be re-litigated:** these rules are the mechanism for the rungs that TRANSFORM a value, and `result_capture` is the declaration of the rung that transforms nothing because nothing crosses. A rule cannot express that rung — it produces a value where the wire needs a fact, and a consumer that cannot tell withholding from an empty response manufactures failures (§11.4). When these rules land, `result_capture` gains the partial rung as a second registered value and the two meet there.

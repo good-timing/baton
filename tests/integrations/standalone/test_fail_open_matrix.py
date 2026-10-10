@@ -30,7 +30,11 @@ from tests.integrations.standalone.test_scrubber_fail_open import (
 
 pytestmark = pytest.mark.asyncio
 
-_ANNOTATE_ARGS = {"user_goal": GOAL_MARKER, "overall_task": "a task", "signal_type": "failure"}
+_ANNOTATE_ARGS = {
+    "user_goal": GOAL_MARKER,
+    "overall_task": "a task",
+    "what_happened": "the call came back unusable",
+}
 
 
 def _seen(res: dict[str, Any]) -> tuple[bool, str | None, str]:

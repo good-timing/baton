@@ -37,17 +37,22 @@ def build_annotation_payload(
     overall_task: str | None,
     suggested_improvement: str | None,
     context: dict[str, Any] | None,
-    signal_type: str | None,
+    what_happened: str | None,
+    tool_name: str | None,
 ) -> AnnotationPayload:
-    """``AnnotationPayload`` with all five free-text members PII-scrubbed.
+    """``AnnotationPayload`` with every free-text member PII-scrubbed.
 
-    ``signal_type`` is a closed vocabulary the agent picks from, not free text,
-    so it is not scrubbed — the same reason ``error_type`` is not (§11.4.3).
+    ``tool_name`` is sent as given, so its three states survive: a name,
+    ``"none"`` or ``""`` for "the agent said no tool exists", and ``None``
+    for nothing stated (SPEC §5.1.1).
     """
     return AnnotationPayload(
         intent=scrubber(user_goal) if user_goal else None,
         expected_outcome=scrubber(expected_result) if expected_result else None,
-        signal_type=signal_type,
+        what_happened=(
+            scrubber(what_happened) if what_happened and what_happened.strip() else None
+        ),
+        tool_name=scrubber(tool_name) if tool_name else tool_name,
         # Agent-facing param `overall_task` -> wire key `workflow`, the same
         # split the injected params use (`overall_task` -> `call_workflow`):
         # renaming the param must not move the key the console groups on.
@@ -64,3 +69,13 @@ def build_annotation_payload(
         suggested_improvement=(scrubber(suggested_improvement) if suggested_improvement else None),
         context=scrubber(context) if context else None,
     )
+
+
+def with_tool_name_required(schema: dict[str, Any]) -> dict[str, Any]:
+    """A copy of the annotation tool's input schema listing ``tool_name`` as
+    required (SPEC §5.1.1). Advertised only: a call that omits it is served."""
+    required = schema.get("required")
+    names = list(required) if isinstance(required, list) else []
+    if "tool_name" not in names:
+        names.append("tool_name")
+    return {**schema, "required": names}

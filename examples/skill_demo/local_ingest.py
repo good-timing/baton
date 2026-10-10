@@ -91,17 +91,22 @@ class IngestHandler(BaseHTTPRequestHandler):
         runtime = event.get("agent_runtime", "?")
         payload = event.get("payload") or {}
         tool = payload.get("tool_name", "")
-        signal_type = payload.get("signal_type")
         extra = f" tool={tool}" if tool else ""
-        if signal_type:
-            extra += f" signal_type={signal_type}"
+        if payload.get("what_happened"):
+            extra += " report"
         # For annotation events, show which fields were populated (names
         # only; values stay in events.jsonl) so live tail tells you whether
         # the agent actually filled the payload.
         if event_type == "annotation":
             present = [
                 k
-                for k in ("intent", "expected_outcome", "workflow", "suggested_improvement", "context")
+                for k in (
+                    "intent",
+                    "expected_outcome",
+                    "workflow",
+                    "suggested_improvement",
+                    "context",
+                )
                 if payload.get(k) is not None
             ]
             if present:

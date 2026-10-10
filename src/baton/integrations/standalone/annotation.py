@@ -3,7 +3,7 @@
 Registers a vendor-namespaced annotation tool on a FastMCP server — named
 after the server itself by default, falling back to ``{vendor_id}_annotate``
 (see ``integrations._annotation_name``). The tool accepts the
-annotation signature (intent / expected_outcome / signal_type / overall_task /
+annotation signature (intent / expected_outcome / what_happened / tool_name / overall_task /
 suggested_improvement / context, all optional per SPEC §5.1.1) and emits an
 ``annotation`` event when called.
 
@@ -88,7 +88,8 @@ def register_annotation_tool(
         ctx: Context,
         user_goal: str,
         expected_result: str | None = None,
-        signal_type: str | None = None,
+        what_happened: str | None = None,
+        tool_name: str | None = None,
         overall_task: str | None = None,
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
@@ -98,18 +99,19 @@ def register_annotation_tool(
         # single umbrella `overall_task` label from one stray proactive is
         # enough to merge distinct tasks in any consumer that keys grouping
         # on it (the annotation label outranks the per-call one there).
-        # Rejecting here, rather than requiring signal_type in the schema,
-        # keeps the agent from fabricating a `failure` just to get the call
-        # through — that would corrupt the reactive signal, which is the one
+        # Rejecting here, rather than requiring what_happened in the schema,
+        # keeps the agent from inventing a problem just to get the call
+        # through — that would corrupt the reports, which are the signal
         # worth protecting.
-        if proactive_mode == "off" and signal_type is None:
+        is_report = bool(what_happened and what_happened.strip())
+        if proactive_mode == "off" and not is_report:
             return {
                 "ok": False,
                 "error": (
                     f"{name} is reactive-only on this server. Call it only AFTER "
                     "a tool call returns an unhelpful, empty, failed or "
                     "contradictory result, or when no tool covers what the user "
-                    "asked for — and set signal_type. What the user is trying to "
+                    "asked for — and say what_happened. What the user is trying to "
                     "do is already recorded on each tool call, so no pre-call "
                     "annotation is needed."
                 ),
@@ -142,9 +144,9 @@ def register_annotation_tool(
         session_id = await resolve_call_session_id(
             headers=call_headers, fallback=fallback_session_id
         )
-        # A proactive annotation (no signal_type) claims the session's proactive
+        # A proactive annotation (not a report) claims the session's proactive
         # slot so the middleware won't also synthesise one from an injected param.
-        if signal_type is None:
+        if not is_report:
             tracker.mark(session_id)
         seq = await counter.next(session_id)
         # Identity takes the SAME ladder the tool-call path takes, hook
@@ -172,7 +174,7 @@ def register_annotation_tool(
         # so a raising vendor scrubber used to break `_annotate` —
         # a tool on the VENDOR's server, so the vendor's end user sees their
         # server erroring. Inside the thunk a throw drops the event instead,
-        # which is right here: `intent`, `signal_type` and
+        # which is right here: `intent`, `what_happened` and
         # `suggested_improvement` are one report and degrade together.
         await safe_emit(
             sink,
@@ -194,7 +196,8 @@ def register_annotation_tool(
                     overall_task=overall_task,
                     suggested_improvement=suggested_improvement,
                     context=context,
-                    signal_type=signal_type,
+                    what_happened=what_happened,
+                    tool_name=tool_name,
                 ),
             ),
             logger,

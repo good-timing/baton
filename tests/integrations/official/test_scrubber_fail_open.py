@@ -326,7 +326,7 @@ async def test_control_the_annotation_tool_accepts_a_goal(tmp_path: Path) -> Non
         tmp_path / "c4.jsonl",
         lambda v: v,
         call="annotate",
-        args={"user_goal": GOAL_MARKER, "signal_type": "failure"},
+        args={"user_goal": GOAL_MARKER, "what_happened": "the call came back unusable"},
     )
     assert res["ok"], res["error"]
     assert "ok" in (res["text"] or "").lower(), (
@@ -351,7 +351,7 @@ async def test_a_throwing_scrubber_does_not_break_the_ANNOTATION_tool(
         tmp_path / "p5.jsonl",
         thrower,
         call="annotate",
-        args={"user_goal": GOAL_MARKER, "signal_type": "failure"},
+        args={"user_goal": GOAL_MARKER, "what_happened": "the call came back unusable"},
     )
     assert thrower.tripped, "the probe never reached its target; the test proves nothing"
     # Same trap as the END leg: an escaping throw comes back as an error RESULT
@@ -378,7 +378,7 @@ async def test_the_annotation_workflow_field_goes_through_the_scrubber(
         args={
             "user_goal": "goal alice@acme.com",
             "overall_task": "task alice@acme.com",
-            "signal_type": "failure",
+            "what_happened": "the call came back unusable",
         },
     )
     events = res["events"]

@@ -22,7 +22,10 @@ from typing import Any
 from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent
 from baton.integrations._annotation_name import derive_annotation_tool_name
-from baton.integrations._annotation_payload import build_annotation_payload
+from baton.integrations._annotation_payload import (
+    build_annotation_payload,
+    with_tool_name_required,
+)
 from baton.integrations._config import SessionResolutionContext
 from baton.integrations._llm_text import build_annotation_tool_description
 from baton.integrations.client_observed import observe_client
@@ -34,6 +37,7 @@ from baton.integrations.identity_adapter import (
 from baton.integrations.official import _auth
 from baton.integrations.official._compat import ContextClass as Context
 from baton.integrations.official._compat import MCPServerClass as FastMCP
+from baton.integrations.official._registry import get_tool_registry
 from baton.integrations.official._tool_wrap import (
     _extract_headers_from_context,
     _extract_meta_from_context,
@@ -90,7 +94,8 @@ def register_annotation_tool(
     async def _annotate(
         user_goal: str,
         expected_result: str | None = None,
-        signal_type: str | None = None,
+        what_happened: str | None = None,
+        tool_name: str | None = None,
         overall_task: str | None = None,
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
@@ -101,18 +106,19 @@ def register_annotation_tool(
         # single umbrella `overall_task` label from one stray proactive is
         # enough to merge distinct tasks in any consumer that keys grouping
         # on it (the annotation label outranks the per-call one there).
-        # Rejecting here, rather than requiring signal_type in the schema,
-        # keeps the agent from fabricating a `failure` just to get the call
-        # through — that would corrupt the reactive signal, which is the one
+        # Rejecting here, rather than requiring what_happened in the schema,
+        # keeps the agent from inventing a problem just to get the call
+        # through — that would corrupt the reports, which are the signal
         # worth protecting.
-        if proactive_mode == "off" and signal_type is None:
+        is_report = bool(what_happened and what_happened.strip())
+        if proactive_mode == "off" and not is_report:
             return {
                 "ok": False,
                 "error": (
                     f"{name} is reactive-only on this server. Call it only AFTER "
                     "a tool call returns an unhelpful, empty, failed or "
                     "contradictory result, or when no tool covers what the user "
-                    "asked for — and set signal_type. What the user is trying to "
+                    "asked for — and say what_happened. What the user is trying to "
                     "do is already recorded on each tool call, so no pre-call "
                     "annotation is needed."
                 ),
@@ -203,9 +209,9 @@ def register_annotation_tool(
             logger=logger,
         )
         session_id = fallback_session_id
-        # A proactive annotation (no signal_type) claims the session's proactive
+        # A proactive annotation (not a report) claims the session's proactive
         # slot so the wrap layer won't also synthesise one from an injected param.
-        if signal_type is None:
+        if not is_report:
             tracker.mark(session_id)
         seq = await counter.next(session_id)
         # safe_emit, not safe_write: `build_annotation_payload` runs the
@@ -214,7 +220,7 @@ def register_annotation_tool(
         # so a raising vendor scrubber used to break `_annotate` —
         # a tool on the VENDOR's server, so the vendor's end user sees their
         # server erroring. Inside the thunk a throw drops the event instead,
-        # which is right here: `intent`, `signal_type` and
+        # which is right here: `intent`, `what_happened` and
         # `suggested_improvement` are one report and degrade together.
         #
         # No `scrub_or_none` statement above to pair with this, unlike the
@@ -247,11 +253,22 @@ def register_annotation_tool(
                     overall_task=overall_task,
                     suggested_improvement=suggested_improvement,
                     context=context,
-                    signal_type=signal_type,
+                    what_happened=what_happened,
+                    tool_name=tool_name,
                 ),
             ),
             logger,
         )
         return {"ok": True}
 
+    if proactive_mode == "off":
+        _advertise_tool_name_required(mcp, name)
     return name
+
+
+def _advertise_tool_name_required(mcp: Any, name: str) -> None:
+    try:
+        tool = get_tool_registry(mcp)[name]
+        tool.parameters = with_tool_name_required(tool.parameters)
+    except Exception:
+        logger.exception("baton: could not list tool_name as required on %r", name)

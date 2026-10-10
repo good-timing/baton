@@ -127,9 +127,7 @@ class _Completions:
         return ChatCompletionResponse(
             id="chatcmpl-demo-stub-0001",
             model=model,
-            choices=[
-                _Choice(index=0, message=_Message(role="assistant", content=synthetic_reply))
-            ],
+            choices=[_Choice(index=0, message=_Message(role="assistant", content=synthetic_reply))],
             usage=_Usage(prompt_tokens=42, completion_tokens=24, total_tokens=66),
         )
 

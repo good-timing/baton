@@ -252,10 +252,10 @@ class TestInstallation:
             assert "user_goal" in required, (
                 f"user_goal must be required on annotation tool schema; required={required}"
             )
-            # signal_type + suggested_improvement stay optional — the
-            # tool description marks them reactive-only and they're
-            # absent on every proactive annotation.
-            assert "signal_type" not in required
+            # Refused at call time when missing, never required in the
+            # schema: an agent forced to fill it invents a problem.
+            assert "what_happened" not in required
+            assert "signal_type" not in _input_schema(annotate).get("properties", {})
             assert "suggested_improvement" not in required
         finally:
             await handle.aclose()
@@ -360,7 +360,7 @@ class TestInstallation:
             )
             await mcp.call_tool(
                 handle.annotation_tool_name,
-                {"user_goal": "g", "signal_type": "failure"},
+                {"user_goal": "g", "what_happened": "the call came back unusable"},
             )
             await handle.flush()
         finally:
@@ -537,9 +537,9 @@ class TestAnnotationToolEndToEnd:
         assert p["expected_outcome"] == "2-3 sentence paragraph"
         # Agent sends `overall_task`; the wire carries `workflow`.
         assert p["workflow"] == "code-review"
-        assert p["signal_type"] is None
+        assert p["what_happened"] is None
 
-    async def test_reactive_annotation_with_signal_type(
+    async def test_reactive_annotation_with_what_happened(
         self, configured_mcp: tuple[Any, Any, str]
     ) -> None:
         mcp, handle, path = configured_mcp
@@ -547,7 +547,7 @@ class TestAnnotationToolEndToEnd:
             handle.annotation_tool_name,
             {
                 "user_goal": "fetch the search results",
-                "signal_type": "dead_end",
+                "what_happened": "the call came back unusable",
                 "suggested_improvement": "surface clearer error",
                 "context": {"likely_cause": "content_filter"},
             },
@@ -559,7 +559,7 @@ class TestAnnotationToolEndToEnd:
         assert len(annotations) == 1
         p = annotations[0]["payload"]
         assert p["intent"] == "fetch the search results"
-        assert p["signal_type"] == "dead_end"
+        assert p["what_happened"] == "the call came back unusable"
         assert p["suggested_improvement"] == "surface clearer error"
         assert p["context"]["likely_cause"] == "content_filter"
 
@@ -603,7 +603,7 @@ class TestAllFourEventTypesInOneFlow:
             handle.annotation_tool_name,
             {
                 "user_goal": "find user",
-                "signal_type": "dead_end",
+                "what_happened": "the call came back unusable",
                 "suggested_improvement": "...",
             },
         )

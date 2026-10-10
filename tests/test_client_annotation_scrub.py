@@ -9,7 +9,14 @@ from baton.events import Event
 from baton.sinks import Sink
 
 SECRET = "alice@acme.com"
-FREE_TEXT_FIELDS = ("intent", "expected_outcome", "workflow", "suggested_improvement")
+FREE_TEXT_FIELDS = (
+    "intent",
+    "expected_outcome",
+    "workflow",
+    "suggested_improvement",
+    "what_happened",
+    "tool_name",
+)
 
 
 class _CollectingSink(Sink):
@@ -45,7 +52,7 @@ _PROACTIVE = ("intent", "expected_outcome", "workflow")
 def test_sync_annotate_scrubs_every_free_text_field() -> None:
     sink = _CollectingSink()
     client = Client(tenant_id="ten_abc", vendor_id="v1", sink=sink, scrubber=_redact)
-    client.annotate(signal_type="failure", **_TEXT)
+    client.annotate(**_TEXT)
     client.close()
     assert _annotation_fields(sink, FREE_TEXT_FIELDS) == _REDACTED
 
@@ -53,7 +60,7 @@ def test_sync_annotate_scrubs_every_free_text_field() -> None:
 async def test_async_annotate_scrubs_every_free_text_field() -> None:
     sink = _CollectingSink()
     client = AsyncClient(tenant_id="ten_abc", vendor_id="v1", sink=sink, scrubber=_redact)
-    await client.annotate(signal_type="failure", **_TEXT)
+    await client.annotate(**_TEXT)
     await client.aclose()
     assert _annotation_fields(sink, FREE_TEXT_FIELDS) == _REDACTED
 

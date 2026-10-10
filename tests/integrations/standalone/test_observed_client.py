@@ -64,7 +64,7 @@ async def test_the_surface_snapshot_carries_no_client_and_caller_events_do(
                     await client.call_tool(name, {})
             await client.call_tool(
                 handle.annotation_tool_name,
-                {"user_goal": "look something up", "signal_type": "failure"},
+                {"user_goal": "look something up", "what_happened": "the call came back unusable"},
             )
     finally:
         await handle.aclose()
@@ -107,7 +107,9 @@ async def test_a_user_agent_sent_over_http_is_observed_and_scrubbed() -> None:
             async with Client(transport) as client:
                 await client.call_tool("work", {"caller": caller})
                 (annotate,) = [t.name for t in await client.list_tools() if t.name != "work"]
-                await client.call_tool(annotate, {"user_goal": "g", "signal_type": "failure"})
+                await client.call_tool(
+                    annotate, {"user_goal": "g", "what_happened": "the call came back unusable"}
+                )
 
         await asyncio.gather(call_as("client-a"), call_as("client-b"))
 

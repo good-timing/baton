@@ -98,7 +98,7 @@ async def _run_official_in_memory(events_path: Path) -> None:
             await client.call_tool("lookup", {"name": "alice"})
             await client.call_tool(
                 handle.annotation_tool_name,
-                {"user_goal": "look up", "signal_type": "failure"},
+                {"user_goal": "look up", "what_happened": "the call came back unusable"},
             )
     finally:
         await handle.aclose()
@@ -131,7 +131,7 @@ async def _run_standalone_in_memory(events_path: Path) -> None:
             await client.call_tool("lookup", {"name": "alice"})
             await client.call_tool(
                 handle.annotation_tool_name,
-                {"user_goal": "look up", "signal_type": "failure"},
+                {"user_goal": "look up", "what_happened": "the call came back unusable"},
             )
     finally:
         await handle.aclose()

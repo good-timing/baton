@@ -7,7 +7,7 @@ capture / interpretation / egress separation is documented in SPEC §11.
 Core (always installed):
 
 - ``__version__`` — embedded in every emitted event's ``sdk_version`` field
-- ``Client``, ``AsyncClient``, ``SignalType`` — library API for Skill-instrumented
+- ``Client``, ``AsyncClient`` — library API for Skill-instrumented
   agent code (see the "Library API" section in ``README.md``)
 - ``Principal`` — the return type of a ``VendorConfig.resolve_principal`` hook.
   Exported because that hook cannot be written without constructing one.
@@ -54,7 +54,6 @@ __all__ = [
     "AsyncTrace",
     "Client",
     "Principal",
-    "SignalType",
     "Trace",
     "VendorConfig",
     "__version__",
@@ -68,7 +67,7 @@ __all__ = [
 # to events.py (which imports it via ``from baton import __version__``).
 # Trace + AsyncTrace are re-exported so typed callers can write
 # ``def f(t: baton.Trace) -> ...`` without reaching into ``baton.client``.
-from baton.client import AsyncClient, AsyncTrace, Client, SignalType, Trace
+from baton.client import AsyncClient, AsyncTrace, Client, Trace
 from baton.identity import Principal
 
 # One entry point for both adapters, detecting on structure — see

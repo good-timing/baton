@@ -52,7 +52,7 @@ def _drive_sync(scrubber: Any, leg: str) -> BaseException | None:
     try:
         if leg == "annotate":
             client.annotate(
-                signal_type="failure", intent=LEG_MARKER["annotate"], context={"row": "42"}
+                what_happened="it failed", intent=LEG_MARKER["annotate"], context={"row": "42"}
             )
             return None
         try:
@@ -63,7 +63,7 @@ def _drive_sync(scrubber: Any, leg: str) -> BaseException | None:
                     t.observed(error=ValueError(LEG_MARKER["error_result"]))
                 else:
                     raise raised
-                t.annotate(signal_type="failure", context={"note": IN_TRACE_ANNOTATION})
+                t.annotate(what_happened=IN_TRACE_ANNOTATION)
         except _VendorError as caught:
             assert caught is raised, "the vendor caught a different exception object"
             return caught
@@ -78,7 +78,7 @@ async def _drive_async(scrubber: Any, leg: str) -> BaseException | None:
     try:
         if leg == "annotate":
             await client.annotate(
-                signal_type="failure", intent=LEG_MARKER["annotate"], context={"row": "42"}
+                what_happened="it failed", intent=LEG_MARKER["annotate"], context={"row": "42"}
             )
             return None
         try:
@@ -89,7 +89,7 @@ async def _drive_async(scrubber: Any, leg: str) -> BaseException | None:
                     t.observed(error=ValueError(LEG_MARKER["error_result"]))
                 else:
                     raise raised
-                await t.annotate(signal_type="failure", context={"note": IN_TRACE_ANNOTATION})
+                await t.annotate(what_happened=IN_TRACE_ANNOTATION)
         except _VendorError as caught:
             assert caught is raised, "the vendor caught a different exception object"
             return caught

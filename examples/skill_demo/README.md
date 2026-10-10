@@ -10,7 +10,7 @@ Useful as a copy-paste starting point for vendors writing their own Baton-aware 
 
 | File | Purpose |
 |---|---|
-| `demo.py` | The worked example. Mirrors the prescribed pattern from a typical chat-completions Skill (vendor-agnostic). Two calls: one succeeds, one fails with a real-world capability-mismatch pattern. The failure triggers an agent-raised `annotate(signal_type=DEAD_END, ...)` — the "ticket." |
+| `demo.py` | The worked example. Mirrors the prescribed pattern from a typical chat-completions Skill (vendor-agnostic). Two calls: one succeeds, one fails with a real-world capability-mismatch pattern. The failure triggers an agent-raised `annotate(what_happened=..., tool_name=...)` — the "ticket." |
 | `fake_vendor.py` | Minimal stub of a vendor SDK client (`client.chat.completions.create` surface — a common chat-completions API shape). Reproduces a 400 ("Grammar must have a 'properties' field") when `response_format={"type": "json_schema"}` is sent to a small model that doesn't support it. Real customer code would import from the vendor's SDK instead — that's the only swap. |
 | `local_ingest.py` | Tiny stdlib HTTP collector that prints received events; lets `demo.py` ship over a real HTTP target without standing up infrastructure. |
 

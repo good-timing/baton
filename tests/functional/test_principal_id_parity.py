@@ -96,7 +96,8 @@ async def _run_official_path(
         async with connected_session(mcp) as client:
             await client.call_tool("lookup", {"name": "alice"})
             await client.call_tool(
-                handle.annotation_tool_name, {"user_goal": "look up", "signal_type": "failure"}
+                handle.annotation_tool_name,
+                {"user_goal": "look up", "what_happened": "the call came back unusable"},
             )
         return handle.annotation_tool_name
     finally:
@@ -136,7 +137,8 @@ async def _run_standalone_path(
         async with Client(mcp) as client:
             await client.call_tool("lookup", {"name": "alice"})
             await client.call_tool(
-                handle.annotation_tool_name, {"user_goal": "look up", "signal_type": "failure"}
+                handle.annotation_tool_name,
+                {"user_goal": "look up", "what_happened": "the call came back unusable"},
             )
     finally:
         await handle.aclose()

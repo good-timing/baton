@@ -23,7 +23,7 @@ cd <repo-root>
 | `AsyncClient` emits directly on the caller's async loop | Same shape, async path |
 | Tool-call lifecycle: `start` → `end` with observed result | Sync + async; checks `duration_ms` populated |
 | Proactive annotation when `intent`/`expected`/`workflow` set | Auto-emits inside `__enter__` with same `session_id` as start |
-| Reactive standalone annotation via `client.annotate(...)` | Full payload incl. `signal_type` + `context` |
+| Reactive standalone annotation via `client.annotate(...)` | Full payload incl. `what_happened`, `tool_name` + `context` |
 | Exception path emits `tool_call_error` and re-raises | Sync + async; `error_type` = exception class name |
 | Both paths target the SAME `POST /v0/events` ingest contract | Bearer auth header verified; envelope matches SPEC §11.4 |
 | Event envelope shape matches SPEC §11.4 | All required envelope fields present |

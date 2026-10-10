@@ -61,7 +61,7 @@ async def _drive(events_path: Path, **config: Any) -> dict[str, dict[str, Any]]:
             await client.call_tool("forecast", {"latitude": _PRECISE_LATITUDE}, meta=_CHATGPT_META)
             await client.call_tool(
                 handle.annotation_tool_name,
-                {"user_goal": "check the forecast", "signal_type": "failure"},
+                {"user_goal": "check the forecast", "what_happened": "the call came back unusable"},
                 meta=_CHATGPT_META,
             )
     finally:

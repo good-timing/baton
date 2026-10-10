@@ -8,9 +8,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## 0.8.15: resource and prompt events
+## 0.8.15: reports in the agent's own words; resource and prompt events
 
-Nothing in your code has to change. If your server has resources or prompts,
+**Breaking, for agents and for the library API.** Install this only against a
+collector that already accepts `what_happened` and tells a report from a note
+by it (SPEC §11.4). An older collector either reads each report as a
+note, so no report count includes it, or refuses it if it validates the
+payload against the earlier schema. A refused report is not retried.
+
+Nothing else in your code has to change. If your server has resources or prompts,
 your `resolve_principal` hook is now also asked on those requests, with
 `tool_name` set to `None`, as on a `tools/list` request.
 
@@ -28,10 +34,33 @@ your `resolve_principal` hook is now also asked on those requests, with
 
 ### Changed
 
+- **An agent reports a problem in its own words; it no longer picks a
+  category.** The annotation tool takes `what_happened` (what it asked for,
+  what came back, why that was unusable) and `tool_name` (the tool that went
+  wrong, or the word `none` when no tool exists for the request). The `signal_type`
+  parameter and its eight values are gone from the tool, its description and
+  the server instructions. The collector assigns the group (SPEC §11.5.5).
+- **`client.annotate(...)` and `trace.annotate(...)` take `what_happened=` and
+  `tool_name=`** in place of `signal_type=`.
+- **A missing tool is reported once per user request.** The instructions say
+  so; an agent looping over a single-item tool used to file once per call.
+- `tool_name` on an annotation has three states: a name, `none` (or `""`)
+  for "no tool exists", and null for not stated. The SDK sends what it was
+  given.
+- **A reports-only annotation tool lists `tool_name` as required** in its
+  advertised schema (both adapters, `proactive_mode="off"`, the default). A
+  report that leaves it out is still taken. Without the listing, agents with
+  no tool to name left the field out.
 - **`result_capture_mode="off"` warns once at install.** A failed
   resource or prompt request sends the message of the exception your handler
   raised, in both modes. Raise a message that names the resource, not its
   contents.
+
+### Removed
+
+- **`baton.SignalType`.** Nothing replaces it. `signal_type` stays in the
+  event schema, never set by this SDK, so a collector can still read reports
+  from older versions.
 
 ## 0.8.14: tool list events
 

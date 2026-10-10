@@ -32,7 +32,7 @@ import pytest
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Request, Response
 
-from baton import AsyncClient, Client, SignalType
+from baton import AsyncClient, Client
 from baton.events import DEFAULT_CONSENT_TOKEN
 from baton.sinks import HttpSink
 
@@ -79,30 +79,6 @@ def async_client(capture_server: HTTPServer) -> AsyncClient:
         consent_token="ct-test",
         sink=HttpSink(url=capture_server.url_for(""), api_key="bk_test_xyz"),
     )
-
-
-# =============================================================================
-# SignalType enum
-# =============================================================================
-
-
-class TestSignalType:
-    def test_all_eight_signal_types_present(self) -> None:
-        values = {s.value for s in SignalType}
-        assert values == {
-            "failure",
-            "retry_loop",
-            "dead_end",
-            "parameter_confusion",
-            "slow_performance",
-            "abandonment",
-            "feature_gap",
-            "other",
-        }
-
-    def test_str_enum_serializes_as_bare_string(self) -> None:
-        assert SignalType.DEAD_END == "dead_end"
-        assert str(SignalType.FAILURE) == "failure"
 
 
 # =============================================================================
@@ -841,7 +817,8 @@ class TestSyncAnnotate:
         captured_events: list[dict[str, Any]],
     ) -> None:
         sync_client.annotate(
-            signal_type=SignalType.DEAD_END,
+            what_happened="asked for warm intros; got a flat list",
+            tool_name="find_mutuals",
             intent="find warmest mutual",
             suggested_improvement="add warmth signals",
             context={"target_user_id": "abc"},
@@ -851,33 +828,43 @@ class TestSyncAnnotate:
         assert len(captured_events) == 1
         ann = captured_events[0]
         assert ann["event_type"] == "annotation"
-        assert ann["payload"]["signal_type"] == "dead_end"
+        assert ann["payload"]["what_happened"] == "asked for warm intros; got a flat list"
+        assert ann["payload"]["tool_name"] == "find_mutuals"
+        assert ann["payload"]["signal_type"] is None
         assert ann["payload"]["intent"] == "find warmest mutual"
         assert ann["payload"]["suggested_improvement"] == "add warmth signals"
         assert ann["payload"]["context"] == {"target_user_id": "abc"}
 
-    def test_annotate_accepts_str_signal_type(
+    def test_annotate_keeps_no_tool_apart_from_not_stated(
         self,
         sync_client: Client,
         captured_events: list[dict[str, Any]],
     ) -> None:
-        sync_client.annotate(signal_type="feature_gap")
+        sync_client.annotate(what_happened="no tool can do a bulk update", tool_name="")
+        sync_client.annotate(what_happened="it failed")
         sync_client.flush()
-        assert captured_events[0]["payload"]["signal_type"] == "feature_gap"
+        assert [e["payload"]["tool_name"] for e in captured_events] == ["", None]
 
-    def test_annotate_rejects_typo_signal_type(
+    def test_a_trace_report_carries_the_tool_it_names(
         self,
         sync_client: Client,
         captured_events: list[dict[str, Any]],
     ) -> None:
-        # The RE-05 fix: silently shipping a non-standard signal_type
-        # (typo like "dead-end" vs "dead_end") used to slip through and
-        # bucket as "other" Console-side. Now raises ValueError immediately.
-        with pytest.raises(ValueError, match="signal_type"):
-            sync_client.annotate(signal_type="dead-end")
-        # No event should have been emitted for the failed call.
+        with sync_client.trace(tool_name="search") as trace:
+            trace.annotate(what_happened="it failed", tool_name="none")
+            trace.observed("ok")
         sync_client.flush()
-        assert captured_events == []
+        (report,) = [e for e in captured_events if e["event_type"] == "annotation"]
+        assert report["payload"]["tool_name"] == "none"
+
+    def test_annotate_with_blank_what_happened_is_a_note(
+        self,
+        sync_client: Client,
+        captured_events: list[dict[str, Any]],
+    ) -> None:
+        sync_client.annotate(what_happened="   ", intent="look something up")
+        sync_client.flush()
+        assert captured_events[0]["payload"]["what_happened"] is None
 
 
 # =============================================================================
@@ -904,7 +891,7 @@ class TestSyncLifecycle:
         )
         client.close()
         with pytest.raises(RuntimeError, match="closed"):
-            client.annotate(signal_type=SignalType.OTHER)
+            client.annotate(what_happened="it failed")
 
     def test_close_idempotent(self, capture_server: HTTPServer) -> None:
         client = Client(
@@ -995,13 +982,15 @@ class TestAsyncHappyPath:
         captured_events: list[dict[str, Any]],
     ) -> None:
         try:
-            await async_client.annotate(signal_type=SignalType.FEATURE_GAP)
+            await async_client.annotate(what_happened="no tool does this", tool_name="")
             await async_client.flush()
         finally:
             await async_client.aclose()
 
         assert captured_events[0]["event_type"] == "annotation"
-        assert captured_events[0]["payload"]["signal_type"] == "feature_gap"
+        assert captured_events[0]["payload"]["what_happened"] == "no tool does this"
+        assert captured_events[0]["payload"]["tool_name"] == ""
+        assert captured_events[0]["payload"]["tool_name"] == ""
 
     async def test_default_agent_runtime_is_python_library(
         self,
@@ -1015,6 +1004,21 @@ class TestAsyncHappyPath:
         finally:
             await async_client.aclose()
         assert all(e["agent_runtime"] == "python-library" for e in captured_events)
+
+    async def test_an_async_trace_report_carries_the_tool_it_names(
+        self,
+        async_client: AsyncClient,
+        captured_events: list[dict[str, Any]],
+    ) -> None:
+        try:
+            async with async_client.trace(tool_name="search") as trace:
+                await trace.annotate(what_happened="it failed", tool_name="none")
+                trace.observed("ok")
+            await async_client.flush()
+        finally:
+            await async_client.aclose()
+        (report,) = [e for e in captured_events if e["event_type"] == "annotation"]
+        assert report["payload"]["tool_name"] == "none"
 
     async def test_async_context_manager(
         self,

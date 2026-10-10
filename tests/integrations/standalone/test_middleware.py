@@ -547,7 +547,8 @@ async def test_headers_are_read_once_per_request(
                 await client.call_tool("lookup", {})
             else:
                 await client.call_tool(
-                    handle.annotation_tool_name, {"user_goal": "g", "signal_type": "failure"}
+                    handle.annotation_tool_name,
+                    {"user_goal": "g", "what_happened": "the call came back unusable"},
                 )
     finally:
         await handle.aclose()

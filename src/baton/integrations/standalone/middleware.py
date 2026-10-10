@@ -44,6 +44,7 @@ from baton.events import (
     ToolCallStartEvent,
     ToolCallStartPayload,
 )
+from baton.integrations._annotation_payload import with_tool_name_required
 from baton.integrations._config import SessionResolutionContext
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
@@ -93,6 +94,7 @@ class BatonMiddleware(Middleware):
         counter: SessionCounter | None = None,
         fallback_session_id: str | None = None,
         annotation_tool_name: str | None = None,
+        annotation_requires_tool_name: bool = False,
         intent_param_mode: str = "required",
         result_capture_mode: ResultCaptureMode = "full",
         proactive_tracker: ProactiveTracker | None = None,
@@ -108,6 +110,7 @@ class BatonMiddleware(Middleware):
         self._counter = counter or SessionCounter()
         self._fallback_session_id = fallback_session_id or f"sdk-{uuid7()}"
         self._annotation_tool_name = annotation_tool_name
+        self._annotation_requires_tool_name = annotation_requires_tool_name
         self._intent_param_mode = intent_param_mode
         self._result_capture_mode = result_capture_mode
         self._proactive = proactive_tracker or ProactiveTracker()
@@ -143,13 +146,14 @@ class BatonMiddleware(Middleware):
         """
         tools = await call_next(context)
         await self._maybe_emit_surface_snapshot(tools)
-        if self._intent_param_mode == "off":
-            return tools
         out: list[Tool] = []
         for tool in tools:
             # The annotation tool takes ``intent`` explicitly — don't inject
             # redundant goal params into it.
             if tool.name == self._annotation_tool_name:
+                out.append(self._annotation_tool_as_advertised(tool))
+                continue
+            if self._intent_param_mode == "off":
                 out.append(tool)
                 continue
             try:
@@ -167,6 +171,15 @@ class BatonMiddleware(Middleware):
                 self._on_native_overall_task(tool.name)
             out.append(new_tool)
         return out
+
+    def _annotation_tool_as_advertised(self, tool: Tool) -> Tool:
+        if not self._annotation_requires_tool_name:
+            return tool
+        try:
+            return tool.model_copy(update={"parameters": with_tool_name_required(tool.parameters)})
+        except Exception:
+            logger.exception("baton: could not list tool_name as required")
+            return tool
 
     def _inject_goal_params(self, tool: Tool) -> tuple[Tool, dict[str, str]]:
         """Return a copy of ``tool`` with the three intent params injected,

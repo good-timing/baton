@@ -43,7 +43,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
-from baton import AsyncClient, Client, SignalType
+from baton import AsyncClient, Client
 
 
 # =============================================================================
@@ -152,7 +152,8 @@ def run_sync(ingest_url: str) -> None:
 
         # Reactive standalone annotation: agent noticed a feature gap.
         client.annotate(
-            signal_type=SignalType.FEATURE_GAP,
+            what_happened="the model object does not say which features it supports",
+            tool_name="",
             intent="check supported features for a model",
             suggested_improvement=(
                 "expose model metadata fields like supports_tool_calling and "
@@ -204,7 +205,8 @@ async def run_async(ingest_url: str) -> None:
             trace.observed(result)
 
         await client.annotate(
-            signal_type=SignalType.SLOW_PERFORMANCE,
+            what_happened="a short prompt took 850 ms",
+            tool_name="chat.completions.create",
             suggested_improvement="add a low-latency model variant for short prompts",
             context={"observed_latency_ms": 850},
         )
@@ -291,15 +293,13 @@ def assert_events(events: list[dict[str, Any]]) -> None:
             f"sequence numbers not monotonic for session {sess[:8]}: {seqs}"
         )
 
-    # Sample inspection: signal_type on standalone annotations should match
-    standalone_anns = [
-        e
-        for e in events
-        if e["event_type"] == "annotation" and e["payload"].get("signal_type")
+    # The two standalone annotations are reports: one names no tool.
+    reports = [
+        e for e in events if e["event_type"] == "annotation" and e["payload"].get("what_happened")
     ]
-    signal_types = {a["payload"]["signal_type"] for a in standalone_anns}
-    assert signal_types == {"feature_gap", "slow_performance"}, (
-        f"unexpected signal_types: {signal_types}"
+    reported_tools = {a["payload"]["tool_name"] for a in reports}
+    assert reported_tools == {"", "chat.completions.create"}, (
+        f"unexpected reported tools: {reported_tools}"
     )
 
     print("[assert] OK - all assertions passed ✓")
@@ -329,15 +329,13 @@ def main() -> int:
             extra = ""
             if type_str == "annotation":
                 p = ev["payload"]
-                if p.get("signal_type"):
-                    extra = f" signal_type={p['signal_type']}"
+                if p.get("what_happened"):
+                    extra = f" report={p['what_happened'][:30]!r}"
                 elif p.get("intent"):
                     extra = f" intent={p['intent'][:30]!r}"
             elif type_str == "tool_call_error":
                 extra = f" error_type={ev['payload']['error_type']}"
-            print(
-                f"  [{i + 1:2d}] {type_str:20s} {tenant:30s} sess={sess} seq={seq}{extra}"
-            )
+            print(f"  [{i + 1:2d}] {type_str:20s} {tenant:30s} sess={sess} seq={seq}{extra}")
 
         assert_events(_captured)
     finally:
