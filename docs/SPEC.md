@@ -4,7 +4,7 @@
 
 *Stability: **exploratory**. Breaking changes are expected until v1.0. Read `CHARTER.md` for project disciplines and open decisions.*
 
-*Vocabulary: a **report** is what an agent files, in its own words, when a tool call goes wrong or no tool fits (§5.1). A **signal** is what the worker builds from a report or from a failure it detected (§3). The worker puts each report in one of seven **groups**, which say HOW the friction happened (§11.5.5). The eight `signal_type` values (§3.1) are words an agent used to pick; from `baton-sdk` 0.8.15 no agent picks one and the worker does not fill one in.*
+*Vocabulary: a **report** is what an agent files, in its own words, when a tool call goes wrong or no tool fits (§5.1). A **signal** is what the worker builds from a report or from a failure it detected (§3). How a collector sorts reports into kinds is its own business and is not part of this spec (§11.5.5). The eight `signal_type` values (§3.1) are words an agent used to pick; from `baton-sdk` 0.8.15 no agent picks one and the worker does not fill one in.*
 
 > **"Console" vs "collector".** This spec describes the **HTTPS wire contract** that an `HttpSink` ships events to. The receiver is called the **Console** throughout for brevity, but it's just whatever HTTP collector the vendor points the sink at — a self-hosted ingest service, a hosted Good Timing Console, or a third-party-built one. Vendors who only need local capture can use `StdoutSink` / `FileSink` and ignore this spec entirely; the event envelope (§11.4) is sink-agnostic.
 
@@ -87,9 +87,8 @@ This is the canonical signal schema the collector worker produces by stitching e
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `signal_id` | string (UUIDv7) | yes | Client-generated. Idempotency key. |
-| `signal_type` | enum (see below) \| null | no | One of eight values, or null. A report from a producer older than `baton-sdk` 0.8.15 carries the value its agent picked, and the worker keeps it. A report from 0.8.15 on has none: the field is null and `group` describes the signal. The worker does not fill it in. A signal the worker built from a failure it detected, with no report, is `failure` (§6.1). |
-| `group` | enum \| null | no | HOW the friction happened: one of the seven groups of §11.5.5, or `none`. The worker's judgement, never the agent's. Null on a signal the worker has not grouped. |
-| `what_happened` | string \| null | yes (nullable) | The agent's own account of the problem, as filed (§5.1.1), after scrubbing (§7). Always kept beside `group`, so a reader can check the group against the words it came from. Null on a signal not built from a report, and on a report from a producer older than 0.8.15. |
+| `signal_type` | enum (see below) \| null | no | One of eight values, or null. A report from a producer older than `baton-sdk` 0.8.15 carries the value its agent picked, and the worker keeps it. A report from 0.8.15 on has none: the field is null, and the worker does not fill it in. A signal the worker built from a failure it detected, with no report, is `failure` (§6.1). |
+| `what_happened` | string \| null | yes (nullable) | The agent's own account of the problem, as filed (§5.1.1), after scrubbing (§7). Null on a signal not built from a report, and on a report from a producer older than 0.8.15. |
 | `reported_tool` | string \| null | no | The report's `tool_name`, as filed, with its three states kept (§5.1.1): a name, `""` for "the agent said no tool exists", null for not stated. Kept apart from `tool_calls`, which is the call the worker matched: the two can differ, and `""` is a fact a consumer can count without a model. |
 | `vendor_id` | string | yes | Stable vendor identifier; matches `VendorConfig.vendor_id`. Lowercase ASCII, `[a-z0-9-]+`. |
 | `session_id` | string | yes | Session correlation ID. Stable across tool calls in one agent session where a session-scoped identifier is observable; an opaque per-event UUID where none is. See §3.4 for the correlation modes and the layered resolution fallback. |
@@ -119,7 +118,7 @@ This is the canonical signal schema the collector worker produces by stitching e
 | `feature_gap` | User wanted a capability that doesn't exist as a tool. | Agent-raised via annotation tool (§5.1) |
 | `other` | Anything that doesn't fit above. Use `intent` + `expected_outcome` to describe. | Agent-raised |
 
-**Who sets it.** From `baton-sdk` 0.8.15 an agent neither sees nor sends these words (§5.1.1). The "Typical source" column above describes producers older than that. A signal built from such a report carries no agent-picked word: its `signal_type` is null, and `group` is the field to read. The worker does not translate a group back into one of the eight words. A consumer SHOULD read `group` for every report, old or new, once the worker has grouped the stored ones (§11.5.5).
+**Who sets it.** From `baton-sdk` 0.8.15 an agent neither sees nor sends these words (§5.1.1). The "Typical source" column above describes producers older than that. A signal built from such a report carries no agent-picked word: its `signal_type` is null, and the worker does not put one of the eight words there. A null is not "nothing wrong": the report is `what_happened`.
 
 ### 3.2 Nested types
 
@@ -386,7 +385,7 @@ The SDK MUST register an annotation tool on the vendor's MCP server AND MUST set
     context: object | null = null,
   ) -> { ok: true }
   ```
-  - `what_happened` is the report: one or two plain sentences in the agent's own words saying what it asked for, what came back, and why that was unusable. **A filled `what_happened` is what makes an annotation a report (§11.4).** A value that is empty or only whitespace counts as absent. The tool text MUST ask for the agent's own words and MUST NOT offer a list of categories to pick from: the category is the worker's to assign (§11.5.5).
+  - `what_happened` is the report: one or two plain sentences in the agent's own words saying what it asked for, what came back, and why that was unusable. **A filled `what_happened` is what makes an annotation a report (§11.4).** A value that is empty or only whitespace counts as absent. The tool text MUST ask for the agent's own words and MUST NOT offer a list of categories to pick from: sorting reports is the collector's job, not the agent's (§11.5.5).
   - `tool_name` is the ONE tool the report is about. It has three states: a name; "no tool", which is the agent SAYING no tool exists for what the user asked; and null, which is nothing stated (every report from a producer older than 0.8.15). The agent-facing text asks for the word `none` for "no tool", and a producer sends what the agent wrote: it MUST NOT rewrite the value, and MUST NOT turn an empty string into null. The worker reads `none` and its variants as "no tool" (§11.5.5) and stores that as `""` in `reported_tool`. A producer that only asks for reports MUST list `tool_name` under `required` in the annotation tool's advertised schema, so that an agent with no tool to name says so rather than leaving the field out; it MUST still take a report that omits it. A description that says "required" is not enough: measured 2026-10-09, with the field described as required but not listed, no agent sent `""` in six sessions with no tool to name and four left the field out; with it listed, one of six left it out. Asked for an empty string, no agent sent one in twelve sessions (three sent two quote characters, four sent `none`), which is why the text asks for the word `none` and the worker normalises (§11.5.5). It is never a list: an agent with a problem on two tools files two reports, and each becomes its own signal. The worker uses it to pick the call the report is about (§11.5.2).
   - There is no `signal_type` parameter. A producer from `baton-sdk` 0.8.15 MUST NOT advertise one and MUST NOT send one. A producer that only asks for reports (§5.1.2, the default) MUST refuse a call with no `what_happened`, and the refusal text MUST name only parameters the agent can see.
   - `workflow` and `suggested_improvement` map directly to the same-named top-level fields in the signal payload (§3.1). Both were originally free-form `context.*` keys; promoted to top-level after empirical validation showed consistent recurrence across their relevant signal types.
@@ -621,7 +620,7 @@ These are future candidates if the layered approach proves insufficient in pract
 
 ## 6. Signal detection rules
 
-Signal classification splits responsibilities between the SDK and the collector's worker. The SDK emits events at the MCP transport boundary regardless of "signal-worthiness"; the worker assembles those events into SignalPayloads (§3) per §11.5, and assigns each report's `group` (§11.5.5).
+Signal classification splits responsibilities between the SDK and the collector's worker. The SDK emits events at the MCP transport boundary regardless of "signal-worthiness"; the worker assembles those events into SignalPayloads (§3) per §11.5.
 
 ### 6.1 SDK-emitted conditions (mechanical, narrow)
 
@@ -634,7 +633,7 @@ The SDK does NOT do state-dependent detection (retry-loop, dead-end pattern matc
 
 ### 6.2 Agent-raised signals
 
-The calling agent raises a signal by filing a report: a call to the annotation tool (§5.1) with `what_happened` filled. The agent describes; it does not classify. The worker assigns the group (§11.5.5). It does not derive a `signal_type` from it (§3.1).
+The calling agent raises a signal by filing a report: a call to the annotation tool (§5.1) with `what_happened` filled. The agent describes; it does not classify, and the worker does not derive a `signal_type` from the report (§3.1). How a collector sorts reports is its own business (§11.5.5).
 
 What agents report, in practice:
 
@@ -643,7 +642,7 @@ What agents report, in practice:
 - the agent sees, after the fact, that it called a tool wrongly;
 - an error came back with no usable reason.
 
-Slowness is not one of the seven groups, and a report about it is grouped `none`. Every tool-call event already carries `duration_ms`, so slowness is the worker's to measure, not the agent's to judge (§6.4).
+Every tool-call event already carries `duration_ms`, so slowness is the worker's to measure, not the agent's to judge (§6.4).
 
 The annotation event ships with the static `consent_token` from `VendorConfig` (§9), like every other event.
 
@@ -1496,43 +1495,15 @@ Pairing a `tool_call_start` with its `tool_call_end` / `tool_call_error` is a se
 
 **Events stored before a producer minted the id carry none.** A consumer holding such history either leaves those calls unpaired or writes ids onto them once, from whatever pairing it used at the time, and marks them as its own.
 
-#### 11.5.5 Report grouping (worker-side)
+#### 11.5.5 Reading a report (worker-side)
 
-The agent says what happened. The worker says which kind of problem it is. An agent that picks its own category picks from words it half understands, at the moment it understands the failure least; the worker can read the same report beside the call it is about.
+The agent says what happened; it does not classify (§5.1.1). Whether a collector sorts reports into kinds, which kinds, and by what method are the collector's own business and are not part of this spec. This section holds only what any collector needs to read a report's fields correctly.
 
-**The groups.** A group is a mechanism: HOW the friction happened. Each report gets exactly one, or `none`.
+**A report that names no tool** is one whose `tool_name` is `none` or `""`. Agents spell it several ways, so the worker SHOULD strip surrounding spaces, brackets and quote marks, and then read an empty result, `none`, `n/a` or `null`, in any letter case, as `""`. This covers `(none)` and a value that is itself two quote characters, which agents send when told to pass an empty string. A null `tool_name` stays "not stated" and is not read this way. It is the agent saying no tool exists for the request. The reverse does not hold: a report that names a tool can still be about something the server lacks, as when the agent loops over a single-item tool for want of a bulk one, or passes an argument the tool does not have. For such reports `context.requested_capability`, when present, is the text to compare when counting how many reports ask for the same thing.
 
-| Group | Definition |
-|---|---|
-| `guessed_value` | agent guessed a field path, entity id or type, URI or enum value the surface documents |
-| `wrong_argument_shape` | agent used a wrong argument name that is a near match of a real one (`projectId` for `project_id`), a missing wrapper, JSON-encoded strings, or omitted a required argument |
-| `server_contract_contradiction` | schema, description or example contradicts what the server accepts, or a precondition is undocumented |
-| `opaque_upstream_failure` | upstream error or outage with no usable reason |
-| `silently_wrong_result` | ok result that misleads: wrong matches, masked empty, missing content, dropped write, or content that is right but badly formed (e.g. HTML-encoded text) |
-| `missing_capability` | the surface does not expose what the task needs. Includes an argument the tool rejects as unknown that is NOT a near match of any real one: the agent asked for a control the tool does not have |
-| `environment_or_access` | fixture not ready, permission or role missing, or blocked outside the server |
+**`signal_type` is not a classification.** When an older producer sent one, it is the word that agent picked; a worker that sorts reports MUST NOT use it as the result. A report filed before `baton-sdk` 0.8.15 keeps the `signal_type` its agent sent.
 
-Rules that go with the table:
-
-- **`none` is an answer.** When no group fits, the worker MUST say `none` and SHOULD record what is missing. It MUST NOT force the nearest group. A consumer shows such a report as not grouped, with the agent's words.
-- **A "not found" that may be true is `none`** unless the report or the call shows the thing should exist. A 404 for a release that was never published is the right answer, not friction.
-- **A report that does not say why** is grouped from the call it is about (§11.5.2). If the cause is still unknown, `none`.
-- **Slowness has no group.** The worker measures it from `duration_ms`.
-- **Stored reports are grouped too.** A report filed before this section existed is grouped by the same method from the text it carries; its `signal_type` stays as the agent sent it and is not the group. A worker MAY group reports before any consumer reads the result, to compare the two.
-- The set is additive-only until v1.0 (§13). `missing_capability` is the group a product team reads as a feature request, and a consumer MAY label it so.
-
-**Who decides.** `group` is the worker's judgement and is never read from the agent. The agent's words stay on the signal as `what_happened` (§3.1), and a consumer SHOULD show them beside the group.
-
-**What the worker may read.** The technique is implementation-defined and MUST be recorded with the result (which method, and for a model, which model and settings), so a reader can tell two methods' answers apart. It MAY use, in rising order of how much it helps:
-
-1. the report's own text and `tool_name`, including the fact that the agent named no tool (see below);
-2. the tool descriptions and schemas of the surface (`surface_snapshot`, §11.4);
-3. the call the report is about: its params, and its result or error (§11.5.2);
-4. the other calls of the same turn.
-
-**A report that names no tool** is one whose `tool_name` is `none` or `""`. Agents spell it several ways, so the worker SHOULD strip surrounding spaces, brackets and quote marks, and then read an empty result, `none`, `n/a` or `null`, in any letter case, as `""`. This covers `(none)` and a value that is itself two quote characters, which agents send when told to pass an empty string. A null `tool_name` stays "not stated" and is not read this way. Such a report is strong evidence for `missing_capability` and the worker SHOULD pass that fact to whatever does the grouping. It is evidence in one direction only: a report that names a tool can still be a missing capability, as when the agent loops over a single-item tool for want of a bulk one, or passes an argument the tool does not have. The worker MUST NOT decide the group from `tool_name` alone. For such reports `context.requested_capability`, when present, is the text to compare when counting how many reports ask for the same thing.
-
-It MUST NOT use the report's `signal_type`, when an older producer sent one, as the group. A producer's capture settings bound all of this: where a result was withheld (`result_capture`, §11.4.3) the worker groups without it, and never treats a withheld result as an empty one.
+**A withheld result is not an empty one.** Where a result was withheld (`result_capture`, §11.4.3), a worker reads the report without it.
 
 **Repeats.** An agent working around one missing tool can file the same report on every call of the loop. Reports in one turn that say the same thing are one problem: a consumer SHOULD show and count them once, with the number of times filed. Each stays its own stored signal.
 
@@ -1601,6 +1572,8 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **Spec-only, ships in no release (2026-10-12) — the list of report groups leaves this spec.** No change to the event envelope (§11.4) and no producer change: a group was never sent by a producer. **REMOVED from the signal (§3.1):** `group`, added in 0.8.15. **§11.5.5** no longer defines seven groups or the rules for assigning them; it keeps what a collector needs to read a report (how "no tool" is spelled, that `signal_type` is not a classification, that a withheld result is not empty, repeats). Why: sorting reports is a collector's own logic, and its wording should be free to change without a change here.
 
 - **0.8.15 (2026-10-09) — BREAKING at the agent surface and the library API, on a PATCH number: an agent reports in its own words, and the worker assigns the group (§5.1.1, §11.4, §11.5.2, §11.5.5).**
 
@@ -1926,7 +1899,7 @@ Open spec-level design questions. Resolutions land in subsequent minor versions 
 - **Vendor signal enrichment from vendor app context.** Mechanism for vendors to attach extra structured context (logs, traces) without breaking the "Baton only sees MCP transport" boundary — probably a `vendor_context` field with a vendor-defined schema, scrubbed and bounded.
 - **Detection extensibility.** Vendor-configurable thresholds + optional vendor-supplied detectors for `slow_performance`, `abandonment`, `dead_end`, `parameter_confusion` (§6.4).
 - **Console responsibility spec.** §10 is currently informative; future revisions should make it normative.
-- **Group taxonomy stability.** The seven groups of §11.5.5 were drawn from a few hundred reports on a handful of surfaces; integrator data may add, merge or split them. The set is additive-only until v1.0 per §13. The eight `signal_type` values are frozen: nothing new is added to a field no agent fills.
+- **`signal_type` values.** The eight are frozen: nothing new is added to a field no agent fills.
 - **Background dispatch.** Dispatch is currently synchronous on the agent's hot path. Moving it off the critical path (background task / queue worker) is a future improvement; the SDK's bounded local buffer + retry-with-backoff is the substrate.
 - **Per-signal end-user consent flow.** Today (§9) the vendor supplies a single static `consent_token` at SDK init and every event ships with the same token — workable for single-end-user deployments, but not for multi-end-user vendor MCP servers. The planned design: on detection of a signal-worthy event (failure / dead-end / friction), the SDK emits an MCP **elicitation prompt** (or, on transports without elicitation support, surfaces a synthetic tool response asking the user to call a vendor-namespaced `<vendor_id>_consent` tool) describing what happened, who will receive the report (vendor display name), what will be sent (high-level summary), and a Y/N choice with an optional "always for this session." On refusal, the SDK MUST discard the payload and MUST NOT retry sending it unless a new signal occurs. Open: which signal types warrant a prompt vs. which can ride on session-level consent? How does this compose with the per-end-user OAuth/DID upgrade path (CHARTER ADR-1)?
 - **Richer PII scrub interface.** The current `VendorConfig.scrubber: Callable` (§7) puts all the burden on the vendor — they have to know what shapes to expect, recursively walk dicts, and reimplement common patterns (emails, API-key shapes, credential param keys). A richer interface would ship declarative rules — `scrub_rules: list[Rule]` with rule kinds `redact_key` / `mask_key` / `regex_mask`, targeting `params` / `error_body` / `result_content` / `intent` / `expected_outcome` — plus sensible defaults for common patterns. A typed `Scrubber` protocol (`scrub_params(tool_name, params)` / `scrub_result(tool_name, result)` / etc.) and a `DefaultScrubber(extra_key_denylist=..., extra_regex_rules=...)` baseline would let most vendors say `VendorConfig(scrub_keys=["password", "email"])` and be done. Sentry / OpenTelemetry pattern. The current `Callable` shape would become an escape hatch alongside the richer surface. **Its relationship to `result_capture` (§11.4) is settled and should not be re-litigated:** these rules are the mechanism for the rungs that TRANSFORM a value, and `result_capture` is the declaration of the rung that transforms nothing because nothing crosses. A rule cannot express that rung — it produces a value where the wire needs a fact, and a consumer that cannot tell withholding from an empty response manufactures failures (§11.4). When these rules land, `result_capture` gains the partial rung as a second registered value and the two meet there.

@@ -72,8 +72,8 @@ def assert_sequence_monotonic_per_session(events: list[dict[str, Any]]) -> None:
 
 
 def assert_no_signal_type_sent(events: list[dict[str, Any]]) -> None:
-    """No capture path sends ``signal_type``: the worker assigns the group
-    (SPEC §11.5.5), and the field stays in the schema for older producers only."""
+    """No capture path sends ``signal_type`` (SPEC §5.1.1): the field stays in
+    the schema for older producers only."""
     for e in events:
         if e["event_type"] == "annotation":
             assert e["payload"].get("signal_type") is None, e

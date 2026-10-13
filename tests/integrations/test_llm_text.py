@@ -74,7 +74,7 @@ def test_instructions_carry_must_required_framing() -> None:
 
 @pytest.mark.parametrize("proactive_mode", ["off", "on"])
 def test_no_agent_facing_text_offers_a_category_to_pick(proactive_mode: str) -> None:
-    """The agent describes and the worker groups (SPEC §11.5.5): neither text
+    """The agent describes and does not classify (SPEC §5.1.1): neither text
     names ``signal_type`` or any of its eight values as something to fill in."""
     instructions = build_server_instructions(
         vendor_display_name="Acme",
