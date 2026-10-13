@@ -813,6 +813,7 @@ Every event has these fields:
     "display_name": "jane"                   //   optional; what a person reads — the vendor chose it; see below
   },
   "transport_observed": "http",              // optional; what the SDK OBSERVED beneath the call, never what it concluded; see below
+  "session_id_origin": "minted",             // optional; whether `session_id` was read from the call or made by the producer; see below
   "client_observed": {                       // optional; what the client said about itself, uninterpreted; see below
     "info": {"name": "claude-code", "version": "2.1.292"},
     "headers": {"user-agent": "claude-code/2.1.292 (sdk-cli)"}
@@ -945,6 +946,22 @@ Four rules, each of them a mistake this project has already made or nearly made:
 - The field is advisory and carries no security property. It is the producer's own report about its own process, is not attested, and MUST NOT be used for authorization or tenancy decisions.
 
 **It goes in its own envelope field, never inside `runtime_meta`.** That dict is the client's `_meta` forwarded verbatim (§11.4.1); an observation the producer made about itself must stay separable from text the client supplied.
+
+**`session_id_origin` — where `session_id` came from (OPTIONAL, nullable).** Registered values:
+
+| value | means |
+|---|---|
+| `"observed"` | the producer read the id from the call: a live rung of §3.4 (3, 4 or 4b) answered |
+| `"minted"` | no live rung answered, so the producer used an id it made itself (§3.4's terminus) |
+| absent / `null` | the producer did not say: a producer predating this field |
+
+**What it is for.** Before this field, a consumer could not tell a session the client kept from one the producer made, because §3.4 forbids reading anything into the `session_id` value. Together with `transport_observed` it names the stateless shape: `"minted"` under `"http"` is a server with no session to read, where one `session_id` covers one request or one process, never one conversation. That is the shape §11.5.1's session join applies to.
+
+**Consumer rules.** As for `transport_observed`: the set is open, a consumer MUST NOT reject an event for an unregistered value and MUST NOT treat one as a registered value, and any rule keyed on this field MUST match `"minted"` positively. The field is advisory and MUST NOT be used for authorization or tenancy decisions.
+
+**Producers that predate the field.** `baton-sdk` up to 0.8.15 and `baton-ts` up to 0.5.4 send no `session_id_origin`, and on those versions an id that starts with `sdk-` is the producer's own. A consumer MAY treat such an event as `"minted"`, for those `sdk_version` values only. This is a fact about named releases, not a rule about the prefix: no producer is required to keep the prefix, and a consumer MUST NOT read it on any other version.
+
+**Ordering.** A collector that refuses unknown envelope members rejects the whole event, so the collector MUST accept this field before any producer sends it, as with `call_id`, `principal` and `transport_observed`.
 
 **`client_observed` — what the client said about itself (OPTIONAL object).** The raw signals a producer saw that identify the calling client, recorded without interpretation. **Absent or `null` when it would have no members**; as everywhere in this envelope the two are the same on the wire, and a consumer MUST NOT test for the key. Inside the object, a member with nothing to carry is omitted.
 
@@ -1448,7 +1465,7 @@ The worker derives turn boundaries using this hierarchy (most-authoritative firs
 
    A label counts as numbered only when an integer of at most six digits is followed by a separator (`:`, `.`, `)` or a dash) and then a space or the end of the label, so `2024 tax prep`, `3-day forecast` and `10:30 standup` are plain labels. Known error: an agent sometimes repeats one number on two messages in a row, which merges them into one turn.
 
-3. **Proactive-annotation boundaries** (§5.1.2). When neither rule above applies, each note (§11.4: an annotation that is not a report) with `intent` populated marks the start of a new turn. A report never opens a turn. The turn extends until the next proactive annotation or end-of-session, whichever comes first.
+3. **Proactive-annotation boundaries** (§5.1.2). When neither rule above applies, each note (§11.4: an annotation that is not a report) with `intent` populated marks the start of a new turn. A report never opens a turn. The turn extends until the next proactive annotation or end-of-session, whichever comes first. **A note the producer built from a call's own injected intent never opens a turn either** (payload `intent_source` exactly `"injected_param"`, sent once per session just before that call). It belongs to the turn its call lands in: when that call opens a new turn, the note moves into it with the call, so its intent stays with its call. On a normal session the note sits at the session's start, where a turn begins anyway, so this changes nothing there. On a stateless server every call is a session and carries one, and once sessions are joined (below) each would otherwise cut a turn between calls the turn number keeps together. A note an agent wrote still opens a turn.
 
 4. **Time-gap heuristic.** When none of the above applies, a contiguous run of events with `captured_at` deltas under N seconds (default N=120) is one turn; a gap ≥ N seconds breaks into a new turn. Workers SHOULD make N configurable per tenant and document it. This rule is brittle (long-running tools, human-in-loop pauses) and is the last resort.
 
@@ -1459,8 +1476,24 @@ Turns are assembled at correlation time, not at emit time — the SDK does not i
 - **Different identifiers MUST split.** Two conversations are never one task.
 - **The same identifier bounds the task but does not decide it.** A conversation can hold several tasks: a thread resumed hours later is usually a new piece of work. The worker MAY split on the same identifier; a gap-based split SHOULD use a threshold of hours, not minutes (the reference worker uses 6 hours). Within that threshold, the same identifier SHOULD keep the turns in one task.
 - **An identifier present on only one side decides nothing by itself.** An event with no `_meta`, such as a `surface_snapshot`, can sit inside a tagged conversation.
-- **Grouping only splits a session; it never joins two.** Two stored sessions that carry the same identifier stay separate. A client's identifier is asserted, never attested, and a join made on it would be invented.
+- **Grouping only splits a session; it never joins two.** Two stored sessions that carry the same identifier stay separate. A client's identifier is asserted, never attested, and a join made on it would be invented. The one exception is the session join below, which keys on the principal, never on a client's identifier.
 - A conversation identifier MUST NOT be used to pair a tool call's start with its end. `call_id` is the only pairing key.
+
+**Joining stateless sessions.** A stateless HTTP server has no session to read (SEP-2567 removed `Mcp-Session-Id`), so its producer's `session_id` covers one request, or one process holding every caller, never one conversation. On a server built per request, each tool call is its own session and every turn is one call. To recover turns, a worker MAY join sessions into one group and run the turn rules above over the group as if it were one session. A worker that joins MUST join only when ALL of these hold:
+
+1. **Each session is stateless HTTP.** It has at least one event with `transport_observed` exactly `"http"`, no event with any other non-null `transport_observed`, and every event carrying `"http"` has `session_id_origin` exactly `"minted"` (or is treated as minted under §11.4's clause for older producers). Events with `transport_observed` absent or null, such as a `surface_snapshot`, neither qualify a session nor disqualify it.
+2. **Each session carries exactly one principal id (§11.4), and it is the same on both.** Events with no principal do not count against this, but a session with no principal at all is never joined, and neither is a session with two. Both `"attested"` and `"asserted"` principals qualify: a vendor's statement about its own users is what the field is for.
+3. **The client is the same on both.** Where both sessions state a client (`client_observed`, or `agent_runtime` when not `"unknown"`) and the two differ, they are not joined.
+4. **Both sessions have the same `tenant_id` and `vendor_id`.**
+5. **The gap is under the idle limit, or an id says they belong together.** Time is the fence only when no id decides. Where the group's last event and the later session's first event carry the same runtime turn identifier (rule 1 above) or the same turn number (rule 2), the sessions are joined across the idle limit, because those rules keep the events in one turn and a fence must not split what they keep together. That hold lasts at most 24 hours: a new chat restarts at turn number 1, so a longer hold would join one person's chats days apart. Otherwise the later session's first event must come less than M after the group's last event. Workers SHOULD make M configurable per tenant and document it; the reference worker uses 30 minutes. Whatever the gap or the id, a group spans at most 24 hours from its first event: a caller that never goes idle, such as a scheduled agent, would otherwise grow one group without end.
+
+**What a join can get wrong.** Never two people: rule 2 requires one principal. It CAN put two conversations of one person, open at the same time in the same client, into one group. The turn rules then cut by time and by turn number, and one person's parallel chats interleave. That is a known error, and an echoed handle (SEP-2567's pattern) is what would fix it.
+
+**What a join MUST NOT do.**
+
+- It MUST NOT change any event. `session_id` stays as the producer sent it; the group lives only in what the worker derives.
+- It MUST be deterministic on replay. The group id is the `session_id` of the group's earliest member (earliest `captured_at`, then lowest `session_id`), so a late session that comes before the earliest member gives the group a new id. A consumer MUST resolve an old id through the group's member list rather than treat it as gone.
+- It MUST record each group's members, so a reader can go from any member's id to its group and back, and a page can say a session was joined.
 
 #### 11.5.2 Annotation correlation within a turn
 
@@ -1572,6 +1605,16 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **Unreleased (2026-10-13) — a worker MAY join stateless sessions by principal (§11.5.1), and the envelope gains `session_id_origin` (§11.4).**
+
+  **ADDED: `session_id_origin`** (OPTIONAL, nullable string on the envelope): `"observed"` when a live §3.4 rung answered, `"minted"` when the producer used its own id. Additive; a producer that never sends it stays conformant. The collector MUST accept it before any producer sends it. For producers that predate it (`baton-sdk` ≤ 0.8.15, `baton-ts` ≤ 0.5.4), a consumer MAY read an `sdk-` prefix as `"minted"`, on those versions only.
+
+  **CHANGED: §11.5.1's "grouping never joins two sessions" gains one exception.** A worker MAY join stateless HTTP sessions that carry the same single principal, the same client, the same tenant and vendor, and a gap under an idle limit (reference: 30 minutes), and cut turns over the group. Before this, a server built per request showed one turn per tool call. No event changes: the group is derived and replayable. **Why the old rule does not forbid this:** it guards against joining on a client's conversation id, which nobody checks. The principal comes from the vendor's own resolver or a verified token, and §3.4 already names the consumer-side partition by principal as the answer for stateless servers. **Known error:** two chats of one person, open at once in one client, land in one group.
+
+  **CHANGED: §11.5.1 rule 3.** A note the producer built from a call's injected intent (`intent_source: "injected_param"`) opens no turn and moves into its call's turn. Measured on the first stateless workspace: with the join alone, all 146 joined calls stayed one per turn, cut by these notes, though 62 back-to-back pairs carried the same turn number; with this rule they form 5 turns.
+
+  **Consumer consequence:** none required; the join is a MAY. A consumer that joins will show fewer, longer sessions for stateless producers, and its session counts for those producers count groups.
 
 - **Spec-only, ships in no release (2026-10-12) — the list of report groups leaves this spec.** No change to the event envelope (§11.4) and no producer change: a group was never sent by a producer. **REMOVED from the signal (§3.1):** `group`, added in 0.8.15. **§11.5.5** no longer defines seven groups or the rules for assigning them; it keeps what a collector needs to read a report (how "no tool" is spelled, that `signal_type` is not a classification, that a withheld result is not empty, repeats). Why: sorting reports is a collector's own logic, and its wording should be free to change without a change here.
 
