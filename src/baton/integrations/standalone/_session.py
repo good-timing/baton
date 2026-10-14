@@ -75,6 +75,7 @@ from typing import Any
 from fastmcp.server.dependencies import get_context, get_http_headers
 
 from baton.integrations._session import (
+    SESSION_MINTED,
     SESSION_OBSERVED,
     ResolvedSession,
     minted,
@@ -264,5 +265,23 @@ async def resolve_call_session_id(
         return ResolvedSession(from_header, SESSION_OBSERVED)
     from_context = session_id_from_fastmcp_context(headers, context)
     if from_context is not None:
-        return ResolvedSession(from_context, SESSION_OBSERVED)
+        origin = SESSION_OBSERVED if _on_sse_connection() else SESSION_MINTED
+        return ResolvedSession(from_context, origin)
     return minted(fallback)
+
+
+def _on_sse_connection() -> bool:
+    """Whether rung 4b's id names a connection rather than one request.
+
+    SSE posts every message with its transport's ``session_id`` query
+    parameter, and there fastmcp's id holds for the connection. Stateless
+    streamable HTTP sends none, and fastmcp makes a new id per request, which
+    SPEC §11.4 calls ``"minted"``. A failed read answers False: the console
+    may then join that connection with the same person's other sessions, and
+    the join keys on the person, so never with a stranger's."""
+    try:
+        from fastmcp.server.dependencies import get_http_request
+
+        return bool(get_http_request().query_params.get("session_id"))
+    except Exception:
+        return False

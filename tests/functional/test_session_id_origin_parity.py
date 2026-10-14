@@ -127,25 +127,32 @@ async def test_every_event_off_the_wire_says_minted(drive: Driver, tmp_path: Pat
     }
 
 
-@pytest.mark.parametrize("stateless", [False, True], ids=["stateful", "stateless"])
-async def test_over_a_real_socket_the_origin_follows_the_rung(stateless: bool) -> None:
-    """Two callers on one HTTP process. On mcp 1.x a rung answers on both
-    shapes (the header when stateful, fastmcp's session id when stateless), so
-    the ids differ per caller and are ``"observed"``. On mcp 2.x no rung
-    answers on either, so both callers share the install-time id and it is
-    ``"minted"``."""
+@pytest.mark.parametrize(
+    ("transport", "stateless"),
+    [("http", False), ("http", True), ("sse", False)],
+    ids=["stateful", "stateless", "sse"],
+)
+async def test_over_a_real_socket_the_origin_follows_the_rung(
+    transport: str, stateless: bool
+) -> None:
+    """Two callers on one HTTP process.
+
+    On mcp 1.x a session the client keeps (the header when stateful, the SSE
+    connection) is ``"observed"``, one id per caller. Stateless, fastmcp makes
+    a new id per request: ``"minted"``, one per call. On mcp 2.x no rung
+    answers, so both callers share the install-time id: ``"minted"``."""
     import asyncio
     from importlib.metadata import version
 
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
-    mcp_major = int(version("mcp").split(".")[0])
-
     from tests._event_helpers import without_surface_snapshots
     from tests.integrations.standalone.test_concurrent_sessions import _running_server
 
-    with _running_server("http", stateless=stateless) as (sink, url):
+    mcp_major = int(version("mcp").split(".")[0])
+
+    with _running_server(transport, stateless=stateless) as (sink, url):
 
         async def _call(caller: str) -> None:
             async with Client(url) as client:
@@ -161,12 +168,22 @@ async def test_over_a_real_socket_the_origin_follows_the_rung(stateless: bool) -
         calls = without_surface_snapshots(events)
         assert calls, "no events captured over the socket"
         assert {ev["transport_observed"] for ev in calls} == {"http"}
-        assert {ev["session_id_origin"] for ev in calls} == {
-            "observed" if mcp_major < 2 else "minted"
-        }
-        call_ids = {ev["session_id"] for ev in calls if ev["event_type"] == "tool_call_start"}
-        if mcp_major < 2:
-            assert len(call_ids) == 2
-            assert install_time_id not in call_ids
+        starts = [ev for ev in calls if ev["event_type"] == "tool_call_start"]
+        start_ids = {ev["session_id"] for ev in starts}
+        origins = {ev["session_id_origin"] for ev in calls}
+
+        if mcp_major >= 2:
+            assert origins == {"minted"}
+            assert start_ids == {install_time_id}
+        elif stateless:
+            assert origins == {"minted"}
+            assert len(start_ids) == 2
+            assert install_time_id not in start_ids
+            session_of_call = {ev["call_id"]: ev["session_id"] for ev in starts}
+            for ev in calls:
+                if ev.get("call_id") is not None:
+                    assert ev["session_id"] == session_of_call[ev["call_id"]], ev["event_type"]
         else:
-            assert call_ids == {install_time_id}
+            assert origins == {"observed"}
+            assert len(start_ids) == 2
+            assert install_time_id not in start_ids

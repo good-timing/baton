@@ -17,9 +17,10 @@ A collector that refuses unknown envelope fields refuses every event.
 
 - **Every event from both MCP adapters says where its `session_id` came from
   (SPEC §11.4).** The new envelope field `session_id_origin` is `"observed"`
-  when the adapter read the id from the request (the `mcp-session-id` header,
-  or the session id fastmcp reports where no header is sent), and `"minted"`
-  when it used the id it made at install. A collector uses `"minted"` on an HTTP request to recognise
+  when the id names a session the client keeps (the `mcp-session-id` header,
+  or fastmcp's own id on an SSE connection), and `"minted"` when it names
+  none: the id the adapter made at install, or the id fastmcp 2.x/3.x makes
+  for each request on a stateless server. A collector uses `"minted"` on an HTTP request to recognise
   a stateless server and join one person's calls into turns. Up to 0.8.15 a
   collector could only infer this from the `sdk-` prefix of the id, and SPEC
   allows that for those versions only. The library API (`Client`, `Trace`)

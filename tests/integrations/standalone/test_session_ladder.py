@@ -244,10 +244,24 @@ class TestRung4bFastmcpContext:
     ) -> None:
         """The SSE shape: a live HTTP request, but no ``mcp-session-id`` on it."""
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
+        monkeypatch.setattr(_session, "_on_sse_connection", lambda: True)
         monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("per-connection-id"))
         assert await _resolve(headers={"host": "example.invalid"}) == (
             "per-connection-id",
             "observed",
+        )
+
+    @requires_http_injection
+    async def test_off_sse_its_per_request_id_is_minted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stateless streamable HTTP: fastmcp makes this id per request."""
+        monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
+        monkeypatch.setattr(_session, "_on_sse_connection", lambda: False)
+        monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("per-request-id"))
+        assert await _resolve(headers={"host": "example.invalid"}) == (
+            "per-request-id",
+            "minted",
         )
 
     async def test_not_used_without_headers_so_stdio_keeps_the_fallback(
@@ -285,6 +299,7 @@ class TestRung4bFastmcpContext:
         body no longer touches. The meta claim now lives in
         ``TestTheRetiredMetaRungs``, on the wire, where it can fail."""
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
+        monkeypatch.setattr(_session, "_on_sse_connection", lambda: True)
         monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("per-connection-id"))
         got = await _resolve(headers={"host": "x"})
         assert got == ("per-connection-id", "observed")
