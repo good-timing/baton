@@ -1606,7 +1606,7 @@ Defined error codes:
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
 
-- **Unreleased (2026-10-13) — a worker MAY join stateless sessions by principal (§11.5.1), and the envelope gains `session_id_origin` (§11.4).**
+- **0.8.16 and ts 0.5.5 (2026-10-13) — a worker MAY join stateless sessions by principal (§11.5.1), and the envelope gains `session_id_origin` (§11.4).**
 
   **ADDED: `session_id_origin`** (OPTIONAL, nullable string on the envelope): `"observed"` when the id names a session the client keeps, `"minted"` when it names none: the producer's own id, or rung 4b's per-request id on stateless HTTP. Additive; a producer that never sends it stays conformant. The collector MUST accept it before any producer sends it. For producers that predate it (`baton-sdk` ≤ 0.8.15, `baton-ts` ≤ 0.5.4), a consumer MAY read an `sdk-` prefix as `"minted"`, on those versions only.
 

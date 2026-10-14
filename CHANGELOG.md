@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.8.16: every event says where its session id came from
 
 Install this only against a collector that already accepts `session_id_origin`.
 A collector that refuses unknown envelope fields refuses every event.
