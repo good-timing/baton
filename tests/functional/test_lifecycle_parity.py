@@ -506,6 +506,7 @@ async def test_the_handlers_own_exception_is_the_one_that_propagates(tmp_path: P
 
     from baton._state import SessionCounter
     from baton.integrations._lifecycle import CapturedRequest, install_lifecycle_capture
+    from baton.integrations._session import minted
     from baton.sinks import FileSink
 
     async def refuse(_context: Any, _params: Any) -> Any:
@@ -519,7 +520,11 @@ async def test_the_handlers_own_exception_is_the_one_that_propagates(tmp_path: P
 
     async def read_request(_context: Any) -> CapturedRequest:
         return CapturedRequest(
-            meta=None, headers=None, handshake_context=None, transport_observed=None, session_id="s"
+            meta=None,
+            headers=None,
+            handshake_context=None,
+            transport_observed=None,
+            session=minted("s"),
         )
 
     sink = FileSink(str(tmp_path / "events.jsonl"))
@@ -540,6 +545,10 @@ async def test_the_handlers_own_exception_is_the_one_that_propagates(tmp_path: P
     for handler in wrapped.values():
         with pytest.raises(_Unprintable):
             await handler(None, None)
+    await sink.aclose()
+
+    events = read_events(tmp_path / "events.jsonl")
+    assert len(events) == len(wrapped), "a request the capture could not read emits nothing"
 
 
 @pytest.mark.parametrize("adapter", ["official", "standalone"])
