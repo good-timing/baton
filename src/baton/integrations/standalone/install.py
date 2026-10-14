@@ -79,7 +79,7 @@ from baton.integrations.standalone import _auth
 from baton.integrations.standalone._session import (
     extract_headers,
     observe_transport,
-    resolve_call_session_id,
+    resolve_call_session,
 )
 from baton.integrations.standalone.annotation import register_annotation_tool
 from baton.integrations.standalone.middleware import BatonMiddleware
@@ -278,7 +278,7 @@ def install_baton(
             headers=headers,
             handshake_context=context,
             transport_observed=observe_transport(),
-            session=await resolve_call_session_id(
+            session=await resolve_call_session(
                 headers=headers, fallback=fallback_session_id, context=context
             ),
         )

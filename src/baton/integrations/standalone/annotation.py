@@ -42,7 +42,7 @@ from baton.integrations.standalone import _auth
 from baton.integrations.standalone._session import (
     extract_headers,
     observe_transport,
-    resolve_call_session_id,
+    resolve_call_session,
 )
 from baton.scrub import identity_scrub, scrub_or_none
 from baton.sinks import Sink, safe_emit
@@ -136,7 +136,7 @@ def register_annotation_tool(
         # tool-call path uses — an annotation that resolved differently from
         # the call it describes could never be joined to it downstream, which
         # is the one correlation this tool exists to produce.
-        session_id, session_id_origin = await resolve_call_session_id(
+        session_id, session_id_origin = await resolve_call_session(
             headers=call_headers, fallback=fallback_session_id
         )
         # A proactive annotation (not a report) claims the session's proactive

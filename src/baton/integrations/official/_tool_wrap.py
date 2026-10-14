@@ -677,7 +677,7 @@ def _wrap_tool_run(
             "_meta",
             logger,
         )
-        call_session = await _resolve_call_session_id(
+        call_session = await _resolve_call_session(
             headers=call_headers, fallback=fallback_session_id
         )
 
@@ -904,7 +904,7 @@ def _extract_headers_from_context(context: Any) -> Mapping[str, str] | None:
     return headers if headers else None
 
 
-async def _resolve_call_session_id(
+async def _resolve_call_session(
     *,
     headers: Mapping[str, str] | None,
     fallback: str,
@@ -1043,7 +1043,7 @@ def _make_emitters(
     the synthesised-proactive ``annotation``, and ``surface_snapshot``.
 
     Each takes the per-call session resolved by
-    ``_resolve_call_session_id`` as its first argument — real on stateful
+    ``_resolve_call_session`` as its first argument — real on stateful
     HTTP, ``fallback_session_id`` otherwise (stdio, or no header found). The
     Console worker also uses ``runtime_meta`` (populated below) for finer
     per-turn correlation per SPEC §11.5, independent of this.

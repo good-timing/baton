@@ -20,8 +20,9 @@ A collector that refuses unknown envelope fields refuses every event.
   when the id names a session the client keeps (the `mcp-session-id` header,
   or fastmcp's own id on an SSE connection), and `"minted"` when it names
   none: the id the adapter made at install, or the id fastmcp 2.x/3.x makes
-  for each request on a stateless server. A collector uses `"minted"` on an HTTP request to recognise
-  a stateless server and join one person's calls into turns. Up to 0.8.15 a
+  for each request on a stateless server. A collector uses `"minted"` on an
+  HTTP request to recognise a stateless server and join one person's calls
+  into turns. Up to 0.8.15 a
   collector could only infer this from the `sdk-` prefix of the id, and SPEC
   allows that for those versions only. The library API (`Client`, `Trace`)
   sends the field as `null`, so the collector note above applies to it too.

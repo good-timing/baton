@@ -73,7 +73,7 @@ from baton.integrations.standalone import _auth
 from baton.integrations.standalone._session import (
     extract_headers,
     observe_transport,
-    resolve_call_session_id,
+    resolve_call_session,
 )
 from baton.scrub import identity_scrub, scrub_or_none
 from baton.sinks import Sink, safe_emit
@@ -507,7 +507,7 @@ class BatonMiddleware(Middleware):
         # stranger-merging one on a hosted server, and the two are identical
         # in the resolved value.
         call_transport = observe_transport()
-        session_id, session_id_origin = await resolve_call_session_id(
+        session_id, session_id_origin = await resolve_call_session(
             headers=call_headers, fallback=self._fallback_session_id
         )
 

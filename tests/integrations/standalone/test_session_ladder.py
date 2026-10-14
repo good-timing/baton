@@ -20,7 +20,7 @@ from werkzeug.wrappers import Response
 
 from baton.integrations._session import ResolvedSession
 from baton.integrations.standalone import _session
-from baton.integrations.standalone._session import extract_headers, resolve_call_session_id
+from baton.integrations.standalone._session import extract_headers, resolve_call_session
 from baton.integrations.standalone.middleware import BatonMiddleware
 from baton.sinks import HttpSink, Sink
 from tests._asgi import fake_http_request
@@ -120,12 +120,12 @@ async def _resolve(
     """⚠ Takes no ``meta``. It used to, and the retired-rung tests passed one
     to prove the ladder ignored it — which became VACUOUS on 2026-09-12 when
     rung 0's removal made ``meta`` stop being a parameter of
-    ``resolve_call_session_id`` at all. A test that hands a value to a
+    ``resolve_call_session`` at all. A test that hands a value to a
     function that cannot accept it proves nothing about the function. The
     retired rungs are now asserted through the real middleware, below."""
 
     async def call() -> ResolvedSession:
-        return await resolve_call_session_id(headers=extract_headers(), fallback=fallback)
+        return await resolve_call_session(headers=extract_headers(), fallback=fallback)
 
     if headers is None:
         return await call()
@@ -143,7 +143,7 @@ class TestTheRetiredMetaRungs:
     every event, so absence is asserted rather than assumed.
 
     ⚠ **Driven through the real middleware, on purpose.** Until 2026-09-12
-    these called ``resolve_call_session_id`` with a ``meta=`` argument. Rung 0
+    these called ``resolve_call_session`` with a ``meta=`` argument. Rung 0
     was that function's last reader of the wire ``_meta``, so its removal took
     the parameter — and the tests kept passing a value the function no longer
     had, which is the definition of assumed rather than asserted. The
@@ -234,9 +234,7 @@ class TestTheSseCheck:
             self.query_params = query
 
     def _with_request(self, monkeypatch: pytest.MonkeyPatch, get_request: Any) -> None:
-        import fastmcp.server.dependencies as dependencies
-
-        monkeypatch.setattr(dependencies, "get_http_request", get_request)
+        monkeypatch.setattr(_session, "get_http_request", get_request)
 
     def test_an_sse_message_post_carries_the_transport_session(
         self, monkeypatch: pytest.MonkeyPatch

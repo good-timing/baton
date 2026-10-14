@@ -46,7 +46,7 @@ from baton.integrations.official._registry import get_tool_registry
 from baton.integrations.official._tool_wrap import (
     _extract_headers_from_context,
     _extract_meta_from_context,
-    _resolve_call_session_id,
+    _resolve_call_session,
     observe_transport,
 )
 from baton.scrub import identity_scrub, scrub_or_none
@@ -123,9 +123,9 @@ def register_annotation_tool(
                 "error": build_refusal_text(annotation_tool_name=name),
             }
 
-        # The MCP Context is threaded in for its ``_meta`` and handshake, so
-        # this event carries the same ``client_observed`` as the tool calls
-        # around it.
+        # The MCP Context is threaded in for its ``_meta``, handshake and
+        # headers, so this event carries the same ``client_observed``,
+        # ``runtime_meta`` and session as the tool calls around it.
         #
         # It is annotated as a BARE ``Context`` on purpose. The older objection
         # here was that mcp's ``Tool.from_function`` calls
@@ -157,7 +157,7 @@ def register_annotation_tool(
         )
         # The same ladder the tool-call path climbs, so an annotation lands in
         # the session of the calls it describes.
-        session_id, session_id_origin = await _resolve_call_session_id(
+        session_id, session_id_origin = await _resolve_call_session(
             headers=call_headers, fallback=fallback_session_id
         )
         # Identity takes the SAME ladder the tool-call path takes, hook

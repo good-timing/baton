@@ -72,12 +72,13 @@ from collections.abc import Callable, Mapping
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from fastmcp.server.dependencies import get_context, get_http_headers
+from fastmcp.server.dependencies import get_context, get_http_headers, get_http_request
 
 from baton.integrations._session import (
     SESSION_MINTED,
     SESSION_OBSERVED,
     ResolvedSession,
+    SessionOrigin,
     minted,
     session_id_from_headers,
 )
@@ -206,11 +207,7 @@ def observe_transport(*, _get_http_request: Callable[[], object] | None = None) 
     ``_get_http_request`` is a seam for the test that proves the last paragraph;
     nothing in the SDK passes it.
     """
-    get_request = _get_http_request
-    if get_request is None:
-        from fastmcp.server.dependencies import get_http_request
-
-        get_request = get_http_request
+    get_request = _get_http_request or get_http_request
     try:
         get_request()
     except RuntimeError:
@@ -221,7 +218,7 @@ def observe_transport(*, _get_http_request: Callable[[], object] | None = None) 
     return "http"
 
 
-async def resolve_call_session_id(
+async def resolve_call_session(
     *, headers: Mapping[str, str] | None, fallback: str, context: Any = None
 ) -> ResolvedSession:
     """The per-call session id and its origin, SPEC §3.4's layered fallback in priority
@@ -265,7 +262,7 @@ async def resolve_call_session_id(
         return ResolvedSession(from_header, SESSION_OBSERVED)
     from_context = session_id_from_fastmcp_context(headers, context)
     if from_context is not None:
-        origin = SESSION_OBSERVED if _on_sse_connection() else SESSION_MINTED
+        origin: SessionOrigin = SESSION_OBSERVED if _on_sse_connection() else SESSION_MINTED
         return ResolvedSession(from_context, origin)
     return minted(fallback)
 
@@ -280,8 +277,6 @@ def _on_sse_connection() -> bool:
     may then join that connection with the same person's other sessions, and
     the join keys on the person, so never with a stranger's."""
     try:
-        from fastmcp.server.dependencies import get_http_request
-
         return bool(get_http_request().query_params.get("session_id"))
     except Exception:
         logger.debug("session_id_origin: the SSE check could not read the request", exc_info=True)

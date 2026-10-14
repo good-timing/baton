@@ -78,7 +78,7 @@ from baton.integrations.official._compat import (
 from baton.integrations.official._tool_wrap import (
     _extract_headers_from_context,
     _extract_meta_from_context,
-    _resolve_call_session_id,
+    _resolve_call_session,
     install_wraps,
     observe_transport,
 )
@@ -205,7 +205,7 @@ def install_baton(
             headers=headers,
             handshake_context=context,
             transport_observed=observe_transport(context),
-            session=await _resolve_call_session_id(headers=headers, fallback=fallback_session_id),
+            session=await _resolve_call_session(headers=headers, fallback=fallback_session_id),
         )
 
     install_lifecycle_capture(
