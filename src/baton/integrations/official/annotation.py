@@ -19,6 +19,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from baton._meta_coords import round_meta_coordinates
 from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent
 from baton.integrations._annotation_name import derive_annotation_tool_name
@@ -32,7 +33,6 @@ from baton.integrations._llm_text import (
     build_annotation_tool_description,
     build_refusal_text,
 )
-from baton.integrations._session import SESSION_MINTED
 from baton.integrations.client_observed import observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
@@ -46,9 +46,10 @@ from baton.integrations.official._registry import get_tool_registry
 from baton.integrations.official._tool_wrap import (
     _extract_headers_from_context,
     _extract_meta_from_context,
+    _resolve_call_session_id,
     observe_transport,
 )
-from baton.scrub import identity_scrub
+from baton.scrub import identity_scrub, scrub_or_none
 from baton.sinks import Sink, safe_emit
 
 logger = logging.getLogger(__name__)
@@ -136,20 +137,6 @@ def register_annotation_tool(
         # schema. It is also named ``ctx`` rather than ``context`` because
         # ``context`` is already this tool's own payload field.
         #
-        # Still a known gap, and now the ONLY one: session id. This tool does
-        # not climb SPEC §3.4's ladder the way ``_tool_wrap.py`` does — it goes
-        # straight to ``fallback_session_id``. So on stateful HTTP, where the
-        # wrap layer answers on rung 4 (``mcp-session-id``), a vendor's
-        # explicit (reactive) annotation calls won't stitch to the session id
-        # their tool calls get; synthesised proactives are unaffected (those
-        # emit from inside the wrap layer). The standalone adapter resolves
-        # both; closing the difference is tracked on sdk-hardening.
-        #
-        # ⚠ This gap NARROWED on 2026-09-12 rather than closing: rung 0
-        # (``VendorConfig.resolve_session_id``) was removed, so the hook half
-        # of the divergence is gone — a hook-resolved id no longer exists for
-        # this tool to miss. The rung-4 half is unchanged and is the whole of
-        # what remains.
         # Reuses the wrap layer's extractor rather than re-deriving the meta
         # here. Two extraction paths on one adapter is how this repo has been
         # bitten before, and this one has a specific guard worth inheriting:
@@ -160,25 +147,19 @@ def register_annotation_tool(
         meta_dict = _extract_meta_from_context(ctx)
         call_headers = _extract_headers_from_context(ctx)
         client = observe_client(meta_dict, context=ctx, headers=call_headers, scrubber=scrubber)
-        # The meta is read for ``client_observed`` and deliberately not emitted
-        # as ``runtime_meta`` on this event, unlike the tool-call path. It can
-        # carry ``io.baton/session_id`` and ``traceparent`` while ``session_id``
-        # below is still the fallback, so emitting both would put a session
-        # identifier on an event whose own envelope field disagrees with it —
-        # one consumer grouping on the forwarded value and another reading the
-        # envelope would file this single event under two sessions. Today's gap
-        # only LOSES a join; that would manufacture a wrong one.
-        #
-        # ⚠ Retiring §3.4's rungs 1-2 (2026-09-09) does NOT dissolve this. It
-        # is tempting to think it does — the SDK no longer treats either key as
-        # session-bearing — but the retirement moved that grouping DOWNSTREAM
-        # rather than abolishing it, so a console that groups on a forwarded
-        # handle is now the expected consumer, not a hypothetical one. The
-        # hazard is unchanged; only its address moved.
-        #
-        # Emitting it becomes correct as soon as this tool resolves a real
-        # session id instead of the fallback — unblocked, since the ``ctx``
-        # that resolution needs is finally threaded in.
+        # scrub_or_none, not a bare call: a plain statement outside the build
+        # thunk, where a raising vendor scrubber would otherwise fail the tool.
+        scrubbed_meta = scrub_or_none(
+            scrubber,
+            round_meta_coordinates(meta_dict) if meta_dict is not None else None,
+            "annotation _meta",
+            logger,
+        )
+        # The same ladder the tool-call path climbs, so an annotation lands in
+        # the session of the calls it describes.
+        session_id, session_id_origin = await _resolve_call_session_id(
+            headers=call_headers, fallback=fallback_session_id
+        )
         # Identity takes the SAME ladder the tool-call path takes, hook
         # included, and carries the finished wire value — the raw principal
         # never travels past the resolver. Wiring only the tool-call path
@@ -186,10 +167,6 @@ def register_annotation_tool(
         # describe carry one — a hook resolves per request, so each path must
         # consult it: the split this field exists to prevent, arriving through
         # the door built to fix it.
-        #
-        # Unlike ``runtime_meta`` just above there is no asymmetry argument
-        # against emitting it — ``principal`` carries no session identity, so
-        # it cannot disagree with the envelope's ``session_id``.
         identity_hook_context = (
             SessionResolutionContext(
                 headers=call_headers,
@@ -206,7 +183,6 @@ def register_annotation_tool(
             hook_context=identity_hook_context,
             logger=logger,
         )
-        session_id = fallback_session_id
         # A proactive annotation (not a report) claims the session's proactive
         # slot so the wrap layer won't also synthesise one from an injected param.
         if not reporting:
@@ -220,11 +196,6 @@ def register_annotation_tool(
         # server erroring. Inside the thunk a throw drops the event instead,
         # which is right here: `intent`, `what_happened` and
         # `suggested_improvement` are one report and degrade together.
-        #
-        # No `scrub_or_none` statement above to pair with this, unlike the
-        # standalone surface: this path reads the meta for ``client_observed``
-        # only and deliberately emits no `runtime_meta` (see above), so there
-        # is no meta scrub out here to guard.
         #
         # ⚠ NOT "every scrubber application here is inside the thunk" —
         # `observe_client` above applies the vendor's scrubber as a plain
@@ -244,7 +215,8 @@ def register_annotation_tool(
                 client_observed=client,
                 principal=annotation_principal,
                 transport_observed=observe_transport(ctx),
-                session_id_origin=SESSION_MINTED,
+                session_id_origin=session_id_origin,
+                runtime_meta=scrubbed_meta,
                 payload=build_annotation_payload(
                     scrubber,
                     user_goal=user_goal,

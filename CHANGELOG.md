@@ -25,6 +25,14 @@ A collector that refuses unknown envelope fields refuses every event.
   allows that for those versions only. The library API (`Client`, `Trace`)
   sends the field as `null`, so the collector note above applies to it too.
 
+### Fixed
+
+- **The official adapter's annotation tool files its event in the session of
+  the calls it describes.** It used the install-time id on every request, so
+  on a stateful HTTP server an annotation never joined its tool calls. It now
+  reads the `mcp-session-id` header as the tool-call path does, and sends the
+  request's `_meta` as `runtime_meta`, as the standalone adapter already did.
+
 ## 0.8.15: reports in the agent's own words; resource and prompt events
 
 **Breaking, for agents and for the library API.** Install this only against a

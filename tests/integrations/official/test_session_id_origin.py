@@ -90,24 +90,31 @@ async def test_an_http_call_with_no_session_header_is_minted(context: Any, tmp_p
     }
 
 
-async def test_the_annotation_tool_sends_the_install_time_id_as_minted(tmp_path: Path) -> None:
-    """This tool does not read the session header, so the id it sends is the
-    install-time one even when the request carries a header. The origin must
-    describe the id that was sent."""
+@pytest.mark.parametrize("fake_context", [_FakeContextV1, _FakeContextV2], ids=["mcp1", "mcp2"])
+async def test_the_annotation_tool_lands_in_the_session_of_the_calls(
+    fake_context: Any, tmp_path: Path
+) -> None:
     events_path = tmp_path / "events.jsonl"
     mcp, handle = _server(events_path)
+    context = fake_context({"mcp-session-id": "from-header"})
     try:
+        await get_tool_registry(mcp)["echo"].run({"msg": "a"}, context=context)
         await get_tool_registry(mcp)[handle.annotation_tool_name].run(
             {"user_goal": "say a", "what_happened": "the call came back unusable"},
-            context=_FakeContextV2({"mcp-session-id": "from-header"}),
+            context=context,
         )
     finally:
         await handle.aclose()
 
-    annotations = [ev for ev in read_events(events_path) if ev["event_type"] == "annotation"]
-    assert [(ev["session_id"], ev["session_id_origin"]) for ev in annotations] == [
-        (handle.session_id, "minted")
+    events = [
+        ev
+        for ev in read_events(events_path)
+        if ev["event_type"] in {"tool_call_start", "annotation"}
     ]
+    assert {ev["event_type"] for ev in events} == {"tool_call_start", "annotation"}
+    assert {(ev["session_id"], ev["session_id_origin"]) for ev in events} == {
+        ("from-header", "observed")
+    }
 
 
 async def test_every_event_off_the_wire_says_minted(tmp_path: Path) -> None:

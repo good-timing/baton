@@ -221,28 +221,14 @@ async def test_the_context_kwarg_stays_out_of_the_public_tool_schema(tmp_path: P
         await handle.aclose()
 
 
-async def test_the_annotation_event_carries_no_session_bearing_meta(tmp_path: Path) -> None:
-    """The annotation tool reads ``_meta`` for the client's declaration but
-    does not emit it as ``runtime_meta`` while its ``session_id`` is the
-    fallback.
-
-    ``_meta`` can carry ``io.baton/session_id`` and ``traceparent``. Emitting
-    those beside an envelope ``session_id`` that ignored them would let two
-    consumers file the same event under two sessions. Delete this test only
-    together with making the tool resolve a real session id.
-    """
+async def test_the_annotation_event_carries_the_meta_as_a_tool_call_does(tmp_path: Path) -> None:
     events = await _drive(
         tmp_path / "e.jsonl",
         {"io.baton/session_id": "app-handle", CLIENT_INFO_META_KEY: {"name": "zed"}},
     )
     annotation = next(ev for ev in events if ev["event_type"] == "annotation")
-    assert annotation["client_observed"] == {"info": {"name": "zed"}}, (
-        "the meta is still read for the declaration; only its emission is withheld"
-    )
-    assert not annotation.get("runtime_meta"), (
-        f"annotation carries runtime_meta {annotation.get('runtime_meta')!r} while its "
-        f"session_id is {annotation['session_id']!r}, which ignored the meta's own handle"
-    )
+    assert annotation["client_observed"] == {"info": {"name": "zed"}}
+    assert annotation["runtime_meta"]["io.baton/session_id"] == "app-handle"
 
 
 # ChatGPT-shaped meta minus the one key that makes it a 2026-07-28 envelope:
