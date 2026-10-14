@@ -137,7 +137,7 @@ def register_annotation_tool(
         # tool-call path uses — an annotation that resolved differently from
         # the call it describes could never be joined to it downstream, which
         # is the one correlation this tool exists to produce.
-        session_id = await resolve_call_session_id(
+        session_id, session_id_origin = await resolve_call_session_id(
             headers=call_headers, fallback=fallback_session_id
         )
         # A proactive annotation (not a report) claims the session's proactive
@@ -184,6 +184,7 @@ def register_annotation_tool(
                 client_observed=client,
                 principal=annotation_principal,
                 transport_observed=observe_transport(),
+                session_id_origin=session_id_origin,
                 runtime_meta=scrubbed_meta,
                 payload=build_annotation_payload(
                     scrubber,

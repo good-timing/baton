@@ -469,6 +469,12 @@ class _EventEnvelope(BaseModel):
     address, no host, no port — so it carries no security property and is not
     for authorization.
     """
+    session_id_origin: str | None = None
+    """Where ``session_id`` came from (SPEC §11.4, OPTIONAL + nullable):
+    ``"observed"`` when a live §3.4 rung answered, ``"minted"`` when this
+    producer used an id it made itself. A plain ``str`` for the reason
+    ``transport_observed`` is one. Null on the library API, which climbs no
+    ladder."""
     runtime_meta: dict[str, Any] | None = None
     """Runtime-supplied ``_meta`` envelope from the MCP request (SPEC §11.4).
     Per SPEC §11.5 the Console worker uses this to derive turn

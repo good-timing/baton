@@ -32,6 +32,7 @@ from baton.integrations._llm_text import (
     build_annotation_tool_description,
     build_refusal_text,
 )
+from baton.integrations._session import SESSION_MINTED
 from baton.integrations.client_observed import observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
@@ -243,6 +244,7 @@ def register_annotation_tool(
                 client_observed=client,
                 principal=annotation_principal,
                 transport_observed=observe_transport(ctx),
+                session_id_origin=SESSION_MINTED,
                 payload=build_annotation_payload(
                     scrubber,
                     user_goal=user_goal,

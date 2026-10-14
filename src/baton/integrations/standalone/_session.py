@@ -74,7 +74,12 @@ from typing import Any
 
 from fastmcp.server.dependencies import get_context, get_http_headers
 
-from baton.integrations._session import session_id_from_headers
+from baton.integrations._session import (
+    SESSION_OBSERVED,
+    ResolvedSession,
+    minted,
+    session_id_from_headers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -217,8 +222,8 @@ def observe_transport(*, _get_http_request: Callable[[], object] | None = None) 
 
 async def resolve_call_session_id(
     *, headers: Mapping[str, str] | None, fallback: str, context: Any = None
-) -> str:
-    """Real per-call session id, SPEC §3.4's layered fallback in priority
+) -> ResolvedSession:
+    """The per-call session id and its origin, SPEC §3.4's layered fallback in priority
     order: (4) the ``mcp-session-id`` header; (4b) fastmcp's
     ``Context.session_id``, where its cache survives and the header was
     absent; else ``fallback``, the install-time process-wide id. Rung 3 (a
@@ -256,6 +261,8 @@ async def resolve_call_session_id(
     """
     from_header = session_id_from_headers(headers)
     if from_header is not None:
-        return from_header
+        return ResolvedSession(from_header, SESSION_OBSERVED)
     from_context = session_id_from_fastmcp_context(headers, context)
-    return from_context if from_context is not None else fallback
+    if from_context is not None:
+        return ResolvedSession(from_context, SESSION_OBSERVED)
+    return minted(fallback)

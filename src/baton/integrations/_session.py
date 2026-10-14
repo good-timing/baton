@@ -27,12 +27,27 @@ context-var-backed header view on the standalone ``fastmcp`` library).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 #: Rung 4's carrier on both adapters. Present on old-spec streamable HTTP;
 #: removed from the wire entirely by MCP 2026-07-28+ (SEP-2567), and never
 #: present on stdio.
 MCP_SESSION_ID_HEADER = "mcp-session-id"
+
+SESSION_OBSERVED = "observed"
+SESSION_MINTED = "minted"
+
+
+class ResolvedSession(NamedTuple):
+    """A ``session_id`` with the envelope's ``session_id_origin`` (SPEC §11.4).
+    The rung that answered decides the origin, never the id's spelling."""
+
+    id: str
+    origin: str
+
+
+def minted(session_id: str) -> ResolvedSession:
+    return ResolvedSession(session_id, SESSION_MINTED)
 
 
 def session_id_from_headers(headers: Any) -> str | None:

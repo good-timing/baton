@@ -61,6 +61,7 @@ from baton.integrations._llm_text import (
     build_user_goal_param_description,
     required_param_names,
 )
+from baton.integrations._session import SESSION_MINTED
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 from baton.integrations.client_observed import meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
@@ -295,6 +296,7 @@ class BatonMiddleware(Middleware):
                 vendor_id=self._vendor_id,
                 consent_token=self._consent_token,
                 session_id=self._fallback_session_id,
+                session_id_origin=SESSION_MINTED,
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
                 payload=SurfaceSnapshotPayload(
@@ -505,7 +507,7 @@ class BatonMiddleware(Middleware):
         # stranger-merging one on a hosted server, and the two are identical
         # in the resolved value.
         call_transport = observe_transport()
-        session_id = await resolve_call_session_id(
+        session_id, session_id_origin = await resolve_call_session_id(
             headers=call_headers, fallback=self._fallback_session_id
         )
 
@@ -529,6 +531,7 @@ class BatonMiddleware(Middleware):
                     client_observed=client,
                     principal=call_principal,
                     transport_observed=call_transport,
+                    session_id_origin=session_id_origin,
                     runtime_meta=scrubbed_meta,
                     payload=AnnotationPayload(
                         intent=scrubbed_intent,
@@ -573,6 +576,7 @@ class BatonMiddleware(Middleware):
                     client_observed=client,
                     principal=call_principal,
                     transport_observed=call_transport,
+                    session_id_origin=session_id_origin,
                     call_id=call_id,
                     runtime_meta=scrubbed_meta,
                     payload=ToolCallStartPayload(
@@ -620,6 +624,7 @@ class BatonMiddleware(Middleware):
                     client_observed=client,
                     principal=call_principal,
                     transport_observed=call_transport,
+                    session_id_origin=session_id_origin,
                     call_id=call_id,
                     runtime_meta=scrubbed_meta,
                     payload=ToolCallErrorPayload(
@@ -692,6 +697,7 @@ class BatonMiddleware(Middleware):
                     client_observed=client,
                     principal=call_principal,
                     transport_observed=call_transport,
+                    session_id_origin=session_id_origin,
                     call_id=call_id,
                     runtime_meta=scrubbed_meta,
                     payload=ToolCallErrorPayload(
@@ -730,6 +736,7 @@ class BatonMiddleware(Middleware):
                 client_observed=client,
                 principal=call_principal,
                 transport_observed=call_transport,
+                session_id_origin=session_id_origin,
                 call_id=call_id,
                 runtime_meta=scrubbed_meta,
                 payload=ToolCallEndPayload(

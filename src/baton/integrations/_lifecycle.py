@@ -26,6 +26,7 @@ from baton._result_capture import ResultCaptureMode
 from baton._state import SessionCounter
 from baton.events import Event
 from baton.integrations._config import SessionResolutionContext
+from baton.integrations._session import ResolvedSession
 from baton.integrations.client_observed import observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
@@ -49,7 +50,7 @@ class CapturedRequest:
     headers: Mapping[str, str] | None
     handshake_context: Any
     transport_observed: str | None
-    session_id: str
+    session: ResolvedSession
 
 
 @dataclass(frozen=True)
@@ -143,7 +144,8 @@ def install_lifecycle_capture(
                 "tenant_id": tenant_id,
                 "vendor_id": vendor_id,
                 "consent_token": consent_token,
-                "session_id": request.session_id,
+                "session_id": request.session.id,
+                "session_id_origin": request.session.origin,
                 "client_observed": observe_client(
                     request.meta,
                     context=request.handshake_context,

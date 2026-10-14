@@ -111,6 +111,10 @@ from baton.integrations._llm_text import (
     required_param_names,
 )
 from baton.integrations._session import (
+    SESSION_MINTED,
+    SESSION_OBSERVED,
+    ResolvedSession,
+    minted,
     session_id_from_headers,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
@@ -440,7 +444,7 @@ def _extract_one_goal_param(
 # do the same without running it.
 _EmitBefore = Callable[
     [
-        str,  # session_id
+        ResolvedSession,  # session
         str,  # tool name
         dict[str, Any],  # params
         dict[str, Any] | None,  # runtime_meta
@@ -457,7 +461,7 @@ _EmitBefore = Callable[
 
 _EmitAfter = Callable[
     [
-        str,  # session_id
+        ResolvedSession,  # session
         str,  # tool name
         Any,  # result
         float,  # duration_s
@@ -478,7 +482,7 @@ _EmitAfter = Callable[
 # exception or a returned result whose error flag is set.
 _EmitError = Callable[
     [
-        str,  # session_id
+        ResolvedSession,  # session
         str,  # tool name
         str,  # error_type
         float,  # duration_s
@@ -508,7 +512,7 @@ _EmitError = Callable[
 
 _EmitProactive = Callable[
     [
-        str,  # session_id
+        ResolvedSession,  # session
         str,  # tool name
         str,  # intent
         str | None,  # expected_outcome
@@ -673,7 +677,7 @@ def _wrap_tool_run(
             "_meta",
             logger,
         )
-        call_session_id = await _resolve_call_session_id(
+        call_session = await _resolve_call_session_id(
             headers=call_headers, fallback=fallback_session_id
         )
 
@@ -682,9 +686,9 @@ def _wrap_tool_run(
         # BEFORE the tool_call_start it explains. ``claim`` dedups per session
         # and is suppressed when a real annotation-tool proactive already
         # fired. Later param intents ride only the start event.
-        if scrubbed_intent is not None and tracker.claim(call_session_id):
+        if scrubbed_intent is not None and tracker.claim(call_session.id):
             await emit_proactive(
-                call_session_id,
+                call_session,
                 name,
                 scrubbed_intent,
                 scrubbed_expected,
@@ -736,7 +740,7 @@ def _wrap_tool_run(
             # assert nothing is to drop the START event, which orphans the end
             # and loses the whole call.
             await emit_before(
-                call_session_id,
+                call_session,
                 name,
                 scrub_or_none(scrubber, params, "params", logger) or {},
                 scrubbed_meta,
@@ -769,7 +773,7 @@ def _wrap_tool_run(
             # (`_state.py`: a dict op under a lock), so the caller-side guard
             # went with the change.
             await emit_error(
-                call_session_id,
+                call_session,
                 name,
                 type(original_exc).__name__,
                 monotonic() - called_at,
@@ -797,7 +801,7 @@ def _wrap_tool_run(
                 # (SPEC §11.2.6). Everything that IS result-derived the
                 # projection decides together, and it owns the scrubber call.
                 await emit_error(
-                    call_session_id,
+                    call_session,
                     name,
                     TOOL_ERROR_TYPE,
                     monotonic() - called_at,
@@ -811,7 +815,7 @@ def _wrap_tool_run(
                 )
             else:
                 await emit_after(
-                    call_session_id,
+                    call_session,
                     name,
                     result,
                     monotonic() - called_at,
@@ -904,8 +908,8 @@ async def _resolve_call_session_id(
     *,
     headers: Mapping[str, str] | None,
     fallback: str,
-) -> str:
-    """Real per-call session id — SPEC §3.4's layered fallback in priority
+) -> ResolvedSession:
+    """The per-call session id and its origin — SPEC §3.4's layered fallback in priority
     order: (4) the ``mcp-session-id`` HTTP header, else (5) ``fallback`` (the
     install-time process-wide id). Rung 3 (a future runtime-specific ``_meta``
     key) isn't defined for any runtime yet, so it's skipped.
@@ -960,7 +964,9 @@ async def _resolve_call_session_id(
     # ANSWER — which is how the first attempt at this fix looked correct and
     # changed nothing on the common path.
     from_header = session_id_from_headers(headers)
-    return from_header if from_header is not None else fallback
+    if from_header is not None:
+        return ResolvedSession(from_header, SESSION_OBSERVED)
+    return minted(fallback)
 
 
 def _is_mrtr_continuation(context: Any) -> bool:
@@ -1036,7 +1042,7 @@ def _make_emitters(
     """Build five async emitters: ``tool_call_start`` / ``_end`` / ``_error``,
     the synthesised-proactive ``annotation``, and ``surface_snapshot``.
 
-    Each takes the per-call ``session_id`` resolved by
+    Each takes the per-call session resolved by
     ``_resolve_call_session_id`` as its first argument — real on stateful
     HTTP, ``fallback_session_id`` otherwise (stdio, or no header found). The
     Console worker also uses ``runtime_meta`` (populated below) for finer
@@ -1047,7 +1053,7 @@ def _make_emitters(
         return await counter.next(session_id)
 
     async def emit_proactive(
-        session_id: str,
+        session: ResolvedSession,
         name: str,
         intent: str,
         expected_outcome: str | None,
@@ -1060,14 +1066,15 @@ def _make_emitters(
         # ⚠ Hoisted out of the build thunk: a lambda cannot `await`.
         # A build that then fails burns this number, which is already
         # possible whenever `sink.write` fails, so the gap is not new.
-        _seq_n = await _seq(session_id)
+        _seq_n = await _seq(session.id)
         await safe_emit(
             sink,
             lambda: AnnotationEvent(
                 tenant_id=tenant_id,
                 vendor_id=vendor_id,
                 consent_token=consent_token,
-                session_id=session_id,
+                session_id=session.id,
+                session_id_origin=session.origin,
                 sequence_number=_seq_n,
                 captured_at=datetime.now(UTC),
                 client_observed=client_observed,
@@ -1086,7 +1093,7 @@ def _make_emitters(
         )
 
     async def emit_before(
-        session_id: str,
+        session: ResolvedSession,
         name: str,
         params: dict[str, Any],
         runtime_meta: dict[str, Any] | None,
@@ -1102,14 +1109,15 @@ def _make_emitters(
         # ⚠ Hoisted out of the build thunk: a lambda cannot `await`.
         # A build that then fails burns this number, which is already
         # possible whenever `sink.write` fails, so the gap is not new.
-        _seq_n = await _seq(session_id)
+        _seq_n = await _seq(session.id)
         await safe_emit(
             sink,
             lambda: ToolCallStartEvent(
                 tenant_id=tenant_id,
                 vendor_id=vendor_id,
                 consent_token=consent_token,
-                session_id=session_id,
+                session_id=session.id,
+                session_id_origin=session.origin,
                 sequence_number=_seq_n,
                 captured_at=datetime.now(UTC),
                 client_observed=client_observed,
@@ -1130,7 +1138,7 @@ def _make_emitters(
         )
 
     async def emit_after(
-        session_id: str,
+        session: ResolvedSession,
         name: str,
         result: Any,
         duration_s: float,
@@ -1143,7 +1151,7 @@ def _make_emitters(
         # ⚠ Hoisted out of the build thunk, because the thunk is sync.
         # A build that then fails burns this number, which is already
         # possible whenever `sink.write` fails, so the gap is not new.
-        _seq_n = await _seq(session_id)
+        _seq_n = await _seq(session.id)
 
         # The projection runs INSIDE the thunk: it owns the scrubber call
         # (`_result_capture.py`), so as a statement out here a raising vendor
@@ -1162,7 +1170,8 @@ def _make_emitters(
                 tenant_id=tenant_id,
                 vendor_id=vendor_id,
                 consent_token=consent_token,
-                session_id=session_id,
+                session_id=session.id,
+                session_id_origin=session.origin,
                 sequence_number=_seq_n,
                 captured_at=datetime.now(UTC),
                 client_observed=client_observed,
@@ -1181,7 +1190,7 @@ def _make_emitters(
         await safe_emit(sink, build, logger)
 
     async def emit_error(
-        session_id: str,
+        session: ResolvedSession,
         name: str,
         error_type: str,
         duration_s: float,
@@ -1209,7 +1218,7 @@ def _make_emitters(
         # ⚠ Hoisted out of the build thunk, because the thunk is sync.
         # A build that then fails burns this number, which is already
         # possible whenever `sink.write` fails, so the gap is not new.
-        _seq_n = await _seq(session_id)
+        _seq_n = await _seq(session.id)
 
         def build() -> ToolCallErrorEvent:
             if raised is not None:
@@ -1231,7 +1240,8 @@ def _make_emitters(
                 tenant_id=tenant_id,
                 vendor_id=vendor_id,
                 consent_token=consent_token,
-                session_id=session_id,
+                session_id=session.id,
+                session_id_origin=session.origin,
                 sequence_number=_seq_n,
                 captured_at=datetime.now(UTC),
                 client_observed=client_observed,
@@ -1265,6 +1275,7 @@ def _make_emitters(
                 vendor_id=vendor_id,
                 consent_token=consent_token,
                 session_id=session_id,
+                session_id_origin=SESSION_MINTED,
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 payload=SurfaceSnapshotPayload(

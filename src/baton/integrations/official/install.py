@@ -205,9 +205,7 @@ def install_baton(
             headers=headers,
             handshake_context=context,
             transport_observed=observe_transport(context),
-            session_id=await _resolve_call_session_id(
-                headers=headers, fallback=fallback_session_id
-            ),
+            session=await _resolve_call_session_id(headers=headers, fallback=fallback_session_id),
         )
 
     install_lifecycle_capture(

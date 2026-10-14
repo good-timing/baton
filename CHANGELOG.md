@@ -8,6 +8,23 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+Install this only against a collector that already accepts `session_id_origin`.
+A collector that refuses unknown envelope fields refuses every event.
+
+### Added
+
+- **Every event from both MCP adapters says where its `session_id` came from
+  (SPEC §11.4).** The new envelope field `session_id_origin` is `"observed"`
+  when the adapter read the id from the request (the `mcp-session-id` header,
+  or the session id fastmcp reports where no header is sent), and `"minted"`
+  when it used the id it made at install. A collector uses `"minted"` on an HTTP request to recognise
+  a stateless server and join one person's calls into turns. Up to 0.8.15 a
+  collector could only infer this from the `sdk-` prefix of the id, and SPEC
+  allows that for those versions only. The library API (`Client`, `Trace`)
+  sends the field as `null`, so the collector note above applies to it too.
+
 ## 0.8.15: reports in the agent's own words; resource and prompt events
 
 **Breaking, for agents and for the library API.** Install this only against a
