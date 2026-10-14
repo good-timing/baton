@@ -226,6 +226,38 @@ class TestHeaderAndFallbackRungs:
         assert await _resolve(headers={"x-request-id": "nope"}) == ("sdk-fallback", "minted")
 
 
+class TestTheSseCheck:
+    """``_on_sse_connection`` against the request it reads."""
+
+    class _Request:
+        def __init__(self, query: dict[str, str]) -> None:
+            self.query_params = query
+
+    def _with_request(self, monkeypatch: pytest.MonkeyPatch, get_request: Any) -> None:
+        import fastmcp.server.dependencies as dependencies
+
+        monkeypatch.setattr(dependencies, "get_http_request", get_request)
+
+    def test_an_sse_message_post_carries_the_transport_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._with_request(monkeypatch, lambda: self._Request({"session_id": "a1b2"}))
+        assert _session._on_sse_connection() is True
+
+    def test_a_streamable_http_request_carries_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._with_request(monkeypatch, lambda: self._Request({}))
+        assert _session._on_sse_connection() is False
+
+    def test_a_request_that_cannot_be_read_is_not_sse(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _raises() -> Any:
+            raise RuntimeError("No active HTTP request found.")
+
+        self._with_request(monkeypatch, _raises)
+        assert _session._on_sse_connection() is False
+
+
 class TestRung4bFastmcpContext:
     """Rung 4b — fastmcp's own ``Context.session_id``, below the header.
 

@@ -124,8 +124,7 @@ def register_annotation_tool(
         # build thunk below, and it stays out there deliberately — it must keep
         # scrubbing BEFORE the awaits that follow, one of which runs the
         # vendor's own `resolve_principal` hook. `None` loses `runtime_meta`
-        # alone, which costs a join and degrades this surface to what
-        # `official/annotation.py` already emits.
+        # alone, which costs a join.
         scrubbed_meta = scrub_or_none(
             scrubber,
             round_meta_coordinates(meta_dict) if meta_dict is not None else None,

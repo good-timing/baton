@@ -154,11 +154,12 @@ async def test_over_a_real_socket_the_origin_follows_the_rung(
 
     with _running_server(transport, stateless=stateless) as (sink, url):
 
-        async def _call(caller: str) -> None:
+        async def _call_twice(caller: str) -> None:
             async with Client(url) as client:
                 await client.call_tool("work", {"caller": caller})
+                await client.call_tool("work", {"caller": caller})
 
-        await asyncio.gather(_call("client-a"), _call("client-b"))
+        await asyncio.gather(_call_twice("client-a"), _call_twice("client-b"))
 
         events = [ev.model_dump() for ev in sink.events]
         snapshots = [ev for ev in events if ev["event_type"] == "surface_snapshot"]
@@ -169,7 +170,11 @@ async def test_over_a_real_socket_the_origin_follows_the_rung(
         assert calls, "no events captured over the socket"
         assert {ev["transport_observed"] for ev in calls} == {"http"}
         starts = [ev for ev in calls if ev["event_type"] == "tool_call_start"]
-        start_ids = {ev["session_id"] for ev in starts}
+        assert len(starts) == 4
+        ids_by_caller: dict[str, set[str]] = {}
+        for ev in starts:
+            ids_by_caller.setdefault(ev["payload"]["params"]["caller"], set()).add(ev["session_id"])
+        start_ids = set().union(*ids_by_caller.values())
         origins = {ev["session_id_origin"] for ev in calls}
 
         if mcp_major >= 2:
@@ -177,7 +182,7 @@ async def test_over_a_real_socket_the_origin_follows_the_rung(
             assert start_ids == {install_time_id}
         elif stateless:
             assert origins == {"minted"}
-            assert len(start_ids) == 2
+            assert len(start_ids) == 4, "one id per request"
             assert install_time_id not in start_ids
             session_of_call = {ev["call_id"]: ev["session_id"] for ev in starts}
             for ev in calls:
@@ -185,5 +190,6 @@ async def test_over_a_real_socket_the_origin_follows_the_rung(
                     assert ev["session_id"] == session_of_call[ev["call_id"]], ev["event_type"]
         else:
             assert origins == {"observed"}
+            assert [len(ids) for ids in ids_by_caller.values()] == [1, 1], "one id per caller"
             assert len(start_ids) == 2
             assert install_time_id not in start_ids

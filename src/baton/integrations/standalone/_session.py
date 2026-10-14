@@ -284,4 +284,5 @@ def _on_sse_connection() -> bool:
 
         return bool(get_http_request().query_params.get("session_id"))
     except Exception:
+        logger.debug("session_id_origin: the SSE check could not read the request", exc_info=True)
         return False
