@@ -506,7 +506,7 @@ async def test_the_handlers_own_exception_is_the_one_that_propagates(tmp_path: P
 
     from baton._state import SessionCounter
     from baton.integrations._lifecycle import CapturedRequest, install_lifecycle_capture
-    from baton.integrations._session import minted
+    from baton.integrations._session import ResolvedSession
     from baton.sinks import FileSink
 
     async def refuse(_context: Any, _params: Any) -> Any:
@@ -524,7 +524,7 @@ async def test_the_handlers_own_exception_is_the_one_that_propagates(tmp_path: P
             headers=None,
             handshake_context=None,
             transport_observed=None,
-            session=minted("s"),
+            session=ResolvedSession("s", "minted"),
         )
 
     sink = FileSink(str(tmp_path / "events.jsonl"))

@@ -226,34 +226,27 @@ class TestHeaderAndFallbackRungs:
         assert await _resolve(headers={"x-request-id": "nope"}) == ("sdk-fallback", "minted")
 
 
-class TestTheSseCheck:
-    """``_on_sse_connection`` against the request it reads."""
+class _Request:
+    def __init__(self, query: dict[str, str]) -> None:
+        self.query_params = query
 
-    class _Request:
-        def __init__(self, query: dict[str, str]) -> None:
-            self.query_params = query
 
-    def _with_request(self, monkeypatch: pytest.MonkeyPatch, get_request: Any) -> None:
-        monkeypatch.setattr(_session, "get_http_request", get_request)
+def _unreadable_request() -> Any:
+    raise RuntimeError("No active HTTP request found.")
 
-    def test_an_sse_message_post_carries_the_transport_session(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._with_request(monkeypatch, lambda: self._Request({"session_id": "a1b2"}))
-        assert _session._on_sse_connection() is True
 
-    def test_a_streamable_http_request_carries_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._with_request(monkeypatch, lambda: self._Request({}))
-        assert _session._on_sse_connection() is False
-
-    def test_a_request_that_cannot_be_read_is_not_sse(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        def _raises() -> Any:
-            raise RuntimeError("No active HTTP request found.")
-
-        self._with_request(monkeypatch, _raises)
-        assert _session._on_sse_connection() is False
+@pytest.mark.parametrize(
+    ("get_request", "on_sse"),
+    [
+        (lambda: _Request({"session_id": "a1b2"}), True),
+        (lambda: _Request({}), False),
+        (_unreadable_request, False),
+    ],
+    ids=["sse-message-post", "streamable-http", "unreadable"],
+)
+def test_the_sse_check(monkeypatch: pytest.MonkeyPatch, get_request: Any, on_sse: bool) -> None:
+    monkeypatch.setattr(_session, "get_http_request", get_request)
+    assert _session._on_sse_connection() is on_sse
 
 
 class TestRung4bFastmcpContext:
@@ -269,30 +262,18 @@ class TestRung4bFastmcpContext:
     """
 
     @requires_http_injection
+    @pytest.mark.parametrize(
+        ("on_sse", "origin"), [(True, "observed"), (False, "minted")], ids=["sse", "stateless"]
+    )
     async def test_used_on_an_http_request_with_no_session_header(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, on_sse: bool, origin: str
     ) -> None:
-        """The SSE shape: a live HTTP request, but no ``mcp-session-id`` on it."""
+        """On SSE fastmcp's id holds for the connection; on stateless streamable
+        HTTP it makes one per request."""
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
-        monkeypatch.setattr(_session, "_on_sse_connection", lambda: True)
-        monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("per-connection-id"))
-        assert await _resolve(headers={"host": "example.invalid"}) == (
-            "per-connection-id",
-            "observed",
-        )
-
-    @requires_http_injection
-    async def test_off_sse_its_per_request_id_is_minted(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Stateless streamable HTTP: fastmcp makes this id per request."""
-        monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
-        monkeypatch.setattr(_session, "_on_sse_connection", lambda: False)
-        monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("per-request-id"))
-        assert await _resolve(headers={"host": "example.invalid"}) == (
-            "per-request-id",
-            "minted",
-        )
+        monkeypatch.setattr(_session, "_on_sse_connection", lambda: on_sse)
+        monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("fastmcp-id"))
+        assert await _resolve(headers={"host": "example.invalid"}) == ("fastmcp-id", origin)
 
     async def test_not_used_without_headers_so_stdio_keeps_the_fallback(
         self, monkeypatch: pytest.MonkeyPatch

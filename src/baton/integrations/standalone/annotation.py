@@ -136,14 +136,14 @@ def register_annotation_tool(
         # tool-call path uses — an annotation that resolved differently from
         # the call it describes could never be joined to it downstream, which
         # is the one correlation this tool exists to produce.
-        session_id, session_id_origin = await resolve_call_session(
+        call_session = await resolve_call_session(
             headers=call_headers, fallback=fallback_session_id
         )
         # A proactive annotation (not a report) claims the session's proactive
         # slot so the middleware won't also synthesise one from an injected param.
         if not reporting:
-            tracker.mark(session_id)
-        seq = await counter.next(session_id)
+            tracker.mark(call_session.id)
+        seq = await counter.next(call_session.id)
         # Identity takes the SAME ladder the tool-call path takes, hook
         # included; see ``official/annotation.py`` for why the annotation path
         # must consult it too.
@@ -177,13 +177,13 @@ def register_annotation_tool(
                 tenant_id=tenant_id,
                 vendor_id=vendor_id,
                 consent_token=consent_token,
-                session_id=session_id,
+                session_id=call_session.id,
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
                 client_observed=client,
                 principal=annotation_principal,
                 transport_observed=observe_transport(),
-                session_id_origin=session_id_origin,
+                session_id_origin=call_session.origin,
                 runtime_meta=scrubbed_meta,
                 payload=build_annotation_payload(
                     scrubber,

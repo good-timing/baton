@@ -157,7 +157,7 @@ def register_annotation_tool(
         )
         # The same ladder the tool-call path climbs, so an annotation lands in
         # the session of the calls it describes.
-        session_id, session_id_origin = await _resolve_call_session(
+        call_session = await _resolve_call_session(
             headers=call_headers, fallback=fallback_session_id
         )
         # Identity takes the SAME ladder the tool-call path takes, hook
@@ -186,8 +186,8 @@ def register_annotation_tool(
         # A proactive annotation (not a report) claims the session's proactive
         # slot so the wrap layer won't also synthesise one from an injected param.
         if not reporting:
-            tracker.mark(session_id)
-        seq = await counter.next(session_id)
+            tracker.mark(call_session.id)
+        seq = await counter.next(call_session.id)
         # safe_emit, not safe_write: `build_annotation_payload` runs the
         # vendor's scrubber on five fields, and as an ARGUMENT expression it
         # would be evaluated in THIS frame, before `safe_write` was entered —
@@ -209,13 +209,13 @@ def register_annotation_tool(
                 tenant_id=tenant_id,
                 vendor_id=vendor_id,
                 consent_token=consent_token,
-                session_id=session_id,
+                session_id=call_session.id,
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
                 client_observed=client,
                 principal=annotation_principal,
                 transport_observed=observe_transport(ctx),
-                session_id_origin=session_id_origin,
+                session_id_origin=call_session.origin,
                 runtime_meta=scrubbed_meta,
                 payload=build_annotation_payload(
                     scrubber,

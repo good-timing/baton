@@ -75,11 +75,8 @@ from typing import Any
 from fastmcp.server.dependencies import get_context, get_http_headers, get_http_request
 
 from baton.integrations._session import (
-    SESSION_MINTED,
-    SESSION_OBSERVED,
     ResolvedSession,
     SessionOrigin,
-    minted,
     session_id_from_headers,
 )
 
@@ -259,12 +256,12 @@ async def resolve_call_session(
     """
     from_header = session_id_from_headers(headers)
     if from_header is not None:
-        return ResolvedSession(from_header, SESSION_OBSERVED)
+        return ResolvedSession(from_header, "observed")
     from_context = session_id_from_fastmcp_context(headers, context)
     if from_context is not None:
-        origin: SessionOrigin = SESSION_OBSERVED if _on_sse_connection() else SESSION_MINTED
+        origin: SessionOrigin = "observed" if _on_sse_connection() else "minted"
         return ResolvedSession(from_context, origin)
-    return minted(fallback)
+    return ResolvedSession(fallback, "minted")
 
 
 def _on_sse_connection() -> bool:

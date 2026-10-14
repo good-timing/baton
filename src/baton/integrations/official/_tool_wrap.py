@@ -111,10 +111,7 @@ from baton.integrations._llm_text import (
     required_param_names,
 )
 from baton.integrations._session import (
-    SESSION_MINTED,
-    SESSION_OBSERVED,
     ResolvedSession,
-    minted,
     session_id_from_headers,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
@@ -965,8 +962,8 @@ async def _resolve_call_session(
     # changed nothing on the common path.
     from_header = session_id_from_headers(headers)
     if from_header is not None:
-        return ResolvedSession(from_header, SESSION_OBSERVED)
-    return minted(fallback)
+        return ResolvedSession(from_header, "observed")
+    return ResolvedSession(fallback, "minted")
 
 
 def _is_mrtr_continuation(context: Any) -> bool:
@@ -1275,7 +1272,7 @@ def _make_emitters(
                 vendor_id=vendor_id,
                 consent_token=consent_token,
                 session_id=session_id,
-                session_id_origin=SESSION_MINTED,
+                session_id_origin="minted",
                 sequence_number=await _seq(session_id),
                 captured_at=datetime.now(UTC),
                 payload=SurfaceSnapshotPayload(

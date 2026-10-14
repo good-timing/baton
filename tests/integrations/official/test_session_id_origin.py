@@ -57,36 +57,29 @@ def _per_call(events_path: Path) -> list[dict[str, Any]]:
 
 
 @pytest.mark.parametrize("fake_context", [_FakeContextV1, _FakeContextV2], ids=["mcp1", "mcp2"])
-async def test_an_id_read_from_the_header_is_observed(fake_context: Any, tmp_path: Path) -> None:
-    events_path = tmp_path / "events.jsonl"
-    mcp, handle = _server(events_path)
-    try:
-        await _run_both_tools(mcp, fake_context({"mcp-session-id": "from-header"}))
-    finally:
-        await handle.aclose()
-
-    assert {(ev["session_id"], ev["session_id_origin"]) for ev in _per_call(events_path)} == {
-        ("from-header", "observed")
-    }
-
-
 @pytest.mark.parametrize(
-    "context",
-    [_FakeContextV1({"host": "example.invalid"}), _FakeContextV2({"host": "example.invalid"})],
-    ids=["mcp1", "mcp2"],
+    ("headers", "expected"),
+    [
+        ({"mcp-session-id": "from-header"}, ("from-header", "observed")),
+        ({"host": "example.invalid"}, (None, "minted")),
+    ],
+    ids=["header", "no-header"],
 )
-async def test_an_http_call_with_no_session_header_is_minted(context: Any, tmp_path: Path) -> None:
+async def test_the_origin_follows_the_session_header(
+    fake_context: Any, headers: dict[str, str], expected: tuple[str | None, str], tmp_path: Path
+) -> None:
     events_path = tmp_path / "events.jsonl"
     mcp, handle = _server(events_path)
     try:
-        await _run_both_tools(mcp, context)
+        await _run_both_tools(mcp, fake_context(headers))
     finally:
         await handle.aclose()
 
     events = _per_call(events_path)
+    session_id, origin = expected
     assert {ev["transport_observed"] for ev in events} == {"http"}
     assert {(ev["session_id"], ev["session_id_origin"]) for ev in events} == {
-        (handle.session_id, "minted")
+        (session_id or handle.session_id, origin)
     }
 
 
