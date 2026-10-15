@@ -14,6 +14,7 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from baton._meta_coords import round_meta_coordinates
 from baton.events import ClientInfoObserved, ClientObserved
 from baton.scrub import scrub_or_none
 
@@ -46,6 +47,19 @@ def meta_to_dict(meta: Any) -> dict[str, Any] | None:
     if hasattr(meta, "model_dump"):
         return meta.model_dump(by_alias=True)  # type: ignore[no-any-return]
     return None
+
+
+def clean_runtime_meta(
+    scrubber: Callable[[Any], Any] | None,
+    meta: Mapping[str, Any] | None,
+    logger: logging.Logger,
+    field: str = "_meta",
+) -> dict[str, Any] | None:
+    """``meta`` as the envelope's ``runtime_meta``: coordinates rounded, then
+    the vendor's scrubber, which fails open (``scrub_or_none``)."""
+    return scrub_or_none(
+        scrubber, round_meta_coordinates(meta) if meta is not None else None, field, logger
+    )
 
 
 def _clean(value: Any, scrubber: Callable[[Any], Any] | None, max_len: int) -> str | None:

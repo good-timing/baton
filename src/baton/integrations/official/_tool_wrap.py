@@ -72,7 +72,6 @@ from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
 
-from baton._meta_coords import clean_runtime_meta
 from baton._result_capture import ResultCaptureMode, end_result_fields
 from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
@@ -115,7 +114,7 @@ from baton.integrations._session import (
     session_id_from_headers,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
-from baton.integrations.client_observed import meta_to_dict, observe_client
+from baton.integrations.client_observed import clean_runtime_meta, meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
     resolve_call_principal,
@@ -666,7 +665,7 @@ def _wrap_tool_run(
             hook_context=identity_hook_context,
             logger=logger,
         )
-        scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, "_meta", logger)
+        scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, logger)
         call_session = await _resolve_call_session(
             headers=call_headers, fallback=fallback_session_id
         )

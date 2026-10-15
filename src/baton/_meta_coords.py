@@ -11,21 +11,20 @@ or returns coordinates is the vendor's data and is captured at full precision.
 That is why this is not a Scrubber rule: the Scrubber walks params and results
 too.
 
-**Before the vendor's scrubber, regardless of it.** ``clean_runtime_meta``
-rounds before ``VendorConfig(scrubber=...)`` runs, so a vendor who supplies
-their own scrubber, or opts out with ``identity_scrub``, still gets the
-rounding.
+**Before the vendor's scrubber, regardless of it.**
+``client_observed.clean_runtime_meta`` rounds before
+``VendorConfig(scrubber=...)`` runs, so a vendor who supplies their own
+scrubber, or opts out with ``identity_scrub``, still gets the rounding.
 """
 
 from __future__ import annotations
 
-import logging
 import math
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any
 
-from baton.scrub import DEPTH_LIMIT, scrub_or_none
+from baton.scrub import DEPTH_LIMIT
 
 #: Keys whose value is rounded. Case-insensitive exact match, like the
 #: Scrubber's field names, so ``lat`` / ``lng`` are not matched.
@@ -34,19 +33,6 @@ COORD_KEYS: frozenset[str] = frozenset({"latitude", "longitude"})
 # "Parses as a decimal number" means plain decimal notation. ``float()`` alone
 # would also take ``nan``, ``inf``, ``1e2`` and ``3_7``; those are left alone.
 _DECIMAL = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
-
-
-def clean_runtime_meta(
-    scrubber: Callable[[Any], Any] | None,
-    meta: Mapping[str, Any] | None,
-    field: str,
-    logger: logging.Logger,
-) -> dict[str, Any] | None:
-    """``meta`` as the envelope's ``runtime_meta``: coordinates rounded, then
-    the vendor's scrubber, which fails open (``scrub_or_none``)."""
-    return scrub_or_none(
-        scrubber, round_meta_coordinates(meta) if meta is not None else None, field, logger
-    )
 
 
 def round_meta_coordinates(meta: Mapping[str, Any]) -> dict[str, Any]:

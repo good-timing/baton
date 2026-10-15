@@ -28,7 +28,6 @@ from fastmcp.tools import Tool
 from mcp.types import CallToolRequestParams, ListToolsRequest
 from pydantic_core import to_jsonable_python
 
-from baton._meta_coords import clean_runtime_meta
 from baton._result_capture import ResultCaptureMode, end_result_fields
 from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
@@ -62,7 +61,7 @@ from baton.integrations._llm_text import (
     required_param_names,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
-from baton.integrations.client_observed import meta_to_dict, observe_client
+from baton.integrations.client_observed import clean_runtime_meta, meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
     resolve_call_principal,
@@ -481,7 +480,7 @@ class BatonMiddleware(Middleware):
             hook_context=identity_hook_context,
             logger=logger,
         )
-        scrubbed_meta = clean_runtime_meta(self._scrubber, meta_dict, "_meta", logger)
+        scrubbed_meta = clean_runtime_meta(self._scrubber, meta_dict, logger)
 
         # Read once per call, beside the session it conditions. SPEC §3.4
         # rung 5 fires only where this says ``"http"``, because the

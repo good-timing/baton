@@ -21,13 +21,12 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from baton._meta_coords import clean_runtime_meta
 from baton._result_capture import ResultCaptureMode
 from baton._state import SessionCounter
 from baton.events import Event
 from baton.integrations._config import SessionResolutionContext
 from baton.integrations._session import ResolvedSession
-from baton.integrations.client_observed import observe_client
+from baton.integrations.client_observed import clean_runtime_meta, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
     resolve_call_principal,
@@ -153,7 +152,7 @@ def install_lifecycle_capture(
                 ),
                 "principal": principal,
                 "transport_observed": request.transport_observed,
-                "runtime_meta": clean_runtime_meta(scrubber, request.meta, "_meta", logger),
+                "runtime_meta": clean_runtime_meta(scrubber, request.meta, logger),
             }
             return envelope, sent, subject
         except Exception:

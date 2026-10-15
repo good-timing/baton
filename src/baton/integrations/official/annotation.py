@@ -19,7 +19,6 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from baton._meta_coords import clean_runtime_meta
 from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent
 from baton.integrations._annotation_name import derive_annotation_tool_name
@@ -33,7 +32,7 @@ from baton.integrations._llm_text import (
     build_annotation_tool_description,
     build_refusal_text,
 )
-from baton.integrations.client_observed import observe_client
+from baton.integrations.client_observed import clean_runtime_meta, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
     resolve_call_principal,
@@ -147,7 +146,7 @@ def register_annotation_tool(
         meta_dict = _extract_meta_from_context(ctx)
         call_headers = _extract_headers_from_context(ctx)
         client = observe_client(meta_dict, context=ctx, headers=call_headers, scrubber=scrubber)
-        scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, "annotation _meta", logger)
+        scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, logger, "annotation _meta")
         # The same ladder the tool-call path climbs, so an annotation lands in
         # the session of the calls it describes.
         call_session = await _resolve_call_session(

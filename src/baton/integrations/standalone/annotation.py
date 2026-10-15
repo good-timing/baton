@@ -22,7 +22,6 @@ from typing import Any
 
 from fastmcp import Context, FastMCP
 
-from baton._meta_coords import clean_runtime_meta
 from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent
 from baton.integrations._annotation_name import derive_annotation_tool_name
@@ -32,7 +31,7 @@ from baton.integrations._llm_text import (
     build_annotation_tool_description,
     build_refusal_text,
 )
-from baton.integrations.client_observed import meta_to_dict, observe_client
+from baton.integrations.client_observed import clean_runtime_meta, meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
     resolve_call_principal,
@@ -120,7 +119,7 @@ def register_annotation_tool(
         # Outside the build thunk below on purpose: it must scrub BEFORE the
         # awaits that follow, one of which runs the vendor's own
         # `resolve_principal` hook. A failed scrub loses `runtime_meta` alone.
-        scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, "annotation _meta", logger)
+        scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, logger, "annotation _meta")
 
         # SPEC §3.4's ladder, resolved by the SAME function the middleware's
         # tool-call path uses — an annotation that resolved differently from
