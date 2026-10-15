@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.8.17: a URL no longer makes a stateless server look like SSE
 
 ### Fixed
 
