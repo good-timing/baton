@@ -259,21 +259,25 @@ async def resolve_call_session(
         return ResolvedSession(from_header, "observed")
     from_context = session_id_from_fastmcp_context(headers, context)
     if from_context is not None:
-        origin: SessionOrigin = "observed" if _on_sse_connection() else "minted"
+        origin: SessionOrigin = "observed" if _on_sse_connection(context) else "minted"
         return ResolvedSession(from_context, origin)
     return ResolvedSession(fallback, "minted")
 
 
-def _on_sse_connection() -> bool:
+def _on_sse_connection(context: Any = None) -> bool:
     """Whether rung 4b's id names a connection rather than one request.
 
-    SSE posts every message with its transport's ``session_id`` query
-    parameter, and there fastmcp's id holds for the connection. Stateless
-    streamable HTTP sends none, and fastmcp makes a new id per request, which
-    SPEC §11.4 calls ``"minted"``. A failed read answers False: the console
-    may then join that connection with the same person's other sessions, and
-    the join keys on the person, so never with a stranger's."""
+    On SSE fastmcp's id holds for the connection; on stateless streamable HTTP
+    it is new per request (SPEC §11.4 ``"minted"``). ``Context.transport``
+    (fastmcp 3+) is fixed when the server starts, so a URL cannot fake it.
+    fastmcp 2.x lacks it, so there SSE's ``session_id`` query parameter is
+    read, which a stateless server's URL could also carry. A failed read
+    answers False: the console may then join that connection with the same
+    person's other sessions, never with a stranger's."""
     try:
+        transport = getattr(context if context is not None else get_context(), "transport", None)
+        if transport is not None:
+            return bool(transport == "sse")
         return bool(get_http_request().query_params.get("session_id"))
     except Exception:
         logger.debug("session_id_origin: the SSE check could not read the request", exc_info=True)

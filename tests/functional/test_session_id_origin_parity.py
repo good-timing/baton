@@ -30,6 +30,17 @@ _SUCCESS_LIFECYCLE_TYPES = {t for t in LIFECYCLE_EVENT_TYPES if not t.endswith("
 _SUCCESS_TOOL_LIST_TYPES = {t for t in TOOL_LIST_EVENT_TYPES if not t.endswith("_error")}
 
 
+def _fastmcp_names_its_transport() -> bool:
+    try:
+        from fastmcp import Context
+    except ImportError:
+        return False
+    return hasattr(Context, "transport")
+
+
+_FASTMCP_NAMES_ITS_TRANSPORT = _fastmcp_names_its_transport()
+
+
 def _register(mcp: Any) -> None:
     @mcp.resource(DOC_URI)
     def doc() -> str:
@@ -128,19 +139,34 @@ async def test_every_event_off_the_wire_says_minted(drive: Driver, tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    ("transport", "stateless"),
-    [("http", False), ("http", True), ("sse", False)],
-    ids=["stateful", "stateless", "sse"],
+    ("transport", "stateless", "query"),
+    [
+        ("http", False, ""),
+        ("http", True, ""),
+        pytest.param(
+            "http",
+            True,
+            "?session_id=from-the-url",
+            marks=pytest.mark.xfail(
+                not _FASTMCP_NAMES_ITS_TRANSPORT,
+                reason="fastmcp 2.x has no Context.transport, so only the URL can tell",
+                strict=True,
+            ),
+        ),
+        ("sse", False, ""),
+    ],
+    ids=["stateful", "stateless", "stateless-url-says-session_id", "sse"],
 )
 async def test_over_a_real_socket_the_origin_follows_the_rung(
-    transport: str, stateless: bool
+    transport: str, stateless: bool, query: str
 ) -> None:
     """Two callers on one HTTP process.
 
     On mcp 1.x a session the client keeps (the header when stateful, the SSE
     connection) is ``"observed"``, one id per caller. Stateless, fastmcp makes
-    a new id per request: ``"minted"``, one per call. On mcp 2.x no rung
-    answers, so both callers share the install-time id: ``"minted"``."""
+    a new id per request: ``"minted"``, one per call, even when the URL
+    carries SSE's ``session_id`` parameter. On mcp 2.x no rung answers, so
+    both callers share the install-time id: ``"minted"``."""
     import asyncio
     from importlib.metadata import version
 
@@ -155,7 +181,7 @@ async def test_over_a_real_socket_the_origin_follows_the_rung(
     with _running_server(transport, stateless=stateless) as (sink, url):
 
         async def _call_twice(caller: str) -> None:
-            async with Client(url) as client:
+            async with Client(url + query) as client:
                 await client.call_tool("work", {"caller": caller})
                 await client.call_tool("work", {"caller": caller})
 

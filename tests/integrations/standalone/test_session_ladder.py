@@ -231,22 +231,42 @@ class _Request:
         self.query_params = query
 
 
+class _ContextWithTransport:
+    def __init__(self, transport: str | None) -> None:
+        self.transport = transport
+
+
 def _unreadable_request() -> Any:
     raise RuntimeError("No active HTTP request found.")
 
 
+_SSE_QUERY = {"session_id": "a1b2"}
+
+
 @pytest.mark.parametrize(
-    ("get_request", "on_sse"),
+    ("context", "get_request", "on_sse"),
     [
-        (lambda: _Request({"session_id": "a1b2"}), True),
-        (lambda: _Request({}), False),
-        (_unreadable_request, False),
+        (_ContextWithTransport("sse"), lambda: _Request({}), True),
+        (_ContextWithTransport("streamable-http"), lambda: _Request(_SSE_QUERY), False),
+        (_ContextWithTransport(None), lambda: _Request(_SSE_QUERY), True),
+        (object(), lambda: _Request(_SSE_QUERY), True),
+        (object(), lambda: _Request({}), False),
+        (object(), _unreadable_request, False),
     ],
-    ids=["sse-message-post", "streamable-http", "unreadable"],
+    ids=[
+        "transport-sse",
+        "transport-wins-over-the-url",
+        "transport-unset-reads-the-url",
+        "fastmcp-2-sse-message-post",
+        "fastmcp-2-streamable-http",
+        "fastmcp-2-unreadable",
+    ],
 )
-def test_the_sse_check(monkeypatch: pytest.MonkeyPatch, get_request: Any, on_sse: bool) -> None:
+def test_the_sse_check(
+    monkeypatch: pytest.MonkeyPatch, context: Any, get_request: Any, on_sse: bool
+) -> None:
     monkeypatch.setattr(_session, "get_http_request", get_request)
-    assert _session._on_sse_connection() is on_sse
+    assert _session._on_sse_connection(context) is on_sse
 
 
 class TestRung4bFastmcpContext:
@@ -271,7 +291,7 @@ class TestRung4bFastmcpContext:
         """On SSE fastmcp's id holds for the connection; on stateless streamable
         HTTP it makes one per request."""
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
-        monkeypatch.setattr(_session, "_on_sse_connection", lambda: on_sse)
+        monkeypatch.setattr(_session, "_on_sse_connection", lambda _context: on_sse)
         monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("fastmcp-id"))
         assert await _resolve(headers={"host": "example.invalid"}) == ("fastmcp-id", origin)
 
@@ -310,7 +330,7 @@ class TestRung4bFastmcpContext:
         body no longer touches. The meta claim now lives in
         ``TestTheRetiredMetaRungs``, on the wire, where it can fail."""
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
-        monkeypatch.setattr(_session, "_on_sse_connection", lambda: True)
+        monkeypatch.setattr(_session, "_on_sse_connection", lambda _context: True)
         monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("per-connection-id"))
         got = await _resolve(headers={"host": "x"})
         assert got == ("per-connection-id", "observed")
