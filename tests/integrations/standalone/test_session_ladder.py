@@ -248,7 +248,6 @@ _SSE_QUERY = {"session_id": "a1b2"}
     [
         (_ContextWithTransport("sse"), lambda: _Request({}), True),
         (_ContextWithTransport("streamable-http"), lambda: _Request(_SSE_QUERY), False),
-        (_ContextWithTransport(None), lambda: _Request(_SSE_QUERY), True),
         (object(), lambda: _Request(_SSE_QUERY), True),
         (object(), lambda: _Request({}), False),
         (object(), _unreadable_request, False),
@@ -256,7 +255,6 @@ _SSE_QUERY = {"session_id": "a1b2"}
     ids=[
         "transport-sse",
         "transport-wins-over-the-url",
-        "transport-unset-reads-the-url",
         "fastmcp-2-sse-message-post",
         "fastmcp-2-streamable-http",
         "fastmcp-2-unreadable",
@@ -294,6 +292,19 @@ class TestRung4bFastmcpContext:
         monkeypatch.setattr(_session, "_on_sse_connection", lambda _context: on_sse)
         monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("fastmcp-id"))
         assert await _resolve(headers={"host": "example.invalid"}) == ("fastmcp-id", origin)
+
+    @requires_http_injection
+    async def test_the_current_context_decides_the_origin(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tool calls and annotations pass no context, so the origin must read
+        the current one: a stateless server at a URL with SSE's parameter."""
+        context = _FakeContext("fastmcp-id")
+        context.transport = "streamable-http"  # type: ignore[attr-defined]
+        monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
+        monkeypatch.setattr(_session, "get_context", lambda: context)
+        monkeypatch.setattr(_session, "get_http_request", lambda: _Request(_SSE_QUERY))
+        assert await _resolve(headers={"host": "x"}) == ("fastmcp-id", "minted")
 
     async def test_not_used_without_headers_so_stdio_keeps_the_fallback(
         self, monkeypatch: pytest.MonkeyPatch

@@ -115,13 +115,11 @@ def _session_cache_survives() -> bool:
 _SESSION_CACHE_SURVIVES = _session_cache_survives()
 
 
-def session_id_from_fastmcp_context(
-    headers: Mapping[str, str] | None, context: Any = None
-) -> str | None:
+def session_id_from_fastmcp_context(headers: Mapping[str, str] | None, context: Any) -> str | None:
     """SPEC §3.4 rung 4b — fastmcp's own per-connection id, where it is stable.
 
-    ``context`` is the fastmcp context to read it from, for a caller that runs
-    where none is current.
+    ``context`` is the fastmcp context to read it from, or ``None`` if there is
+    none.
 
     Fires only on an HTTP transport that did not carry ``mcp-session-id`` — in
     practice SSE, and also stateless streamable HTTP, where it degrades to a
@@ -143,10 +141,10 @@ def session_id_from_fastmcp_context(
     """
     if not _SESSION_CACHE_SURVIVES:
         return None
-    if not headers:
+    if not headers or context is None:
         return None
     try:
-        session_id = (context if context is not None else get_context()).session_id
+        session_id = context.session_id
     except Exception:  # best-effort rung; see docstring
         return None
     return session_id or None
@@ -257,6 +255,8 @@ async def resolve_call_session(
     from_header = session_id_from_headers(headers)
     if from_header is not None:
         return ResolvedSession(from_header, "observed")
+    if context is None:
+        context = _current_context()
     from_context = session_id_from_fastmcp_context(headers, context)
     if from_context is not None:
         origin: SessionOrigin = "observed" if _on_sse_connection(context) else "minted"
@@ -264,18 +264,26 @@ async def resolve_call_session(
     return ResolvedSession(fallback, "minted")
 
 
-def _on_sse_connection(context: Any = None) -> bool:
+def _current_context() -> Any:
+    try:
+        return get_context()
+    except Exception:  # no live request; rung 4b then falls through
+        return None
+
+
+def _on_sse_connection(context: Any) -> bool:
     """Whether rung 4b's id names a connection rather than one request.
 
     On SSE fastmcp's id holds for the connection; on stateless streamable HTTP
-    it is new per request (SPEC §11.4 ``"minted"``). ``Context.transport``
-    (fastmcp 3+) is fixed when the server starts, so a URL cannot fake it.
-    fastmcp 2.x lacks it, so there SSE's ``session_id`` query parameter is
-    read, which a stateless server's URL could also carry. A failed read
-    answers False: the console may then join that connection with the same
-    person's other sessions, never with a stranger's."""
+    it is new per request (SPEC §11.4 ``"minted"``). On fastmcp 3+ an app that
+    fastmcp builds records its transport, and ``Context.transport`` reports it
+    on every request, so a URL cannot fake it. fastmcp 2.x, and an app the
+    vendor builds by hand, leave it unset; there SSE's ``session_id`` query
+    parameter is read, which a stateless server's URL could also carry. A
+    failed read answers False: the console may then join that connection with
+    the same person's other sessions, never with a stranger's."""
     try:
-        transport = getattr(context if context is not None else get_context(), "transport", None)
+        transport = getattr(context, "transport", None)
         if transport is not None:
             return bool(transport == "sse")
         return bool(get_http_request().query_params.get("session_id"))
