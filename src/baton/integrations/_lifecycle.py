@@ -21,7 +21,7 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from baton._meta_coords import round_meta_coordinates
+from baton._meta_coords import clean_runtime_meta
 from baton._result_capture import ResultCaptureMode
 from baton._state import SessionCounter
 from baton.events import Event
@@ -33,7 +33,6 @@ from baton.integrations.identity_adapter import (
     resolve_call_principal,
     token_claims,
 )
-from baton.scrub import scrub_or_none
 from baton.sinks import Sink, safe_emit
 
 logger = logging.getLogger(__name__)
@@ -154,12 +153,7 @@ def install_lifecycle_capture(
                 ),
                 "principal": principal,
                 "transport_observed": request.transport_observed,
-                "runtime_meta": scrub_or_none(
-                    scrubber,
-                    round_meta_coordinates(request.meta) if request.meta is not None else None,
-                    "_meta",
-                    logger,
-                ),
+                "runtime_meta": clean_runtime_meta(scrubber, request.meta, "_meta", logger),
             }
             return envelope, sent, subject
         except Exception:

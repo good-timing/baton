@@ -22,7 +22,7 @@ from typing import Any
 
 from fastmcp import Context, FastMCP
 
-from baton._meta_coords import round_meta_coordinates
+from baton._meta_coords import clean_runtime_meta
 from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent
 from baton.integrations._annotation_name import derive_annotation_tool_name
@@ -44,7 +44,7 @@ from baton.integrations.standalone._session import (
     observe_transport,
     resolve_call_session,
 )
-from baton.scrub import identity_scrub, scrub_or_none
+from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_emit
 
 logger = logging.getLogger(__name__)
@@ -117,20 +117,10 @@ def register_annotation_tool(
         meta_dict = meta_to_dict(rc.meta if rc else None)
         call_headers = extract_headers()
         client = observe_client(meta_dict, context=ctx, headers=call_headers, scrubber=scrubber)
-        # Coordinates round before the vendor's scrubber, whatever it is
-        # (``_meta_coords``).
-        #
-        # scrub_or_none, not a bare call: this is a plain statement OUTSIDE the
-        # build thunk below, and it stays out there deliberately — it must keep
-        # scrubbing BEFORE the awaits that follow, one of which runs the
-        # vendor's own `resolve_principal` hook. `None` loses `runtime_meta`
-        # alone, which costs a join.
-        scrubbed_meta = scrub_or_none(
-            scrubber,
-            round_meta_coordinates(meta_dict) if meta_dict is not None else None,
-            "annotation _meta",
-            logger,
-        )
+        # Outside the build thunk below on purpose: it must scrub BEFORE the
+        # awaits that follow, one of which runs the vendor's own
+        # `resolve_principal` hook. A failed scrub loses `runtime_meta` alone.
+        scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, "annotation _meta", logger)
 
         # SPEC §3.4's ladder, resolved by the SAME function the middleware's
         # tool-call path uses — an annotation that resolved differently from

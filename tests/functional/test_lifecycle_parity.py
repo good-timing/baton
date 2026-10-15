@@ -18,7 +18,7 @@ pytestmark = pytest.mark.functional
 
 DOC_URI = "file:///docs/SECRET-plan.txt"
 BROKEN_URI = "file:///broken.txt"
-SENT_META = {"io.example/trace": "abc"}
+SENT_META = {"io.example/trace": "abc", "location": {"latitude": "37.79535"}}
 
 Hook = Callable[[Any], Principal | None]
 Action = Callable[[Any], Awaitable[None]]
@@ -342,8 +342,9 @@ async def test_the_requests_meta_is_on_the_envelope_and_not_in_params(
 
     start, end = _lifecycle_events(events_path)
     assert start["payload"] == {"uri": DOC_URI, "params": {"uri": DOC_URI}}
-    assert start["runtime_meta"]["io.example/trace"] == "abc"
-    assert end["runtime_meta"]["io.example/trace"] == "abc"
+    for event in (start, end):
+        assert event["runtime_meta"]["io.example/trace"] == "abc"
+        assert event["runtime_meta"]["location"] == {"latitude": "37.8"}
 
 
 @pytest.mark.parametrize("drive", ADAPTERS)

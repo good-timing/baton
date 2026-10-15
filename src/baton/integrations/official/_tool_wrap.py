@@ -72,7 +72,7 @@ from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
 
-from baton._meta_coords import round_meta_coordinates
+from baton._meta_coords import clean_runtime_meta
 from baton._result_capture import ResultCaptureMode, end_result_fields
 from baton._state import ProactiveTracker, SessionCounter
 from baton._uuid import uuid7
@@ -666,14 +666,7 @@ def _wrap_tool_run(
             hook_context=identity_hook_context,
             logger=logger,
         )
-        # Coordinates round BEFORE the vendor's scrubber, so they round whatever
-        # scrubber is configured (``_meta_coords``).
-        scrubbed_meta = scrub_or_none(
-            scrubber,
-            round_meta_coordinates(meta_dict) if meta_dict is not None else None,
-            "_meta",
-            logger,
-        )
+        scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, "_meta", logger)
         call_session = await _resolve_call_session(
             headers=call_headers, fallback=fallback_session_id
         )

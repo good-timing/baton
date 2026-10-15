@@ -19,7 +19,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from baton._meta_coords import round_meta_coordinates
+from baton._meta_coords import clean_runtime_meta
 from baton._state import ProactiveTracker, SessionCounter
 from baton.events import AnnotationEvent
 from baton.integrations._annotation_name import derive_annotation_tool_name
@@ -49,7 +49,7 @@ from baton.integrations.official._tool_wrap import (
     _resolve_call_session,
     observe_transport,
 )
-from baton.scrub import identity_scrub, scrub_or_none
+from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_emit
 
 logger = logging.getLogger(__name__)
@@ -147,14 +147,7 @@ def register_annotation_tool(
         meta_dict = _extract_meta_from_context(ctx)
         call_headers = _extract_headers_from_context(ctx)
         client = observe_client(meta_dict, context=ctx, headers=call_headers, scrubber=scrubber)
-        # scrub_or_none, not a bare call: a plain statement outside the build
-        # thunk, where a raising vendor scrubber would otherwise fail the tool.
-        scrubbed_meta = scrub_or_none(
-            scrubber,
-            round_meta_coordinates(meta_dict) if meta_dict is not None else None,
-            "annotation _meta",
-            logger,
-        )
+        scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, "annotation _meta", logger)
         # The same ladder the tool-call path climbs, so an annotation lands in
         # the session of the calls it describes.
         call_session = await _resolve_call_session(
