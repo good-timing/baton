@@ -483,15 +483,6 @@ class BatonMiddleware(Middleware):
         )
         scrubbed_meta = clean_runtime_meta(self._scrubber, meta_dict, "_meta", logger)
 
-        # ⚠ The ordering constraint that used to live here DIED with rung 0
-        # (removed 2026-09-12). It read "resolved AFTER the goal-param strip +
-        # meta extraction so a configured hook sees vendor-visible ``params``
-        # and unscrubbed ``meta_dict``" — true while a hook took those, and
-        # meaningless now that this reads headers alone and takes no
-        # arguments. Placement here is incidental, not load-bearing: nothing
-        # above it feeds it. Said explicitly so the next reader neither
-        # preserves a constraint that no longer exists nor thinks they broke
-        # one by moving the call.
         # Read once per call, beside the session it conditions. SPEC §3.4
         # rung 5 fires only where this says ``"http"``, because the
         # process-wide fallback below is the CORRECT answer on stdio and a

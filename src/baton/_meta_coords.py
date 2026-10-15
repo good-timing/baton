@@ -11,9 +11,10 @@ or returns coordinates is the vendor's data and is captured at full precision.
 That is why this is not a Scrubber rule: the Scrubber walks params and results
 too.
 
-**Before the vendor's scrubber, regardless of it.** Each adapter calls this
-before ``VendorConfig(scrubber=...)`` runs, so a vendor who supplies their own
-scrubber, or opts out with ``identity_scrub``, still gets the rounding.
+**Before the vendor's scrubber, regardless of it.** ``clean_runtime_meta``
+rounds before ``VendorConfig(scrubber=...)`` runs, so a vendor who supplies
+their own scrubber, or opts out with ``identity_scrub``, still gets the
+rounding.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ def clean_runtime_meta(
     logger: logging.Logger,
 ) -> dict[str, Any] | None:
     """``meta`` as the envelope's ``runtime_meta``: coordinates rounded, then
-    the vendor's scrubber, fail-open (``scrub_or_none``)."""
+    the vendor's scrubber, which fails open (``scrub_or_none``)."""
     return scrub_or_none(
         scrubber, round_meta_coordinates(meta) if meta is not None else None, field, logger
     )

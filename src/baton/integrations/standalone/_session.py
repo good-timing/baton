@@ -115,27 +115,21 @@ _SESSION_CACHE_SURVIVES = _session_cache_survives()
 
 
 def session_from_fastmcp_context(
-    headers: Mapping[str, str] | None, context: Any
+    headers: Mapping[str, str] | None, context: Any = None
 ) -> ResolvedSession | None:
     """SPEC §3.4 rung 4b — fastmcp's own per-connection id, where it is stable,
     with its origin.
 
-    ``context`` is the fastmcp context to read it from, or ``None`` if there is
-    none.
+    ``context`` is the fastmcp context to read it from, for a caller that runs
+    where none is current.
 
-    Fires only on an HTTP transport that did not carry ``mcp-session-id`` — in
-    practice SSE, and also stateless streamable HTTP, where it degrades to a
-    per-request id (see the module docstring: deliberately unfixed, unchanged
-    since 0.6.1, and the safe direction of the two). **Not on stdio or
-    in-process**, and that exclusion is
-    load-bearing rather than an optimisation: there, one process is one client
-    and ``fallback`` already says so correctly. Firing would mint a SECOND
-    per-process id that disagrees with the one the install-time
-    ``surface_snapshot`` carries, splitting a session's snapshot from its own
-    calls — a real regression the suite caught
-    (``test_middleware.py::TestSequenceNumbers``), and the reason the original
-    port's "stdio returns what the fallback already is" reasoning does not hold:
-    same SHAPE (per process), different VALUE.
+    Fires only on an HTTP transport that did not carry ``mcp-session-id``: SSE,
+    and stateless streamable HTTP, where the id is per request and so
+    ``"minted"`` (see the module docstring). **Not on stdio or in-process**:
+    there one process is one client and ``fallback`` already says so. Firing
+    would mint a second per-process id that disagrees with the install-time
+    ``surface_snapshot``'s, splitting a session from its own snapshot
+    (``test_middleware.py::TestSequenceNumbers``).
 
     Returns ``None`` outside a live request, on a transport with no session, or
     on any version where the cache does not survive. Never raises: a
@@ -143,15 +137,18 @@ def session_from_fastmcp_context(
     """
     if not _SESSION_CACHE_SURVIVES:
         return None
-    if not headers or context is None:
+    if not headers:
         return None
     try:
+        context = context if context is not None else get_context()
         session_id = context.session_id
     except Exception:  # best-effort rung; see docstring
         return None
     if not session_id:
         return None
-    return ResolvedSession(session_id, "observed" if _on_sse_connection(context) else "minted")
+    return ResolvedSession(
+        session_id, "observed" if _client_keeps_the_session(context) else "minted"
+    )
 
 
 def extract_headers() -> Mapping[str, str] | None:
@@ -227,14 +224,10 @@ async def resolve_call_session(
     future runtime-specific ``_meta`` key) isn't defined for any runtime yet,
     so it's skipped.
 
-    **Rung 0 — ``VendorConfig.resolve_session_id`` — was REMOVED 2026-09-12**,
-    for the reason that retired rungs 1-2: it keyed the session on an
-    identifier the SDK did not mint. It differed from those two only in who
-    supplied the value, and the join rule does not distinguish a client's
-    handle from a vendor's. What the vendor knows about a caller now reaches
-    Baton through ``VendorConfig.resolve_principal``, which lands in ``principal`` —
-    a field the console can partition on downstream, where the decision can
-    be changed and re-run.
+    There is no vendor hook and no ``_meta`` rung: each would key the session
+    on an id the SDK did not mint. What the vendor knows about a caller goes
+    in ``principal`` (``VendorConfig.resolve_principal``) instead, and
+    ``_meta`` reaches the console as ``runtime_meta``.
 
     ``fallback`` is **not** SPEC rung 5. Rung 5 is a per-event UUID; neither
     adapter implements it, so both terminate on a process-wide id that is
@@ -245,51 +238,28 @@ async def resolve_call_session(
     rung emits is undecided — a stream of fresh UUIDs is indistinguishable from
     the merge defect, which is why the ``correlation_mode`` field was dropped
     rather than kept. D-3 settles the shape.
-
-    **Rungs 1-2 were retired 2026-09-09** — ``_meta.traceparent``'s trace-id
-    and a client-supplied ``_meta["io.baton/session_id"]`` both keyed the
-    session on an identifier the SDK did not mint, which the D2 join rule
-    forbids. The values still reach the console via ``runtime_meta``; only the
-    capture-time join is gone. Before the shared module existed this adapter
-    implemented neither rung, resolving only via fastmcp's own
-    ``Context.session_id`` — the uneven ladder design note D3 recorded and
-    deferred; retiring them makes both adapters even again, from the other
-    end.
     """
     from_header = session_id_from_headers(headers)
     if from_header is not None:
         return ResolvedSession(from_header, "observed")
-    if context is None:
-        context = _current_context()
     from_context = session_from_fastmcp_context(headers, context)
     if from_context is not None:
         return from_context
     return ResolvedSession(fallback, "minted")
 
 
-def _current_context() -> Any:
+def _client_keeps_the_session(context: Any) -> bool:
+    """Whether rung 4b's id names a session the client keeps.
+
+    mcp sets ``client_params`` only when a session handles ``initialize``. An
+    SSE connection does, so fastmcp's id holds for the connection. Stateless
+    streamable HTTP builds a new session for every request, already marked
+    initialized, so it never has them and fastmcp's id is new per request
+    (SPEC §11.4 ``"minted"``). A failed read answers False: the console may
+    then join that connection with the same person's other sessions, never
+    with a stranger's."""
     try:
-        return get_context()
-    except Exception:  # no live request; rung 4b then falls through
-        return None
-
-
-def _on_sse_connection(context: Any) -> bool:
-    """Whether rung 4b's id names a connection rather than one request.
-
-    On SSE fastmcp's id holds for the connection; on stateless streamable HTTP
-    it is new per request (SPEC §11.4 ``"minted"``). On fastmcp 3+ an app that
-    fastmcp builds records its transport, and ``Context.transport`` reports it
-    on every request, so a URL cannot fake it. fastmcp 2.x, and an app the
-    vendor builds by hand, leave it unset; there SSE's ``session_id`` query
-    parameter is read, which a stateless server's URL could also carry. A
-    failed read answers False: the console may then join that connection with
-    the same person's other sessions, never with a stranger's."""
-    try:
-        transport = getattr(context, "transport", None)
-        if transport is not None:
-            return bool(transport == "sse")
-        return bool(get_http_request().query_params.get("session_id"))
+        return context.request_context.session.client_params is not None
     except Exception:
-        logger.debug("session_id_origin: the SSE check could not read the request", exc_info=True)
+        logger.debug("session_id_origin: could not read the session", exc_info=True)
         return False

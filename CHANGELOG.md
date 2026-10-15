@@ -13,11 +13,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ### Fixed
 
 - **A stateless server reached at a URL with a `session_id` parameter no
-  longer says `"observed"` on fastmcp 3.** The standalone adapter now reads
-  the transport fastmcp records on the apps it builds, so a URL cannot make a
-  stateless server look like SSE. On fastmcp 2.x, which records no transport,
-  and on an app the vendor builds by hand, the adapter still reads the URL.
-  fastmcp 4 was never affected. The mistake could only stop a collector
+  longer says `"observed"`.** The standalone adapter now asks mcp whether the
+  session went through `initialize`, which an SSE connection does and a
+  stateless request never does, so a URL cannot make a stateless server look
+  like SSE. fastmcp 4 was never affected. The mistake could only stop a collector
   joining that server's calls, never join two people's.
 
 ## 0.8.16: every event says where its session id came from

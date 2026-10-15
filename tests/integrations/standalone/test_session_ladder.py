@@ -9,6 +9,7 @@ which SPEC calls rung 4 and which fastmcp 4.x mints fresh per request — see
 from __future__ import annotations
 
 from importlib.metadata import version
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -76,10 +77,13 @@ async def _session_id_from_a_call(
 
 
 class _FakeContext:
-    """Stands in for fastmcp's ``Context``; only ``session_id`` is read."""
+    """Stands in for fastmcp's ``Context``; only ``session_id`` and the mcp
+    session's ``client_params`` are read."""
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(self, session_id: str = "fastmcp-id", *, initialized: bool = False) -> None:
         self.session_id = session_id
+        session = SimpleNamespace(client_params=object() if initialized else None)
+        self.request_context = SimpleNamespace(session=session)
 
 
 TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
@@ -226,45 +230,17 @@ class TestHeaderAndFallbackRungs:
         assert await _resolve(headers={"x-request-id": "nope"}) == ("sdk-fallback", "minted")
 
 
-class _Request:
-    def __init__(self, query: dict[str, str]) -> None:
-        self.query_params = query
-
-
-class _ContextWithTransport:
-    def __init__(self, transport: str | None) -> None:
-        self.transport = transport
-
-
-def _unreadable_request() -> Any:
-    raise RuntimeError("No active HTTP request found.")
-
-
-_SSE_QUERY = {"session_id": "a1b2"}
-
-
 @pytest.mark.parametrize(
-    ("context", "get_request", "on_sse"),
+    ("context", "kept"),
     [
-        (_ContextWithTransport("sse"), lambda: _Request({}), True),
-        (_ContextWithTransport("streamable-http"), lambda: _Request(_SSE_QUERY), False),
-        (object(), lambda: _Request(_SSE_QUERY), True),
-        (object(), lambda: _Request({}), False),
-        (object(), _unreadable_request, False),
+        (_FakeContext(initialized=True), True),
+        (_FakeContext(initialized=False), False),
+        (object(), False),
     ],
-    ids=[
-        "transport-sse",
-        "transport-wins-over-the-url",
-        "fastmcp-2-sse-message-post",
-        "fastmcp-2-streamable-http",
-        "fastmcp-2-unreadable",
-    ],
+    ids=["initialized-sse-connection", "stateless-request", "unreadable"],
 )
-def test_the_sse_check(
-    monkeypatch: pytest.MonkeyPatch, context: Any, get_request: Any, on_sse: bool
-) -> None:
-    monkeypatch.setattr(_session, "get_http_request", get_request)
-    assert _session._on_sse_connection(context) is on_sse
+def test_the_session_check(context: Any, kept: bool) -> None:
+    assert _session._client_keeps_the_session(context) is kept
 
 
 class TestRung4bFastmcpContext:
@@ -289,22 +265,21 @@ class TestRung4bFastmcpContext:
         """On SSE fastmcp's id holds for the connection; on stateless streamable
         HTTP it makes one per request."""
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
-        monkeypatch.setattr(_session, "_on_sse_connection", lambda _context: on_sse)
+        monkeypatch.setattr(_session, "_client_keeps_the_session", lambda _context: on_sse)
         monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("fastmcp-id"))
         assert await _resolve(headers={"host": "example.invalid"}) == ("fastmcp-id", origin)
 
     @requires_http_injection
+    @pytest.mark.parametrize(("initialized", "origin"), [(True, "observed"), (False, "minted")])
     async def test_the_current_context_decides_the_origin(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, initialized: bool, origin: str
     ) -> None:
-        """Tool calls and annotations pass no context, so the origin must read
-        the current one: a stateless server at a URL with SSE's parameter."""
-        context = _FakeContext("fastmcp-id")
-        context.transport = "streamable-http"  # type: ignore[attr-defined]
+        """Tool calls and annotations pass no context, so the origin must come
+        from the current one."""
+        context = _FakeContext(initialized=initialized)
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
         monkeypatch.setattr(_session, "get_context", lambda: context)
-        monkeypatch.setattr(_session, "get_http_request", lambda: _Request(_SSE_QUERY))
-        assert await _resolve(headers={"host": "x"}) == ("fastmcp-id", "minted")
+        assert await _resolve(headers={"host": "x"}) == ("fastmcp-id", origin)
 
     async def test_not_used_without_headers_so_stdio_keeps_the_fallback(
         self, monkeypatch: pytest.MonkeyPatch
@@ -341,7 +316,7 @@ class TestRung4bFastmcpContext:
         body no longer touches. The meta claim now lives in
         ``TestTheRetiredMetaRungs``, on the wire, where it can fail."""
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
-        monkeypatch.setattr(_session, "_on_sse_connection", lambda _context: True)
+        monkeypatch.setattr(_session, "_client_keeps_the_session", lambda _context: True)
         monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("per-connection-id"))
         got = await _resolve(headers={"host": "x"})
         assert got == ("per-connection-id", "observed")
