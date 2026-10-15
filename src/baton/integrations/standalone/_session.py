@@ -76,7 +76,6 @@ from fastmcp.server.dependencies import get_context, get_http_headers, get_http_
 
 from baton.integrations._session import (
     ResolvedSession,
-    SessionOrigin,
     session_id_from_headers,
 )
 
@@ -115,8 +114,11 @@ def _session_cache_survives() -> bool:
 _SESSION_CACHE_SURVIVES = _session_cache_survives()
 
 
-def session_id_from_fastmcp_context(headers: Mapping[str, str] | None, context: Any) -> str | None:
-    """SPEC §3.4 rung 4b — fastmcp's own per-connection id, where it is stable.
+def session_from_fastmcp_context(
+    headers: Mapping[str, str] | None, context: Any
+) -> ResolvedSession | None:
+    """SPEC §3.4 rung 4b — fastmcp's own per-connection id, where it is stable,
+    with its origin.
 
     ``context`` is the fastmcp context to read it from, or ``None`` if there is
     none.
@@ -147,7 +149,9 @@ def session_id_from_fastmcp_context(headers: Mapping[str, str] | None, context: 
         session_id = context.session_id
     except Exception:  # best-effort rung; see docstring
         return None
-    return session_id or None
+    if not session_id:
+        return None
+    return ResolvedSession(session_id, "observed" if _on_sse_connection(context) else "minted")
 
 
 def extract_headers() -> Mapping[str, str] | None:
@@ -257,10 +261,9 @@ async def resolve_call_session(
         return ResolvedSession(from_header, "observed")
     if context is None:
         context = _current_context()
-    from_context = session_id_from_fastmcp_context(headers, context)
+    from_context = session_from_fastmcp_context(headers, context)
     if from_context is not None:
-        origin: SessionOrigin = "observed" if _on_sse_connection(context) else "minted"
-        return ResolvedSession(from_context, origin)
+        return from_context
     return ResolvedSession(fallback, "minted")
 
 
