@@ -1,10 +1,5 @@
-"""SPEC §3.4 session-id ladder — standalone ``fastmcp`` adapter.
-
-Parity coverage for the mcp adapter's ``TestSessionIdMetaRungs``. Before this
-adapter grew a ladder it resolved only via fastmcp's ``Context.session_id``,
-which SPEC calls rung 4 and which fastmcp 4.x mints fresh per request — see
-``baton.integrations.standalone._session``.
-"""
+"""SPEC §3.4 session-id ladder — standalone ``fastmcp`` adapter. See
+``baton.integrations.standalone._session``."""
 
 from __future__ import annotations
 
@@ -121,12 +116,9 @@ async def _resolve(
     headers: dict[str, str] | None = None,
     fallback: str = "sdk-fallback",
 ) -> ResolvedSession:
-    """⚠ Takes no ``meta``. It used to, and the retired-rung tests passed one
-    to prove the ladder ignored it — which became VACUOUS on 2026-09-12 when
-    rung 0's removal made ``meta`` stop being a parameter of
-    ``resolve_call_session`` at all. A test that hands a value to a
-    function that cannot accept it proves nothing about the function. The
-    retired rungs are now asserted through the real middleware, below."""
+    """Takes no ``meta``: ``resolve_call_session`` has no meta parameter, so
+    passing one would prove nothing. The meta rungs' absence is asserted
+    through the real middleware, below."""
 
     async def call() -> ResolvedSession:
         return await resolve_call_session(headers=extract_headers(), fallback=fallback)
@@ -138,24 +130,14 @@ async def _resolve(
 
 
 class TestTheRetiredMetaRungs:
-    """Rungs 1-2 were RETIRED 2026-09-09 — ``_meta.traceparent`` and
-    ``_meta["io.baton/session_id"]`` no longer resolve the session.
+    """``_meta.traceparent`` and ``_meta["io.baton/session_id"]`` do not
+    resolve the session: each would key it on an id the SDK did not mint,
+    which the D2 join rule forbids.
 
-    Both keyed the session on an identifier the SDK did not mint, which the D2
-    join rule forbids. These tests are the inverse of the ones they replace: a
-    silent restoration of either rung would change what a session groups on for
-    every event, so absence is asserted rather than assumed.
-
-    ⚠ **Driven through the real middleware, on purpose.** Until 2026-09-12
-    these called ``resolve_call_session`` with a ``meta=`` argument. Rung 0
-    was that function's last reader of the wire ``_meta``, so its removal took
-    the parameter — and the tests kept passing a value the function no longer
-    had, which is the definition of assumed rather than asserted. The
-    restoration path they exist to catch is still open: ``_session`` already
-    imports ``get_context()`` and uses it at rung 4b, so a new meta rung needs
-    no signature change to reach ``_meta``. Only a test that puts meta on the
-    WIRE can see that, so these send it through an in-process client and
-    assert on the emitted envelope.
+    ⚠ **Driven through the real middleware, on purpose.** ``_session`` already
+    calls ``get_context()`` at rung 4b, so a new meta rung could reach
+    ``_meta`` with no signature change. Only a test that puts meta on the WIRE
+    and reads the emitted envelope can see that.
     """
 
     async def test_traceparent_alone_leaves_the_fallback(
@@ -246,26 +228,23 @@ def test_the_session_check(context: Any, kept: bool) -> None:
 class TestRung4bFastmcpContext:
     """Rung 4b — fastmcp's own ``Context.session_id``, below the header.
 
-    It exists for ONE transport: SSE never sends ``mcp-session-id`` (the id
-    rides a query param), so header-only resolution dropped every SSE client
-    onto the process-wide fallback and merged them. Measured with two concurrent
-    clients on one server: one shared id, 2 of 8 call pairs attributed to the
-    wrong caller. The rung is gated because on mcp 2.x the cached id is rebuilt
-    per request — using it there would restore the per-call churn this ladder
-    was built to end.
+    It exists for SSE, which never sends ``mcp-session-id`` (the id rides a
+    query parameter), so header-only resolution would put every SSE client on
+    the process-wide fallback and merge them. It is gated off on mcp 2, where
+    the cached id is rebuilt per request.
     """
 
     @requires_http_injection
     @pytest.mark.parametrize(
-        ("on_sse", "origin"), [(True, "observed"), (False, "minted")], ids=["sse", "stateless"]
+        ("kept", "origin"), [(True, "observed"), (False, "minted")], ids=["sse", "stateless"]
     )
     async def test_used_on_an_http_request_with_no_session_header(
-        self, monkeypatch: pytest.MonkeyPatch, on_sse: bool, origin: str
+        self, monkeypatch: pytest.MonkeyPatch, kept: bool, origin: str
     ) -> None:
         """On SSE fastmcp's id holds for the connection; on stateless streamable
         HTTP it makes one per request."""
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
-        monkeypatch.setattr(_session, "_client_keeps_the_session", lambda _context: on_sse)
+        monkeypatch.setattr(_session, "_client_keeps_the_session", lambda _context: kept)
         monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("fastmcp-id"))
         assert await _resolve(headers={"host": "example.invalid"}) == ("fastmcp-id", origin)
 
@@ -302,19 +281,10 @@ class TestRung4bFastmcpContext:
         )
 
     @requires_http_injection
-    async def test_answers_the_sse_shape_that_meta_used_to_take(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Before the rung-1/2 retirement a ``traceparent`` beat this rung. It
-        no longer does, so 4b now answers the SSE shape even when the client
-        propagates a trace context — the intended widening, not a regression:
-        4b is an id the server library owns.
-
-        ⚠ Renamed 2026-09-12 from ``test_meta_no_longer_outranks_it``, which
-        stopped being what it did: the meta argument it made that claim with
-        went away with rung 0, leaving the old name asserting something the
-        body no longer touches. The meta claim now lives in
-        ``TestTheRetiredMetaRungs``, on the wire, where it can fail."""
+    async def test_a_traceparent_does_not_outrank_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A ``traceparent`` on the request does not outrank this rung: 4b is an
+        id the server library owns. The meta claim itself is tested on the
+        wire, in ``TestTheRetiredMetaRungs``."""
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
         monkeypatch.setattr(_session, "_client_keeps_the_session", lambda _context: True)
         monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("per-connection-id"))

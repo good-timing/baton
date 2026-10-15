@@ -1,68 +1,31 @@
 """SPEC §3.4 session-id resolution for the standalone ``fastmcp`` adapter.
 
-One resolver, used by every capture path — ``BatonMiddleware`` (tool calls),
-the registered annotation tool and the tool list capture. That sharing is load-bearing rather than tidy:
-an annotation whose ``session_id`` disagrees with the tool call it describes can
-never be joined to it downstream, which is the single correlation the sensor
-exists to produce. Two ladders would let each path's tests pass while the
-product stayed broken.
+One resolver for every capture path: ``BatonMiddleware``, the annotation tool
+and the tool-list capture. An annotation whose ``session_id`` differs from the
+call it describes can never be joined to it, so two ladders would let each
+path's tests pass while the product broke.
 
-**Rung 4 is read from the ``mcp-session-id`` header, not from fastmcp's
-``Context.session_id``.** That property caches its generated id on the
-``ServerSession`` (on 4.x, on that session's ``_connection``), and under MCP SDK
-v2 *both* objects are rebuilt per request — so every call mints a fresh
-``uuid4``. Verified first-hand on fastmcp 4.0.2 across in-process, stdio and
-streamable HTTP: three calls on one client connection, three different ids. The
-damage is silent — events ship and nothing errors, but sequence numbers restart
-at 1 per call, the once-per-session proactive fires every call, and an
-``*_annotate`` lands under a different id than the call it annotates.
+**Rung 4 reads the ``mcp-session-id`` header, not ``Context.session_id``.**
+That property caches its id on mcp's ``ServerSession`` (on fastmcp 4, on its
+``_connection``), and mcp 2 rebuilds both for every request. Every call would
+get a new id: sequence numbers restart, the once-per-session proactive fires
+every call, and an annotation lands apart from its call.
 
-**But the header is not carried on every transport, so it cannot be the last
-rung before the fallback.** SSE never sends it: ``mcp.server.sse`` carries its id
-as a ``session_id`` QUERY PARAM and the literal string ``mcp-session-id`` does
-not appear in that module. Reading only the header therefore regressed SSE from
-a real per-client id to the process-wide fallback — measured with two concurrent
-clients on one server, which shared one id and mis-attributed 2 of 8 call pairs
-(measured in an internal transport study). That direction is
-the worse one: the bug this ladder fixes SPLIT one client into many and cost
-joins; the fallback MERGES many clients into one and manufactures joins between
-strangers.
+**Rung 4b is ``Context.session_id``, below the header.** SSE never sends the
+header (its id is a ``session_id`` query parameter), so reading only the header
+would put every SSE client on the process-wide fallback and merge them. That is
+the worse direction: a split only loses joins, a merge joins strangers. The
+rung runs only on mcp 1, where the cache holds (``_session_cache_survives``),
+and only on requests with HTTP headers: on stdio and in-process one process is
+one client and ``fallback`` already says so.
 
-So ``Context.session_id`` returns as **rung 4b**, below the header and above the
-fallback, and doubly gated: to the band where its cache actually survives (see
-``_session_cache_survives``), and to requests that carry HTTP headers at all.
-That second gate narrows it to HTTP requests the header rung did not answer. On
-STATEFUL old-spec streamable HTTP the header rung has already answered; on stdio
-and in-process there are no headers, one process IS one client, and ``fallback``
-already says so — firing there would only mint a second per-process id that
-disagrees with the ``surface_snapshot``'s.
-
-**Two cases are left, not one.** SSE is the one this rung exists for: a live HTTP
-request, no ``mcp-session-id``, and a per-connection id that reading the header
-alone throws away. The other is **stateless streamable HTTP**
-(``stateless_http=True`` / ``FASTMCP_STATELESS_HTTP``), where mcp builds a fresh
-transport and a fresh ``ServerSession`` per request
-(``streamable_http_manager._handle_stateless_request``) and issues no
-``mcp-session-id`` — so the rung fires and ``Context.session_id`` mints a fresh
-``uuid4`` for every call. Measured on fastmcp 3.4.2 / mcp 1.27.2, one client,
-three sequential calls: three ids with the rung on, the single process-wide
-``fallback`` with it off.
-
-**That case is knowingly not fixed here, and this rung is not what broke it.**
-0.6.1 resolved solely through this same property, so a stateless deployment has
-always minted per-request ids; the rung reproduces the released behaviour rather
-than regressing it. It is also the survivable direction: a stateless server has
-no session by protocol design, and splitting one client's calls costs joins,
-where routing them to the process-wide ``fallback`` would merge every client of
-a multi-user server and manufacture joins between strangers. Start/end pairing
-survives either way — both legs of a call share one request, so they share the
-id; what a split costs is ``sequence_number`` continuity (restarts at 1 per
-call), the once-per-session proactive (fires per call), and the cross-request
-``*_annotate`` → call join. SPEC §3.4's real answer here is rung 5, a per-event
-UUID, unbuilt in both adapters and tracked as D2. (It used to read
-``correlation_mode=per-event``; that envelope field was dropped 2026-09-09 and
-removed from SPEC 2026-09-15 — it could not tell a deliberate per-event stream
-apart from the merge defect, since both emit a fresh UUID per event.)
+On stateless streamable HTTP (``stateless_http=True``) the rung also runs, but
+mcp builds a new ``ServerSession`` for every request, so the id is per request
+and is sent as ``"minted"``. That split is the safe direction; sending those
+calls to the process-wide fallback would merge every client of a multi-user
+server. It costs ``sequence_number`` continuity, the once-per-session proactive
+and the annotation-to-call join. SPEC §3.4's answer is rung 5, which is unbuilt
+(D2).
 """
 
 from __future__ import annotations
@@ -86,22 +49,16 @@ def _session_cache_survives() -> bool:
     """Whether fastmcp's ``Context.session_id`` holds still across calls here.
 
     Gated on the **mcp** major, not fastmcp's, because mcp owns the mechanism:
-    ``Context.session_id`` stashes its id on ``request_context.session`` (a
-    ``ServerSession``), and mcp 2.x rebuilds that object — and, on fastmcp 4,
-    the ``_connection`` it moved the cache to — for every request. mcp 1.x keeps
-    one per connection, so the id survives.
+    mcp 2 rebuilds the ``ServerSession`` the id is cached on (and, on fastmcp 4,
+    its ``_connection``) for every request; mcp 1 keeps one per connection.
+    ``test_gate_matches_the_installed_mcp_major`` pins it.
 
-    The two libraries move in lockstep today (fastmcp 2.x/3.x pin ``mcp<2``;
-    fastmcp 4 requires ``mcp>=2``), so either version would discriminate — this
-    one names the cause, and stays right if that pairing ever changes.
-
-    Unknown version means DO NOT use the rung: losing a join is recoverable,
+    Unknown version means do not use the rung: losing a join is recoverable,
     inventing one between two users is not.
 
-    ⚠ fastmcp 4 believes it fixed this by caching on the connection, commented
-    as persisting "for the whole client session". Probed on 4.0.2 in-process:
-    three calls, three ids AND three different ``_connection`` objects. Do not
-    re-open this on the strength of reading their source.
+    ⚠ fastmcp 4's source says its connection cache lasts "for the whole client
+    session". It does not: each call gets a new ``_connection``. Do not enable
+    the rung on mcp 2 on the strength of that comment.
     """
     try:
         major = int(version("mcp").split(".")[0])
@@ -162,7 +119,7 @@ def extract_headers() -> Mapping[str, str] | None:
 
     ⚠ **The ``dict`` this returns is case-SENSITIVE and that is deliberate.**
     ASGI has already lowercased its keys, so a vendor hook reading the canonical
-    ``"X-Forwarded-User"`` would miss — register A8. The fold happens once, in
+    ``"X-Forwarded-User"`` would miss. The fold happens once, in
     ``SessionResolutionContext.__post_init__``, rather than here: this function
     also feeds rung 4, which looks up an already-lowercase constant, and putting
     the guarantee in the class means a future adapter inherits it instead of
@@ -179,11 +136,9 @@ def observe_transport(*, _get_http_request: Callable[[], object] | None = None) 
     "never raises ... an empty dict if there is no active HTTP request" — so it
     swallows the ``RuntimeError`` that IS the absence signal and returns the same
     empty mapping either way. Reading a transport off it would fold "no HTTP
-    request" and "the read broke" into one answer, which is the precise merge
-    ``Event.transport_observed`` forbids, and the defect register A6 records in
-    the official adapter's equivalent helper. Headers are also the wrong carrier
-    on their own merits: they are vacuously empty across the whole mcp 1.x band
-    (register A7) while the request object splits correctly there.
+    request" and "the read broke" into one answer, which is the merge
+    ``Event.transport_observed`` forbids. Headers are also empty across the
+    whole mcp 1.x band, while the request object tells the cases apart there.
 
     So this calls ``get_http_request`` itself and reads the three outcomes apart:
 
@@ -193,9 +148,8 @@ def observe_transport(*, _get_http_request: Callable[[], object] | None = None) 
     - raises anything else → ``"read-failed"``
 
     ⚠ **The exception type is a GUESS about a third party and is treated as one.**
-    ``RuntimeError`` is confirmed on fastmcp 3.3.1 / 3.4.7 / 4.0.2 / 4.0.3, and
-    commit ``8b4356d`` in this repo records fastmcp raising ``RuntimeError``
-    where its own docstring promised ``ValueError``. The default branch is
+    fastmcp has raised ``RuntimeError`` where its own docstring promised
+    ``ValueError``. The default branch is
     therefore ``read-failed`` rather than ``no-http-request``: if a version ever
     signals absence some other way we under-report a real stdio server, which
     loses a grouping. The reverse mistake invents one.
