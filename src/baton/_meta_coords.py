@@ -1,8 +1,8 @@
 """Coordinate rounding for ``_meta`` before it becomes ``runtime_meta``.
 
 ChatGPT sends ``openai/userLocation`` in every request's ``_meta`` with
-``latitude`` and ``longitude`` at metre precision (measured in prod 2026-09-15:
-two values resolved to a storefront and a home). ``_meta`` is what the CLIENT
+``latitude`` and ``longitude`` at metre precision, enough to find a home.
+``_meta`` is what the CLIENT
 reveals about the person, so every adapter rounds it here before it is emitted:
 to 1 decimal, roughly 10 km, keeping city, region, country and timezone.
 

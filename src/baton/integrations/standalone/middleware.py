@@ -489,7 +489,9 @@ class BatonMiddleware(Middleware):
         # in the resolved value.
         call_transport = observe_transport()
         call_session = await resolve_call_session(
-            headers=call_headers, fallback=self._fallback_session_id
+            headers=call_headers,
+            fallback=self._fallback_session_id,
+            context=context.fastmcp_context,
         )
 
         # The session's FIRST injected-param intent also becomes a proactive

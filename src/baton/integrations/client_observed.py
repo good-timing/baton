@@ -1,8 +1,9 @@
-"""The envelope's ``client_observed`` (SPEC §11.4).
+"""The envelope's ``client_observed`` and ``runtime_meta`` (SPEC §11.4): what
+the client sent about itself and its request.
 
-What the client said about itself, sent uninterpreted. The consumer names the
-client; this SDK does not, and its adapters leave ``agent_runtime`` at
-``"unknown"``.
+``client_observed`` is what the client said about itself, sent uninterpreted.
+The consumer names the client; this SDK does not, and its adapters leave
+``agent_runtime`` at ``"unknown"``.
 
 Lives beside the adapters, not under one, because both call it and the
 standalone adapter may not import the official one.

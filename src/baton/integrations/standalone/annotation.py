@@ -126,7 +126,7 @@ def register_annotation_tool(
         # the call it describes could never be joined to it downstream, which
         # is the one correlation this tool exists to produce.
         call_session = await resolve_call_session(
-            headers=call_headers, fallback=fallback_session_id
+            headers=call_headers, fallback=fallback_session_id, context=ctx
         )
         # A proactive annotation (not a report) claims the session's proactive
         # slot so the middleware won't also synthesise one from an injected param.

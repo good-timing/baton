@@ -113,9 +113,8 @@ def extract_headers() -> Mapping[str, str] | None:
     ``get_http_headers`` (set by ``RequestContextMiddleware`` around the whole
     request, so it's populated by the time either capture path runs). Never
     raises — empty outside a live HTTP request (e.g. stdio).
-    ``include_all=True`` so a vendor's hook can read headers the default view
-    strips (e.g. ``authorization``, which both the session-lookup hook and the
-    ``resolve_principal`` identity hook may need).
+    ``include_all=True`` so the ``resolve_principal`` identity hook can read
+    headers the default view strips, such as ``authorization``.
 
     ⚠ **The ``dict`` this returns is case-SENSITIVE and that is deliberate.**
     ASGI has already lowercased its keys, so a vendor hook reading the canonical
@@ -137,8 +136,7 @@ def observe_transport(*, _get_http_request: Callable[[], object] | None = None) 
     swallows the ``RuntimeError`` that IS the absence signal and returns the same
     empty mapping either way. Reading a transport off it would fold "no HTTP
     request" and "the read broke" into one answer, which is the merge
-    ``Event.transport_observed`` forbids. Headers are also empty across the
-    whole mcp 1.x band, while the request object tells the cases apart there.
+    ``Event.transport_observed`` forbids.
 
     So this calls ``get_http_request`` itself and reads the three outcomes apart:
 

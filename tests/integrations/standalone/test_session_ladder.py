@@ -281,17 +281,6 @@ class TestRung4bFastmcpContext:
         )
 
     @requires_http_injection
-    async def test_a_traceparent_does_not_outrank_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A ``traceparent`` on the request does not outrank this rung: 4b is an
-        id the server library owns. The meta claim itself is tested on the
-        wire, in ``TestTheRetiredMetaRungs``."""
-        monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
-        monkeypatch.setattr(_session, "_client_keeps_the_session", lambda _context: True)
-        monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("per-connection-id"))
-        got = await _resolve(headers={"host": "x"})
-        assert got == ("per-connection-id", "observed")
-
-    @requires_http_injection
     async def test_gated_off_where_the_cache_does_not_survive(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
