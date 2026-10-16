@@ -116,25 +116,36 @@ async def resolve_principal_via_hook(
             exc_info=True,
         )
         return None
-    if result is None:
+    return _usable_principal(result, where="resolve_principal hook returned", logger=logger)
+
+
+def _usable_principal(value: object, *, where: str, logger: logging.Logger) -> Principal | None:
+    if value is None:
         return None
-    if not isinstance(result, Principal):
+    if not isinstance(value, Principal):
         logger.warning(
-            "baton: resolve_principal hook returned %s, not a baton.Principal — "
-            "ignoring it; the event ships without a principal. Return "
-            "Principal(principal_id=...) or None.",
-            type(result).__name__,
+            "baton: %s %s, not a baton.Principal — ignoring it; the event ships "
+            "without a principal. Pass Principal(principal_id=...) or None.",
+            where,
+            type(value).__name__,
         )
         return None
-    if not isinstance(result.principal_id, str) or not result.principal_id.strip():
+    if not isinstance(value.principal_id, str) or not value.principal_id.strip():
         # A blank id names nobody, and every such caller would merge into one
         # actor.
         logger.warning(
-            "baton: resolve_principal hook returned a Principal with an empty or "
-            "non-string principal_id — ignoring it."
+            "baton: %s a Principal with an empty or non-string principal_id — ignoring it.",
+            where,
         )
         return None
-    return result
+    return value
+
+
+def wire_vendor_principal(value: object, *, logger: logging.Logger) -> PrincipalWire | None:
+    """A principal the vendor's code passed directly (the library API), as the
+    wire object. Never raises: a bad value is logged and dropped, as from a hook."""
+    principal = _usable_principal(value, where="principal= was given", logger=logger)
+    return _wire_principal(principal, logger=logger)
 
 
 def token_claims(token: Any) -> Mapping[str, Any] | None:
@@ -182,17 +193,16 @@ def _wire_principal(principal: Principal | None, *, logger: logging.Logger) -> P
         return None
     if _UNSENDABLE.search(principal.principal_id):
         logger.warning(
-            "baton: resolve_principal hook returned a principal_id holding a lone "
-            "surrogate or U+0000 — ignoring it; the event ships without a principal."
+            "baton: a principal_id holding a lone surrogate or U+0000 — ignoring "
+            "it; the event ships without a principal."
         )
         return None
     form: str = principal.form
     if not isinstance(form, str) or form not in PRINCIPAL_FORMS:
-        # A type checker refuses this at the hook; this is for a hook nobody
-        # type-checks. SPEC §11.4: anything not "hashed" is personal data.
+        # A type checker refuses this at the hook or ``principal=``; this is
+        # for a caller nobody type-checks. SPEC §11.4: anything not "hashed" is personal data.
         logger.warning(
-            "baton: resolve_principal hook returned form %r, expected one of %s — "
-            "sending it as %r.",
+            "baton: a principal with form %r, expected one of %s — sending it as %r.",
             form,
             sorted(PRINCIPAL_FORMS),
             PRINCIPAL_FORM_RAW,

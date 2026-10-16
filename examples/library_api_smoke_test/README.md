@@ -22,12 +22,12 @@ cd <repo-root>
 | Sync `Client` emits via background thread bridge | Drives a synthetic chat-completion through `Client` + asserts events arrive |
 | `AsyncClient` emits directly on the caller's async loop | Same shape, async path |
 | Tool-call lifecycle: `start` → `end` with observed result | Sync + async; checks `duration_ms` populated |
-| Proactive annotation when `intent`/`expected`/`workflow` set | Auto-emits inside `__enter__` with same `session_id` as start |
+| `intent`/`expected_outcome`/`workflow` ride the call | On `tool_call_start` as `call_intent`/`call_expected`/`call_workflow`; no extra note |
 | Reactive standalone annotation via `client.annotate(...)` | Full payload incl. `what_happened`, `tool_name` + `context` |
 | Exception path emits `tool_call_error` and re-raises | Sync + async; `error_type` = exception class name |
 | Both paths target the SAME `POST /v0/events` ingest contract | Bearer auth header verified; envelope matches SPEC §11.4 |
 | Event envelope shape matches SPEC §11.4 | All required envelope fields present |
-| `agent_runtime` set to `"python-library"` | All captured events |
-| Sequence numbers monotonic per `session_id` | Per-event mode default |
+| `transport_observed` is `"library"`, `agent_runtime` is `"unknown"` | All captured events |
+| `client.session(...)` gives its calls one session and principal | Sync side: one `observed` session; async side, outside a block: one `minted` session per call |
 
 

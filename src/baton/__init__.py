@@ -9,6 +9,8 @@ Core (always installed):
 - ``__version__`` — embedded in every emitted event's ``sdk_version`` field
 - ``Client``, ``AsyncClient`` — library API for Skill-instrumented
   agent code (see the "Library API" section in ``README.md``)
+- ``INTENT_PARAMS`` / ``IntentParam`` — the injected params' names and the
+  text an agent reads, for a vendor adding them to its own API (SPEC §5.6)
 - ``Principal`` — the return type of a ``VendorConfig.resolve_principal`` hook.
   Exported because that hook cannot be written without constructing one.
 - ``principal_from_oauth_sub``, ``principal_from_oauth_email`` — ready-made
@@ -50,9 +52,11 @@ except PackageNotFoundError:
     __version__ = "0.0.0+local"
 
 __all__ = [
+    "INTENT_PARAMS",
     "AsyncClient",
     "AsyncTrace",
     "Client",
+    "IntentParam",
     "Principal",
     "Trace",
     "VendorConfig",
@@ -75,4 +79,5 @@ from baton.identity import Principal
 # the call, so neither optional extra is required to import ``baton``.
 from baton.install import install_baton
 from baton.integrations._config import VendorConfig
+from baton.integrations._llm_text import INTENT_PARAMS, IntentParam
 from baton.integrations.oauth_hooks import principal_from_oauth_email, principal_from_oauth_sub

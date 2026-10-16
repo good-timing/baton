@@ -12,7 +12,7 @@ read-back — the collector's on-the-wire JSON view (the same
 in-process ``Event`` objects, so this proves each adapter's *serialized*
 output is consistent, not just its in-memory model.
 
-Path-specific facts (``agent_runtime`` value, whether ``surface_snapshot``
+Path-specific facts (``transport_observed``, whether ``surface_snapshot``
 fires) stay as per-path assertions rather than forced into the shared core
 — see ``tests/_event_helpers.py::without_surface_snapshots``.
 """
@@ -147,6 +147,7 @@ def _run_library_path(events_path: str) -> None:
             params={"name": "alice"},
         ) as trace:
             trace.observed({"found": True, "name": "alice"})
+        trace.annotate(what_happened="the match had no email", tool_name="lookup")
 
         try:
             with client.trace(tool_name="boom"):
@@ -174,16 +175,13 @@ async def test_mcp_family_envelope_invariants_hold(path_name: str, tmp_path: Pat
     assert_sequence_monotonic_per_session(events)
     assert_no_signal_type_sent(events)
 
-    # Path-specific: MCP-family agent_runtime is never the library sentinel.
-    assert all(e["agent_runtime"] != "python-library" for e in events), (
-        f"{path_name}: expected a non-library agent_runtime, got "
-        f"{ {e['agent_runtime'] for e in events} }"
-    )
+    assert all(e["agent_runtime"] == "unknown" for e in events)
+    assert all(e.get("transport_observed") != "library" for e in events)
     assert {e["event_type"] for e in events} - TOOL_LIST_EVENT_TYPES == EXPECTED_EVENT_TYPES
 
 
 # =============================================================================
-# library API — separate test (sync driver, distinct agent_runtime)
+# library API — separate test (sync driver, distinct transport_observed)
 # =============================================================================
 
 
@@ -196,5 +194,7 @@ async def test_library_path_envelope_invariants_hold(tmp_path: Path) -> None:
     assert_sequence_monotonic_per_session(events)
     assert_no_signal_type_sent(events)
 
-    assert all(e["agent_runtime"] == "python-library" for e in events)
+    assert all(e["agent_runtime"] == "unknown" for e in events)
+    assert all(e["transport_observed"] == "library" for e in events)
+    assert all(e["session_id_origin"] == "minted" for e in events)
     assert {e["event_type"] for e in events} == EXPECTED_EVENT_TYPES

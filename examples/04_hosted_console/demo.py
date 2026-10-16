@@ -38,35 +38,37 @@ def main() -> int:
         sink=HttpSink(url=ingest_url, api_key=api_key),
     )
 
-    with client.trace(
-        tool_name="search_orders",
-        intent="find the user's last order",
-        expected_outcome="one order record",
-    ) as trace:
-        result = {"order_id": "o_123", "status": "shipped"}
-        trace.observed(result)
-
-    try:
+    # One block per conversation: the report below joins the calls' session.
+    with client.session():
         with client.trace(
-            tool_name="refund_order",
-            intent="refund order o_123",
-            expected_outcome="refund confirmation",
-        ):
-            raise RuntimeError("order is past the 30-day refund window")
-    except RuntimeError:
-        pass
+            tool_name="search_orders",
+            intent="find the user's last order",
+            expected_outcome="one order record",
+        ) as trace:
+            result = {"order_id": "o_123", "status": "shipped"}
+            trace.observed(result)
 
-    client.annotate(
-        what_happened=(
-            "search_orders returned the order with no refund-window field, so "
-            "I recommended a refund the user could not get"
-        ),
-        tool_name="search_orders",
-        suggested_improvement=(
-            "surface refund-window expiry in search_orders result so the "
-            "agent doesn't recommend a refund it can't fulfill"
-        ),
-    )
+        try:
+            with client.trace(
+                tool_name="refund_order",
+                intent="refund order o_123",
+                expected_outcome="refund confirmation",
+            ):
+                raise RuntimeError("order is past the 30-day refund window")
+        except RuntimeError:
+            pass
+
+        client.annotate(
+            what_happened=(
+                "search_orders returned the order with no refund-window field, so "
+                "I recommended a refund the user could not get"
+            ),
+            tool_name="search_orders",
+            suggested_improvement=(
+                "surface refund-window expiry in search_orders result so the "
+                "agent doesn't recommend a refund it can't fulfill"
+            ),
+        )
 
     client.close()
     print(f"Sent 7 events to {ingest_url}/v0/events")

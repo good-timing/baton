@@ -65,19 +65,48 @@ async def test_async_annotate_scrubs_every_free_text_field() -> None:
     assert _annotation_fields(sink, FREE_TEXT_FIELDS) == _REDACTED
 
 
-def test_sync_trace_scrubs_its_proactive_annotation() -> None:
+_CALL_FIELD = {
+    "intent": "call_intent",
+    "expected_outcome": "call_expected",
+    "workflow": "call_workflow",
+}
+
+
+def _start_fields(sink: _CollectingSink) -> dict[str, Any]:
+    (start,) = [e for e in sink.events if e.event_type == "tool_call_start"]
+    return {name: getattr(start.payload, field) for name, field in _CALL_FIELD.items()}
+
+
+def test_sync_trace_scrubs_the_intent_on_its_call() -> None:
     sink = _CollectingSink()
     client = Client(tenant_id="ten_abc", vendor_id="v1", sink=sink, scrubber=_redact)
     with client.trace(tool_name="fetch", **{name: _TEXT[name] for name in _PROACTIVE}) as t:
         t.observed(result="ok")
     client.close()
-    assert _annotation_fields(sink, _PROACTIVE) == {name: _REDACTED[name] for name in _PROACTIVE}
+    assert _start_fields(sink) == {name: _REDACTED[name] for name in _PROACTIVE}
 
 
-async def test_async_trace_scrubs_its_proactive_annotation() -> None:
+async def test_async_trace_scrubs_the_intent_on_its_call() -> None:
     sink = _CollectingSink()
     client = AsyncClient(tenant_id="ten_abc", vendor_id="v1", sink=sink, scrubber=_redact)
     async with client.trace(tool_name="fetch", **{name: _TEXT[name] for name in _PROACTIVE}) as t:
         t.observed(result="ok")
     await client.aclose()
-    assert _annotation_fields(sink, _PROACTIVE) == {name: _REDACTED[name] for name in _PROACTIVE}
+    assert _start_fields(sink) == {name: _REDACTED[name] for name in _PROACTIVE}
+
+
+def test_a_scrubber_that_raises_on_the_intent_costs_the_field_not_the_call() -> None:
+    def _raise_on_intent(value: Any) -> Any:
+        if value == "secret goal":
+            raise RuntimeError("scrubber broke")
+        return value
+
+    sink = _CollectingSink()
+    client = Client(tenant_id="ten_abc", vendor_id="v1", sink=sink, scrubber=_raise_on_intent)
+    with client.trace(tool_name="fetch", intent="secret goal", expected_outcome="a row") as t:
+        t.observed(result="ok")
+    client.close()
+    (start,) = [e for e in sink.events if e.event_type == "tool_call_start"]
+    assert start.payload.call_intent is None
+    assert start.payload.call_expected == "a row"
+    assert [e.event_type for e in sink.events] == ["tool_call_start", "tool_call_end"]

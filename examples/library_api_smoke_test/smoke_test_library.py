@@ -4,7 +4,7 @@ Mirrors the v02_e2e/smoke_test_stdio.py shape but for the library path:
 - Spawns a stdlib HTTP capture server on localhost (no Console required)
 - Drives a synthetic vendor-shaped chat-completion call through Client
 - Drives an async equivalent through AsyncClient
-- Asserts the events landed with correct schema, ordering, and agent_runtime
+- Asserts the events landed with correct schema, ordering, and session
 
 What this validates:
 
@@ -13,18 +13,17 @@ What this validates:
 | Sync Client emits via background thread bridge cleanly     | ✓     |
 | AsyncClient emits directly on async loop                   | ✓     |
 | Tool-call lifecycle: start → end with observed result      | ✓     |
-| Proactive annotation when intent/expected set              | ✓     |
+| Intent rides tool_call_start, with no extra note           | ✓     |
 | Reactive standalone annotation via client.annotate(...)    | ✓     |
 | Exception path emits tool_call_error and re-raises         | ✓     |
 | Both paths target the SAME POST /v0/events ingest contract | ✓     |
 | Event envelope shape matches SPEC §11.4                    | ✓     |
-| agent_runtime correctly set to "python-library"            | ✓     |
-| Sequence numbers monotonic per session_id                  | ✓     |
+| transport_observed "library", agent_runtime "unknown"     | ✓     |
+| client.session() puts the sync calls in one session        | ✓     |
 
 What this does NOT validate:
 
 - Skill-author adherence in production (Skill-design, not engineering)
-- Session correlation under streamable HTTP (per-event mode is the default)
 - consent_token scaling beyond the single-static-UUID model
 - A real vendor SDK's behavior (we use a stub function)
 
@@ -43,7 +42,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
-from baton import AsyncClient, Client
+from baton import AsyncClient, Client, Principal
 
 
 # =============================================================================
@@ -136,42 +135,48 @@ def run_sync(ingest_url: str) -> None:
         sink=HttpSink(url=ingest_url, api_key="bk_test_sync"),
     )
     try:
-        # Happy path: proactive intent + params + observed result.
-        with client.trace(
-            tool_name="chat.completions.create",
-            intent="answer the user's question about agent observability",
-            expected_outcome="a complete answer based on retrieved context",
-            workflow="customer-support-resolution",
-            params={"model": "Qwen/Qwen2.5-72B-Instruct"},
-        ) as trace:
-            result = _fake_vendor_chat_completions_create(
-                model="Qwen/Qwen2.5-72B-Instruct",
-                messages=[{"role": "user", "content": "How does Baton compare to OTel?"}],
+        # One block per conversation: every call inside shares its session.
+        with client.session(
+            session_id="conv-123",
+            principal=Principal(principal_id="user-42"),
+            headers={"User-Agent": "smoke-agent/1.0"},
+        ):
+            # Happy path: intent + params + observed result.
+            with client.trace(
+                tool_name="chat.completions.create",
+                intent="answer the user's question about agent observability",
+                expected_outcome="a complete answer based on retrieved context",
+                workflow="customer-support-resolution",
+                params={"model": "Qwen/Qwen2.5-72B-Instruct"},
+            ) as trace:
+                result = _fake_vendor_chat_completions_create(
+                    model="Qwen/Qwen2.5-72B-Instruct",
+                    messages=[{"role": "user", "content": "How does Baton compare to OTel?"}],
+                )
+                trace.observed(result)
+
+            # Reactive standalone annotation: agent noticed a feature gap.
+            client.annotate(
+                what_happened="the model object does not say which features it supports",
+                tool_name="",
+                intent="check supported features for a model",
+                suggested_improvement=(
+                    "expose model metadata fields like supports_tool_calling and "
+                    "supports_streaming on the model object so agents can answer "
+                    "user questions without best-guess inference"
+                ),
+                context={
+                    "missing_capability_field": "supports_tool_calling",
+                    "requested_capability": "tool calling support check",
+                },
             )
-            trace.observed(result)
 
-        # Reactive standalone annotation: agent noticed a feature gap.
-        client.annotate(
-            what_happened="the model object does not say which features it supports",
-            tool_name="",
-            intent="check supported features for a model",
-            suggested_improvement=(
-                "expose model metadata fields like supports_tool_calling and "
-                "supports_streaming on the model object so agents can answer "
-                "user questions without best-guess inference"
-            ),
-            context={
-                "missing_capability_field": "supports_tool_calling",
-                "requested_capability": "tool calling support check",
-            },
-        )
-
-        # Exception path: simulated failure inside the with block.
-        try:
-            with client.trace(tool_name="chat.completions.create") as trace:
-                raise ValueError("simulated network timeout")
-        except ValueError:
-            pass  # expected re-raise
+            # Exception path: simulated failure inside the with block.
+            try:
+                with client.trace(tool_name="chat.completions.create") as trace:
+                    raise ValueError("simulated network timeout")
+            except ValueError:
+                pass  # expected re-raise
     finally:
         client.close()
     print("[sync] done")
@@ -229,24 +234,30 @@ async def run_async(ingest_url: str) -> None:
 def assert_events(events: list[dict[str, Any]]) -> None:
     print(f"\n[assert] {len(events)} events captured. Validating...")
 
-    # Sync side: 2 traces (one normal, one error) + 1 standalone annotation.
-    # Trace 1 emits: start + proactive annotation + end → 3 events
-    # Standalone annotate → 1 event
-    # Trace 2 emits: start + tool_call_error → 2 events
-    # Total sync: 6
-    # Async side: same shape → 6
-    # Grand total: 12
-    expected = 12
+    # Per scenario: trace 1 start + end, one standalone annotate, trace 2
+    # start + error = 5 events. Two scenarios: 10.
+    expected = 10
     assert len(events) == expected, f"expected {expected} events, got {len(events)}"
 
     # All events should set agent_runtime correctly
     sync_events = [e for e in events if e["tenant_id"] == "vendor-sync-spike"]
     async_events = [e for e in events if e["tenant_id"] == "vendor-async-spike"]
-    assert len(sync_events) == 6, f"expected 6 sync events, got {len(sync_events)}"
-    assert len(async_events) == 6, f"expected 6 async events, got {len(async_events)}"
-    assert all(e["agent_runtime"] == "python-library" for e in events), (
-        "all events should have agent_runtime=python-library"
-    )
+    assert len(sync_events) == 5, f"expected 5 sync events, got {len(sync_events)}"
+    assert len(async_events) == 5, f"expected 5 async events, got {len(async_events)}"
+    assert all(e["agent_runtime"] == "unknown" for e in events)
+    assert all(e["transport_observed"] == "library" for e in events)
+
+    # The sync calls ran inside one client.session() block.
+    assert {e["session_id"] for e in sync_events} == {"conv-123"}
+    assert {e["session_id_origin"] for e in sync_events} == {"observed"}
+    assert {e["principal"]["id"] for e in sync_events} == {"user-42"}
+    # The async calls ran outside any block: one minted session per call.
+    assert {e["session_id_origin"] for e in async_events} == {"minted"}
+
+    # Intent rides the call it describes.
+    first_start = next(e for e in sync_events if e["event_type"] == "tool_call_start")
+    assert first_start["payload"]["intent_source"] == "library_arg"
+    assert first_start["payload"]["call_workflow"] == "customer-support-resolution"
 
     # Envelope per SPEC §11.4
     # Keep in sync with tests/functional/envelope_assertions.py's
@@ -281,8 +292,8 @@ def assert_events(events: list[dict[str, Any]]) -> None:
     assert type_counts.get("tool_call_end", 0) == 2
     # 1 exception per scenario × 2 scenarios = 2 tool_call_errors
     assert type_counts.get("tool_call_error", 0) == 2
-    # Proactive annotation (1 per happy-path trace) + standalone annotate = 2+2 = 4
-    assert type_counts.get("annotation", 0) == 4
+    # One standalone annotate per scenario; a trace's intent sends no note.
+    assert type_counts.get("annotation", 0) == 2
 
     # Sequence numbers monotonic within each session_id
     by_session: dict[str, list[int]] = {}
@@ -331,8 +342,8 @@ def main() -> int:
                 p = ev["payload"]
                 if p.get("what_happened"):
                     extra = f" report={p['what_happened'][:30]!r}"
-                elif p.get("intent"):
-                    extra = f" intent={p['intent'][:30]!r}"
+            elif type_str == "tool_call_start" and ev["payload"].get("call_intent"):
+                extra = f" intent={ev['payload']['call_intent'][:30]!r}"
             elif type_str == "tool_call_error":
                 extra = f" error_type={ev['payload']['error_type']}"
             print(f"  [{i + 1:2d}] {type_str:20s} {tenant:30s} sess={sess} seq={seq}{extra}")

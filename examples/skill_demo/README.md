@@ -51,10 +51,8 @@ cd <repo-root>
 
 Expected event sequence in `events.jsonl`:
 
-1. `tool_call_start` — preflight `vendor.chat.completions.create`
-2. `annotation` — proactive intent capture (auto-emitted because `intent`/`expected_outcome`/`workflow` were set on the trace)
-3. `tool_call_end` — preflight succeeds
-4. `tool_call_start` — extraction call
-5. `annotation` — proactive intent capture for the extraction
-6. `tool_call_error` — the 400
-7. `annotation` — agent-raised `dead_end` signal (the ticket)
+1. `tool_call_start` — preflight `vendor.chat.completions.create`, carrying the trace's `intent`/`expected_outcome`/`workflow` as `call_intent`/`call_expected`/`call_workflow`
+2. `tool_call_end` — preflight succeeds
+3. `tool_call_start` — extraction call, with its own intent
+4. `tool_call_error` — the 400
+5. `annotation` — agent-raised `dead_end` signal (the ticket)

@@ -44,18 +44,26 @@ Sending to your own collector instead, or trying the package before you have a k
 For vendors whose customers reach the API through agent-generated code (the Skills pattern) rather than MCP tool calls. Same event envelope, same sinks, different emission boundary:
 
 ```python
-from baton import Client
+from baton import Client, Principal
 
 client = Client(dsn="https://baton_pk_...@baton.goodtiming.ai/ten_.../your-vendor")
 
-with client.trace(
-    tool_name="chat.completions.create",
-    intent="summarize the user's question",
-    expected_outcome="2-3 sentence answer",
-) as trace:
-    response = vendor_client.chat.completions.create(...)
-    trace.observed(response)
+with client.session(
+    session_id=request.conversation_id,           # optional: your own id for the conversation
+    principal=Principal(principal_id=user.id),    # optional: who is calling
+    client_info={"name": "claude-code", "version": "2.1"},  # optional: which app is calling
+    headers=request.headers,                      # optional: only User-Agent and X-Anthropic-Client are kept
+):
+    with client.trace(
+        tool_name="chat.completions.create",
+        intent="summarize the user's question",
+        expected_outcome="2-3 sentence answer",
+    ) as trace:
+        response = vendor_client.chat.completions.create(...)
+        trace.observed(response)
 ```
+
+Open one `client.session(...)` per request or conversation. Every `trace()` and `annotate()` inside it shares its session, principal and client. A `trace()` outside a block gets a session of its own. Pass `client_info` or the request's `headers` when your request says which app the agent runs in; with neither, your dashboard shows "app not reported". `intent`, `expected_outcome` and `workflow` usually come from the agent: to ask for them on your own API with the wording an agent sees on an MCP server, use `baton.INTENT_PARAMS`.
 
 `AsyncClient` is the async twin. Worked end to end in [`examples/skill_demo/`](https://github.com/good-timing/baton/tree/main/examples/skill_demo).
 

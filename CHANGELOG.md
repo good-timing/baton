@@ -8,6 +8,45 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+Install this only against a collector that reads a call's intent from the call
+(SPEC §5.6). A collector that reads intent only from notes shows none for
+library calls.
+
+### Added
+
+- **`client.session(...)`** gives every `trace()` and `annotate()` inside it
+  one session, principal and client: `session_id=` (your own id for the
+  conversation, sent as `"observed"`), `principal=`, `client_info=` and
+  `headers=` (only the registered headers are kept). Without a `session_id`
+  the block mints one. A bad value is logged and dropped, never raised. A
+  call outside any block gets a session of its own.
+- **`baton.INTENT_PARAMS`**: the injected params' names and the text an agent
+  reads, for asking for them on your own API.
+
+### Changed
+
+- **A trace's `intent` / `expected_outcome` / `workflow` ride its
+  `tool_call_start`** as `call_intent` / `call_expected` / `call_workflow`,
+  with `intent_source: "library_arg"`. The extra note the library sent for
+  them is gone.
+- **Every library event says what it is**: `transport_observed: "library"`
+  and `session_id_origin`. `agent_runtime` is `"unknown"`; it was
+  `"python-library"`.
+- **Sequence numbers come from the clock** (microseconds, one counter for the
+  whole process, strictly increasing), so events of one session sent from
+  several workers stay in order as far as their clocks agree. Two workers can
+  send the same number; a collector must not reject that (SPEC §11.2).
+
+### Removed
+
+- **`trace(session_id=...)` and `annotate(session_id=...)`.** Only
+  `client.session(...)` sets the session. To report on a trace, call
+  `trace.annotate(...)`, or annotate inside the block.
+- **`Client(agent_runtime=...)` and `AsyncClient(agent_runtime=...)`.**
+  Library events send `"unknown"`, as the MCP adapters do; the consumer names
+  the client from `client_observed`.
 ## 0.8.17: a URL no longer makes a stateless server look like SSE
 
 ### Fixed

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -179,10 +180,10 @@ EXPECTED_RESULT_PARAM_NAME = "expected_result"
 # to fill in the vendor object it is touching instead of the meta task label.
 OVERALL_TASK_PARAM_NAME = "overall_task"
 
-# Provenance value stamped on ``tool_call_start.payload.intent_source`` and on
-# the synthesised proactive annotation when intent came from an injected param
-# (vs a real annotation-tool call). The Console reads this string.
+# ``tool_call_start.payload.intent_source``: where the call's intent came from.
+# The Console reads these strings.
 INTENT_SOURCE_PARAM = "injected_param"
+INTENT_SOURCE_LIBRARY = "library_arg"
 
 # The leading label has to track ``intent_param_mode``: under ``"required"``
 # the injector appends the escalated params to the schema's advertised
@@ -288,6 +289,28 @@ def build_overall_task_param_description(*, intent_param_mode: str = "optional")
     if intent_param_mode == "required":
         return _OVERALL_TASK_PARAM_DESCRIPTION_REQUIRED
     return _OVERALL_TASK_PARAM_DESCRIPTION
+
+
+@dataclass(frozen=True)
+class IntentParam:
+    """One injected param, for a vendor adding it to its own API (SPEC §5.6).
+
+    ``description`` is the text an agent reads on an MCP server, without the
+    leading "OPTIONAL." / "REQUIRED." label: whether the vendor's API requires
+    it is the vendor's call. ``trace_kwarg`` is the ``client.trace()`` argument
+    the agent's answer goes to.
+    """
+
+    name: str
+    description: str
+    trace_kwarg: str
+
+
+INTENT_PARAMS: tuple[IntentParam, ...] = (
+    IntentParam(USER_GOAL_PARAM_NAME, _USER_GOAL_PARAM_BODY, "intent"),
+    IntentParam(EXPECTED_RESULT_PARAM_NAME, _EXPECTED_RESULT_PARAM_BODY, "expected_outcome"),
+    IntentParam(OVERALL_TASK_PARAM_NAME, _OVERALL_TASK_PARAM_BODY, "workflow"),
+)
 
 
 def drop_subagent_clause(mcp: Any, tool_name: str, write: Callable[[Any, str], None]) -> None:

@@ -13,24 +13,25 @@ Sync usage (drives the async ``Sink`` via a background daemon thread
 running a persistent event loop; standard pattern for sync-over-async SDKs
 like Sentry):
 
-    from baton import Client
+    from baton import Client, Principal
 
     client = Client(dsn="https://baton_pk_...@ingest.example.com/ten_.../acme")
     try:
-        with client.trace(
-            tool_name="chat.completions.create",
-            intent="answer the user's question about X",
-            expected_outcome="a complete answer based on retrieved context",
-        ) as trace:
-            trace.with_params({"model": "...", "messages": [...]})
-            result = vendor_client.chat.completions.create(...)
-            trace.observed(result)
-        # ...later, if friction:
-        client.annotate(
-            what_happened="asked for the answer's latency; the response carries none",
-            tool_name="chat.completions.create",
-            suggested_improvement="expose latency metadata on the response",
-        )
+        with client.session(principal=Principal(principal_id=user.id)):
+            with client.trace(
+                tool_name="chat.completions.create",
+                intent="answer the user's question about X",
+                expected_outcome="a complete answer based on retrieved context",
+            ) as trace:
+                trace.with_params({"model": "...", "messages": [...]})
+                result = vendor_client.chat.completions.create(...)
+                trace.observed(result)
+            # ...later, if friction:
+            trace.annotate(
+                what_happened="asked for the answer's latency; the response carries none",
+                tool_name="chat.completions.create",
+                suggested_improvement="expose latency metadata on the response",
+            )
     finally:
         client.close()
 
@@ -45,11 +46,12 @@ Async usage (no thread bridge; directly drives the async ``Sink``):
         sink=HttpSink("https://acme.console.example.com", api_key="bk_live_..."),
     )
     try:
-        async with client.trace(...) as trace:
-            trace.with_params({...})
-            result = await vendor_client.chat.completions.create(...)
-            trace.observed(result)
-        await client.annotate(what_happened=..., tool_name=..., ...)
+        with client.session(...):
+            async with client.trace(...) as trace:
+                trace.with_params({...})
+                result = await vendor_client.chat.completions.create(...)
+                trace.observed(result)
+            await trace.annotate(what_happened=..., tool_name=..., ...)
     finally:
         await client.aclose()
 
@@ -92,7 +94,8 @@ import logging
 import os
 import threading
 import traceback
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import monotonic
@@ -100,6 +103,14 @@ from types import TracebackType
 from typing import Any, Self, TypeVar, cast
 
 from baton._dsn import parse_dsn, select_dsn
+from baton._library_session import (
+    PROCESS_SEQUENCE,
+    LibrarySession,
+    enter_block,
+    exit_block,
+    new_session,
+    session_for_call,
+)
 from baton._optout import DisabledSink, capture_disabled, log_disabled
 from baton._result_capture import (
     WITHHELD,
@@ -120,6 +131,8 @@ from baton.events import (
     ToolCallStartEvent,
     ToolCallStartPayload,
 )
+from baton.identity import Principal
+from baton.integrations._llm_text import INTENT_SOURCE_LIBRARY
 from baton.scrub import (  # noqa: F401  identity_scrub kept exported
     Scrubber,
     identity_scrub,
@@ -168,6 +181,86 @@ def _scrubbed_text(scrubber: Callable[[Any], Any], text: str | None) -> str | No
     return None if text is None else cast("str | None", scrubber(text))
 
 
+def _call_text(scrubber: Callable[[Any], Any], text: str | None, field: str) -> str | None:
+    # Fails open, unlike ``_scrubbed_text``: a throw on the START event would
+    # drop it and orphan the call's end, so it costs this field only.
+    value = None if text is None else scrub_or_none(scrubber, text, field, logger)
+    return value if isinstance(value, str) else None
+
+
+def _trace_envelope(trace: Trace | AsyncTrace, sequence_number: int) -> dict[str, Any]:
+    """The envelope every event of one traced call carries. Call only inside a
+    build thunk, so ``captured_at`` is the build time."""
+    return {
+        "tenant_id": trace._client._tenant_id,
+        "vendor_id": trace._client._vendor_id,
+        **trace._session.envelope(),
+        "sequence_number": sequence_number,
+        "captured_at": datetime.now(UTC),
+        "consent_token": trace._consent_token,
+        "call_id": trace._call_id,
+    }
+
+
+def _start_payload(
+    trace: Trace | AsyncTrace, scrubber: Callable[[Any], Any]
+) -> ToolCallStartPayload:
+    """The call's intent rides its own start event, never a note (SPEC §5.6)."""
+    intent = _call_text(scrubber, trace._intent, "intent")
+    expected = _call_text(scrubber, trace._expected_outcome, "expected_outcome")
+    workflow = _call_text(scrubber, trace._workflow, "workflow")
+    stated = any(value and value.strip() for value in (intent, expected, workflow))
+    return ToolCallStartPayload(
+        tool_name=trace._tool_name,
+        params=trace._params,
+        call_intent=intent,
+        call_expected=expected,
+        call_workflow=workflow,
+        intent_source=INTENT_SOURCE_LIBRARY if stated else None,
+    )
+
+
+def _annotation_event(
+    *,
+    tenant_id: str,
+    vendor_id: str,
+    scrubber: Callable[[Any], Any],
+    session: LibrarySession,
+    sequence_number: int,
+    consent_token: str,
+    what_happened: str | None,
+    tool_name: str | None,
+    intent: str | None,
+    expected_outcome: str | None,
+    workflow: str | None,
+    suggested_improvement: str | None,
+    context: dict[str, Any] | None,
+) -> AnnotationEvent:
+    """Call only inside a build thunk: a throw scrubbing a text field drops the
+    whole annotation, as on the adapters."""
+    return AnnotationEvent(
+        tenant_id=tenant_id,
+        vendor_id=vendor_id,
+        **session.envelope(),
+        sequence_number=sequence_number,
+        captured_at=datetime.now(UTC),
+        consent_token=consent_token,
+        payload=AnnotationPayload(
+            intent=_scrubbed_text(scrubber, intent),
+            expected_outcome=_scrubbed_text(scrubber, expected_outcome),
+            what_happened=_scrubbed_text(scrubber, what_happened)
+            if what_happened and what_happened.strip()
+            else None,
+            tool_name=_scrubbed_text(scrubber, tool_name) if tool_name else tool_name,
+            workflow=_scrubbed_text(scrubber, workflow),
+            suggested_improvement=_scrubbed_text(scrubber, suggested_improvement),
+            # scrub_or_none, unlike the text fields above: a throw on
+            # ``context`` costs that field, not the whole annotation.
+            context=scrub_or_none(scrubber, context, "context", logger) if context else None,
+        ),
+    )
+
+
 class _ScrubFailed(Exception):
     """Re-raised inside the build thunk so the guard drops the event."""
 
@@ -208,9 +301,9 @@ def _end_result_fields(observed: Any) -> ResultFields:
     ambiguity §11.4.3 warns about, so they drop the event exactly as this
     does. The annotation text fields go through ``_scrubbed_text``, also bare
     inside a thunk: an annotation is one report and is dropped whole, as on
-    the adapters. Every OTHER application — ``params`` on both doors, ``context`` on
-    both ``annotate``s — takes ``scrub_or_none``, where ``None`` already
-    means "field unavailable".
+    the adapters. Every OTHER application — ``params`` on both doors, the
+    call's intent fields (``_call_text``), ``context`` on both ``annotate``s —
+    takes ``scrub_or_none``, where ``None`` already means "field unavailable".
 
     Shared by ``Trace`` and ``AsyncTrace``, which are otherwise twins by
     copy.
@@ -530,7 +623,7 @@ class Trace:
         expected_outcome: str | None,
         workflow: str | None,
         consent_token: str | None,
-        session_id: str | None,
+        session: LibrarySession,
     ) -> None:
         self._client = client
         self._tool_name = tool_name
@@ -539,10 +632,7 @@ class Trace:
         self._workflow = workflow
         # Per-trace consent_token overrides the Client-level default.
         self._consent_token: str = consent_token or client._consent_token
-        # session_id per the SPEC §3.4 layered fallback. In library mode we
-        # default to per-event (fresh UUID per trace); per-trace override
-        # supports session-stitched mode when a caller passes an explicit id.
-        self._session_id = session_id or str(uuid7())
+        self._session = session
         self._params: dict[str, Any] = {}
         self._observed_result: Any = _UNSET
         self._observed_error: tuple[str, str] | None = None
@@ -563,13 +653,8 @@ class Trace:
 
     @property
     def session_id(self) -> str:
-        """The session_id this trace owns.
-
-        Public so callers can correlate post-trace ``client.annotate(...)``
-        calls with the trace they're about — or, more ergonomically, use
-        ``trace.annotate(...)`` (below) which binds the session_id for you.
-        """
-        return self._session_id
+        """The session this trace's events carry."""
+        return self._session.session_id
 
     def with_params(self, params: dict[str, Any]) -> Self:
         """Attach params to the start event before it ships."""
@@ -630,18 +715,12 @@ class Trace:
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> None:
-        """Emit a reactive annotation bound to this trace's ``session_id``.
-
-        Equivalent to ``client.annotate(session_id=trace.session_id, ...)`` but
-        without the manual wiring. Use to attach a friction signal (the
-        ``dead_end`` / ``retry_loop`` / etc. "ticket") to the same logical
-        session as the trace — typically after the ``with`` block exits, once
-        the caller has decided whether the outcome was friction-worthy.
-
-        Sequence numbers continue from the trace's counter, so the ticket
-        lands in correct order after the trace's ``end``/``error`` event.
-        """
-        self._client.annotate(
+        """Emit an annotation in this trace's session, with its principal and
+        client — typically a report after the ``with`` block exits, once the
+        caller has decided the outcome was friction-worthy."""
+        self._client._annotate(
+            self._session,
+            consent_token=self._consent_token,
             what_happened=what_happened,
             tool_name=tool_name,
             intent=intent,
@@ -649,8 +728,6 @@ class Trace:
             workflow=workflow,
             suggested_improvement=suggested_improvement,
             context=context,
-            session_id=self._session_id,
-            consent_token=self._consent_token,
         )
 
     def observed(
@@ -739,19 +816,11 @@ class Trace:
         self._call_started_at = monotonic()
         self._entered_before = True
         self._call_id = str(uuid7())
-        self._start_seq = self._client._next_seq(self._session_id)
+        self._start_seq = self._client._next_seq()
         # Entry resets everything the SDK DERIVES for one execution and
         # preserves everything the vendor CONFIGURED (tool_name, params,
-        # intent, session_id), so "configure once, enter N times" keeps
-        # working. Without these three lines a re-entered Trace emitted the
-        # PREVIOUS call's result body as this call's outcome, and did it in
-        # SILENCE: the "exited without observed()" warning tests
-        # ``is _UNSET``, and the field was still holding the old value — so
-        # the one signal that could have named the defect was suppressed by
-        # the defect itself. Nothing downstream can catch it either; the
-        # console groups on tool name and params, never on the result body,
-        # so the ids and totals stay right while the content is another
-        # call's. See workplan §N12.
+        # intent, session), so "configure once, enter N times" keeps working:
+        # ``test_second_entry_does_not_inherit_the_first_result``.
         self._observed_result = _UNSET
         self._observed_error = None
         self._observed_warned = False
@@ -763,41 +832,10 @@ class Trace:
         assert start_seq is not None  # set two lines up, in __enter__
         self._client._emit_sync(
             lambda: ToolCallStartEvent(
-                tenant_id=self._client._tenant_id,
-                vendor_id=self._client._vendor_id,
-                session_id=self._session_id,
-                sequence_number=start_seq,
-                captured_at=datetime.now(UTC),
-                consent_token=self._consent_token,
-                agent_runtime=self._client._agent_runtime,
-                call_id=self._call_id,
-                payload=ToolCallStartPayload(
-                    tool_name=self._tool_name,
-                    params=self._params,
-                ),
+                **_trace_envelope(self, start_seq),
+                payload=_start_payload(self, self._client._scrubber),
             )
         )
-        # Proactive annotation if intent/expected/workflow supplied.
-        if self._intent or self._expected_outcome or self._workflow:
-            ann_seq = self._client._next_seq(self._session_id)
-            self._client._emit_sync(
-                lambda: AnnotationEvent(
-                    tenant_id=self._client._tenant_id,
-                    vendor_id=self._client._vendor_id,
-                    session_id=self._session_id,
-                    sequence_number=ann_seq,
-                    captured_at=datetime.now(UTC),
-                    consent_token=self._consent_token,
-                    agent_runtime=self._client._agent_runtime,
-                    payload=AnnotationPayload(
-                        intent=_scrubbed_text(self._client._scrubber, self._intent),
-                        expected_outcome=_scrubbed_text(
-                            self._client._scrubber, self._expected_outcome
-                        ),
-                        workflow=_scrubbed_text(self._client._scrubber, self._workflow),
-                    ),
-                )
-            )
         return self
 
     def __exit__(
@@ -815,19 +853,12 @@ class Trace:
         # would otherwise keep the stale value.
         self._start_seq = None
         duration_ms = self._compute_duration_ms()
-        end_seq = self._client._next_seq(self._session_id)
+        end_seq = self._client._next_seq()
 
         if exc is not None:
             self._client._emit_sync(
                 lambda: ToolCallErrorEvent(
-                    tenant_id=self._client._tenant_id,
-                    vendor_id=self._client._vendor_id,
-                    session_id=self._session_id,
-                    sequence_number=end_seq,
-                    captured_at=datetime.now(UTC),
-                    consent_token=self._consent_token,
-                    agent_runtime=self._client._agent_runtime,
-                    call_id=self._call_id,
+                    **_trace_envelope(self, end_seq),
                     payload=ToolCallErrorPayload(
                         tool_name=self._tool_name,
                         error_type=exc.__class__.__name__,
@@ -864,14 +895,7 @@ class Trace:
             error_type, error_body = self._observed_error
             self._client._emit_sync(
                 lambda: ToolCallErrorEvent(
-                    tenant_id=self._client._tenant_id,
-                    vendor_id=self._client._vendor_id,
-                    session_id=self._session_id,
-                    sequence_number=end_seq,
-                    captured_at=datetime.now(UTC),
-                    consent_token=self._consent_token,
-                    agent_runtime=self._client._agent_runtime,
-                    call_id=self._call_id,
+                    **_trace_envelope(self, end_seq),
                     payload=ToolCallErrorPayload(
                         tool_name=self._tool_name,
                         error_type=error_type,
@@ -887,14 +911,7 @@ class Trace:
             def _build_end() -> ToolCallEndEvent:
                 end_fields = _end_result_fields(self._observed_result)
                 return ToolCallEndEvent(
-                    tenant_id=self._client._tenant_id,
-                    vendor_id=self._client._vendor_id,
-                    session_id=self._session_id,
-                    sequence_number=end_seq,
-                    captured_at=datetime.now(UTC),
-                    consent_token=self._consent_token,
-                    agent_runtime=self._client._agent_runtime,
-                    call_id=self._call_id,
+                    **_trace_envelope(self, end_seq),
                     payload=ToolCallEndPayload(
                         tool_name=self._tool_name,
                         duration_ms=duration_ms,
@@ -916,7 +933,50 @@ class Trace:
 # =============================================================================
 
 
-class Client:
+class _Sessions:
+    """``session()`` for both clients: one block, read by every call inside it."""
+
+    _scrubber: Any
+    _disabled: bool
+
+    def _next_seq(self) -> int:
+        return PROCESS_SEQUENCE.next()
+
+    @contextmanager
+    def session(
+        self,
+        *,
+        session_id: str | None = None,
+        principal: Principal | None = None,
+        client_info: Mapping[str, Any] | None = None,
+        headers: Mapping[str, Any] | None = None,
+    ) -> Iterator[LibrarySession]:
+        """Give every ``trace()`` and ``annotate()`` inside the block one
+        session, principal and client (SPEC §5.6). Open one per request or
+        conversation.
+
+        ``session_id`` is the vendor's own id for the conversation; without
+        one, the block mints an id. ``principal`` is who the vendor says is
+        calling. ``client_info`` (``{"name": ..., "version": ...}``) and
+        ``headers`` are what the calling client sent; only registered headers
+        are kept. A bad value is logged and dropped, never raised.
+        """
+        block = new_session(
+            session_id=session_id,
+            principal=principal,
+            client_info=client_info,
+            headers=headers,
+            scrubber=self._scrubber,
+            disabled=self._disabled,
+        )
+        token = enter_block(self, block)
+        try:
+            yield block
+        finally:
+            exit_block(token)
+
+
+class Client(_Sessions):
     """Sync library API client. Drives async ``EventEmitter`` via a background
     daemon thread (``_SyncBridge``). One client instance per vendor process.
     """
@@ -929,7 +989,6 @@ class Client:
         vendor_id: str | None = None,
         tenant_id: str | None = None,
         consent_token: str | None = None,
-        agent_runtime: str = "python-library",
         scrubber: Any = None,
         result_capture_mode: str = "full",
     ) -> None:
@@ -951,7 +1010,6 @@ class Client:
         self._vendor_id: str = resolved.vendor_id
         self._tenant_id: str = resolved.tenant_id
         self._consent_token: str = resolved.consent_token
-        self._agent_runtime: str = agent_runtime
         # Default to a fresh Scrubber per Client so the per-category
         # counter is owned by the client instance (and not shared across
         # processes via a class-level singleton). Pass identity_scrub
@@ -970,11 +1028,6 @@ class Client:
         self._bridge: _SyncBridge | None = None if self._disabled else _SyncBridge()
         self._sink: Sink = resolved.sink
 
-        # Per-session sequence counters. Library mode = per-event mode (each
-        # Trace generates a fresh session_id), so each session_id has exactly
-        # one trace's worth of events. Counter still maintained for consistency
-        # with SPEC §11.4 (monotonic sequence_number per session).
-        self._seq_counters: dict[str, int] = {}
         self._closed = False
 
     def trace(
@@ -986,9 +1039,13 @@ class Client:
         workflow: str | None = None,
         params: dict[str, Any] | None = None,
         consent_token: str | None = None,
-        session_id: str | None = None,
     ) -> Trace:
         """Open a trace for one logical tool call. Use as a context manager.
+
+        ``intent`` / ``expected_outcome`` / ``workflow`` ride the call's
+        ``tool_call_start``. The call takes the open ``session()`` block's
+        session, principal and client; outside any block it gets a session of
+        its own.
 
         Pass ``params`` here (not via ``trace.with_params()``) so they ship on
         the ``tool_call_start`` event in ``__enter__``. ``with_params()`` is
@@ -1004,7 +1061,7 @@ class Client:
             expected_outcome=expected_outcome,
             workflow=workflow,
             consent_token=consent_token,
-            session_id=session_id,
+            session=session_for_call(self),
         )
         if params is not None:
             # See ``Trace.with_params`` — same statement, same reason, and the
@@ -1023,46 +1080,59 @@ class Client:
         workflow: str | None = None,
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
-        session_id: str | None = None,
         consent_token: str | None = None,
     ) -> None:
-        """Emit a standalone annotation event (reactive friction signal, or
-        proactive intent capture outside a ``trace()``).
+        """Emit a standalone annotation event in the open ``session()`` block,
+        or in a session of its own outside one. To report on a trace, call
+        ``trace.annotate(...)``.
 
         ``consent_token`` defaults to the Client-level token; pass an override
         when the annotation belongs to a different end-user than the Client's
-        configured token (or when ``Trace.annotate(...)`` is forwarding a
-        per-trace override).
+        configured token.
         """
+        self._annotate(
+            session_for_call(self),
+            consent_token=consent_token or self._consent_token,
+            what_happened=what_happened,
+            tool_name=tool_name,
+            intent=intent,
+            expected_outcome=expected_outcome,
+            workflow=workflow,
+            suggested_improvement=suggested_improvement,
+            context=context,
+        )
+
+    def _annotate(
+        self,
+        session: LibrarySession,
+        *,
+        consent_token: str,
+        what_happened: str | None,
+        tool_name: str | None,
+        intent: str | None,
+        expected_outcome: str | None,
+        workflow: str | None,
+        suggested_improvement: str | None,
+        context: dict[str, Any] | None,
+    ) -> None:
         if self._closed:
             raise RuntimeError("Client is closed")
-        resolved_session = session_id or str(uuid7())
-        resolved_consent = consent_token or self._consent_token
-        seq = self._next_seq(resolved_session)
+        seq = self._next_seq()
         self._emit_sync(
-            lambda: AnnotationEvent(
+            lambda: _annotation_event(
                 tenant_id=self._tenant_id,
                 vendor_id=self._vendor_id,
-                session_id=resolved_session,
+                scrubber=self._scrubber,
+                session=session,
                 sequence_number=seq,
-                captured_at=datetime.now(UTC),
-                consent_token=resolved_consent,
-                agent_runtime=self._agent_runtime,
-                payload=AnnotationPayload(
-                    intent=_scrubbed_text(self._scrubber, intent),
-                    expected_outcome=_scrubbed_text(self._scrubber, expected_outcome),
-                    what_happened=_scrubbed_text(self._scrubber, what_happened)
-                    if what_happened and what_happened.strip()
-                    else None,
-                    tool_name=_scrubbed_text(self._scrubber, tool_name) if tool_name else tool_name,
-                    workflow=_scrubbed_text(self._scrubber, workflow),
-                    suggested_improvement=_scrubbed_text(self._scrubber, suggested_improvement),
-                    # scrub_or_none, unlike the text fields above: a throw on
-                    # ``context`` costs that field, not the whole annotation.
-                    context=scrub_or_none(self._scrubber, context, "context", logger)
-                    if context
-                    else None,
-                ),
+                consent_token=consent_token,
+                what_happened=what_happened,
+                tool_name=tool_name,
+                intent=intent,
+                expected_outcome=expected_outcome,
+                workflow=workflow,
+                suggested_improvement=suggested_improvement,
+                context=context,
             )
         )
 
@@ -1142,15 +1212,10 @@ class Client:
         # safe_write, not self._sink.write directly — a raise here (closed
         # sink, an overflow warning promoted to an exception, etc.) would
         # otherwise propagate into the vendor's own code inside the
-        # `with client.trace(...)` block, ahead of the vendor's real call in
-        # the proactive case. SPEC §11.2 fail-open applies here exactly as it
+        # `with client.trace(...)` block, ahead of the vendor's real call.
+        # SPEC §11.2 fail-open applies here exactly as it
         # does to the MCP adapters' tool-call wrapping.
         self._bridge.run(safe_write(self._sink, event, logger))
-
-    def _next_seq(self, session_id: str) -> int:
-        current = self._seq_counters.get(session_id, 0)
-        self._seq_counters[session_id] = current + 1
-        return current + 1
 
 
 # =============================================================================
@@ -1170,7 +1235,7 @@ class AsyncTrace:
         expected_outcome: str | None,
         workflow: str | None,
         consent_token: str | None,
-        session_id: str | None,
+        session: LibrarySession,
     ) -> None:
         self._client = client
         self._tool_name = tool_name
@@ -1178,7 +1243,7 @@ class AsyncTrace:
         self._expected_outcome = expected_outcome
         self._workflow = workflow
         self._consent_token: str = consent_token or client._consent_token
-        self._session_id = session_id or str(uuid7())
+        self._session = session
         self._params: dict[str, Any] = {}
         self._observed_result: Any = _UNSET
         self._observed_error: tuple[str, str] | None = None
@@ -1199,8 +1264,8 @@ class AsyncTrace:
 
     @property
     def session_id(self) -> str:
-        """The session_id this trace owns. See ``Trace.session_id`` for usage."""
-        return self._session_id
+        """The session this trace's events carry."""
+        return self._session.session_id
 
     def with_params(self, params: dict[str, Any]) -> Self:
         # scrub_or_none, not a bare call: this runs OUTSIDE any build thunk,
@@ -1258,10 +1323,10 @@ class AsyncTrace:
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> None:
-        """Async equivalent of ``Trace.annotate``. Binds the trace's
-        ``session_id`` to the emitted annotation event.
-        """
-        await self._client.annotate(
+        """Async equivalent of ``Trace.annotate``."""
+        await self._client._annotate(
+            self._session,
+            consent_token=self._consent_token,
             what_happened=what_happened,
             tool_name=tool_name,
             intent=intent,
@@ -1269,8 +1334,6 @@ class AsyncTrace:
             workflow=workflow,
             suggested_improvement=suggested_improvement,
             context=context,
-            session_id=self._session_id,
-            consent_token=self._consent_token,
         )
 
     def observed(
@@ -1346,19 +1409,11 @@ class AsyncTrace:
         self._call_started_at = monotonic()
         self._entered_before = True
         self._call_id = str(uuid7())
-        self._start_seq = self._client._next_seq(self._session_id)
+        self._start_seq = self._client._next_seq()
         # Entry resets everything the SDK DERIVES for one execution and
         # preserves everything the vendor CONFIGURED (tool_name, params,
-        # intent, session_id), so "configure once, enter N times" keeps
-        # working. Without these three lines a re-entered Trace emitted the
-        # PREVIOUS call's result body as this call's outcome, and did it in
-        # SILENCE: the "exited without observed()" warning tests
-        # ``is _UNSET``, and the field was still holding the old value — so
-        # the one signal that could have named the defect was suppressed by
-        # the defect itself. Nothing downstream can catch it either; the
-        # console groups on tool name and params, never on the result body,
-        # so the ids and totals stay right while the content is another
-        # call's. See workplan §N12.
+        # intent, session), so "configure once, enter N times" keeps working:
+        # ``test_second_entry_does_not_inherit_the_first_result``.
         self._observed_result = _UNSET
         self._observed_error = None
         self._observed_warned = False
@@ -1368,40 +1423,10 @@ class AsyncTrace:
         assert start_seq is not None  # set two lines up, in __aenter__
         await self._client._emit(
             lambda: ToolCallStartEvent(
-                tenant_id=self._client._tenant_id,
-                vendor_id=self._client._vendor_id,
-                session_id=self._session_id,
-                sequence_number=start_seq,
-                captured_at=datetime.now(UTC),
-                consent_token=self._consent_token,
-                agent_runtime=self._client._agent_runtime,
-                call_id=self._call_id,
-                payload=ToolCallStartPayload(
-                    tool_name=self._tool_name,
-                    params=self._params,
-                ),
+                **_trace_envelope(self, start_seq),
+                payload=_start_payload(self, self._client._scrubber),
             )
         )
-        if self._intent or self._expected_outcome or self._workflow:
-            ann_seq = self._client._next_seq(self._session_id)
-            await self._client._emit(
-                lambda: AnnotationEvent(
-                    tenant_id=self._client._tenant_id,
-                    vendor_id=self._client._vendor_id,
-                    session_id=self._session_id,
-                    sequence_number=ann_seq,
-                    captured_at=datetime.now(UTC),
-                    consent_token=self._consent_token,
-                    agent_runtime=self._client._agent_runtime,
-                    payload=AnnotationPayload(
-                        intent=_scrubbed_text(self._client._scrubber, self._intent),
-                        expected_outcome=_scrubbed_text(
-                            self._client._scrubber, self._expected_outcome
-                        ),
-                        workflow=_scrubbed_text(self._client._scrubber, self._workflow),
-                    ),
-                )
-            )
         return self
 
     async def __aexit__(
@@ -1423,19 +1448,12 @@ class AsyncTrace:
             if self._call_started_at is not None
             else None
         )
-        end_seq = self._client._next_seq(self._session_id)
+        end_seq = self._client._next_seq()
 
         if exc is not None:
             await self._client._emit(
                 lambda: ToolCallErrorEvent(
-                    tenant_id=self._client._tenant_id,
-                    vendor_id=self._client._vendor_id,
-                    session_id=self._session_id,
-                    sequence_number=end_seq,
-                    captured_at=datetime.now(UTC),
-                    consent_token=self._consent_token,
-                    agent_runtime=self._client._agent_runtime,
-                    call_id=self._call_id,
+                    **_trace_envelope(self, end_seq),
                     payload=ToolCallErrorPayload(
                         tool_name=self._tool_name,
                         error_type=exc.__class__.__name__,
@@ -1470,14 +1488,7 @@ class AsyncTrace:
             error_type, error_body = self._observed_error
             await self._client._emit(
                 lambda: ToolCallErrorEvent(
-                    tenant_id=self._client._tenant_id,
-                    vendor_id=self._client._vendor_id,
-                    session_id=self._session_id,
-                    sequence_number=end_seq,
-                    captured_at=datetime.now(UTC),
-                    consent_token=self._consent_token,
-                    agent_runtime=self._client._agent_runtime,
-                    call_id=self._call_id,
+                    **_trace_envelope(self, end_seq),
                     payload=ToolCallErrorPayload(
                         tool_name=self._tool_name,
                         error_type=error_type,
@@ -1491,14 +1502,7 @@ class AsyncTrace:
             def _build_end() -> ToolCallEndEvent:
                 end_fields = _end_result_fields(self._observed_result)
                 return ToolCallEndEvent(
-                    tenant_id=self._client._tenant_id,
-                    vendor_id=self._client._vendor_id,
-                    session_id=self._session_id,
-                    sequence_number=end_seq,
-                    captured_at=datetime.now(UTC),
-                    consent_token=self._consent_token,
-                    agent_runtime=self._client._agent_runtime,
-                    call_id=self._call_id,
+                    **_trace_envelope(self, end_seq),
                     payload=ToolCallEndPayload(
                         tool_name=self._tool_name,
                         duration_ms=duration_ms,
@@ -1515,7 +1519,7 @@ class AsyncTrace:
 # =============================================================================
 
 
-class AsyncClient:
+class AsyncClient(_Sessions):
     """Async equivalent of ``Client``. Directly drives the async ``EventEmitter``
     (no thread bridge needed since the caller is already async).
     """
@@ -1528,7 +1532,6 @@ class AsyncClient:
         vendor_id: str | None = None,
         tenant_id: str | None = None,
         consent_token: str | None = None,
-        agent_runtime: str = "python-library",
         scrubber: Any = None,
         result_capture_mode: str = "full",
     ) -> None:
@@ -1550,7 +1553,6 @@ class AsyncClient:
         self._vendor_id: str = resolved.vendor_id
         self._tenant_id: str = resolved.tenant_id
         self._consent_token: str = resolved.consent_token
-        self._agent_runtime: str = agent_runtime
         # Default to a fresh Scrubber per AsyncClient — see Client
         # docstring for the rationale (per-client counter, no
         # cross-process sharing). Pass identity_scrub explicitly to opt
@@ -1559,7 +1561,6 @@ class AsyncClient:
         self._result_capture_mode = resolved.result_capture_mode
 
         self._sink: Sink = resolved.sink
-        self._seq_counters: dict[str, int] = {}
         self._closed = False
 
     def trace(
@@ -1571,8 +1572,8 @@ class AsyncClient:
         workflow: str | None = None,
         params: dict[str, Any] | None = None,
         consent_token: str | None = None,
-        session_id: str | None = None,
     ) -> AsyncTrace:
+        """Async equivalent of ``Client.trace``."""
         if self._closed:
             raise RuntimeError("AsyncClient is closed")
         trace = AsyncTrace(
@@ -1582,7 +1583,7 @@ class AsyncClient:
             expected_outcome=expected_outcome,
             workflow=workflow,
             consent_token=consent_token,
-            session_id=session_id,
+            session=session_for_call(self),
         )
         if params is not None:
             # See ``Trace.with_params`` — same statement, same reason, and the
@@ -1601,38 +1602,52 @@ class AsyncClient:
         workflow: str | None = None,
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
-        session_id: str | None = None,
         consent_token: str | None = None,
+    ) -> None:
+        """Async equivalent of ``Client.annotate``."""
+        await self._annotate(
+            session_for_call(self),
+            consent_token=consent_token or self._consent_token,
+            what_happened=what_happened,
+            tool_name=tool_name,
+            intent=intent,
+            expected_outcome=expected_outcome,
+            workflow=workflow,
+            suggested_improvement=suggested_improvement,
+            context=context,
+        )
+
+    async def _annotate(
+        self,
+        session: LibrarySession,
+        *,
+        consent_token: str,
+        what_happened: str | None,
+        tool_name: str | None,
+        intent: str | None,
+        expected_outcome: str | None,
+        workflow: str | None,
+        suggested_improvement: str | None,
+        context: dict[str, Any] | None,
     ) -> None:
         if self._closed:
             raise RuntimeError("AsyncClient is closed")
-        resolved_session = session_id or str(uuid7())
-        resolved_consent = consent_token or self._consent_token
-        seq = self._next_seq(resolved_session)
+        seq = self._next_seq()
         await self._emit(
-            lambda: AnnotationEvent(
+            lambda: _annotation_event(
                 tenant_id=self._tenant_id,
                 vendor_id=self._vendor_id,
-                session_id=resolved_session,
+                scrubber=self._scrubber,
+                session=session,
                 sequence_number=seq,
-                captured_at=datetime.now(UTC),
-                consent_token=resolved_consent,
-                agent_runtime=self._agent_runtime,
-                payload=AnnotationPayload(
-                    intent=_scrubbed_text(self._scrubber, intent),
-                    expected_outcome=_scrubbed_text(self._scrubber, expected_outcome),
-                    what_happened=_scrubbed_text(self._scrubber, what_happened)
-                    if what_happened and what_happened.strip()
-                    else None,
-                    tool_name=_scrubbed_text(self._scrubber, tool_name) if tool_name else tool_name,
-                    workflow=_scrubbed_text(self._scrubber, workflow),
-                    suggested_improvement=_scrubbed_text(self._scrubber, suggested_improvement),
-                    # scrub_or_none, unlike the text fields above: a throw on
-                    # ``context`` costs that field, not the whole annotation.
-                    context=scrub_or_none(self._scrubber, context, "context", logger)
-                    if context
-                    else None,
-                ),
+                consent_token=consent_token,
+                what_happened=what_happened,
+                tool_name=tool_name,
+                intent=intent,
+                expected_outcome=expected_outcome,
+                workflow=workflow,
+                suggested_improvement=suggested_improvement,
+                context=context,
             )
         )
 
@@ -1679,8 +1694,3 @@ class AsyncClient:
         # write. See ``Client._emit_sync`` for why construction needs a guard
         # at all, and why the sync twin cannot use this helper.
         await safe_emit(self._sink, build, logger)
-
-    def _next_seq(self, session_id: str) -> int:
-        current = self._seq_counters.get(session_id, 0)
-        self._seq_counters[session_id] = current + 1
-        return current + 1

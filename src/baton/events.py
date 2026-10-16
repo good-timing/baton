@@ -66,12 +66,14 @@ class ToolCallStartPayload(BaseModel):
 
     ``call_intent`` / ``call_expected`` / ``call_workflow`` are the values the
     SDK stripped from the injected ``user_goal`` / ``expected_result`` /
-    ``overall_task`` params (``integrations._llm_text``); they ride as
+    ``overall_task`` params (``integrations._llm_text``), or, on the library
+    API, what the vendor passed to ``trace()`` (SPEC §5.6); they ride as
     SIBLINGS of ``params`` — ``params`` stays exactly the vendor-visible
     arguments. ``call_intent``/``call_expected`` are call-scoped diagnostics;
     ``call_workflow`` is the task-label grouping key (console rung 3b, exact
     string continuity). ``intent_source`` records provenance
-    (``"injected_param"``). All null when the params weren't used. The Console
+    (``"injected_param"`` or ``"library_arg"``). All null when no intent was
+    given. The Console
     reads these off ``payload`` (``worker/correlate.py``, ``cycle.py``); kept
     in lockstep with the proxy's emitter output."""
 
@@ -414,8 +416,8 @@ class _EventEnvelope(BaseModel):
     consent_token: str
     sdk_version: str = __version__
     agent_runtime: str = "unknown"
-    """Legacy (SPEC §3.4). The MCP adapters never set it: the consumer names
-    the client from ``client_observed``."""
+    """Required and always ``"unknown"`` from this SDK (SPEC §3.4): the
+    consumer names the client from ``client_observed``."""
     client_observed: ClientObserved | None = None
     """What the client said about itself (SPEC §11.4). ``None`` where nothing
     was observed, and always on ``surface_snapshot``."""
@@ -451,8 +453,9 @@ class _EventEnvelope(BaseModel):
     MCP request with no HTTP behind it: stdio or in-memory, where one process
     is one caller. ``"read-failed"`` — this producer's own read of the
     transport raised, which says nothing about the deployment and everything
-    about us. Null where we did not look: the library API, which has no MCP
-    transport at all.
+    about us. ``"library"`` — the library API, where the vendor's code called
+    us and there is no transport to see (SPEC §5.6). Null where we did not
+    look: an event no call caused, such as ``surface_snapshot``.
 
     **A raised read MUST become ``"read-failed"``, never ``"no-http-request"``.**
     That value asserts a fact about the customer's deployment, and an
@@ -474,7 +477,8 @@ class _EventEnvelope(BaseModel):
     OPTIONAL + nullable): ``"observed"`` if it does, ``"minted"`` if it names
     none, as with the producer's own id or fastmcp's per-request id on
     stateless HTTP. A plain ``str`` for the reason ``transport_observed`` is
-    one. Null on the library API, which climbs no ladder."""
+    one. On the library API, ``"observed"`` when the vendor passed its own id
+    to ``client.session()`` (SPEC §5.6)."""
     runtime_meta: dict[str, Any] | None = None
     """Runtime-supplied ``_meta`` envelope from the MCP request (SPEC §11.4).
     Per SPEC §11.5 the Console worker uses this to derive turn

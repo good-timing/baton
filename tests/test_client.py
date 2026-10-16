@@ -10,13 +10,13 @@ Covers the library API surface (Client / AsyncClient / Trace / AsyncTrace):
 - observed() missing: UserWarning + tool_call_end with result=None
 - observed() called twice: UserWarning + last wins
 - annotate() emits standalone annotation event
-- Proactive annotation (intent/expected on trace) emits in same session
+- Intent on trace rides the start event, with no note
 - Params via trace(params=...) ship on start
 - Params via with_params() after enter emits UserWarning
 - Config loading: explicit kwargs win, env-var fallback works
 - close() then trace() raises RuntimeError
 - close() is idempotent
-- agent_runtime defaults to "python-library"
+- agent_runtime defaults to "unknown"
 - Sync + async parity
 """
 
@@ -232,7 +232,7 @@ class TestSyncHappyPath:
         start = next(e for e in captured_events if e["event_type"] == "tool_call_start")
         assert start["payload"]["params"] == {"model": "gpt-4"}
 
-    def test_proactive_annotation_emits_when_intent_set(
+    def test_intent_rides_the_start_event_and_sends_no_note(
         self,
         sync_client: Client,
         captured_events: list[dict[str, Any]],
@@ -246,30 +246,40 @@ class TestSyncHappyPath:
             trace.observed("ok")
         sync_client.flush()
 
-        # tool_call_start, annotation, tool_call_end — in that order
-        types = [e["event_type"] for e in captured_events]
-        assert types == ["tool_call_start", "annotation", "tool_call_end"]
-        ann = captured_events[1]
-        assert ann["payload"]["intent"] == "find the answer"
-        assert ann["payload"]["expected_outcome"] == "a number"
-        assert ann["payload"]["workflow"] == "user-question"
+        assert [e["event_type"] for e in captured_events] == ["tool_call_start", "tool_call_end"]
+        payload = captured_events[0]["payload"]
+        assert payload["call_intent"] == "find the answer"
+        assert payload["call_expected"] == "a number"
+        assert payload["call_workflow"] == "user-question"
+        assert payload["intent_source"] == "library_arg"
 
-    def test_sequence_numbers_monotonic_per_session(
+    def test_a_trace_without_intent_has_no_intent_source(
         self,
         sync_client: Client,
         captured_events: list[dict[str, Any]],
     ) -> None:
-        with sync_client.trace(
-            tool_name="my.tool",
-            intent="x",  # forces proactive annotation
-        ) as trace:
+        with sync_client.trace(tool_name="my.tool") as trace:
             trace.observed("ok")
         sync_client.flush()
 
-        seqs = [e["sequence_number"] for e in captured_events]
-        assert seqs == [1, 2, 3]
+        assert captured_events[0]["payload"]["intent_source"] is None
 
-    def test_default_agent_runtime_is_python_library(
+    def test_sequence_numbers_increase_within_a_session(
+        self,
+        sync_client: Client,
+        captured_events: list[dict[str, Any]],
+    ) -> None:
+        with sync_client.session():
+            with sync_client.trace(tool_name="my.tool") as trace:
+                trace.observed("ok")
+            sync_client.annotate(what_happened="thin result", tool_name="my.tool")
+        sync_client.flush()
+
+        seqs = [e["sequence_number"] for e in captured_events]
+        assert len(seqs) == 3
+        assert seqs == sorted(set(seqs))
+
+    def test_default_agent_runtime_is_unknown(
         self,
         sync_client: Client,
         captured_events: list[dict[str, Any]],
@@ -278,7 +288,7 @@ class TestSyncHappyPath:
             trace.observed("ok")
         sync_client.flush()
 
-        assert all(e["agent_runtime"] == "python-library" for e in captured_events)
+        assert all(e["agent_runtime"] == "unknown" for e in captured_events)
 
 
 # =============================================================================
@@ -992,7 +1002,7 @@ class TestAsyncHappyPath:
         assert captured_events[0]["payload"]["tool_name"] == ""
         assert captured_events[0]["payload"]["tool_name"] == ""
 
-    async def test_default_agent_runtime_is_python_library(
+    async def test_default_agent_runtime_is_unknown(
         self,
         async_client: AsyncClient,
         captured_events: list[dict[str, Any]],
@@ -1003,7 +1013,7 @@ class TestAsyncHappyPath:
             await async_client.flush()
         finally:
             await async_client.aclose()
-        assert all(e["agent_runtime"] == "python-library" for e in captured_events)
+        assert all(e["agent_runtime"] == "unknown" for e in captured_events)
 
     async def test_an_async_trace_report_carries_the_tool_it_names(
         self,

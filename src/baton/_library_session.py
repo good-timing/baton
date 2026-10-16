@@ -1,0 +1,138 @@
+"""The library API's session block and sequence numbers (SPEC §5.6)."""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from collections.abc import Callable, Mapping
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Any
+
+from baton._uuid import uuid7
+from baton.events import ClientObserved, PrincipalWire
+from baton.integrations._session import SessionOrigin, clean_session_id
+from baton.integrations.client_observed import CLIENT_INFO_META_KEY, observe_client
+from baton.integrations.identity_adapter import wire_vendor_principal
+
+logger = logging.getLogger(__name__)
+
+TRANSPORT_LIBRARY = "library"
+ORIGIN_OBSERVED: SessionOrigin = "observed"
+ORIGIN_MINTED: SessionOrigin = "minted"
+
+
+@dataclass(frozen=True)
+class LibrarySession:
+    """What ``client.session(...)`` gives every call inside it."""
+
+    session_id: str
+    session_id_origin: SessionOrigin
+    principal: PrincipalWire | None = None
+    client_observed: ClientObserved | None = None
+
+    def envelope(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "session_id_origin": self.session_id_origin,
+            "transport_observed": TRANSPORT_LIBRARY,
+            "principal": self.principal,
+            "client_observed": self.client_observed,
+        }
+
+
+# The owning client is stored with the block so one client's block never
+# reaches another client's events.
+_current: ContextVar[tuple[object, LibrarySession] | None] = ContextVar(
+    "baton_library_session", default=None
+)
+
+
+def _vendor_session_id(value: object) -> str | None:
+    cleaned = clean_session_id(value)
+    if cleaned is None and value is not None:
+        logger.warning("baton: session_id=%r is not a non-blank string — ignoring it.", value)
+    return cleaned
+
+
+def _minted() -> LibrarySession:
+    return LibrarySession(str(uuid7()), ORIGIN_MINTED)
+
+
+def _client_observed(
+    client_info: object, headers: Mapping[str, Any] | None, scrubber: Callable[[Any], Any]
+) -> ClientObserved | None:
+    if client_info is None and headers is None:
+        return None
+    meta = {CLIENT_INFO_META_KEY: client_info} if client_info is not None else None
+    return observe_client(meta, headers=headers, scrubber=scrubber)
+
+
+def new_session(
+    *,
+    session_id: object = None,
+    principal: object = None,
+    client_info: object = None,
+    headers: Mapping[str, Any] | None = None,
+    scrubber: Callable[[Any], Any],
+    disabled: bool,
+) -> LibrarySession:
+    """A ``session()`` block's values. Never raises: a value that is not
+    usable is logged and dropped."""
+    vendor_id = _vendor_session_id(session_id)
+    base = LibrarySession(vendor_id, ORIGIN_OBSERVED) if vendor_id is not None else _minted()
+    if disabled:
+        # The kill switch stops the work too: no scrubber runs on a value that
+        # will never be sent.
+        return base
+    return LibrarySession(
+        base.session_id,
+        base.session_id_origin,
+        principal=wire_vendor_principal(principal, logger=logger),
+        client_observed=_client_observed(client_info, headers, scrubber),
+    )
+
+
+def session_for_call(owner: object) -> LibrarySession:
+    """``owner``'s open block, or a minted session for this call alone."""
+    entry = _current.get()
+    if entry is not None and entry[0] is owner:
+        return entry[1]
+    return _minted()
+
+
+def enter_block(owner: object, session: LibrarySession) -> Any:
+    return _current.set((owner, session))
+
+
+def exit_block(token: Any) -> None:
+    try:
+        _current.reset(token)
+    except ValueError:
+        # The block closed in another context than it opened in, such as a
+        # streamed response finished by another task. That context never saw
+        # the block, so there is nothing to undo, and the vendor's code must
+        # not fail over it.
+        logger.debug("baton: session block closed in another context", exc_info=True)
+
+
+class SequenceClock:
+    """Sequence numbers from the clock, in microseconds (SPEC §5.6 rule 3).
+
+    One counter for the process (``PROCESS_SEQUENCE``), shared by every
+    client: strictly increasing across all sessions is strictly increasing
+    within each, and nothing grows per session.
+    """
+
+    def __init__(self) -> None:
+        self._last = 0
+        self._lock = threading.Lock()
+
+    def next(self) -> int:
+        with self._lock:
+            self._last = max(self._last + 1, time.time_ns() // 1000)
+            return self._last
+
+
+PROCESS_SEQUENCE = SequenceClock()

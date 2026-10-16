@@ -49,6 +49,12 @@ def session_id_from_headers(headers: Any) -> str | None:
         value = headers.get(MCP_SESSION_ID_HEADER)
     except (AttributeError, TypeError):
         return None
+    return clean_session_id(value)
+
+
+def clean_session_id(value: object) -> str | None:
+    """A session id as sent, stripped; ``None`` when it is not a non-blank
+    string. See ``session_id_from_headers`` for why both rules hold."""
     if not isinstance(value, str) or not value.strip():
         return None
     return value.strip()
