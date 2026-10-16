@@ -356,7 +356,7 @@ The Console returns this in response to a return-channel query (§8). It is also
 1. **MCP middleware** (`install_baton(mcp, VendorConfig(...))`) — for vendors who expose their API as MCP tools. Intent / expected_outcome / reports come from the agent via the annotation tool described below; runtime context comes from the MCP `_meta` field.
 2. **Library API** (`baton.Client` / `AsyncClient`) — for vendors whose customers reach the vendor API via agent-generated code (Skills pattern, not MCP). Intent / expected_outcome come from the developer as kwargs on `client.trace(intent=..., expected_outcome=..., workflow=...)`; reports come via `client.annotate(what_happened=..., tool_name=...)` or `trace.annotate(...)`.
 
-Everything downstream — event envelope, sink behavior, worker assembly, signal classification — is identical across both paths. The rest of this section describes the **MCP path** mechanism; the library API path is the same data captured via direct function arguments, so it does not need a separate intent-capture spec.
+Everything downstream — event envelope, sink behavior, worker assembly, signal classification — is identical across both paths. §5.1 to §5.5 describe the **MCP path** mechanism. The library path has no transport to read and no tool schema to extend, so the vendor's code passes what the middleware would have observed; §5.6 states what it passes and where each value lands on the wire.
 
 ADR-2 in CHARTER. On the MCP path, the spec separates two distinct sources, plumbed differently:
 
@@ -616,6 +616,37 @@ Two framing notes empirically isolated:
 
 These are future candidates if the layered approach proves insufficient in practice.
 
+### 5.6 Library API path (normative)
+
+A library producer emits the §11.4 envelope a middleware producer emits. Where the middleware **observes** a value, the library **takes it from the vendor's code**, and the value lands in the same field. A consumer never needs to know which path produced an event to read it.
+
+| Value | Middleware source | Library source | Field |
+|---|---|---|---|
+| Intent, expected outcome, task | injected params (§5.1) | `trace(intent=, expected_outcome=, workflow=)` | `tool_call_start.payload.call_intent` / `call_expected` / `call_workflow` |
+| Who is calling | the vendor's resolver | `client.session(principal=)` | `principal` |
+| Which client | `clientInfo`, registered headers | `client.session(client_info=, headers=)` | `client_observed` |
+| Session | the §3.4 ladder | `client.session(session_id=)`, else one minted id per block | `session_id`, `session_id_origin` |
+
+**The session block.** The vendor opens `client.session(...)` once per request or conversation, and every `trace()` and `annotate()` inside it takes the block's session, principal and client. `trace()` accepts the same values to override the block for one call. A `trace()` outside any block mints its own session. The block sets a context variable that `trace()` reads, and does nothing else.
+
+A library producer MUST:
+
+1. **Put intent on the call it describes, and nowhere else.** Intent passed to `trace()` goes on that call's `tool_call_start` as `call_intent` / `call_expected` / `call_workflow`, with `intent_source: "library_arg"`. It MUST NOT also be sent as a note: §11.5.1 rule 3 would open a turn at that note, between the call and its own intent.
+2. **Mark the session id's origin.** `session_id_origin` is `"observed"` when the vendor passed `session_id`, and `"minted"` when the producer made one. `transport_observed` is `"library"` (§11.4).
+3. **Number a session's events by time.** A vendor-supplied session id can span several processes, such as a stateless API behind several workers, so a counter that restarts at 1 per process puts their events out of order. Each number SHOULD be the larger of the session's previous number in this process plus one, and the current time in microseconds, which fits the field's 64-bit integer. The number orders events and is not their identity: two processes can reach the same number in one microsecond, and §11.2 rule 5 says what a consumer does then.
+4. **Apply §11.4's rules to what the vendor passes.** `principal` follows the object's rules, including absent-as-a-whole. `client_observed.headers` holds registered headers only. Every `client_observed` value is scrubbed and truncated as on the middleware path.
+5. **Send no `failure_kind`.** It names a failure the producer made above the vendor's handler (§11.4.3). A library rejects nothing itself: every failure it records is the vendor's code speaking.
+
+**Consumers read a call's intent from the call.** A consumer that needs a turn's or a session's intent or expected outcome MUST read the calls' `call_intent` / `call_expected` first, and MAY fall back to a note's `intent` / `expected_outcome` for producers that send no call fields. Library events carry no note, so a consumer that reads only notes shows nothing for them.
+
+A library producer SHOULD expose the injected params' names and descriptions (§5.1.2) as data, so a vendor can add them to its own API with the same wording an agent sees on an MCP server.
+
+**Agent reports** (`client.annotate(...)`, `trace.annotate(...)`) are unchanged: the vendor's code relays what its caller wrote.
+
+**Out of scope on this path:** `surface_snapshot` and the tool list events, because a library has no tool surface it can list. `runtime_meta` and `trace_context` stay optional and vendor-supplied.
+
+**`agent_runtime` is `"unknown"`.** The library cannot see the client any more than the middleware can name it, so it sends what the vendor passes as `client_observed` and leaves the name to the consumer (§11.4). `sdk_version` already names the producer.
+
 ---
 
 ## 6. Signal detection rules
@@ -763,7 +794,7 @@ A conforming SDK MUST:
 2. **PII-scrub at event-emit time.** Raw PII MUST NOT cross the network to the Console. Scrubbing rules per §7 cover captured data — params, results, error bodies, annotation text. **Members the vendor's own code supplies are the vendor's choice as data controller (§7)**: `principal` (§11.4), whose `"raw"` `id` and `display_name` are personal data by design and say so on the wire.
 3. **Buffer events locally with bounded size.** Default bound: 1000 events. On overflow: drop oldest, emit `UserWarning(events_dropped)`. The buffer is in-process per SDK instance; it MUST NOT block the vendor's hot path on remote service availability.
 4. **POST events to Console ingest endpoint** (`POST /v0/events`) asynchronously with retry-and-backoff. Default timeout: 1s per request. Circuit-break after N consecutive failures.
-5. **Assign sequence numbers per session.** Monotonic per `session_id`. Worker uses (`session_id`, `sequence_number`) for reliable event ordering, not just timestamps.
+5. **Assign sequence numbers per session.** Increasing per `session_id` within one process; §5.6 covers a session that spans processes. Worker orders a session's events by `sequence_number`, then `event_id`, not by timestamps alone. **The number is not the event's identity; `event_id` is.** A library producer numbers by the clock (§5.6), so two events of one session can share a number. A consumer MUST NOT reject or fail an event for a repeated (`session_id`, `sequence_number`), and recognises a retried event by its `event_id`.
 6. **Withhold result-derived data on request, and say so on the wire.** When configured to withhold results (§11.4 `result_capture`), a conforming SDK MUST emit nothing **derived from the tool's result** — `result`, and an `error_body` unwrapped from the result — MUST set `result_capture` on every affected event, and MUST still classify and emit `error_type`, `tool_name` and `duration_ms`. The rule is keyed on PROVENANCE, not on a field name: `error_body` is fed from several sources and only the result-derived one is withheld (§11.4.3). A producer MUST NOT infer the withheld state from an absent value, and a consumer MUST NOT either. ⚠ **A producer that also emits ANY of the four resource/prompt `*_error` legs carries two further obligations, neither of them about wire output: its own vendor-facing docs MUST say that those legs' messages survive the mode, and it MUST emit a `UserWarning` naming them when the mode is configured (§11.4.4).**
 7. **MAY do cheap stateless classification.** E.g., set `signal_type=failure` on a tool-call-error event when the exception class matches a known failure pattern. State-dependent classification (retry_loop) MUST NOT happen in the SDK.
 
@@ -931,7 +962,8 @@ Four rules, each of them a mistake this project has already made or nearly made:
 | `"http"` | an HTTP request object was reachable from the call's context | the call arrived over an HTTP transport. One process MAY be serving many callers |
 | `"no-http-request"` | a live MCP request with no HTTP request behind it | stdio or an in-memory transport. One process is one caller |
 | `"read-failed"` | the producer's own read of the transport raised | **nothing about the transport.** Its own value so a consumer can COUNT how often the read fails, rather than a producer defect arriving disguised as a fact |
-| absent / `null` | the producer did not look | no MCP transport exists — the library API — or a producer predating this field |
+| `"library"` | the producer is the library API (§5.6): the vendor's code called it, not an MCP request | no transport could be observed. The vendor's code MAY be serving many callers |
+| absent / `null` | the producer did not look | a producer predating this field, or an event no call caused, such as a `surface_snapshot` |
 
 **Why the values name the observation.** "stdio" is not what is measured. The absence of an HTTP request covers real stdio AND the in-memory transport, and further transports exist which do not split into one-caller and many-caller. Naming the value after what was seen keeps the inference — and the right to revise it — with the consumer.
 
@@ -1025,12 +1057,12 @@ Event types and their payload shapes:
 
 > **An annotation is a REPORT when `payload.what_happened` is filled** (non-null and not only whitespace) **OR `payload.signal_type` is non-null. Otherwise it is a NOTE.**
 
-- **Note** (proactive annotation). Emitted at the *start* of a logical operation (e.g., automatically from `client.trace(intent=..., expected_outcome=..., workflow=...)`'s constructor kwargs, or synthesised from the injected params) to capture what the agent is about to attempt. Carries `intent` / `expected_outcome` / `workflow`.
+- **Note** (proactive annotation). Written by the agent through the annotation tool at the *start* of a logical operation, to say what it is about to attempt. Carries `intent` / `expected_outcome` / `workflow`. **A producer MUST NOT build a note from a call's own intent**: that intent rides the call as `call_intent` / `call_expected` / `call_workflow` (§5.6), and a copy adds nothing. Producers before this rule sent one such copy per session, marked `intent_source: "injected_param"`; §11.5.1 rule 3 still places those.
 - **Report** (reactive annotation). Emitted *after* a tool call's outcome is known, or when no tool fits, to flag friction. Carries `what_happened` / `tool_name` / `suggested_improvement` / `context` (and may also carry `intent` / `expected_outcome` / `workflow` for self-describing context). This is the "ticket" the Console egresses.
 
 The second half of the test exists for producers older than `baton-sdk` 0.8.15, whose reports carry `signal_type` and no `what_happened`, and for every such report already stored. `signal_type` on an annotation is DEPRECATED: a producer from 0.8.15 never sends it, and it leaves the schema once no older producer is live (§13).
 
-`tool_name` on an annotation names the tool the annotation is about: on a note synthesised from injected params, the tool whose call carried them; on a report, the tool the agent named, or the word `none` when no tool exists (§5.1.1). It is not evidence of who wrote the annotation; `intent_source` is.
+`tool_name` on an annotation names the tool the annotation is about: on a note an older producer built from injected params, the tool whose call carried them; on a report, the tool the agent named, or the word `none` when no tool exists (§5.1.1). It is not evidence of who wrote the annotation; `intent_source` is.
 
 The wire format is intentionally unified — both flavors share the same envelope so order-preserving stream processors handle them identically — but the semantic split is load-bearing for Console-side correlation (§11.5) and egress routing.
 
@@ -1465,7 +1497,7 @@ The worker derives turn boundaries using this hierarchy (most-authoritative firs
 
    A label counts as numbered only when an integer of at most six digits is followed by a separator (`:`, `.`, `)` or a dash) and then a space or the end of the label, so `2024 tax prep`, `3-day forecast` and `10:30 standup` are plain labels. Known error: an agent sometimes repeats one number on two messages in a row, which merges them into one turn.
 
-3. **Proactive-annotation boundaries** (§5.1.2). When neither rule above applies, each note (§11.4: an annotation that is not a report) with `intent` populated marks the start of a new turn. A report never opens a turn. The turn extends until the next proactive annotation or end-of-session, whichever comes first. **A note the producer built from a call's own injected intent never opens a turn either** (payload `intent_source` exactly `"injected_param"`, sent once per session just before that call). It belongs to the turn its call lands in: when that call opens a new turn, the note moves into it with the call, so its intent stays with its call. On a normal session the note sits at the session's start, where a turn begins anyway, so this changes nothing there. On a stateless server every call is a session and carries one, and once sessions are joined (below) each would otherwise cut a turn between calls the turn number keeps together. A note an agent wrote still opens a turn.
+3. **Proactive-annotation boundaries** (§5.1.2). When neither rule above applies, each note (§11.4: an annotation that is not a report) with `intent` populated marks the start of a new turn. A report never opens a turn. The turn extends until the next proactive annotation or end-of-session, whichever comes first. **A note the producer built from a call's own injected intent never opens a turn either** (payload `intent_source` exactly `"injected_param"`, sent once per session just before that call). Current producers send no such note (§11.4); this clause places the ones older producers sent. It belongs to the turn its call lands in: when that call opens a new turn, the note moves into it with the call, so its intent stays with its call. On a normal session the note sits at the session's start, where a turn begins anyway, so this changes nothing there. On a stateless server every call is a session and carries one, and once sessions are joined (below) each would otherwise cut a turn between calls the turn number keeps together. A note an agent wrote still opens a turn.
 
 4. **Time-gap heuristic.** When none of the above applies, a contiguous run of events with `captured_at` deltas under N seconds (default N=120) is one turn; a gap ≥ N seconds breaks into a new turn. Workers SHOULD make N configurable per tenant and document it. This rule is brittle (long-running tools, human-in-loop pauses) and is the last resort.
 
@@ -1481,7 +1513,7 @@ Turns are assembled at correlation time, not at emit time — the SDK does not i
 
 **Joining stateless sessions.** A stateless HTTP server has no session to read (SEP-2567 removed `Mcp-Session-Id`), so its producer's `session_id` covers one request, or one process holding every caller, never one conversation. On a server built per request, each tool call is its own session and every turn is one call. To recover turns, a worker MAY join sessions into one group and run the turn rules above over the group as if it were one session. A worker that joins MUST join only when ALL of these hold:
 
-1. **Each session is stateless HTTP.** It has at least one event with `transport_observed` exactly `"http"`, no event with any other non-null `transport_observed`, and every event carrying `"http"` has `session_id_origin` exactly `"minted"` (or is treated as minted under §11.4's clause for older producers). Events with `transport_observed` absent or null, such as a `surface_snapshot`, neither qualify a session nor disqualify it.
+1. **Each session is stateless HTTP, or a library session with no vendor session id.** It has at least one event with `transport_observed` exactly `"http"`, or at least one exactly `"library"`, and no event with any other non-null `transport_observed`. Every event carrying that value has `session_id_origin` exactly `"minted"` (or, for `"http"`, is treated as minted under §11.4's clause for older producers). A library producer mints one session per `client.session` block, or per call outside one (§5.6), so its sessions split a conversation the same way. Both sessions of a join carry the same value. Events with `transport_observed` absent or null, such as a `surface_snapshot`, neither qualify a session nor disqualify it.
 2. **Each session carries exactly one principal id (§11.4), and it is the same on both.** Events with no principal do not count against this, but a session with no principal at all is never joined, and neither is a session with two. Both `"attested"` and `"asserted"` principals qualify: a vendor's statement about its own users is what the field is for.
 3. **The client is the same on both, and so is the conversation.** Where both sessions state a client (`client_observed`, or `agent_runtime` when not `"unknown"`) and the two differ, they are not joined. Likewise where both state a runtime conversation identifier (rule 1 above) and the two differ: one turn never spans two conversations, so a group must not either. The same identifier on both is never a reason to join: it only keeps apart, as the grouping rule above requires.
 4. **Both sessions have the same `tenant_id` and `vendor_id`.**
@@ -1605,6 +1637,26 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **Pending (library API + all producers, 2026-10-16) — the library path fills the envelope the middleware fills (§5.6), and no producer copies a call's intent into a note.**
+
+  **CHANGED: where library intent lands.** `trace(intent=, expected_outcome=, workflow=)` puts the values on `tool_call_start` as `call_intent` / `call_expected` / `call_workflow`, with the new `intent_source` value `"library_arg"`. The separate note it sent before is no longer sent. **Consumer consequence:** a consumer that read library intent from notes finds nothing there and MUST read it from the call (§5.6). **Ordering: the consumer lands first.** A consumer that reads intent only from notes must read calls first before any producer ships this.
+
+  **ADDED: `intent_source` value `"library_arg"`** on `tool_call_start`, for intent the vendor's code passed to `trace()`. The schema already types the field as a free string.
+
+  **ADDED: library inputs** for `principal`, `client_observed` and `session_id_origin`, each landing in its existing field under its existing rules. No new envelope field. A library producer never sends `failure_kind`.
+
+  **CHANGED: no producer copies a call's intent into a note.** The MCP adapters in both SDKs and `baton-proxy` stop sending the one note per session built from the first call's injected params (`intent_source: "injected_param"`). It duplicated that call's `call_intent` / `call_expected` / `call_workflow`. **Consumer consequence:** the same as for the library above, and the same ordering: the consumer reads the call first, then producers drop the note. §11.5.1 rule 3 keeps its clause for notes already stored and for older producers.
+
+  **ADDED: `client.session(...)`**, a block that gives every call inside it one session, principal and client. A library producer without one mints a session per call, as before.
+
+  **ADDED: `transport_observed: "library"`.** Before, the library sent no value, which a consumer could not tell from a producer predating the field. A new registered value; consumers already must not reject one.
+
+  **CHANGED: §11.5.1's join accepts library sessions** minted by the producer, under the same conditions as stateless HTTP.
+
+  **CHANGED: §11.2 rule 5.** `sequence_number` orders events; `event_id` identifies them. A library numbers by the clock, so two events of one session can share a number. **Ordering: the consumer lands first.** A consumer that rejects a repeated (`session_id`, `sequence_number`) must stop before any library producer ships this.
+
+  **DECIDED: `agent_runtime` on the library is `"unknown"`**, as on the middleware path. The reference library sent `"python-library"`.
 
 - **0.8.16 and ts 0.5.5 (2026-10-13) — a worker MAY join stateless sessions by principal (§11.5.1), and the envelope gains `session_id_origin` (§11.4).**
 
