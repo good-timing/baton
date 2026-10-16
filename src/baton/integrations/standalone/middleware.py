@@ -29,11 +29,9 @@ from mcp.types import CallToolRequestParams, ListToolsRequest
 from pydantic_core import to_jsonable_python
 
 from baton._result_capture import ResultCaptureMode, end_result_fields
-from baton._state import ProactiveTracker, SessionCounter
+from baton._state import SessionCounter
 from baton._uuid import uuid7
 from baton.events import (
-    AnnotationEvent,
-    AnnotationPayload,
     SurfaceSnapshotEvent,
     SurfaceSnapshotPayload,
     ToolCallEndEvent,
@@ -96,7 +94,6 @@ class BatonMiddleware(Middleware):
         annotation_requires_tool_name: bool = False,
         intent_param_mode: str = "required",
         result_capture_mode: ResultCaptureMode = "full",
-        proactive_tracker: ProactiveTracker | None = None,
         server_meta: dict[str, Any] | None = None,
         resolve_principal_hook: ResolvePrincipalHook | None = None,
         on_native_overall_task: Callable[[str], None] | None = None,
@@ -112,7 +109,6 @@ class BatonMiddleware(Middleware):
         self._annotation_requires_tool_name = annotation_requires_tool_name
         self._intent_param_mode = intent_param_mode
         self._result_capture_mode = result_capture_mode
-        self._proactive = proactive_tracker or ProactiveTracker()
         self._server_meta = server_meta or {}
         self._on_native_overall_task = on_native_overall_task
         self._resolve_principal_hook = resolve_principal_hook
@@ -493,39 +489,6 @@ class BatonMiddleware(Middleware):
             fallback=self._fallback_session_id,
             context=context.fastmcp_context,
         )
-
-        # The session's FIRST injected-param intent also becomes a proactive
-        # annotation, sequenced BEFORE the tool_call_start it explains (so
-        # "proactive before the call it covers" holds downstream). ``claim``
-        # dedups per session and is suppressed if a real annotation-tool
-        # proactive already fired. Later param intents ride only the start
-        # events — a per-call proactive would open one console turn per call.
-        if scrubbed_intent is not None and self._proactive.claim(call_session.id):
-            seq_ann = await self._next_seq(call_session.id)
-            await safe_emit(
-                self._sink,
-                lambda: AnnotationEvent(
-                    tenant_id=self._tenant_id,
-                    vendor_id=self._vendor_id,
-                    consent_token=self._consent_token,
-                    session_id=call_session.id,
-                    sequence_number=seq_ann,
-                    captured_at=datetime.now(UTC),
-                    client_observed=client,
-                    principal=call_principal,
-                    transport_observed=call_transport,
-                    session_id_origin=call_session.origin,
-                    runtime_meta=scrubbed_meta,
-                    payload=AnnotationPayload(
-                        intent=scrubbed_intent,
-                        expected_outcome=scrubbed_expected,
-                        workflow=scrubbed_task,
-                        intent_source=INTENT_SOURCE_PARAM,
-                        tool_name=tool_name,
-                    ),
-                ),
-                logger,
-            )
 
         # The per-call join key (SPEC §11.4). A LOCAL, minted here in the
         # scope that emits all three legs below, which is what makes it

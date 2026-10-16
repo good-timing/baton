@@ -932,7 +932,7 @@ class TestIntentInjectionInstalled:
         self, configured_mcp: tuple[FastMCP, Any], captured: list[dict[str, Any]]
     ) -> None:
         """install_baton wires injection on by default; a call carrying
-        user_goal captures call_intent and synthesises a proactive."""
+        user_goal captures call_intent and sends no note."""
         mcp, handle = configured_mcp
 
         @mcp.tool()
@@ -964,16 +964,14 @@ class TestIntentInjectionInstalled:
 
         start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
         assert start["payload"]["call_intent"] == "the why"
-        anns = [ev for ev in captured if ev["event_type"] == "annotation"]
-        assert len(anns) == 1
-        assert anns[0]["payload"]["intent_source"] == "injected_param"
+        assert start["payload"]["intent_source"] == "injected_param"
+        assert not any(ev["event_type"] == "annotation" for ev in captured)
 
-    async def test_real_proactive_suppresses_synthesised_one(
+    async def test_an_agent_written_note_is_the_only_note(
         self, configured_mcp: tuple[FastMCP, Any], captured: list[dict[str, Any]]
     ) -> None:
-        """When the agent calls the annotation tool proactively first, the
-        middleware must NOT also synthesise a proactive from the injected param
-        (shared ProactiveTracker) — but the tool call still rides its intent."""
+        """The agent's own note is sent; the call's injected intent rides
+        only the call."""
         mcp, handle = configured_mcp
 
         @mcp.tool()
@@ -991,10 +989,8 @@ class TestIntentInjectionInstalled:
         await handle.flush()
 
         anns = [ev for ev in captured if ev["event_type"] == "annotation"]
-        assert len(anns) == 1, "the real proactive suppresses the synthesised one"
+        assert len(anns) == 1
         assert anns[0]["payload"]["intent"] == "real proactive intent"
-        assert anns[0]["payload"].get("intent_source") is None  # real, not injected
-        # the param intent is not lost — it still rides tool_call_start
         start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
         assert start["payload"]["call_intent"] == "param intent"
 

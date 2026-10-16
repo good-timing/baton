@@ -33,11 +33,10 @@ python examples/fastmcp_server/demo.py
 The demo drives the wrapped server with two tool calls and prints the captured
 events to stderr. You'll see:
 
-- an `annotation` event with `intent_source: "injected_param"` — the *why*,
-  harvested from the injected param;
-- `tool_call_start` / `tool_call_end` events — the *what*, with `call_intent` on
-  the start event and `params` holding exactly the arguments your tool received
-  (`user_goal`/`expected_result` stripped out).
+- `tool_call_start` / `tool_call_end` events. The start event carries the *why*
+  as `call_intent` / `call_expected` (`intent_source: "injected_param"`),
+  harvested from the injected params, and `params` holding exactly the
+  arguments your tool received (`user_goal`/`expected_result` stripped out).
 
 ## The integration, in full
 

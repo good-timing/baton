@@ -17,7 +17,7 @@ from tests._mcp_session import connected_session
 
 from ._fake_context import _FakeContextV1, _FakeContextV2
 
-_PER_CALL_TYPES = {"annotation", "tool_call_start", "tool_call_end", "tool_call_error"}
+_PER_CALL_TYPES = {"tool_call_start", "tool_call_end", "tool_call_error"}
 
 
 def _server(events_path: Path) -> tuple[Any, Any]:

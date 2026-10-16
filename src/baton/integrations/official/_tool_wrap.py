@@ -56,10 +56,7 @@ advertises as ``inputSchema``. The vendor-neutral ``user_goal``/``expected_resul
 params (white-label rule — see ``integrations._llm_text``) are stripped back out
 in the wrapper before the vendor handler validates its arguments, so the tool
 never sees them. This is the capture path that survives runtimes which drop
-``instructions`` (notably Claude Desktop). The session's first injected
-``user_goal`` also synthesises one proactive annotation (carrying
-``expected_result`` too, if present), coordinated with the annotation tool via
-a shared ``ProactiveTracker`` so a session opens at most one proactive.
+``instructions`` (notably Claude Desktop).
 """
 
 from __future__ import annotations
@@ -73,11 +70,9 @@ from time import monotonic
 from typing import Any
 
 from baton._result_capture import ResultCaptureMode, end_result_fields
-from baton._state import ProactiveTracker, SessionCounter
+from baton._state import SessionCounter
 from baton._uuid import uuid7
 from baton.events import (
-    AnnotationEvent,
-    AnnotationPayload,
     ClientObserved,
     PrincipalWire,
     SurfaceSnapshotEvent,
@@ -189,19 +184,17 @@ def install_wraps(
     annotation_tool_name: str | None = None,
     intent_param_mode: str = "required",
     result_capture_mode: ResultCaptureMode = "full",
-    proactive_tracker: ProactiveTracker | None = None,
     server_meta: dict[str, Any] | None = None,
     resolve_principal_hook: ResolvePrincipalHook | None = None,
 ) -> None:
     """Inject + wrap all currently-registered tools AND future registrations."""
-    tracker = proactive_tracker or ProactiveTracker()
     # tool_name -> {param_name: "injected" | "native"}. Populated as tools are
     # injected; read in the wrapper to decide strip-vs-forward, per param,
     # independently. A plain dict (no lock) is safe: all access is on the one
     # asyncio loop, so no statement interleaves.
     param_registry: dict[str, dict[str, str]] = {}
     surface_state = _SurfaceState(server_meta or {})
-    emit_before, emit_after, emit_error, emit_proactive, emit_surface = _make_emitters(
+    emit_before, emit_after, emit_error, emit_surface = _make_emitters(
         tenant_id=tenant_id,
         vendor_id=vendor_id,
         consent_token=consent_token,
@@ -260,12 +253,10 @@ def install_wraps(
                 emit_before,
                 emit_after,
                 emit_error,
-                emit_proactive,
                 scrubber,
                 intent_param_mode=intent_param_mode,
                 result_capture_mode=result_capture_mode,
                 param_registry=param_registry,
-                tracker=tracker,
                 fallback_session_id=fallback_session_id,
                 tenant_id=tenant_id,
                 resolve_principal_hook=resolve_principal_hook,
@@ -506,21 +497,6 @@ _EmitError = Callable[
     Awaitable[None],
 ]
 
-_EmitProactive = Callable[
-    [
-        ResolvedSession,  # session
-        str,  # tool name
-        str,  # intent
-        str | None,  # expected_outcome
-        str | None,  # workflow
-        dict[str, Any] | None,  # runtime_meta
-        ClientObserved | None,  # client_observed
-        PrincipalWire | None,  # principal
-        str | None,  # transport_observed
-    ],
-    Awaitable[None],
-]
-
 _EmitSurface = Callable[[str, str, dict[str, Any]], Awaitable[None]]
 
 
@@ -530,13 +506,11 @@ def _wrap_tool_run(
     emit_before: _EmitBefore,
     emit_after: _EmitAfter,
     emit_error: _EmitError,
-    emit_proactive: _EmitProactive,
     scrubber: Callable[[Any], Any],
     *,
     intent_param_mode: str,
     result_capture_mode: ResultCaptureMode,
     param_registry: dict[str, dict[str, str]],
-    tracker: ProactiveTracker,
     fallback_session_id: str,
     tenant_id: str,
     resolve_principal_hook: ResolvePrincipalHook | None,
@@ -669,24 +643,6 @@ def _wrap_tool_run(
         call_session = await _resolve_call_session(
             headers=call_headers, fallback=fallback_session_id
         )
-
-        # The session's FIRST injected intent also becomes a proactive
-        # annotation (carrying expected_result too, if present), sequenced
-        # BEFORE the tool_call_start it explains. ``claim`` dedups per session
-        # and is suppressed when a real annotation-tool proactive already
-        # fired. Later param intents ride only the start event.
-        if scrubbed_intent is not None and tracker.claim(call_session.id):
-            await emit_proactive(
-                call_session,
-                name,
-                scrubbed_intent,
-                scrubbed_expected,
-                scrubbed_task,
-                scrubbed_meta,
-                call_client,
-                call_principal,
-                call_transport,
-            )
 
         # The per-call join key (SPEC §11.4). A LOCAL of this wrapper call,
         # which is the scope that emits both legs, so it is per-call by
@@ -1025,11 +981,10 @@ def _make_emitters(
     _EmitBefore,
     _EmitAfter,
     _EmitError,
-    _EmitProactive,
     _EmitSurface,
 ]:
-    """Build five async emitters: ``tool_call_start`` / ``_end`` / ``_error``,
-    the synthesised-proactive ``annotation``, and ``surface_snapshot``.
+    """Build four async emitters: ``tool_call_start`` / ``_end`` / ``_error``
+    and ``surface_snapshot``.
 
     Each takes the per-call session resolved by
     ``_resolve_call_session`` as its first argument — real on stateful
@@ -1040,46 +995,6 @@ def _make_emitters(
 
     async def _seq(session_id: str) -> int:
         return await counter.next(session_id)
-
-    async def emit_proactive(
-        session: ResolvedSession,
-        name: str,
-        intent: str,
-        expected_outcome: str | None,
-        workflow: str | None,
-        runtime_meta: dict[str, Any] | None,
-        client_observed: ClientObserved | None,
-        principal: PrincipalWire | None,
-        transport_observed: str | None,
-    ) -> None:
-        # ⚠ Hoisted out of the build thunk: a lambda cannot `await`.
-        # A build that then fails burns this number, which is already
-        # possible whenever `sink.write` fails, so the gap is not new.
-        _seq_n = await _seq(session.id)
-        await safe_emit(
-            sink,
-            lambda: AnnotationEvent(
-                tenant_id=tenant_id,
-                vendor_id=vendor_id,
-                consent_token=consent_token,
-                session_id=session.id,
-                session_id_origin=session.origin,
-                sequence_number=_seq_n,
-                captured_at=datetime.now(UTC),
-                client_observed=client_observed,
-                principal=principal,
-                transport_observed=transport_observed,
-                runtime_meta=runtime_meta,
-                payload=AnnotationPayload(
-                    intent=intent,
-                    expected_outcome=expected_outcome,
-                    workflow=workflow,
-                    intent_source=INTENT_SOURCE_PARAM,
-                    tool_name=name,
-                ),
-            ),
-            logger,
-        )
 
     async def emit_before(
         session: ResolvedSession,
@@ -1278,7 +1193,7 @@ def _make_emitters(
             )
         )
 
-    return emit_before, emit_after, emit_error, emit_proactive, emit_surface
+    return emit_before, emit_after, emit_error, emit_surface
 
 
 def _result_to_jsonable(result: Any) -> Any:

@@ -152,14 +152,11 @@ class TestOneLogicalCallEmitsOnePair:
 
 @requires_mrtr
 class TestContinuationDoesNotReplayPerCallWork:
-    async def test_injected_intent_yields_one_proactive_annotation(
+    async def test_injected_intent_is_reported_once(
         self, sink: Sink, captured: list[dict[str, Any]]
     ) -> None:
         """A continuation RESENDS the original arguments, injected params and
-        all. The proactive annotation dedups per session rather than per round,
-        so this holds by construction — pinned because "by construction" is
-        what the suppressed start would otherwise have been asserting for it.
-        """
+        all; the intent rides the one start event and nothing else."""
         mcp = _build_mcp(sink)
         _add_guarded_tool(mcp)
 
@@ -168,7 +165,11 @@ class TestContinuationDoesNotReplayPerCallWork:
 
         await sink.flush()
         types = [ev["event_type"] for ev in captured]
-        assert types.count("annotation") == 1, f"one call, one proactive — got {types}"
+        assert "annotation" not in types, f"no note for a call's own intent — got {types}"
+        intents = [
+            ev["payload"]["call_intent"] for ev in captured if ev["event_type"] == "tool_call_start"
+        ]
+        assert intents == ["check the intent path"]
 
 
 @requires_mrtr

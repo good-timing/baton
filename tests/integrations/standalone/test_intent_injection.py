@@ -2,10 +2,8 @@
 
 Mirrors baton-extmcp's vendor-neutral intent-injection matrix, adapted to the
 in-process FastMCP Client harness: inject ``user_goal``/``expected_result`` on
-``tools/list``, strip both on ``tools/call``, ride ``user_goal`` on
-``tool_call_start.payload.call_intent``, and synthesise one proactive
-annotation (carrying ``expected_result`` too, if present) from the session's
-first injected intent.
+``tools/list``, strip both on ``tools/call``, and ride them on
+``tool_call_start`` as ``call_intent`` / ``call_expected``, never in a note.
 """
 
 from __future__ import annotations
@@ -287,64 +285,14 @@ class TestCallStripAndCapture:
 
 
 # =============================================================================
-# proactive synthesis + dedup
+# no copied note: a call's intent rides only the call (SPEC §11.4)
 # =============================================================================
 
 
-class TestProactiveSynthesis:
-    async def test_first_intent_emits_proactive_before_start(
+class TestNoCopiedNote:
+    async def test_injected_intent_rides_the_start_and_sends_no_note(
         self, sink: Sink, captured: list[dict[str, Any]]
     ) -> None:
-        mcp = _build_mcp(sink)
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            await client.call_tool(
-                "echo", {"text": "x", USER_GOAL_PARAM_NAME: "why the user called"}
-            )
-
-        await sink.flush()
-        tool_events = without_surface_snapshots(captured)
-        types = [ev["event_type"] for ev in tool_events]
-        assert types[0] == "annotation", "proactive must be sequenced first"
-        ann = tool_events[0]
-        assert ann["payload"]["intent"] == "why the user called"
-        assert ann["payload"]["intent_source"] == INTENT_SOURCE_PARAM
-        assert ann["payload"]["tool_name"] == "echo"
-        # sequence: annotation < start
-        start = next(ev for ev in tool_events if ev["event_type"] == "tool_call_start")
-        assert ann["sequence_number"] < start["sequence_number"]
-
-    async def test_only_one_proactive_per_session(
-        self, sink: Sink, captured: list[dict[str, Any]]
-    ) -> None:
-        mcp = _build_mcp(sink)
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            await client.call_tool("echo", {"text": "1", USER_GOAL_PARAM_NAME: "first why"})
-            await client.call_tool("echo", {"text": "2", USER_GOAL_PARAM_NAME: "second why"})
-
-        await sink.flush()
-        annotations = [ev for ev in captured if ev["event_type"] == "annotation"]
-        assert len(annotations) == 1, "only the session's first intent synthesises a proactive"
-        # but the second call still rides its intent on the start event
-        starts = [ev for ev in captured if ev["event_type"] == "tool_call_start"]
-        assert starts[1]["payload"]["call_intent"] == "second why"
-
-    async def test_expected_result_rides_proactive_and_every_start(
-        self, sink: Sink, captured: list[dict[str, Any]]
-    ) -> None:
-        """``expected_result`` feeds the proactive annotation's
-        ``expected_outcome`` AND rides every ``tool_call_start`` as
-        ``call_expected`` (2026-08-10 — previously dropped after the session's
-        first call). Never reaches the vendor handler."""
         mcp = _build_mcp(sink)
 
         @mcp.tool()
@@ -358,20 +306,23 @@ class TestProactiveSynthesis:
                     "text": "x",
                     USER_GOAL_PARAM_NAME: "why the user called",
                     EXPECTED_RESULT_PARAM_NAME: "a successful echo",
+                    OVERALL_TASK_PARAM_NAME: "1: echo things",
                 },
             )
-            await client.call_tool(
-                "echo", {"text": "y", EXPECTED_RESULT_PARAM_NAME: "a second success"}
-            )
+            await client.call_tool("echo", {"text": "y", USER_GOAL_PARAM_NAME: "second why"})
 
         await sink.flush()
-        ann = next(ev for ev in captured if ev["event_type"] == "annotation")
-        assert ann["payload"]["expected_outcome"] == "a successful echo"
-        starts = [ev for ev in captured if ev["event_type"] == "tool_call_start"]
+        tool_events = without_surface_snapshots(captured)
+        assert not any(ev["event_type"] == "annotation" for ev in tool_events)
+        starts = [ev for ev in tool_events if ev["event_type"] == "tool_call_start"]
+        assert starts[0]["payload"]["call_intent"] == "why the user called"
         assert starts[0]["payload"]["call_expected"] == "a successful echo"
-        assert starts[1]["payload"]["call_expected"] == "a second success"
+        assert starts[0]["payload"]["call_workflow"] == "1: echo things"
+        assert starts[0]["payload"]["intent_source"] == INTENT_SOURCE_PARAM
+        assert starts[1]["payload"]["call_intent"] == "second why"
         for start in starts:
-            assert "expected_result" not in start["payload"]["params"]
+            assert USER_GOAL_PARAM_NAME not in start["payload"]["params"]
+            assert EXPECTED_RESULT_PARAM_NAME not in start["payload"]["params"]
 
 
 # =============================================================================
@@ -415,29 +366,6 @@ class TestOverallTaskParam:
         start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
         assert start["payload"]["call_workflow"] == "file q3 notes"
         assert start["payload"]["params"] == {"text": "hello"}
-
-    async def test_overall_task_rides_synthesised_proactive_workflow(
-        self, sink: Sink, captured: list[dict[str, Any]]
-    ) -> None:
-        mcp = _build_mcp(sink)
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            await client.call_tool(
-                "echo",
-                {
-                    "text": "x",
-                    USER_GOAL_PARAM_NAME: "find the q3 notes page",
-                    OVERALL_TASK_PARAM_NAME: "file q3 notes",
-                },
-            )
-
-        await sink.flush()
-        ann = next(ev for ev in captured if ev["event_type"] == "annotation")
-        assert ann["payload"]["workflow"] == "file q3 notes"
 
 
 # =============================================================================

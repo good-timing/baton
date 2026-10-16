@@ -5,14 +5,12 @@ captured event prints as JSONL to stderr.
 
     python examples/fastmcp_server/demo.py
 
-Watch for two things in the output:
-  1. `annotation` (intent_source=injected_param) — the *why* (and *what success
-     looks like*), captured from the `user_goal`/`expected_result` params even
-     though this client never read server instructions. That's the Claude
-     Desktop case: instructions are ignored, intent still lands.
-  2. `tool_call_start` / `tool_call_end` — the *what*, with `call_intent` riding
-     the start event and `params` holding exactly the vendor-visible arguments
-     (no `user_goal`/`expected_result` — both were stripped before the tool ran).
+Watch `tool_call_start`: it carries the *why* (and *what success looks like*)
+as `call_intent` / `call_expected` (intent_source=injected_param), captured
+from the `user_goal`/`expected_result` params even though this client never
+read server instructions. That's the Claude Desktop case: instructions are
+ignored, intent still lands. `params` holds exactly the vendor-visible
+arguments: both injected params were stripped before the tool ran.
 """
 
 from __future__ import annotations

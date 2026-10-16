@@ -48,7 +48,7 @@ import logging
 from typing import Any
 
 from baton._optout import capture_disabled
-from baton._state import ProactiveTracker, SessionCounter
+from baton._state import SessionCounter
 from baton._uuid import uuid7
 from baton.integrations._annotation_name import resolve_annotation_names
 from baton.integrations._config import (
@@ -141,10 +141,6 @@ def install_baton(
     tenant_id = _resolve_tenant_id(config.tenant_id, config.vendor_id)
     fallback_session_id = f"sdk-{uuid7()}"
     counter = SessionCounter()
-    # Shared across the wrap layer (synthesises a proactive from the first
-    # injected intent) and the annotation tool (emits one when called
-    # proactively) so a session opens at most one proactive.
-    proactive_tracker = ProactiveTracker()
     sink = resolve_sink(config)
 
     # Both LLM-facing names, the display name first so the tool name's budget
@@ -192,7 +188,6 @@ def install_baton(
         annotation_tool_name=annotation_tool_name,
         intent_param_mode=config.intent_param_mode,
         result_capture_mode=config.result_capture_mode,
-        proactive_tracker=proactive_tracker,
         resolve_principal_hook=config.resolve_principal,
         server_meta=server_meta,
     )
@@ -243,7 +238,6 @@ def install_baton(
         proactive_mode=config.proactive_mode,
         resolve_principal_hook=config.resolve_principal,
         scrubber=scrubber,
-        proactive_tracker=proactive_tracker,
     )
 
     return BatonHandle(

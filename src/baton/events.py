@@ -221,11 +221,6 @@ class AnnotationPayload(BaseModel):
     workflow: str | None = None
     suggested_improvement: str | None = None
     context: dict[str, Any] | None = None
-    intent_source: str | None = None
-    """Provenance for synthesised proactives — ``"injected_param"`` when this
-    annotation was generated from a stripped ``user_goal``/``expected_result``
-    param rather than a real annotation-tool call. Null for agent-authored
-    annotations. Mirrors the proxy's ``enqueue_annotation`` output."""
     tool_name: str | None = None
     """The tool the annotation is about. On a report, ``"none"`` (or ``""``) is
     the agent saying no tool exists and ``None`` is nothing stated; the value

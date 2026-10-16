@@ -12,7 +12,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 Install this only against a collector that reads a call's intent from the call
 (SPEC §5.6). A collector that reads intent only from notes shows none for
-library calls.
+library calls, and none for MCP sessions whose agent writes no note.
 
 ### Added
 
@@ -34,6 +34,11 @@ library calls.
 - **Every library event says what it is**: `transport_observed: "library"`
   and `session_id_origin`. `agent_runtime` is `"unknown"`; it was
   `"python-library"`.
+- **The MCP adapters no longer copy a call's intent into a note.** They sent
+  one note per session built from the first call's injected params
+  (`intent_source: "injected_param"`); that intent already rides every
+  `tool_call_start`. A note the agent writes through the annotation tool is
+  unchanged.
 - **Sequence numbers come from the clock** (microseconds, one counter for the
   whole process, strictly increasing), so events of one session sent from
   several workers stay in order as far as their clocks agree. Two workers can
@@ -47,6 +52,9 @@ library calls.
 - **`Client(agent_runtime=...)` and `AsyncClient(agent_runtime=...)`.**
   Library events send `"unknown"`, as the MCP adapters do; the consumer names
   the client from `client_observed`.
+- **`intent_source` on annotations.** Only the copied note set it. The field
+  stays on `tool_call_start`.
+
 ## 0.8.17: a URL no longer makes a stateless server look like SSE
 
 ### Fixed

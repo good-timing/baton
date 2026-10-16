@@ -412,17 +412,15 @@ class VendorConfig:
     Off by default because the injected params supersede it: ``user_goal``,
     ``expected_result`` and ``overall_task`` ride every ``tool_call_start`` as
     ``call_intent``/``call_expected``/``call_workflow``, so a pre-call
-    annotation carries no field the call event doesn't — while costing a full
-    extra inference turn per tool call (measured 2x: 4 annotation calls serving
-    4 tool calls). It also captures worse: the annotation path was measured at
-    R=0.135 coverage vs the params' 1.000, and supplies conversation-scoped
-    umbrella task labels where the param supplies per-task ones.
+    annotation carries no field the call event doesn't — while costing an
+    extra inference turn per tool call. It also captures intent less reliably
+    than the params, and supplies conversation-scoped umbrella task labels
+    where the param supplies per-task ones.
 
-    **This never disables reactive annotation.** The tool stays on the surface,
-    the friction clauses of the instructions stay verbatim, and the SDK's own
-    synthesized proactive (built from the injected params, no agent turn) still
-    fires — so ``intent``/``expected_outcome``/``workflow`` remain populated on
-    the wire. Only the agent-initiated pre-call annotation goes away.
+    **This never disables reactive annotation.** The tool stays on the surface
+    and the friction clauses of the instructions stay verbatim. Only the
+    agent-initiated pre-call annotation goes away; the call's intent still
+    rides its ``tool_call_start``.
 
     Set ``"on"`` when ``intent_param_mode="off"``: with neither, nothing
     captures intent. The two are alternative intent channels, not additive —

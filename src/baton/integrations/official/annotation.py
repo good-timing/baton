@@ -19,7 +19,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from baton._state import ProactiveTracker, SessionCounter
+from baton._state import SessionCounter
 from baton.events import AnnotationEvent
 from baton.integrations._annotation_name import derive_annotation_tool_name
 from baton.integrations._annotation_payload import (
@@ -80,11 +80,9 @@ def register_annotation_tool(
     annotation_tool_name: str,
     proactive_mode: str = "off",
     scrubber: Callable[[Any], Any] = identity_scrub,
-    proactive_tracker: ProactiveTracker | None = None,
     resolve_principal_hook: ResolvePrincipalHook | None = None,
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
-    tracker = proactive_tracker or ProactiveTracker()
     name = annotation_tool_name
     description = build_annotation_tool_description(
         vendor_display_name=vendor_display_name, proactive_mode=proactive_mode
@@ -175,10 +173,6 @@ def register_annotation_tool(
             hook_context=identity_hook_context,
             logger=logger,
         )
-        # A proactive annotation (not a report) claims the session's proactive
-        # slot so the wrap layer won't also synthesise one from an injected param.
-        if not reporting:
-            tracker.mark(call_session.id)
         seq = await counter.next(call_session.id)
         # safe_emit, not safe_write: `build_annotation_payload` runs the
         # vendor's scrubber on five fields, and as an ARGUMENT expression it

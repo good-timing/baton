@@ -976,33 +976,6 @@ class TestStatefulHttpSessionResolution:
         start = next(e for e in events if e["event_type"] == "tool_call_start")
         assert start["session_id"] == handle.session_id
 
-    async def test_proactive_annotation_carries_the_same_resolved_session_id(
-        self, configured_mcp: tuple[Any, Any, str]
-    ) -> None:
-        """The synthesised proactive (from an injected user_goal) must land
-        on the same session as the tool_call_start it explains, not the
-        process-wide fallback."""
-        mcp, handle, path = configured_mcp
-
-        # No `user_goal` param declared — Baton injects it into the advertised
-        # schema, so a value supplied at call time is treated as captured
-        # intent (disposition "injected"), not forwarded to the vendor fn.
-        @mcp.tool()
-        def echo(msg: str) -> str:
-            return msg
-
-        tool = get_tool_registry(mcp)["echo"]
-        await tool.run(
-            {"msg": "a", "user_goal": "summarize the thread"},
-            context=_FakeContextV2({"mcp-session-id": "sess-with-goal"}),
-        )
-        await handle.flush()
-
-        events = _read_events(path)
-        by_type = {e["event_type"]: e for e in events}
-        assert by_type["annotation"]["session_id"] == "sess-with-goal"
-        assert by_type["tool_call_start"]["session_id"] == "sess-with-goal"
-
     async def test_sequence_numbers_independent_per_resolved_session(
         self, configured_mcp: tuple[Any, Any, str]
     ) -> None:
