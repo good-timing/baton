@@ -625,9 +625,9 @@ A library producer emits the §11.4 envelope a middleware producer emits. Where 
 | Intent, expected outcome, task | injected params (§5.1) | `trace(intent=, expected_outcome=, workflow=)` | `tool_call_start.payload.call_intent` / `call_expected` / `call_workflow` |
 | Who is calling | the vendor's resolver | `client.session(principal=)` | `principal` |
 | Which client | `clientInfo`, registered headers | `client.session(client_info=, headers=)` | `client_observed` |
-| Session | the §3.4 ladder | `client.session(session_id=)`, else one minted id per block | `session_id`, `session_id_origin` |
+| Session | the §3.4 ladder | `client.session(session_id=)`, else one minted id per block, or per call outside any block | `session_id`, `session_id_origin` |
 
-**The session block.** The vendor opens `client.session(...)` once per request or conversation, and every `trace()` and `annotate()` inside it takes the block's session, principal and client. `trace()` accepts the same values to override the block for one call. A `trace()` outside any block mints its own session. The block sets a context variable that `trace()` reads, and does nothing else.
+**The session block.** The vendor opens `client.session(...)` once per request or conversation, and every `trace()` and `annotate()` inside it takes the block's session, principal and client. Only the block sets them, so a call has one place to take them from. A `session_id` passed to the block is the vendor's own and is sent as `"observed"`: an id the producer minted MUST NOT be passed back in, or its origin is mislabelled. A call outside any block mints its own session. The block sets a context variable that `trace()` and `annotate()` read, and does nothing else.
 
 A library producer MUST:
 
@@ -641,7 +641,7 @@ A library producer MUST:
 
 A library producer SHOULD expose the injected params' names and descriptions (§5.1.2) as data, so a vendor can add them to its own API with the same wording an agent sees on an MCP server.
 
-**Agent reports** (`client.annotate(...)`, `trace.annotate(...)`) are unchanged: the vendor's code relays what its caller wrote.
+**Agent reports** (`trace.annotate(...)` for a traced call, or `client.annotate(...)` inside the block) carry what the vendor's code relays from its caller, in the block's or the trace's session.
 
 **Out of scope on this path:** `surface_snapshot` and the tool list events, because a library has no tool surface it can list. `runtime_meta` and `trace_context` stay optional and vendor-supplied.
 
@@ -1648,7 +1648,9 @@ Defined error codes:
 
   **CHANGED: no producer copies a call's intent into a note.** The MCP adapters in both SDKs and `baton-proxy` stop sending the one note per session built from the first call's injected params (`intent_source: "injected_param"`). It duplicated that call's `call_intent` / `call_expected` / `call_workflow`. **Consumer consequence:** the same as for the library above, and the same ordering: the consumer reads the call first, then producers drop the note. §11.5.1 rule 3 keeps its clause for notes already stored and for older producers.
 
-  **ADDED: `client.session(...)`**, a block that gives every call inside it one session, principal and client. A library producer without one mints a session per call, as before.
+  **REMOVED: `intent_source` on `annotation` payloads.** Only the copied note set it, so `events.schema.json` drops the member. It stays on `tool_call_start`. **Consumer consequence:** a consumer keeps accepting it from older producers, which still send it on their copied note. **Producer consequence:** a producer validating against the new schema stops sending it, which it does by dropping the copied note.
+
+  **ADDED: `client.session(...)`**, a block that gives every call inside it one session, principal and client. Only the block sets them; `trace()` and `annotate()` take no session of their own, and outside a block each mints one, as before.
 
   **ADDED: `transport_observed: "library"`.** Before, the library sent no value, which a consumer could not tell from a producer predating the field. A new registered value; consumers already must not reject one.
 
@@ -1657,6 +1659,8 @@ Defined error codes:
   **CHANGED: §11.2 rule 5.** `sequence_number` orders events; `event_id` identifies them. A library numbers by the clock, so two events of one session can share a number. **Ordering: the consumer lands first.** A consumer that rejects a repeated (`session_id`, `sequence_number`) must stop before any library producer ships this.
 
   **DECIDED: `agent_runtime` on the library is `"unknown"`**, as on the middleware path. The reference library sent `"python-library"`.
+
+  **REMOVED (reference library API): `trace()` / `annotate()` arguments `session_id`, `principal`, `client_info` and `headers`, and `Client(agent_runtime=)` / `AsyncClient(agent_runtime=)`.** Only `client.session(...)` sets a call's session, principal and client, and `agent_runtime` is always `"unknown"`. No wire change.
 
 - **0.8.16 and ts 0.5.5 (2026-10-13) — a worker MAY join stateless sessions by principal (§11.5.1), and the envelope gains `session_id_origin` (§11.4).**
 
