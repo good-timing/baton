@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.8.18: the library path fills the envelope the MCP path fills
 
 Install this only against a collector that reads a call's intent from the call
 (SPEC §5.6). A collector that reads intent only from notes shows none for
