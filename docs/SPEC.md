@@ -1638,7 +1638,7 @@ Defined error codes:
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
 
-- **Pending (library API + all producers, 2026-10-16) — the library path fills the envelope the middleware fills (§5.6), and no producer copies a call's intent into a note.**
+- **0.8.18, ts 0.5.6 and proxy 0.6.17 (2026-10-16) — the library path fills the envelope the middleware fills (§5.6), and no producer copies a call's intent into a note.**
 
   **CHANGED: where library intent lands.** `trace(intent=, expected_outcome=, workflow=)` puts the values on `tool_call_start` as `call_intent` / `call_expected` / `call_workflow`, with the new `intent_source` value `"library_arg"`. The separate note it sent before is no longer sent. **Consumer consequence:** a consumer that read library intent from notes finds nothing there and MUST read it from the call (§5.6). **Ordering: the consumer lands first.** A consumer that reads intent only from notes must read calls first before any producer ships this.
 
