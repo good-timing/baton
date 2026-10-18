@@ -626,15 +626,18 @@ A library producer emits the §11.4 envelope a middleware producer emits. Where 
 | Who is calling | the vendor's resolver | `client.session(principal=)` | `principal` |
 | Which client | `clientInfo`, registered headers | `client.session(client_info=, headers=)` | `client_observed` |
 | Session | the §3.4 ladder | `client.session(session_id=)`, else one minted id per block, or per call outside any block | `session_id`, `session_id_origin` |
+| Turn (one user request) | the client's `_meta` (§11.4.1) | `client.session(turn_id=)` | `runtime_meta["baton/turn_id"]` |
 
-**The session block.** The vendor opens `client.session(...)` once per request or conversation, and every `trace()` and `annotate()` inside it takes the block's session, principal and client. Only the block sets them, so a call has one place to take them from. A `session_id` passed to the block is the vendor's own and is sent as `"observed"`: an id the producer minted MUST NOT be passed back in, or its origin is mislabelled. A call outside any block mints its own session. The block sets a context variable that `trace()` and `annotate()` read, and does nothing else.
+**The session block.** The vendor opens `client.session(...)` once per request or conversation, and every `trace()` and `annotate()` inside it takes the block's session, principal, client and turn. Only the block sets them, so a call has one place to take them from. A `session_id` passed to the block is the vendor's own and is sent as `"observed"`: an id the producer minted MUST NOT be passed back in, or its origin is mislabelled. A call outside any block mints its own session. The block sets a context variable that `trace()` and `annotate()` read, and does nothing else.
+
+**The turn.** A `turn_id` passed to the block is the vendor's own id for the user request its calls answer, such as one run of a multi-step flow that spans many blocks. Every event in the block carries it as `runtime_meta["baton/turn_id"]`, a turn identifier (§11.4.1). Without one, `runtime_meta` is null. The producer never makes one up.
 
 A library producer MUST:
 
 1. **Put intent on the call it describes, and nowhere else.** Intent passed to `trace()` goes on that call's `tool_call_start` as `call_intent` / `call_expected` / `call_workflow`, with `intent_source: "library_arg"`. It MUST NOT also be sent as a note: §11.5.1 rule 3 would open a turn at that note, between the call and its own intent.
 2. **Mark the session id's origin.** `session_id_origin` is `"observed"` when the vendor passed `session_id`, and `"minted"` when the producer made one. `transport_observed` is `"library"` (§11.4).
 3. **Number a session's events by time.** A vendor-supplied session id can span several processes, such as a stateless API behind several workers, so a counter that restarts at 1 per process puts their events out of order. Each number SHOULD be the larger of the session's previous number in this process plus one, and the current time in microseconds, which fits the field's 64-bit integer. The number orders events and is not their identity: two processes can reach the same number in one microsecond, and §11.2 rule 5 says what a consumer does then.
-4. **Apply §11.4's rules to what the vendor passes.** `principal` follows the object's rules, including absent-as-a-whole. `client_observed.headers` holds registered headers only. Every `client_observed` value is scrubbed and truncated as on the middleware path.
+4. **Apply §11.4's rules to what the vendor passes.** `principal` follows the object's rules, including absent-as-a-whole. `client_observed.headers` holds registered headers only. Every `client_observed` value is scrubbed and truncated as on the middleware path. A `session_id` or `turn_id` that is not a non-blank string is dropped.
 5. **Send no `failure_kind`.** It names a failure the producer made above the vendor's handler (§11.4.3). A library rejects nothing itself: every failure it records is the vendor's code speaking.
 
 **Consumers read a call's intent from the call.** A consumer that needs a turn's or a session's intent or expected outcome MUST read the calls' `call_intent` / `call_expected` first, and MAY fall back to a note's `intent` / `expected_outcome` for producers that send no call fields. Library events carry no note, so a consumer that reads only notes shows nothing for them.
@@ -643,7 +646,7 @@ A library producer SHOULD expose the injected params' names and descriptions (§
 
 **Agent reports** (`trace.annotate(...)` for a traced call, or `client.annotate(...)` inside the block) carry what the vendor's code relays from its caller, in the block's or the trace's session.
 
-**Out of scope on this path:** `surface_snapshot` and the tool list events, because a library has no tool surface it can list. `runtime_meta` and `trace_context` stay optional and vendor-supplied.
+**Out of scope on this path:** `surface_snapshot` and the tool list events, because a library has no tool surface it can list. `runtime_meta` holds the block's turn id and nothing else. `trace_context` stays optional and vendor-supplied.
 
 **`agent_runtime` is `"unknown"`.** The library cannot see the client any more than the middleware can name it, so it sends what the vendor passes as `client_observed` and leaves the name to the consumer (§11.4). `sdk_version` already names the producer.
 
@@ -1068,20 +1071,22 @@ The wire format is intentionally unified — both flavors share the same envelop
 
 #### 11.4.1 `runtime_meta` (optional) — for worker-side correlation
 
-`session_id` is a process-lifetime identifier (the SDK's fallback UUID, generated at `install_baton(...)` time), NOT a conversation-turn identifier. A single MCP server process across multiple user prompts produces one `session_id`. To recover finer-grained turn and conversation boundaries, the worker MUST read `runtime_meta` when populated.
+On the MCP path, `session_id` is a process-lifetime identifier (the SDK's fallback UUID, generated at `install_baton(...)` time), NOT a conversation-turn identifier. A single MCP server process across multiple user prompts produces one `session_id`. To recover finer-grained turn and conversation boundaries, the worker MUST read `runtime_meta` when populated.
 
-The SDK populates `runtime_meta` with the raw `_meta` dict from the MCP request, with the vendor's PII scrubber applied. Examples of keys, by the level each identifies. Codex and ChatGPT keys were observed on the wire; VS Code's are read from its source and have not been observed:
+On the MCP path the SDK populates `runtime_meta` with the raw `_meta` dict from the MCP request, with the vendor's PII scrubber applied. On the library path it holds only the vendor's turn id (§5.6). Examples of keys, by the level each identifies. Codex and ChatGPT keys were observed on the wire; VS Code's are read from its source and have not been observed:
 
 - **Conversation** — `openai/session` (ChatGPT), `threadId` (Codex CLI), `vscode.conversationId` (VS Code)
-- **Turn** (one user request) — `turn_id` inside `x-codex-turn-metadata` (Codex CLI), `vscode.requestId` (VS Code)
+- **Turn** (one user request) — `turn_id` inside `x-codex-turn-metadata` (Codex CLI), `vscode.requestId` (VS Code), `baton/turn_id` (a library producer, §5.6)
 - **One tool call** — `claudecode/toolUseId` (Claude Code). Data only; the SDK's `call_id` remains the sole pairing key
 - `progressToken` — an MCP per-request counter. It labels no conversation, turn or person
 
 Clients are not consistent about names. Codex CLI's `sessionId` carries the same value as its `threadId`, a conversation, while Baton's `session_id` is a process lifetime. A worker MUST level a key by what it was observed to identify, never by its name. A key that identifies a CONVERSATION MUST NOT be used as `session_id`, including through §3.4 rung 3's adapter table, which is for session-scoped keys only and has no entries today.
 
+`baton/turn_id` is the one key Baton defines rather than observes. It is a turn identifier by definition, whatever the client. A worker MUST read it only on events whose `transport_observed` is `"library"`: on any other event the key came from a client's `_meta`, and nothing says what that client meant by it.
+
 The worker's correlation hierarchy is §11.5.1. It is stated there once.
 
-The SDK does NOT interpret `runtime_meta` beyond capture; it remains "what the runtime supplied," verbatim. See §11.5 for how the worker derives turn boundaries from these primitives.
+The SDK does NOT interpret `runtime_meta` beyond capture; on the MCP path it remains "what the runtime supplied," verbatim. See §11.5 for how the worker derives turn boundaries from these primitives.
 
 Worker derives the canonical SignalPayload (§3) by:
 - Grouping events by `(tenant_id, session_id)`
@@ -1637,6 +1642,12 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **0.8.19 (SDK-only, 2026-10-18) — a library producer can state the turn (§5.6), as `runtime_meta["baton/turn_id"]`.**
+
+  **ADDED: `client.session(turn_id=)`.** The vendor's own id for the user request the block's calls answer. Every event in the block carries it as `runtime_meta: {"baton/turn_id": ...}`. Without it, `runtime_meta` stays null as before. No new envelope field: `runtime_meta` is already an open object. `baton-ts` has no library API, so it has nothing to add.
+
+  **ADDED: `baton/turn_id`, a turn identifier (§11.4.1) read only on `transport_observed: "library"`.** It is the first `runtime_meta` key Baton defines. **Consumer consequence:** library events can carry a new `runtime_meta` key. A consumer that ignores it sees the same events as before. **Ordering: the consumer lands first.**
 
 - **0.8.18, ts 0.5.6 and proxy 0.6.17 (2026-10-16) — the library path fills the envelope the middleware fills (§5.6), and no producer copies a call's intent into a note.**
 
