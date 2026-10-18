@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 TRANSPORT_LIBRARY = "library"
 ORIGIN_OBSERVED: SessionOrigin = "observed"
 ORIGIN_MINTED: SessionOrigin = "minted"
+TURN_ID_META_KEY = "baton/turn_id"
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class LibrarySession:
     session_id_origin: SessionOrigin
     principal: PrincipalWire | None = None
     client_observed: ClientObserved | None = None
+    turn_id: str | None = None
 
     def envelope(self) -> dict[str, Any]:
         return {
@@ -39,6 +41,7 @@ class LibrarySession:
             "transport_observed": TRANSPORT_LIBRARY,
             "principal": self.principal,
             "client_observed": self.client_observed,
+            "runtime_meta": {TURN_ID_META_KEY: self.turn_id} if self.turn_id else None,
         }
 
 
@@ -49,10 +52,10 @@ _current: ContextVar[tuple[object, LibrarySession] | None] = ContextVar(
 )
 
 
-def _vendor_session_id(value: object) -> str | None:
+def _vendor_id(name: str, value: object) -> str | None:
     cleaned = clean_session_id(value)
     if cleaned is None and value is not None:
-        logger.warning("baton: session_id=%r is not a non-blank string — ignoring it.", value)
+        logger.warning("baton: %s=%r is not a non-blank string — ignoring it.", name, value)
     return cleaned
 
 
@@ -75,12 +78,13 @@ def new_session(
     principal: object = None,
     client_info: object = None,
     headers: Mapping[str, Any] | None = None,
+    turn_id: object = None,
     scrubber: Callable[[Any], Any],
     disabled: bool,
 ) -> LibrarySession:
     """A ``session()`` block's values. Never raises: a value that is not
     usable is logged and dropped."""
-    vendor_id = _vendor_session_id(session_id)
+    vendor_id = _vendor_id("session_id", session_id)
     base = LibrarySession(vendor_id, ORIGIN_OBSERVED) if vendor_id is not None else _minted()
     if disabled:
         # The kill switch stops the work too: no scrubber runs on a value that
@@ -91,6 +95,7 @@ def new_session(
         base.session_id_origin,
         principal=wire_vendor_principal(principal, logger=logger),
         client_observed=_client_observed(client_info, headers, scrubber),
+        turn_id=_vendor_id("turn_id", turn_id),
     )
 
 

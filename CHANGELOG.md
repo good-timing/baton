@@ -8,6 +8,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Added
+
+- **`client.session(turn_id=...)`**: your own id for the user request the
+  block's calls answer. Every event in the block carries it as
+  `runtime_meta["baton/turn_id"]` (SPEC §5.6), so a multi-step run stays one
+  turn however long the agent pauses between steps. Without it the block sends
+  no `runtime_meta`, as before. A bad value is logged and dropped.
+
 ## 0.8.18: the library path fills the envelope the MCP path fills
 
 Install this only against a collector that reads a call's intent from the call

@@ -53,6 +53,7 @@ with client.session(
     principal=Principal(principal_id=user.id),    # optional: who is calling
     client_info={"name": "claude-code", "version": "2.1"},  # optional: which app is calling
     headers=request.headers,                      # optional: only User-Agent and X-Anthropic-Client are kept
+    turn_id=request.run_id,                       # optional: your own id for the user's request
 ):
     with client.trace(
         tool_name="chat.completions.create",
@@ -63,7 +64,7 @@ with client.session(
         trace.observed(response)
 ```
 
-Open one `client.session(...)` per request or conversation. Every `trace()` and `annotate()` inside it shares its session, principal and client. A `trace()` outside a block gets a session of its own. Pass `client_info` or the request's `headers` when your request says which app the agent runs in; with neither, your dashboard shows "app not reported". `intent`, `expected_outcome` and `workflow` usually come from the agent: to ask for them on your own API with the wording an agent sees on an MCP server, use `baton.INTENT_PARAMS`.
+Open one `client.session(...)` per request or conversation. Every `trace()` and `annotate()` inside it shares its session, principal, client and turn. A `trace()` outside a block gets a session of its own. Pass `client_info` or the request's `headers` when your request says which app the agent runs in; with neither, your dashboard shows "app not reported". Pass `turn_id` when one user request spans several of your requests, such as an agent working through a multi-step flow: its calls then stay one turn however long the agent pauses. `intent`, `expected_outcome` and `workflow` usually come from the agent: to ask for them on your own API with the wording an agent sees on an MCP server, use `baton.INTENT_PARAMS`.
 
 `AsyncClient` is the async twin. Worked end to end in [`examples/skill_demo/`](https://github.com/good-timing/baton/tree/main/examples/skill_demo).
 

@@ -950,22 +950,27 @@ class _Sessions:
         principal: Principal | None = None,
         client_info: Mapping[str, Any] | None = None,
         headers: Mapping[str, Any] | None = None,
+        turn_id: str | None = None,
     ) -> Iterator[LibrarySession]:
         """Give every ``trace()`` and ``annotate()`` inside the block one
-        session, principal and client (SPEC §5.6). Open one per request or
-        conversation.
+        session, principal, client and turn (SPEC §5.6). Open one per request
+        or conversation.
 
         ``session_id`` is the vendor's own id for the conversation; without
         one, the block mints an id. ``principal`` is who the vendor says is
         calling. ``client_info`` (``{"name": ..., "version": ...}``) and
         ``headers`` are what the calling client sent; only registered headers
-        are kept. A bad value is logged and dropped, never raised.
+        are kept. ``turn_id`` is the vendor's own id for the user request the
+        block's calls answer: pass the same value to every block that serves
+        it, such as each step of one multi-step run, and those calls stay one
+        turn across pauses. A bad value is logged and dropped, never raised.
         """
         block = new_session(
             session_id=session_id,
             principal=principal,
             client_info=client_info,
             headers=headers,
+            turn_id=turn_id,
             scrubber=self._scrubber,
             disabled=self._disabled,
         )
@@ -1044,7 +1049,7 @@ class Client(_Sessions):
 
         ``intent`` / ``expected_outcome`` / ``workflow`` ride the call's
         ``tool_call_start``. The call takes the open ``session()`` block's
-        session, principal and client; outside any block it gets a session of
+        session, principal, client and turn; outside any block it gets a session of
         its own.
 
         Pass ``params`` here (not via ``trace.with_params()``) so they ship on

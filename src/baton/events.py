@@ -475,13 +475,16 @@ class _EventEnvelope(BaseModel):
     one. On the library API, ``"observed"`` when the vendor passed its own id
     to ``client.session()`` (SPEC §5.6)."""
     runtime_meta: dict[str, Any] | None = None
-    """Runtime-supplied ``_meta`` envelope from the MCP request (SPEC §11.4).
+    """Runtime-supplied ``_meta`` envelope from the MCP request (SPEC §11.4),
+    or on the library API only the vendor's ``baton/turn_id`` (SPEC §5.6).
     Per SPEC §11.5 the Console worker uses this to derive turn
-    boundaries that are more precise than ``session_id`` alone (which is
-    only the SDK-process lifetime, not a conversation turn). Examples:
-    ``claudecode/toolUseId``, ``claudecode/sessionId``, ``progressToken``.
-    Null when the host runtime didn't surface a meta or the adapter can't
-    access it. PII-scrubbed if the vendor's scrubber covers metadata keys."""
+    boundaries that are more precise than ``session_id`` alone (which on the
+    MCP path is only the SDK-process lifetime, not a conversation turn).
+    Examples: ``claudecode/toolUseId``, ``claudecode/sessionId``,
+    ``progressToken``. Null when the host runtime didn't surface a meta, the
+    adapter can't access it, or a library block was given no ``turn_id``.
+    On the MCP path, PII-scrubbed if the vendor's scrubber covers metadata
+    keys."""
 
 
 # =============================================================================

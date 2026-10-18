@@ -138,14 +138,20 @@ def test_bad_values_are_dropped_not_raised(caplog: pytest.LogCaptureFixture) -> 
     sink = _CollectingSink()
     client = _client(sink)
     with caplog.at_level(logging.WARNING, logger="baton"):
-        with client.session(session_id="  ", principal={"principal_id": "u"}):  # type: ignore[arg-type]
+        with client.session(
+            session_id="  ",
+            principal={"principal_id": "u"},  # type: ignore[arg-type]
+            turn_id=7,  # type: ignore[arg-type]
+        ):
             _traced(client)
     client.close()
 
     start = sink.events[0]
     assert start.session_id_origin == "minted"
     assert start.principal is None
+    assert start.runtime_meta is None
     assert "not a baton.Principal" in caplog.text
+    assert "turn_id=7" in caplog.text
 
 
 def test_a_disabled_client_opens_a_block_without_scrubbing(
@@ -257,14 +263,15 @@ async def test_a_block_closed_in_another_context_does_not_raise() -> None:
     await client.aclose()
 
 
-def test_a_padded_session_id_is_stripped() -> None:
+def test_a_padded_session_or_turn_id_is_stripped() -> None:
     sink = _CollectingSink()
     client = _client(sink)
-    with client.session(session_id=" conv-1 "):
+    with client.session(session_id=" conv-1 ", turn_id=" run-1 "):
         _traced(client)
     client.close()
 
     assert {e.session_id for e in sink.events} == {"conv-1"}
+    assert [e.runtime_meta for e in sink.events] == [{"baton/turn_id": "run-1"}] * 2
 
 
 def test_trace_and_annotate_take_no_session_of_their_own() -> None:
@@ -272,7 +279,7 @@ def test_trace_and_annotate_take_no_session_of_their_own() -> None:
     sync = _client(_CollectingSink())
     async_ = AsyncClient(vendor_id="v1", tenant_id="ten_abc", sink=_CollectingSink())
     for door in (sync.trace, sync.annotate, async_.trace, async_.annotate):
-        for name in ("session_id", "principal", "client_info", "headers"):
+        for name in ("session_id", "principal", "client_info", "headers", "turn_id"):
             with pytest.raises(TypeError):
                 door(tool_name="fetch", **{name: "x"})
     sync.close()
@@ -289,3 +296,32 @@ def test_annotate_outside_a_block_gets_a_session_of_its_own() -> None:
 
     assert len({e.session_id for e in sink.events}) == 2
     assert {e.session_id_origin for e in sink.events} == {"minted"}
+
+
+async def test_every_event_in_a_block_carries_its_turn_id() -> None:
+    sync_sink, async_sink = _CollectingSink(), _CollectingSink()
+    sync, async_ = _client(sync_sink), AsyncClient(vendor_id="v1", sink=async_sink)
+    with sync.session(session_id="run-1", turn_id="run-1"):
+        with sync.trace(tool_name="fetch") as trace:
+            trace.observed("ok")
+        trace.annotate(what_happened="thin", tool_name="fetch")
+        sync.annotate(what_happened="thin again", tool_name="fetch")
+    with async_.session(turn_id="run-1"):
+        async with async_.trace(tool_name="fetch") as atrace:
+            atrace.observed("ok")
+    sync.close()
+    await async_.aclose()
+
+    events = _wire(sync_sink) + _wire(async_sink)
+    assert [e["runtime_meta"] for e in events] == [{"baton/turn_id": "run-1"}] * 6
+
+
+def test_a_block_without_a_turn_id_and_a_call_outside_any_block_send_no_runtime_meta() -> None:
+    sink = _CollectingSink()
+    client = _client(sink)
+    with client.session(session_id="run-1"):
+        _traced(client)
+    _traced(client)
+    client.close()
+
+    assert {e["runtime_meta"] for e in _wire(sink)} == {None}
