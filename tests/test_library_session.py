@@ -263,6 +263,19 @@ async def test_a_block_closed_in_another_context_does_not_raise() -> None:
     await client.aclose()
 
 
+def test_session_and_turn_ids_are_sent_as_passed_not_scrubbed() -> None:
+    sink = _CollectingSink()
+    client = _client(sink)
+    with client.session(session_id="jane@example.com", turn_id="jane@example.com:run-1"):
+        _traced(client)
+    client.close()
+
+    assert {e.session_id for e in sink.events} == {"jane@example.com"}
+    assert {e.runtime_meta["baton/turn_id"] for e in sink.events if e.runtime_meta} == {
+        "jane@example.com:run-1"
+    }
+
+
 def test_a_padded_session_or_turn_id_is_stripped() -> None:
     sink = _CollectingSink()
     client = _client(sink)
