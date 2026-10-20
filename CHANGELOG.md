@@ -8,13 +8,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.8.20: a client closes its sink once
 
 ### Fixed
 
 - **`Client.close()` and `AsyncClient.aclose()` close the sink once.** Two
   calls at the same time, from two threads or two tasks, used to both close
-  it.
+  it. The client now counts as closed from the moment the first call starts,
+  so a `trace()` or `annotate()` made while it is closing raises "Client is
+  closed" instead of sending into a sink that is shutting down.
 
 ## 0.8.19: a library session can name its turn
 
