@@ -1034,6 +1034,7 @@ class Client(_Sessions):
         self._sink: Sink = resolved.sink
 
         self._closed = False
+        self._close_lock = threading.Lock()
 
     def trace(
         self,
@@ -1151,18 +1152,20 @@ class Client(_Sessions):
 
     def close(self) -> None:
         """Flush + close the sink + stop the bridge thread."""
-        if self._closed:
-            return
+        # Marked closed before closing, under a lock, so two threads calling
+        # close() at once close the sink once.
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
         if self._bridge is None:
             # Disabled: no bridge to run on, but a sink the caller handed us
             # still has to be released.
-            self._closed = True
             _close_sink_without_a_loop(self._sink)
             return
         try:
             self._bridge.run(self._sink.aclose())
         finally:
-            self._closed = True
             self._bridge.stop()
 
     def __enter__(self) -> Self:
@@ -1662,12 +1665,12 @@ class AsyncClient(_Sessions):
         await self._sink.flush()
 
     async def aclose(self) -> None:
+        # Marked closed before the await, so a second aclose() running at the
+        # same time returns instead of closing the sink again.
         if self._closed:
             return
-        try:
-            await self._sink.aclose()
-        finally:
-            self._closed = True
+        self._closed = True
+        await self._sink.aclose()
 
     async def __aenter__(self) -> Self:
         return self

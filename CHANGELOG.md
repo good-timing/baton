@@ -8,6 +8,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Fixed
+
+- **`Client.close()` and `AsyncClient.aclose()` close the sink once.** Two
+  calls at the same time, from two threads or two tasks, used to both close
+  it.
+
 ## 0.8.19: a library session can name its turn
 
 ### Added

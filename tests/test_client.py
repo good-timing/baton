@@ -22,8 +22,10 @@ Covers the library API surface (Client / AsyncClient / Trace / AsyncTrace):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import threading
 import warnings
 from collections.abc import Iterator
 from typing import Any
@@ -34,11 +36,28 @@ from werkzeug.wrappers import Request, Response
 
 from baton import AsyncClient, Client
 from baton.events import DEFAULT_CONSENT_TOKEN
-from baton.sinks import HttpSink
+from baton.sinks import HttpSink, Sink
 
 # =============================================================================
 # Fixtures
 # =============================================================================
+
+
+class _SlowCloseSink(Sink):
+    """Counts closes, and yields inside one so a second close can overlap it."""
+
+    def __init__(self) -> None:
+        self.closes = 0
+
+    async def write(self, event: Any) -> None:
+        pass
+
+    async def flush(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
+        self.closes += 1
+        await asyncio.sleep(0.05)
 
 
 @pytest.fixture
@@ -903,6 +922,16 @@ class TestSyncLifecycle:
         with pytest.raises(RuntimeError, match="closed"):
             client.annotate(what_happened="it failed")
 
+    def test_close_from_two_threads_closes_the_sink_once(self) -> None:
+        sink = _SlowCloseSink()
+        client = Client(sink=sink, vendor_id="v")
+        threads = [threading.Thread(target=client.close) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert sink.closes == 1
+
     def test_close_idempotent(self, capture_server: HTTPServer) -> None:
         client = Client(
             sink=HttpSink(url=capture_server.url_for(""), api_key="x"),
@@ -1043,6 +1072,12 @@ class TestAsyncHappyPath:
             async with client.trace(tool_name="t") as trace:
                 trace.observed("ok")
         assert len(captured_events) == 2  # start + end
+
+    async def test_concurrent_aclose_closes_the_sink_once(self) -> None:
+        sink = _SlowCloseSink()
+        client = AsyncClient(sink=sink, vendor_id="v")
+        await asyncio.gather(client.aclose(), client.aclose())
+        assert sink.closes == 1
 
     async def test_close_then_trace_raises(
         self,
