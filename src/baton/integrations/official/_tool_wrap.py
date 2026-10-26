@@ -89,9 +89,10 @@ from baton.integrations._config import (
 )
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
-    ErrorResultFields,
     is_error_result,
+    raised_error_fields,
     returned_error_fields,
+    vendor_exception,
 )
 from baton.integrations._llm_text import (
     EXPECTED_RESULT_PARAM_NAME,
@@ -106,6 +107,8 @@ from baton.integrations._llm_text import (
 )
 from baton.integrations._session import (
     ResolvedSession,
+    end_of_ladder,
+    next_sequence,
     session_id_from_headers,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
@@ -116,7 +119,7 @@ from baton.integrations.identity_adapter import (
     token_claims,
 )
 from baton.integrations.official import _auth
-from baton.integrations.official._compat import set_server_instructions
+from baton.integrations.official._compat import ToolErrorClass, set_server_instructions
 from baton.integrations.official._registry import get_tool_manager, get_tool_registry
 from baton.scrub import identity_scrub, scrub_or_none
 from baton.sinks import Sink, safe_emit
@@ -641,7 +644,9 @@ def _wrap_tool_run(
         )
         scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, logger)
         call_session = await _resolve_call_session(
-            headers=call_headers, fallback=fallback_session_id
+            headers=call_headers,
+            fallback=fallback_session_id,
+            transport_observed=call_transport,
         )
 
         # The per-call join key (SPEC §11.4). A LOCAL of this wrapper call,
@@ -701,22 +706,10 @@ def _wrap_tool_run(
         try:
             result = await original_run(arguments, context=context, convert_result=convert_result)
         except BaseException as exc:
-            # mcp's Tool.run does `raise ToolError(...) from e` — surface the
-            # original __cause__ when present so error_type reflects the real
-            # exception class the vendor's fn actually raised.
-            original_exc = exc.__cause__ if exc.__cause__ is not None else exc
-            # ⚠ The exception goes in RAW. Its scrub used to be an argument
-            # expression, evaluated in THIS frame before ``emit_error`` was
-            # entered, and this sits in an ``except`` with a ``raise`` under
-            # it — so a throwing scrubber REPLACED the vendor's own exception
-            # with ours. Same shape proven on the library path
-            # (`spikes/client_failopen_1003/`); missed here when the official
-            # adapter was converted (`eb4fb8f`), then guarded by a caller-side
-            # try/except (`cab0143`), and now it cannot recur: the emitter owns
-            # the projection, so there is no expression here to get wrong.
-            # ``_seq`` is the one await left outside the thunk and cannot raise
-            # (`_state.py`: a dict op under a lock), so the caller-side guard
-            # went with the change.
+            original_exc = vendor_exception(exc, "mcp")
+            # The exception goes in raw: scrubbing it here, inside this
+            # ``except``, would let a throwing scrubber replace the vendor's
+            # exception. ``emit_error`` scrubs inside its guard.
             await emit_error(
                 call_session,
                 name,
@@ -853,65 +846,27 @@ async def _resolve_call_session(
     *,
     headers: Mapping[str, str] | None,
     fallback: str,
+    transport_observed: str | None,
 ) -> ResolvedSession:
-    """The per-call session id and its origin — SPEC §3.4's layered fallback in priority
-    order: (4) the ``mcp-session-id`` HTTP header, else (5) ``fallback`` (the
-    install-time process-wide id). Rung 3 (a future runtime-specific ``_meta``
-    key) isn't defined for any runtime yet, so it's skipped.
+    """The per-call session id and its origin — SPEC §3.4's ladder in priority
+    order: (4) the ``mcp-session-id`` HTTP header, else (5) a new id for this
+    request when an HTTP request is behind it, else ``fallback`` (the
+    install-time process-wide id, correct on stdio and in-memory). Rung 3 is
+    defined for no runtime yet; this adapter has no rung 4b.
 
-    **Rung 0 — ``VendorConfig.resolve_session_id`` — was REMOVED 2026-09-12**,
-    for the reason that retired rungs 1-2: it keyed the session on an
-    identifier the SDK did not mint. A vendor's handle differed from a
-    client's only in who supplied it, which the join rule does not
-    distinguish. What a vendor knows about a caller now reaches Baton through
-    ``VendorConfig.resolve_principal`` and lands in ``principal``, where the console
-    can group on it downstream and change its mind later.
-
-    **Rungs 1-2 were retired 2026-09-09** — they keyed the session on
-    identifiers the SDK did not mint (``_meta.traceparent``'s trace-id and a
-    client-supplied ``_meta["io.baton/session_id"]``), which the D2 join rule
-    forbids. Both values are still captured — ``runtime_meta`` forwards the
-    whole ``_meta`` — so grouping on them is a downstream decision now. See
-    ``integrations._session``.
-
-    The header rung (4) is stateful-HTTP-only and protocol-version-sensitive:
-    ``stateless_http`` defaults to ``False`` on both mcp 1.x and 2.0, so the
-    header is present on old-spec streamable HTTP (the documented hosted
-    shape — one process, many users). But MCP protocol 2026-07-28+ (SEP-2567)
-    removes the header from the wire entirely when a client negotiates that
-    version — confirmed in mcp 2.0.0's ``_streamable_http_modern.py`` ("no
-    `Mcp-Session-Id`") — so on a new-spec connection this rung always misses
-    regardless of vendor deployment shape, which is why the ladder
-    terminates on ``fallback`` for that shape rather than on a meta rung. On
-    stdio there's no HTTP request, so the header rung
-    always misses and ``fallback`` is correct there (one process = one
-    user). On stateless HTTP (``stateless_http=True``, opt-in, no current
-    vendor) there's no header by protocol design either — that miss isn't a
-    bug this function can fix. ⚠ **It also no longer has a workaround.** The
-    vendor-configurable resolver that covered this shape was rung 0, removed
-    2026-09-12, and SPEC rung 5 (a per-event UUID) is still unbuilt — so
-    new-spec and stateless HTTP terminate on the process-wide ``fallback``,
-    which is stable but merges every client of a multi-user server. That is
-    D2/B4, and the answer is the console-side partition (N3), not a rung.
+    Rung 5 fires on stateless HTTP, on SSE, and on every new-spec (SEP-2567)
+    connection, none of which carries the header.
 
     mcp 2.0's ``Context`` exposes ``.headers`` directly; mcp 1.x has no such
     accessor, so ``_extract_headers_from_context`` also tries reaching
-    through ``request_context.request.headers`` (a raw transport request
-    object on HTTP transports, ``None`` on stdio). Never raises —
-    best-effort like ``_extract_meta_from_context`` below, including outside
-    a live request (``request_context`` raises ``ValueError`` there on both
-    SDK versions).
+    through ``request_context.request.headers``. Never raises.
     """
-    # Extracted ONCE by the caller and passed in, never re-read here. It is a
-    # required parameter rather than an optional one precisely so this cannot
-    # drift back: a ``None`` default reads as "not extracted yet" and would
-    # re-extract on every stdio call, where ``None`` is also the correct
-    # ANSWER — which is how the first attempt at this fix looked correct and
-    # changed nothing on the common path.
+    # Required, not defaulted: on stdio ``None`` is the real answer, so a
+    # ``None`` default would read as "not extracted yet" and re-extract.
     from_header = session_id_from_headers(headers)
     if from_header is not None:
         return ResolvedSession(from_header, "observed")
-    return ResolvedSession(fallback, "minted")
+    return end_of_ladder(fallback=fallback, transport_observed=transport_observed)
 
 
 def _is_mrtr_continuation(context: Any) -> bool:
@@ -986,15 +941,9 @@ def _make_emitters(
     """Build four async emitters: ``tool_call_start`` / ``_end`` / ``_error``
     and ``surface_snapshot``.
 
-    Each takes the per-call session resolved by
-    ``_resolve_call_session`` as its first argument — real on stateful
-    HTTP, ``fallback_session_id`` otherwise (stdio, or no header found). The
-    Console worker also uses ``runtime_meta`` (populated below) for finer
-    per-turn correlation per SPEC §11.5, independent of this.
+    Each takes the per-call session resolved by ``_resolve_call_session`` as
+    its first argument.
     """
-
-    async def _seq(session_id: str) -> int:
-        return await counter.next(session_id)
 
     async def emit_before(
         session: ResolvedSession,
@@ -1013,7 +962,7 @@ def _make_emitters(
         # ⚠ Hoisted out of the build thunk: a lambda cannot `await`.
         # A build that then fails burns this number, which is already
         # possible whenever `sink.write` fails, so the gap is not new.
-        _seq_n = await _seq(session.id)
+        _seq_n = await next_sequence(counter, session)
         await safe_emit(
             sink,
             lambda: ToolCallStartEvent(
@@ -1055,7 +1004,7 @@ def _make_emitters(
         # ⚠ Hoisted out of the build thunk, because the thunk is sync.
         # A build that then fails burns this number, which is already
         # possible whenever `sink.write` fails, so the gap is not new.
-        _seq_n = await _seq(session.id)
+        _seq_n = await next_sequence(counter, session)
 
         # The projection runs INSIDE the thunk: it owns the scrubber call
         # (`_result_capture.py`), so as a statement out here a raising vendor
@@ -1122,16 +1071,16 @@ def _make_emitters(
         # ⚠ Hoisted out of the build thunk, because the thunk is sync.
         # A build that then fails burns this number, which is already
         # possible whenever `sink.write` fails, so the gap is not new.
-        _seq_n = await _seq(session.id)
+        _seq_n = await next_sequence(counter, session)
 
         def build() -> ToolCallErrorEvent:
             if raised is not None:
-                # No result object exists on a raise, so there is none to
-                # record and none to withhold: SPEC §11.4.3(1) leaves this
-                # shape unchanged under every mode, because an exception
-                # message is the vendor's own code speaking about a call that
-                # never returned. Both defaults say exactly that.
-                resolved = ErrorResultFields(error_body=str(scrubber(str(raised)))[:2000])
+                resolved = raised_error_fields(
+                    mode=result_capture_mode,
+                    scrubber=scrubber,
+                    raised=raised,
+                    tool_error=ToolErrorClass,
+                )
             else:
                 # SPEC §11.4.3(2): both result-derived members, decided
                 # together, and the projection owns the scrubber call.
@@ -1180,7 +1129,7 @@ def _make_emitters(
                 consent_token=consent_token,
                 session_id=session_id,
                 session_id_origin="minted",
-                sequence_number=await _seq(session_id),
+                sequence_number=await counter.next(session_id),
                 captured_at=datetime.now(UTC),
                 payload=SurfaceSnapshotPayload(
                     surface_hash=digest,

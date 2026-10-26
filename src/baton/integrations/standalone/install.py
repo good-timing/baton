@@ -41,7 +41,7 @@ a ``dsn=`` field of its own so the two combine.
 **The off switch.** Setting ``BATON_DISABLED=1`` in the
 environment makes this function install NOTHING and raise nothing: no
 middleware, no wrapped tools, no annotation tool on the surface, no
-instructions rewrite, no sink. The server behaves exactly as it would without
+added instructions, no sink. The server behaves exactly as it would without
 this call. See ``baton._optout``.
 
 """
@@ -71,7 +71,11 @@ from baton.integrations._lifecycle import (
     install_lifecycle_capture,
     warn_if_results_are_withheld,
 )
-from baton.integrations._llm_text import build_server_instructions, drop_subagent_clause
+from baton.integrations._llm_text import (
+    build_server_instructions,
+    drop_subagent_clause,
+    with_vendor_instructions,
+)
 from baton.integrations._surface import build_server_meta
 from baton.integrations.client_observed import meta_to_dict
 from baton.integrations.official._registry import get_tool_manager
@@ -233,7 +237,7 @@ def install_baton(
         proactive_mode=config.proactive_mode,
         intent_param_mode=config.intent_param_mode,
     )
-    _set_instructions(mcp, instructions)
+    _set_instructions(mcp, with_vendor_instructions(mcp, instructions))
 
     # This adapter sees a tool's schema only when tools are listed, so the
     # sentence goes from the sessions that start after the first listing.
@@ -268,13 +272,17 @@ def install_baton(
         # ``test_the_requests_meta_is_on_the_envelope_and_not_in_params``.
         context = Context(fastmcp=mcp)
         headers = extract_headers()
+        transport = observe_transport()
         return CapturedRequest(
             meta=meta_to_dict(getattr(context.request_context, "meta", None)),
             headers=headers,
             handshake_context=context,
-            transport_observed=observe_transport(),
+            transport_observed=transport,
             session=await resolve_call_session(
-                headers=headers, fallback=fallback_session_id, context=context
+                headers=headers,
+                fallback=fallback_session_id,
+                transport_observed=transport,
+                context=context,
             ),
         )
 

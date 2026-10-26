@@ -14,6 +14,8 @@ transport-specific ones).
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 
 
 class SessionCounter:
@@ -34,3 +36,24 @@ class SessionCounter:
             new = current + 1
             self._counters[session_id] = new
             return new
+
+
+class SequenceClock:
+    """Sequence numbers from the clock, in microseconds (SPEC §5.6 rule 3).
+
+    One counter for the process (``PROCESS_SEQUENCE``), shared by every
+    client: strictly increasing across all sessions is strictly increasing
+    within each, and nothing grows per session.
+    """
+
+    def __init__(self) -> None:
+        self._last = 0
+        self._lock = threading.Lock()
+
+    def next(self) -> int:
+        with self._lock:
+            self._last = max(self._last + 1, time.time_ns() // 1000)
+            return self._last
+
+
+PROCESS_SEQUENCE = SequenceClock()

@@ -25,7 +25,7 @@ from baton._result_capture import ResultCaptureMode
 from baton._state import SessionCounter
 from baton.events import Event
 from baton.integrations._config import SessionResolutionContext
-from baton.integrations._session import ResolvedSession
+from baton.integrations._session import ResolvedSession, next_sequence
 from baton.integrations.client_observed import clean_runtime_meta, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
@@ -112,9 +112,9 @@ def install_lifecycle_capture(
 
     async def opened(
         family: _Family, read_request_context: Callable[[], Any], params: Any
-    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
-        """The envelope, the request's params and the subject, or ``None`` when
-        a read failed and the request is served without events."""
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], ResolvedSession] | None:
+        """The envelope, the request's params, the subject and the session, or
+        ``None`` when a read failed and the request is served without events."""
         try:
             request = await read_request(read_request_context())
             principal = await resolve_call_principal(
@@ -154,7 +154,7 @@ def install_lifecycle_capture(
                 "transport_observed": request.transport_observed,
                 "runtime_meta": clean_runtime_meta(scrubber, request.meta, logger),
             }
-            return envelope, sent, subject
+            return envelope, sent, subject, request.session
         except Exception:
             logger.exception(
                 "baton: %s capture failed; the request is served without it", family.method
@@ -170,10 +170,10 @@ def install_lifecycle_capture(
         request = await opened(family, read_request_context, params)
         if request is None:
             return await serve()
-        envelope, sent, subject = request
+        envelope, sent, subject, session = request
 
         async def emit(leg: str, build_payload: Callable[[], dict[str, Any]]) -> None:
-            sequence_number = await counter.next(envelope["session_id"])
+            sequence_number = await next_sequence(counter, session)
             await safe_emit(
                 sink,
                 lambda: _EVENT.validate_python(

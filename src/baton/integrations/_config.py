@@ -359,16 +359,16 @@ class VendorConfig:
     **Requests are unaffected.** ``params`` are captured in both modes; this
     field says nothing about them. Shaped so inputs COULD join later.
 
-    **What stays under ``"off"``, and say this to a reviewer unprompted:**
-    ``error_type``, ``tool_name`` and ``duration_ms``, so failure
-    classification, pairing and timing all still work — and the message of an
-    exception your own code RAISES, which is not derived from a result and is
-    the highest-value diagnostic the product has. Exception messages are a
-    classic leak channel (a failed query echoed back, a record id in a
-    ``KeyError``), so if that is also a problem the mode grows a stricter
-    value then. The same holds for a failed resource or prompt request: its
-    four error events carry the error's message in both modes, and
-    installing with ``"off"`` warns once to say so.
+    **A raised exception's message is withheld too, unless it is a
+    ``ToolError``** (your MCP library's class for a message meant for the
+    agent). ``raise ToolError("Row not found, check the id")`` is sent;
+    ``raise ValueError(...)``, or a ``ToolError`` raised ``from`` another
+    exception, is sent as ``""``: fastmcp wraps every exception that way, so
+    the two cannot be told apart. Write ``raise ToolError(...) from None`` to
+    have the message sent. ``error_type``, ``tool_name`` and
+    ``duration_ms`` stay in both modes, so failure counts, pairing and timing
+    still work. A failed resource or prompt request still carries its
+    message in both modes, and installing with ``"off"`` warns once to say so.
 
     **A mode string, not a boolean**, matching ``intent_param_mode`` /
     ``proactive_mode``, and leaving room for the

@@ -14,6 +14,9 @@ from __future__ import annotations
 
 from typing import Any, Literal, NamedTuple
 
+from baton._state import PROCESS_SEQUENCE, SessionCounter
+from baton._uuid import uuid7
+
 #: Rung 4's carrier on both adapters. Present on old-spec streamable HTTP;
 #: removed from the wire entirely by MCP 2026-07-28+ (SEP-2567), and never
 #: present on stdio.
@@ -24,10 +27,29 @@ SessionOrigin = Literal["observed", "minted"]
 
 class ResolvedSession(NamedTuple):
     """A ``session_id`` with the envelope's ``session_id_origin`` (SPEC §11.4).
-    How the id was found decides the origin, never the id's spelling."""
+    How the id was found decides the origin, never the id's spelling.
+
+    ``per_call`` ids are clock-numbered: a counter would keep an entry for
+    every request the process serves."""
 
     id: str
     origin: SessionOrigin
+    per_call: bool = False
+
+
+def end_of_ladder(*, fallback: str, transport_observed: str | None) -> ResolvedSession:
+    """SPEC §3.4 rung 5: a new id per request where an HTTP request is behind
+    the call, else the install-time ``fallback``, which is correct where one
+    process serves one agent."""
+    if transport_observed == "http":
+        return ResolvedSession(f"sdk-{uuid7()}", "minted", per_call=True)
+    return ResolvedSession(fallback, "minted")
+
+
+async def next_sequence(counter: SessionCounter, session: ResolvedSession) -> int:
+    if session.per_call:
+        return PROCESS_SEQUENCE.next()
+    return await counter.next(session.id)
 
 
 def session_id_from_headers(headers: Any) -> str | None:

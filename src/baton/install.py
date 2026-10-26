@@ -53,7 +53,7 @@ mis-route installs a capture that looks healthy and produces nothing
 **The off switch.** Setting ``BATON_DISABLED=1`` in the
 environment makes this function install NOTHING and raise nothing: no
 middleware, no wrapped tools, no annotation tool on the surface, no
-instructions rewrite, no sink. The server behaves exactly as it would without
+added instructions, no sink. The server behaves exactly as it would without
 this call. See ``baton._optout``.
 
 """

@@ -20,12 +20,11 @@ and only on requests with HTTP headers: on stdio and in-process one process is
 one client and ``fallback`` already says so.
 
 On stateless streamable HTTP (``stateless_http=True``) the rung also runs, but
-mcp builds a new ``ServerSession`` for every request, so the id is per request
-and is sent as ``"minted"``. That split is the safe direction; sending those
-calls to the process-wide fallback would merge every client of a multi-user
-server. It costs ``sequence_number`` continuity, the once-per-session proactive
-and the annotation-to-call join. SPEC §3.4's answer is rung 5, which is unbuilt
-(D2).
+mcp builds a new ``ServerSession`` for every request, so the id is per request:
+it is sent as ``"minted"`` and numbered like rung 5's.
+
+Where no rung answers, the ladder ends on rung 5 (``end_of_ladder``): a new id
+per request behind HTTP, the process-wide fallback otherwise.
 """
 
 from __future__ import annotations
@@ -33,12 +32,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
+from typing import Any, Literal
 
 from fastmcp.server.dependencies import get_context, get_http_headers, get_http_request
 
 from baton.integrations._session import (
     ResolvedSession,
+    end_of_ladder,
     session_id_from_headers,
 )
 
@@ -103,9 +103,12 @@ def session_from_fastmcp_context(
         return None
     if not session_id:
         return None
-    return ResolvedSession(
-        session_id, "observed" if _client_keeps_the_session(context) else "minted"
-    )
+    scope = _session_scope(context)
+    if scope == "connection":
+        return ResolvedSession(session_id, "observed")
+    # After a failed read the id may be an SSE connection's, which the counter
+    # already numbers, so only a known per-request id is clock-numbered.
+    return ResolvedSession(session_id, "minted", per_call=scope == "request")
 
 
 def extract_headers() -> Mapping[str, str] | None:
@@ -167,29 +170,23 @@ def observe_transport(*, _get_http_request: Callable[[], object] | None = None) 
 
 
 async def resolve_call_session(
-    *, headers: Mapping[str, str] | None, fallback: str, context: Any = None
+    *,
+    headers: Mapping[str, str] | None,
+    fallback: str,
+    transport_observed: str | None,
+    context: Any = None,
 ) -> ResolvedSession:
-    """The per-call session id and its origin, SPEC §3.4's layered fallback in priority
+    """The per-call session id and its origin, SPEC §3.4's ladder in priority
     order: (4) the ``mcp-session-id`` header; (4b) fastmcp's
     ``Context.session_id``, where its cache survives and the header was
-    absent; else ``fallback``, the install-time process-wide id. Rung 3 (a
-    future runtime-specific ``_meta`` key) isn't defined for any runtime yet,
-    so it's skipped.
+    absent; (5) a new id for this request when an HTTP request is behind it;
+    else ``fallback``, the install-time process-wide id. Rung 3 is defined for
+    no runtime yet.
 
     There is no vendor hook and no ``_meta`` rung: each would key the session
     on an id the SDK did not mint. What the vendor knows about a caller goes
     in ``principal`` (``VendorConfig.resolve_principal``) instead, and
     ``_meta`` reaches the console as ``runtime_meta``.
-
-    ``fallback`` is **not** SPEC rung 5. Rung 5 is a per-event UUID; neither
-    adapter implements it, so both terminate on a process-wide id that is
-    stable but merges every client of a multi-user server. That gap is D2.
-    ⚠ Rung 5 is also **not implementable yet**, and not only for want of code:
-    SPEC now conditions it on ``transport_observed`` (this fallback is the
-    CORRECT answer on stdio, where one process is one agent), and what a fired
-    rung emits is undecided — a stream of fresh UUIDs is indistinguishable from
-    the merge defect, which is why the ``correlation_mode`` field was dropped
-    rather than kept. D-3 settles the shape.
     """
     from_header = session_id_from_headers(headers)
     if from_header is not None:
@@ -197,21 +194,22 @@ async def resolve_call_session(
     from_context = session_from_fastmcp_context(headers, context)
     if from_context is not None:
         return from_context
-    return ResolvedSession(fallback, "minted")
+    return end_of_ladder(fallback=fallback, transport_observed=transport_observed)
 
 
-def _client_keeps_the_session(context: Any) -> bool:
-    """Whether rung 4b's id names a session the client keeps.
+def _session_scope(context: Any) -> Literal["connection", "request", "unknown"]:
+    """What rung 4b's id names: a session the client keeps, or one request.
 
     mcp sets ``client_params`` only when a session handles ``initialize``. An
     SSE connection does, so fastmcp's id holds for the connection. Stateless
     streamable HTTP builds a new session for every request, already marked
     initialized, so it never has them and fastmcp's id is new per request
-    (SPEC §11.4 ``"minted"``). A failed read answers False: the console may
-    then join that connection with the same person's other sessions, never
-    with a stranger's."""
+    (SPEC §11.4 ``"minted"``). A failed read answers ``"unknown"``, sent as
+    ``"minted"``: the console may then join that connection with the same
+    person's other sessions, never with a stranger's."""
     try:
-        return context.request_context.session.client_params is not None
+        initialized = context.request_context.session.client_params is not None
     except Exception:
         logger.debug("session_id_origin: could not read the session", exc_info=True)
-        return False
+        return "unknown"
+    return "connection" if initialized else "request"

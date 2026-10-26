@@ -104,7 +104,6 @@ from typing import Any, Self, TypeVar, cast
 
 from baton._dsn import parse_dsn, select_dsn
 from baton._library_session import (
-    PROCESS_SEQUENCE,
     LibrarySession,
     enter_block,
     exit_block,
@@ -119,6 +118,7 @@ from baton._result_capture import (
     validate_mode,
     withholding,
 )
+from baton._state import PROCESS_SEQUENCE
 from baton._uuid import uuid7
 from baton.events import (
     DEFAULT_CONSENT_TOKEN,

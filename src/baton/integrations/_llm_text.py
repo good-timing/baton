@@ -11,8 +11,8 @@ truncation cap):**
   the BEFORE/AFTER/IF triggers, the report fields, and the
   "annotation doesn't replace answering" guardrail. Claude Code
   truncates ``InitializeResult.instructions`` at ~2087 chars, so the
-  template is kept under ~1500 chars and the fixed subagent sentence
-  added after it fits in the rest. Loaded once at session init, which is the only point that
+  template is kept under ~1500 chars and the fixed recovery and subagent
+  sentences fit in the rest. Loaded once at session init, which is the only point that
   can drive the *first* proactive annotation before any tool is called.
 - *Annotation tool description* carries the field-level reference (what
   belongs in user_goal / expected_result / overall_task / suggested_improvement /
@@ -83,6 +83,13 @@ _INSTRUCTIONS_PROACTIVE_CLAUSE = (
     "repeated verbatim until the user starts a different task.\n\n"
 )
 
+# Without it an agent can file the report and stop the user's task.
+_INSTRUCTIONS_RECOVERY_SENTENCE = (
+    " Then keep going: work out why the call failed, fix the input, and try "
+    "again. Do not repeat the same failing call. Reporting is not a "
+    "substitute for recovering."
+)
+
 # Always present, in both modes — this is the product signal. `again` points
 # back at the BEFORE call, so it is rendered only where that call is asked for.
 _INSTRUCTIONS_REACTIVE_CLAUSES = (
@@ -90,7 +97,8 @@ _INSTRUCTIONS_REACTIVE_CLAUSES = (
     "unhelpful or contradictory result, or the user shows signs of giving "
     "up, you MUST call `{annotation_tool_name}` {again}with what_happened "
     "(REQUIRED, your own words, NOT a category), tool_name (REQUIRED) and "
-    "suggested_improvement (REQUIRED whenever you can articulate one).\n\n"
+    "suggested_improvement (REQUIRED whenever you can articulate one)."
+    "{recovery}\n\n"
     "IF a {vendor_display_name} tool response lacks a structured field for "
     "what the user asked about, OR you satisfied the user's intent via a "
     "workaround because no tool matched what they asked for, OR the user "
@@ -150,7 +158,7 @@ _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
 
 
 # Empirically measured Claude Code truncation cap for InitializeResult.instructions.
-# The cap below it leaves room for ``_INSTRUCTIONS_SUBAGENT_CLAUSE``.
+# The cap below it leaves room for the fixed recovery and subagent sentences.
 _CLAUDE_CODE_TRUNCATION_CAP = 2087
 _INSTRUCTIONS_LENGTH_CAP = 1500
 
@@ -352,24 +360,70 @@ def build_server_instructions(
         template = _INSTRUCTIONS_HEAD_PROACTIVE + _INSTRUCTIONS_PROACTIVE_CLAUSE
     else:
         template = _INSTRUCTIONS_HEAD_REACTIVE_ONLY
-    rendered = (template + _INSTRUCTIONS_REACTIVE_CLAUSES).format(
-        vendor_display_name=vendor_display_name,
-        annotation_tool_name=annotation_tool_name,
-        again="again " if proactive_mode == "on" else "",
-    )
-    if len(rendered) > _INSTRUCTIONS_LENGTH_CAP:
+
+    def render(recovery: str) -> str:
+        return (template + _INSTRUCTIONS_REACTIVE_CLAUSES).format(
+            vendor_display_name=vendor_display_name,
+            annotation_tool_name=annotation_tool_name,
+            again="again " if proactive_mode == "on" else "",
+            recovery=recovery,
+        )
+
+    # The cap is the budget the two names share. The fixed sentences have no
+    # names in them, so they come out of the headroom under the truncation cap.
+    budgeted = len(render(""))
+    if budgeted > _INSTRUCTIONS_LENGTH_CAP:
         raise ValueError(
-            f"Rendered server instructions are {len(rendered)} chars, which exceeds "
+            f"Rendered server instructions are {budgeted} chars, which exceeds "
             f"the {_INSTRUCTIONS_LENGTH_CAP}-char safety cap "
             f"(Claude Code truncates at ~{_CLAUDE_CODE_TRUNCATION_CAP}). "
             f"Shorten vendor_display_name or annotation_tool_name."
         )
-    # Added after the cap check: the sentence has a fixed length, so it comes
-    # out of the headroom under the truncation point and not out of the budget
-    # the two names share.
+    rendered = render(_INSTRUCTIONS_RECOVERY_SENTENCE)
     if intent_param_mode != "off":
         rendered += _INSTRUCTIONS_SUBAGENT_CLAUSE
     return rendered
+
+
+_VENDOR_INSTRUCTIONS_ATTR = "_baton_vendor_instructions"
+# Where our paragraph begins; both heads share it.
+_OURS_START = _INSTRUCTIONS_HEAD_PROACTIVE.split("{", 1)[0]
+
+
+def _ends_in_ours(current: Any, vendor: Any) -> bool:
+    """Whether ``current`` is the vendor's text followed by a paragraph of ours."""
+    if not isinstance(current, str):
+        return False
+    prefix = f"{vendor}\n\n" if isinstance(vendor, str) and vendor.strip() else ""
+    return current.startswith(prefix + _OURS_START)
+
+
+def with_vendor_instructions(mcp: Any, ours: str) -> str:
+    """SPEC §5.1.2: the vendor's own instructions first, ours below them.
+
+    The runtime cuts at ``_CLAUDE_CODE_TRUNCATION_CAP`` from the end, so the
+    order decides whose text is lost. The vendor's text is remembered on the
+    server, so a second install replaces our paragraph rather than appending
+    another; text the vendor set in between replaces what was remembered.
+    """
+    current = mcp.instructions
+    vendor = getattr(mcp, _VENDOR_INSTRUCTIONS_ATTR, current)
+    if not _ends_in_ours(current, vendor):
+        vendor = current
+        setattr(mcp, _VENDOR_INSTRUCTIONS_ATTR, vendor)
+    if not isinstance(vendor, str) or not vendor.strip():
+        return ours
+    combined = f"{vendor}\n\n{ours}"
+    if len(combined) > _CLAUDE_CODE_TRUNCATION_CAP:
+        logger.warning(
+            "baton: the server instructions are %d chars (yours %d, Baton's %d); "
+            "Claude Code cuts them at ~%d, so the end of Baton's text is lost there",
+            len(combined),
+            len(vendor),
+            len(ours),
+            _CLAUDE_CODE_TRUNCATION_CAP,
+        )
+    return combined
 
 
 def build_annotation_tool_description(

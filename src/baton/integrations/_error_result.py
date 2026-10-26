@@ -196,9 +196,7 @@ def returned_error_fields(
     ``error_body`` is genuinely ambiguous with "the failure carried no
     message", and ``result_capture`` is what tells the two apart.
 
-    The RAISE shape has no projection and needs none — its ``error_body`` is
-    the vendor's own exception text, not result-derived, so it is unchanged
-    under every mode (SPEC §11.4.3(1)).
+    The RAISE shape is ``raised_error_fields``.
     """
     if withholding(mode):
         return ErrorResultFields(error_body="", result_capture=WITHHELD)
@@ -206,3 +204,42 @@ def returned_error_fields(
         error_body=str(scrubber(error_text(result)))[:2000],
         result=scrubber(envelope_to_jsonable(result)),
     )
+
+
+def vendor_exception(raised: BaseException, host_package: str) -> BaseException:
+    """The exception the vendor's code raised: what ``raised`` wraps when the
+    host library raised it around a cause, else ``raised`` itself.
+
+    Who raised it is read from the frame its ``raise`` ran in: a vendor's own
+    ``raise ToolError(...) from e`` is chained too, and is the vendor's."""
+    cause = raised.__cause__
+    tb = raised.__traceback__
+    if cause is None or tb is None:
+        return raised
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    module = str(tb.tb_frame.f_globals.get("__name__", ""))
+    raised_by_host = module == host_package or module.startswith(f"{host_package}.")
+    return cause if raised_by_host else raised
+
+
+def marked_public(exc: BaseException, tool_error: type[BaseException]) -> bool:
+    """Whether the vendor raised ``exc`` to give the agent its message.
+
+    A tool-error raised ``from`` another exception may describe that exception,
+    so it does not count (SPEC §11.4.3(1))."""
+    return isinstance(exc, tool_error) and exc.__cause__ is None
+
+
+def raised_error_fields(
+    *,
+    mode: str,
+    scrubber: Callable[[Any], Any],
+    raised: BaseException,
+    tool_error: type[BaseException],
+) -> ErrorResultFields:
+    """The RAISE failure shape's ``error_body`` (SPEC §11.4.3(1)): withheld
+    under ``"off"`` unless the vendor marked the message public."""
+    if withholding(mode) and not marked_public(raised, tool_error):
+        return ErrorResultFields(error_body="", result_capture=WITHHELD)
+    return ErrorResultFields(error_body=str(scrubber(str(raised)))[:2000])

@@ -32,6 +32,7 @@ from baton.integrations._llm_text import (
     build_annotation_tool_description,
     build_refusal_text,
 )
+from baton.integrations._session import next_sequence
 from baton.integrations.client_observed import clean_runtime_meta, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
@@ -145,10 +146,13 @@ def register_annotation_tool(
         call_headers = _extract_headers_from_context(ctx)
         client = observe_client(meta_dict, context=ctx, headers=call_headers, scrubber=scrubber)
         scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, logger, "annotation _meta")
-        # The same ladder the tool-call path climbs, so an annotation lands in
-        # the session of the calls it describes.
+        # The same ladder the tool-call path climbs, so where a session can be
+        # read an annotation lands in the session of the calls it describes.
+        call_transport = observe_transport(ctx)
         call_session = await _resolve_call_session(
-            headers=call_headers, fallback=fallback_session_id
+            headers=call_headers,
+            fallback=fallback_session_id,
+            transport_observed=call_transport,
         )
         # Identity takes the SAME ladder the tool-call path takes, hook
         # included, and carries the finished wire value — the raw principal
@@ -173,7 +177,7 @@ def register_annotation_tool(
             hook_context=identity_hook_context,
             logger=logger,
         )
-        seq = await counter.next(call_session.id)
+        seq = await next_sequence(counter, call_session)
         # safe_emit, not safe_write: `build_annotation_payload` runs the
         # vendor's scrubber on five fields, and as an ARGUMENT expression it
         # would be evaluated in THIS frame, before `safe_write` was entered —
@@ -200,7 +204,7 @@ def register_annotation_tool(
                 captured_at=datetime.now(UTC),
                 client_observed=client,
                 principal=annotation_principal,
-                transport_observed=observe_transport(ctx),
+                transport_observed=call_transport,
                 session_id_origin=call_session.origin,
                 runtime_meta=scrubbed_meta,
                 payload=build_annotation_payload(

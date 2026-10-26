@@ -37,7 +37,7 @@ a ``dsn=`` field of its own so the two combine.
 **The off switch.** Setting ``BATON_DISABLED=1`` in the
 environment makes this function install NOTHING and raise nothing: no
 middleware, no wrapped tools, no annotation tool on the surface, no
-instructions rewrite, no sink. The server behaves exactly as it would without
+added instructions, no sink. The server behaves exactly as it would without
 this call. See ``baton._optout``.
 
 """
@@ -64,7 +64,7 @@ from baton.integrations._lifecycle import (
     install_lifecycle_capture,
     warn_if_results_are_withheld,
 )
-from baton.integrations._llm_text import build_server_instructions
+from baton.integrations._llm_text import build_server_instructions, with_vendor_instructions
 from baton.integrations._surface import build_server_meta
 from baton.integrations.official import _auth
 from baton.integrations.official._compat import (
@@ -173,7 +173,7 @@ def install_baton(
         proactive_mode=config.proactive_mode,
         intent_param_mode=config.intent_param_mode,
     )
-    set_server_instructions(mcp, instructions)
+    set_server_instructions(mcp, with_vendor_instructions(mcp, instructions))
 
     # Wrap currently-registered tools + patch add_tool for future ones.
     install_wraps(
@@ -195,12 +195,15 @@ def install_baton(
     async def read_request(request_context: Any) -> CapturedRequest:
         context = _RequestOnly(request_context)
         headers = _extract_headers_from_context(context)
+        transport = observe_transport(context)
         return CapturedRequest(
             meta=_extract_meta_from_context(context),
             headers=headers,
             handshake_context=context,
-            transport_observed=observe_transport(context),
-            session=await _resolve_call_session(headers=headers, fallback=fallback_session_id),
+            transport_observed=transport,
+            session=await _resolve_call_session(
+                headers=headers, fallback=fallback_session_id, transport_observed=transport
+            ),
         )
 
     install_lifecycle_capture(

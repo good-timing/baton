@@ -20,7 +20,7 @@ local sinks AND any HTTP sink see only scrubbed values.
 - cc — 13-19 digit candidates filtered by Luhn
 
 Plus field-name overrides: any dict key matching
-``{email, phone, ssn, api_key, token, secret, password}`` (case-insensitive)
+``{email, phone, ssn, api_key, token, secret, password, user_name}`` (case-insensitive)
 force-redacts its string value regardless of pattern.
 
 Differs from LangSmith's approach (off by default, bring-your-own regex)
@@ -46,6 +46,9 @@ _T = TypeVar("_T")
 # Cap on recursive walk depth. Matches LangSmith's default; protects
 # against pathological inputs without truncating realistic MCP payloads.
 DEPTH_LIMIT = 10
+DEPTH_MARKER = "[REDACTED:depth-limit]"
+
+logger = logging.getLogger(__name__)
 
 # Dict keys whose string values are redacted regardless of value-pattern
 # match. Case-insensitive exact match (no plural / prefix matching to keep
@@ -110,13 +113,26 @@ class Scrubber:
 
     def __init__(self) -> None:
         self.counts: Counter[str] = Counter()
+        self._warned_depth = False
 
     def __call__(self, value: Any) -> Any:
         return self._walk(value, depth=0, force_field=None)
 
+    def _past_the_depth_limit(self) -> str:
+        self.counts["depth_limit"] += 1
+        if not self._warned_depth:
+            self._warned_depth = True
+            logger.warning(
+                "baton: a payload nests deeper than %d levels; containers past that "
+                "depth are sent as %r",
+                DEPTH_LIMIT,
+                DEPTH_MARKER,
+            )
+        return DEPTH_MARKER
+
     def _walk(self, value: Any, *, depth: int, force_field: str | None) -> Any:
-        if depth >= DEPTH_LIMIT:
-            return value
+        if depth >= DEPTH_LIMIT and isinstance(value, (dict, list)):
+            return self._past_the_depth_limit()
         if isinstance(value, dict):
             return {
                 k: self._walk(

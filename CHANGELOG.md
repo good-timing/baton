@@ -8,6 +8,50 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## 0.8.21 (unreleased): one session per call on stateless HTTP, kept instructions, no unscrubbed deep values
+
+### Fixed
+
+- **On HTTP with no session to read, each request is its own session**
+  (SPEC §3.4 rung 5). Stateless streamable HTTP, SSE on the official `mcp`
+  adapter, and any HTTP connection on mcp 2 used to put every caller of the
+  server into one install-time session. Each request now gets its own
+  `sdk-` id, with `session_id_origin: "minted"`; a tool call's start and end
+  share it. Its `sequence_number` comes from the clock, so the per-session
+  counter no longer grows by one entry per request. stdio and in-memory
+  servers keep one session per process, as before.
+- **`install_baton` keeps your server instructions.** It used to write over
+  them. Its own text now goes below yours, after a blank line, and it logs a
+  warning when the two together pass the ~2,087 characters Claude Code
+  keeps, because the runtime then cuts the end of Baton's text.
+- **The scrubber no longer sends deep values unscrubbed.** A value 10 or
+  more levels deep went out as is. An object or array there is now sent as
+  `"[REDACTED:depth-limit]"`, counted in `Scrubber.counts["depth_limit"]`, and
+  logged once per scrubber. A plain value there is scrubbed as usual.
+
+### Changed
+
+- **After reporting a failed call, the agent is told to carry on.** The
+  instructions' error paragraph now ends: "Then keep going: work out why the
+  call failed, fix the input, and try again. Do not repeat the same failing
+  call. Reporting is not a substitute for recovering." Without it, an agent
+  could report the error and then stop the user's task. The instructions grow
+  by about 160 characters.
+- **`result_capture_mode="off"` withholds a raised exception's message,
+  unless it is a `ToolError`.** A tool's error message is its answer when it
+  fails, and it was sent in every mode. Under `"off"` it is now `""`, with
+  `result_capture: "off"` on the event. Raise your MCP library's `ToolError`
+  for a message you want the agent and Baton to see. A `ToolError` raised
+  `from` another exception is withheld, because fastmcp wraps every exception
+  that way; write `raise ToolError(...) from None` to have it sent.
+  `error_type` and timing are still sent, and `"full"` is unchanged.
+- **On `fastmcp`, `error_type` names the exception your tool raised.** It was
+  `"ToolError"` for every raised error, because fastmcp wraps the exception
+  before the middleware sees it. It now reads the wrapped one, as the official
+  `mcp` adapter already did: a `ValueError` is sent as `"ValueError"`.
+
+---
+
 ## 0.8.20: a client closes its sink once
 
 ### Fixed

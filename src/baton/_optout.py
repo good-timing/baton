@@ -4,7 +4,7 @@
 
 **Off means INSTALL NOTHING, and it means NEVER THROW.** Not capture-and-
 discard: no middleware, no tool wrapping, no annotation tool on the surface, no
-instructions rewrite, no sink, no buffer, no background thread. The vendor's
+added instructions, no sink, no buffer, no background thread. The vendor's
 server starts and behaves exactly as it would if ``install_baton`` were not in
 the file at all. That is the contract, and both halves are load-bearing:
 

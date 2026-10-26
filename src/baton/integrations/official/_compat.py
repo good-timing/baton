@@ -43,17 +43,21 @@ if TYPE_CHECKING:
     # 1.27 / 2.0.
     MCPServerClass = Any
     ContextClass = Any
+    ToolErrorClass: type[Exception]
 else:
     try:  # mcp <2
         from mcp.server.fastmcp import Context as ContextClass
         from mcp.server.fastmcp import FastMCP as MCPServerClass
+        from mcp.server.fastmcp.exceptions import ToolError as ToolErrorClass
     except ImportError:  # mcp >=2.0 renamed the module + class
         from mcp.server.mcpserver import Context as ContextClass
         from mcp.server.mcpserver import MCPServer as MCPServerClass
+        from mcp.server.mcpserver.exceptions import ToolError as ToolErrorClass
 
 __all__ = [
     "ContextClass",
     "MCPServerClass",
+    "ToolErrorClass",
     "get_lowlevel_server",
     "require_high_level_server",
     "set_server_instructions",

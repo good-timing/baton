@@ -31,6 +31,7 @@ from baton.integrations._llm_text import (
     build_annotation_tool_description,
     build_refusal_text,
 )
+from baton.integrations._session import next_sequence
 from baton.integrations.client_observed import clean_runtime_meta, meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
@@ -121,12 +122,15 @@ def register_annotation_tool(
 
         # SPEC §3.4's ladder, resolved by the SAME function the middleware's
         # tool-call path uses — an annotation that resolved differently from
-        # the call it describes could never be joined to it downstream, which
-        # is the one correlation this tool exists to produce.
+        # the call it describes could never be joined to it downstream.
+        call_transport = observe_transport()
         call_session = await resolve_call_session(
-            headers=call_headers, fallback=fallback_session_id, context=ctx
+            headers=call_headers,
+            fallback=fallback_session_id,
+            transport_observed=call_transport,
+            context=ctx,
         )
-        seq = await counter.next(call_session.id)
+        seq = await next_sequence(counter, call_session)
         # Identity takes the SAME ladder the tool-call path takes, hook
         # included; see ``official/annotation.py`` for why the annotation path
         # must consult it too.
@@ -165,7 +169,7 @@ def register_annotation_tool(
                 captured_at=datetime.now(UTC),
                 client_observed=client,
                 principal=annotation_principal,
-                transport_observed=observe_transport(),
+                transport_observed=call_transport,
                 session_id_origin=call_session.origin,
                 runtime_meta=scrubbed_meta,
                 payload=build_annotation_payload(

@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
 
+from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools import Tool
 from mcp.types import CallToolRequestParams, ListToolsRequest
@@ -46,7 +47,9 @@ from baton.integrations._config import SessionResolutionContext
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
     is_error_result,
+    raised_error_fields,
     returned_error_fields,
+    vendor_exception,
 )
 from baton.integrations._llm_text import (
     EXPECTED_RESULT_PARAM_NAME,
@@ -58,6 +61,7 @@ from baton.integrations._llm_text import (
     build_user_goal_param_description,
     required_param_names,
 )
+from baton.integrations._session import next_sequence
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 from baton.integrations.client_observed import clean_runtime_meta, meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
@@ -284,7 +288,7 @@ class BatonMiddleware(Middleware):
                     required_param_names(intent_param_mode=self._intent_param_mode)
                 ),
             )
-            seq = await self._next_seq(self._fallback_session_id)
+            seq = await self._counter.next(self._fallback_session_id)
             event = SurfaceSnapshotEvent(
                 tenant_id=self._tenant_id,
                 vendor_id=self._vendor_id,
@@ -478,15 +482,13 @@ class BatonMiddleware(Middleware):
         )
         scrubbed_meta = clean_runtime_meta(self._scrubber, meta_dict, logger)
 
-        # Read once per call, beside the session it conditions. SPEC §3.4
-        # rung 5 fires only where this says ``"http"``, because the
-        # process-wide fallback below is the CORRECT answer on stdio and a
-        # stranger-merging one on a hosted server, and the two are identical
-        # in the resolved value.
+        # Read once per call, beside the session it conditions: SPEC §3.4
+        # rung 5 fires only where this says ``"http"``.
         call_transport = observe_transport()
         call_session = await resolve_call_session(
             headers=call_headers,
             fallback=self._fallback_session_id,
+            transport_observed=call_transport,
             context=context.fastmcp_context,
         )
 
@@ -509,7 +511,7 @@ class BatonMiddleware(Middleware):
         # tool_call_start — before invoking the vendor handler. safe_write
         # so a sink failure doesn't break the vendor's tool call (SPEC §11.2).
         if not is_continuation:
-            seq_start = await self._next_seq(call_session.id)
+            seq_start = await next_sequence(self._counter, call_session)
             await safe_emit(
                 self._sink,
                 lambda: ToolCallStartEvent(
@@ -556,11 +558,18 @@ class BatonMiddleware(Middleware):
             # it synchronously inside this block; this makes it not depend on
             # that.
             raised = exc
+            vendor_exc = vendor_exception(raised, "fastmcp")
             duration_ms = int((monotonic() - called_at) * 1000)
-            seq_err = await self._next_seq(call_session.id)
-            await safe_emit(
-                self._sink,
-                lambda: ToolCallErrorEvent(
+            seq_err = await next_sequence(self._counter, call_session)
+
+            def build_error() -> ToolCallErrorEvent:
+                fields = raised_error_fields(
+                    mode=self._result_capture_mode,
+                    scrubber=self._scrubber,
+                    raised=raised,
+                    tool_error=ToolError,
+                )
+                return ToolCallErrorEvent(
                     tenant_id=self._tenant_id,
                     vendor_id=self._vendor_id,
                     consent_token=self._consent_token,
@@ -575,13 +584,14 @@ class BatonMiddleware(Middleware):
                     runtime_meta=scrubbed_meta,
                     payload=ToolCallErrorPayload(
                         tool_name=tool_name,
-                        error_type=type(raised).__name__,
-                        error_body=str(self._scrubber(str(raised)))[:2000],
+                        error_type=type(vendor_exc).__name__,
+                        error_body=fields.error_body,
                         duration_ms=duration_ms,
+                        result_capture=fields.result_capture,
                     ),
-                ),
-                logger,
-            )
+                )
+
+            await safe_emit(self._sink, build_error, logger)
             raise
 
         # MRTR: an ``InputRequiredResult`` means the call PAUSED to ask the
@@ -616,7 +626,7 @@ class BatonMiddleware(Middleware):
         # as before. That is correct — there is no flag to misread — and it is
         # pinned positively by ``test_floor_has_no_flag_to_read``.
         if is_error_result(result):
-            seq_err = await self._next_seq(call_session.id)
+            seq_err = await next_sequence(self._counter, call_session)
 
             # SPEC §11.4.3(2): both result-derived members, decided together.
             # ⚠ The projection runs INSIDE the thunk. It owns the scrubber call
@@ -659,7 +669,7 @@ class BatonMiddleware(Middleware):
             await safe_emit(self._sink, build_err, logger)
             return result
 
-        seq_end = await self._next_seq(call_session.id)
+        seq_end = await next_sequence(self._counter, call_session)
 
         # ⚠ The projection runs INSIDE the thunk, same rule as the error leg
         # above: it owns the scrubber call (`_result_capture.py`), and out here
@@ -697,12 +707,8 @@ class BatonMiddleware(Middleware):
         return result
 
     # =========================================================================
-    # Internal — sequence number + extraction helpers
+    # Internal — extraction helpers
     # =========================================================================
-
-    async def _next_seq(self, session_id: str) -> int:
-        """Atomically increment + return the per-session sequence counter."""
-        return await self._counter.next(session_id)
 
     @staticmethod
     def _extract_request_meta(context: MiddlewareContext[CallToolRequestParams]) -> Any:
