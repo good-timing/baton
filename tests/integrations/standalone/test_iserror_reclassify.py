@@ -170,6 +170,6 @@ async def test_raise_shape_is_unchanged(events: list[dict[str, Any]]) -> None:
     only coverage the floor has, and it is the assertion that proves this
     adapter sits outside fastmcp's exception-to-flag conversion."""
     payload = _terminal(events, "hard_fail")["payload"]
-    assert payload["error_type"] == "ToolError"
+    assert payload["error_type"] == "ValueError"
     assert "boom" in payload["error_body"]
     assert payload.get("result") is None

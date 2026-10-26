@@ -78,9 +78,15 @@ async def test_the_origin_follows_the_session_header(
     events = _per_call(events_path)
     session_id, origin = expected
     assert {ev["transport_observed"] for ev in events} == {"http"}
-    assert {(ev["session_id"], ev["session_id_origin"]) for ev in events} == {
-        (session_id or handle.session_id, origin)
-    }
+    assert {ev["session_id_origin"] for ev in events} == {origin}
+    if session_id is not None:
+        assert {ev["session_id"] for ev in events} == {session_id}
+    else:
+        # SPEC §3.4 rung 5: each call its own session, never the install id.
+        by_call = {(ev["call_id"], ev["session_id"]) for ev in events}
+        assert len(by_call) == 2
+        assert len({sid for _, sid in by_call}) == 2
+        assert handle.session_id not in {sid for _, sid in by_call}
 
 
 @pytest.mark.parametrize("fake_context", [_FakeContextV1, _FakeContextV2], ids=["mcp1", "mcp2"])

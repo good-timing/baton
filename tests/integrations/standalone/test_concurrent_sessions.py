@@ -171,37 +171,7 @@ def _running_server(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    "transport",
-    [
-        pytest.param(
-            "http",
-            marks=pytest.mark.xfail(
-                MCP_MAJOR >= 2,
-                strict=True,
-                raises=AssertionError,
-                reason=(
-                    "fastmcp 4 sends no mcp-session-id and its own cached id is "
-                    "rebuilt per request, so every client lands on the process-wide "
-                    "fallback and merges — seams note D2, undecided"
-                ),
-            ),
-        ),
-        pytest.param(
-            "sse",
-            marks=pytest.mark.xfail(
-                MCP_MAJOR >= 2,
-                strict=True,
-                raises=AssertionError,
-                reason=(
-                    "SSE never sends the mcp-session-id header, and on mcp 2.x "
-                    "rung 4b is gated off because the cache does not survive — "
-                    "so nothing is left but the fallback"
-                ),
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("transport", ["http", "sse"])
 async def test_concurrent_clients_do_not_share_a_session_id(transport: str) -> None:
     with _running_server(transport) as (sink, url):
 
@@ -226,34 +196,13 @@ async def test_concurrent_clients_do_not_share_a_session_id(transport: str) -> N
 
 
 @pytest.mark.anyio
-@pytest.mark.xfail(
-    MCP_MAJOR >= 2,
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "on mcp 2.x rung 4b is gated off (the cached id does not survive), and "
-        "stateless mode issues no mcp-session-id — so both clients land on the "
-        "process-wide fallback and merge. Same D2 gap as the other two legs."
-    ),
-)
 async def test_stateless_http_clients_do_not_merge() -> None:
     """Stateless streamable HTTP splits one client's calls, and that is DELIBERATE.
 
-    A stateless server rebuilds its session per request, so ``Context.session_id``
-    (rung 4b) mints a fresh id per call: one client's consecutive calls do not
-    share an id, ``sequence_number`` restarts at 1, and a cross-request
-    ``*_annotate`` cannot be joined to the call it describes. That is unchanged
-    from 0.6.1, which resolved through the same property — this ladder neither
-    caused it nor repairs it, and SPEC §3.4's answer is rung 5 (per-event UUID),
-    unbuilt in both adapters (D2).
-
-    **What this test pins is the direction, not the split.** The tempting "fix" is
-    to narrow rung 4b's gate so stateless falls through to ``fallback``. That
-    would trade a recoverable failure for an unrecoverable one: a split costs
-    joins, while the process-wide fallback would merge every client of a
-    multi-user stateless server and attach one user's arguments to another
-    user's result. This test goes RED on exactly that change, and stays green
-    under rung 5, whose per-event ids are also distinct.
+    Each request is its own session (SPEC §3.4 rung 5, or rung 4b's per-request
+    id on mcp 1), so one client's calls do not share an id either. The tempting
+    "fix" is to send them to the process-wide fallback, which would merge every
+    client of a multi-user server; this test goes red on that change.
     """
     with _running_server("http", stateless=True) as (sink, url):
 
@@ -279,7 +228,9 @@ async def test_stateless_http_clients_do_not_merge() -> None:
 async def test_a_listing_shares_the_calls_session(transport: str) -> None:
     """SPEC §11.4.5: a listing carries the session id any other request from
     that client would carry. The list handler runs below fastmcp, so this is
-    the ladder's fastmcp rung reached from outside a fastmcp context."""
+    the ladder's fastmcp rung reached from outside a fastmcp context. On mcp 2
+    no session survives across requests, so each request is its own (§3.4
+    rung 5)."""
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
 
     connect = SSETransport if transport == "sse" else StreamableHttpTransport
@@ -304,8 +255,11 @@ async def test_a_listing_shares_the_calls_session(transport: str) -> None:
 
     for caller in ("alice", "bob"):
         called_in = sessions_of(caller, "tool_call_start")
+        listed_in = sessions_of(caller, "tool_list_start")
         assert len(called_in) == 1, caller
-        assert sessions_of(caller, "tool_list_start") == called_in, caller
-        assert sessions_of(caller, "tool_list_end") == called_in, caller
-    if MCP_MAJOR < 2:
-        assert sessions_of("alice", "tool_call_start") != sessions_of("bob", "tool_call_start")
+        assert sessions_of(caller, "tool_list_end") == listed_in, caller
+        if MCP_MAJOR < 2:
+            assert listed_in == called_in, caller
+        else:
+            assert listed_in and listed_in.isdisjoint(called_in), caller
+    assert sessions_of("alice", "tool_call_start") != sessions_of("bob", "tool_call_start")

@@ -23,8 +23,8 @@ from werkzeug.wrappers import Response
 
 from baton.integrations._llm_text import build_user_goal_param_description
 from baton.integrations.standalone import VendorConfig, install_baton
-from baton.sinks import HttpSink
-from tests._event_helpers import without_surface_snapshots, without_tool_listings
+from baton.sinks import FileSink, HttpSink
+from tests._event_helpers import read_events, without_surface_snapshots, without_tool_listings
 
 
 @pytest.fixture
@@ -1067,3 +1067,106 @@ def test_a_bare_low_level_server_is_not_bounced_to_the_other_adapter() -> None:
     assert "Neither adapter supports it yet" in detail
     # It must NOT hand them an adapter that will refuse them in turn.
     assert "Use ``baton.integrations.official.install_baton`` instead" not in detail
+
+
+VENDOR_INSTRUCTIONS = "VENDOR: use search_actions + run_action for anything outside ads-core."
+
+
+class TestVendorInstructionsAreKept:
+    """SPEC §5.1.2: install appends below the vendor's instructions, and
+    never writes over them."""
+
+    def _install(self, tmp_path: Any, instructions: str | None) -> tuple[Any, Any, str]:
+        path = str(tmp_path / "events.jsonl")
+        mcp = FastMCP("Acme Ads", instructions=instructions)
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="acme-ads",
+                vendor_display_name="Acme Ads",
+                consent_token="ct_test",
+                sink=FileSink(path),
+            ),
+        )
+        return mcp, handle, path
+
+    async def test_the_vendors_text_comes_first_and_the_sdks_below_it(self, tmp_path: Any) -> None:
+        mcp, handle, _ = self._install(tmp_path, VENDOR_INSTRUCTIONS)
+        try:
+            vendor, sep, ours = mcp.instructions.partition("\n\n")
+            assert (vendor, sep) == (VENDOR_INSTRUCTIONS, "\n\n")
+            assert handle.annotation_tool_name in ours
+        finally:
+            await handle.aclose()
+
+    @pytest.mark.parametrize("instructions", [None, "", "  \n"])
+    async def test_no_vendor_text_leaves_only_the_sdks(
+        self, tmp_path: Any, instructions: str | None
+    ) -> None:
+        mcp, handle, _ = self._install(tmp_path, instructions)
+        try:
+            assert mcp.instructions.startswith("This server is wrapped")
+        finally:
+            await handle.aclose()
+
+    async def test_the_snapshot_still_carries_the_vendors_own_text(self, tmp_path: Any) -> None:
+        mcp, handle, path = self._install(tmp_path, VENDOR_INSTRUCTIONS)
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        try:
+            async with Client(mcp) as client:
+                await client.call_tool("echo", {"text": "x"})
+            await handle.flush()
+        finally:
+            await handle.aclose()
+        snapshot = next(e for e in read_events(path) if e["event_type"] == "surface_snapshot")
+        assert snapshot["payload"]["instructions"] == VENDOR_INSTRUCTIONS
+
+    async def test_too_long_together_warns_and_installs(
+        self, tmp_path: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mcp, handle, _ = self._install(tmp_path, "x" * 800)
+        try:
+            assert mcp.instructions.startswith("x" * 800)
+            assert "2087" in caplog.text and "800" in caplog.text
+        finally:
+            await handle.aclose()
+
+    async def test_a_second_install_replaces_our_paragraph(self, tmp_path: Any) -> None:
+        mcp, handle, _ = self._install(tmp_path, VENDOR_INSTRUCTIONS)
+        try:
+            again = install_baton(
+                mcp,
+                VendorConfig(
+                    vendor_id="acme-ads",
+                    vendor_display_name="Acme Ads",
+                    consent_token="ct_test",
+                    proactive_mode="on",
+                    sink=FileSink(str(tmp_path / "second.jsonl")),
+                ),
+            )
+            assert mcp.instructions.startswith(VENDOR_INSTRUCTIONS + "\n\n")
+            assert mcp.instructions.count("This server is wrapped") == 1
+            await again.aclose()
+        finally:
+            await handle.aclose()
+
+    async def test_dropping_the_subagent_sentence_keeps_the_vendors_text(
+        self, tmp_path: Any
+    ) -> None:
+        mcp, handle, _ = self._install(tmp_path, VENDOR_INSTRUCTIONS)
+        try:
+
+            @mcp.tool()
+            def approve(doc: str, overall_task: str = "") -> str:
+                return doc
+
+            async with Client(mcp) as client:
+                await client.list_tools()
+            assert "subagent" not in mcp.instructions
+            assert mcp.instructions.startswith(VENDOR_INSTRUCTIONS + "\n\n")
+        finally:
+            await handle.aclose()

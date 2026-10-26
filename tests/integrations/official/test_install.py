@@ -1389,3 +1389,106 @@ def test_the_standalone_fastmcp_server_is_told_which_adapter_to_use(events_path:
     assert "standalone" in detail
     # It must NOT reach for the bare-Server / version guesses here.
     assert "pin mcp" not in detail and "mcp.server.Server" not in detail
+
+
+VENDOR_INSTRUCTIONS = "VENDOR: use search_actions + run_action for anything outside ads-core."
+
+
+class TestVendorInstructionsAreKept:
+    """SPEC §5.1.2: install appends below the vendor's instructions, and
+    never writes over them."""
+
+    def _install(self, events_path: str, instructions: str | None) -> tuple[Any, Any]:
+        mcp = FastMCP("Acme Ads", instructions=instructions)
+        handle = install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="acme-ads",
+                vendor_display_name="Acme Ads",
+                consent_token="ct_test",
+                sink=FileSink(events_path),
+            ),
+        )
+        return mcp, handle
+
+    async def test_the_vendors_text_comes_first_and_the_sdks_below_it(
+        self, events_path: str
+    ) -> None:
+        mcp, handle = self._install(events_path, VENDOR_INSTRUCTIONS)
+        try:
+            vendor, sep, ours = mcp.instructions.partition("\n\n")
+            assert (vendor, sep) == (VENDOR_INSTRUCTIONS, "\n\n")
+            assert handle.annotation_tool_name in ours
+        finally:
+            await handle.aclose()
+
+    @pytest.mark.parametrize("instructions", [None, "", "  \n"])
+    async def test_no_vendor_text_leaves_only_the_sdks(
+        self, events_path: str, instructions: str | None
+    ) -> None:
+        mcp, handle = self._install(events_path, instructions)
+        try:
+            assert mcp.instructions.startswith("This server is wrapped")
+        finally:
+            await handle.aclose()
+
+    async def test_the_snapshot_still_carries_the_vendors_own_text(self, events_path: str) -> None:
+        mcp, handle = self._install(events_path, VENDOR_INSTRUCTIONS)
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        try:
+            await mcp.call_tool("echo", {"text": "x"})
+            await handle.flush()
+        finally:
+            await handle.aclose()
+        snapshot = next(
+            e for e in _read_events(events_path) if e["event_type"] == "surface_snapshot"
+        )
+        assert snapshot["payload"]["instructions"] == VENDOR_INSTRUCTIONS
+
+    async def test_too_long_together_warns_and_installs(
+        self, events_path: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mcp, handle = self._install(events_path, "x" * 800)
+        try:
+            assert mcp.instructions.startswith("x" * 800)
+            assert "2087" in caplog.text and "800" in caplog.text
+        finally:
+            await handle.aclose()
+
+    async def test_a_second_install_replaces_our_paragraph(self, events_path: Any) -> None:
+        mcp, handle = self._install(events_path, VENDOR_INSTRUCTIONS)
+        try:
+            again = install_baton(
+                mcp,
+                VendorConfig(
+                    vendor_id="acme-ads",
+                    vendor_display_name="Acme Ads",
+                    consent_token="ct_test",
+                    proactive_mode="on",
+                    sink=FileSink(events_path + ".2"),
+                ),
+            )
+            assert mcp.instructions.startswith(VENDOR_INSTRUCTIONS + "\n\n")
+            assert mcp.instructions.count("This server is wrapped") == 1
+            await again.aclose()
+        finally:
+            await handle.aclose()
+
+    async def test_dropping_the_subagent_sentence_keeps_the_vendors_text(
+        self, events_path: str
+    ) -> None:
+        mcp, handle = self._install(events_path, VENDOR_INSTRUCTIONS)
+
+        def approve(doc: str, overall_task: str = "") -> str:
+            return doc
+
+        try:
+            mcp.add_tool(approve)
+            assert "subagent" not in mcp.instructions
+            assert mcp.instructions.startswith(VENDOR_INSTRUCTIONS + "\n\n")
+        finally:
+            await handle.aclose()

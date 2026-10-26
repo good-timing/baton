@@ -21,9 +21,13 @@ Coverage:
 
 from __future__ import annotations
 
+import json
+import logging
+from typing import Any
+
 import pytest
 
-from baton.scrub import DEPTH_LIMIT, Scrubber, identity_scrub
+from baton.scrub import DEPTH_LIMIT, DEPTH_MARKER, Scrubber, identity_scrub
 
 # =============================================================================
 # Pattern coverage
@@ -179,20 +183,57 @@ def test_non_string_scalars_pass_through() -> None:
     assert out == {"n": 42, "b": True, "x": None, "f": 3.14}
 
 
-def test_depth_limit_does_not_crash_on_deep_input() -> None:
-    """Construct a structure deeper than DEPTH_LIMIT — should return
-    cleanly without scrubbing past the cap. Just verifying no recursion
-    blow-up and a sane result; the deep leaf may or may not be scrubbed
-    depending on exactly where the cap hits."""
+def _wrapped(value: Any, levels: int) -> Any:
+    for _ in range(levels):
+        value = {"wrap": value}
+    return value
+
+
+LEAKY = {"email": "jane@client.com", "note": "call jane@client.com"}
+
+
+def test_values_inside_the_depth_limit_are_scrubbed() -> None:
+    out = Scrubber()(_wrapped(LEAKY, DEPTH_LIMIT - 2))
+    assert "jane@client.com" not in json.dumps(out)
+    assert DEPTH_MARKER not in json.dumps(out)
+
+
+@pytest.mark.parametrize("extra", [0, 1, 5])
+def test_containers_past_the_depth_limit_are_never_sent_raw(extra: int) -> None:
+    out = Scrubber()(_wrapped(LEAKY, DEPTH_LIMIT + extra))
+    assert "jane@client.com" not in json.dumps(out)
+    assert DEPTH_MARKER in json.dumps(out)
+
+
+def test_plain_values_at_the_depth_limit_are_scrubbed_not_replaced() -> None:
+    """Only a container can nest further, so only a container is cut."""
+    out = Scrubber()(_wrapped({"status": "ok", "note": "call jane@client.com"}, DEPTH_LIMIT - 1))
+    dumped = json.dumps(out)
+    assert '"ok"' in dumped
+    assert "jane@client.com" not in dumped
+    assert DEPTH_MARKER not in dumped
+
+
+def test_non_string_values_at_the_limit_are_replaced_too() -> None:
+    out = Scrubber()(_wrapped({"card": 4111111111111111}, DEPTH_LIMIT))
+    assert "4111111111111111" not in json.dumps(out)
+
+
+def test_hitting_the_depth_limit_is_counted_and_logged_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     s = Scrubber()
-    deep: dict = {"a": "x@y.co"}
-    cur = deep
-    for _ in range(DEPTH_LIMIT + 5):
-        cur["next"] = {"a": "x@y.co"}
-        cur = cur["next"]
-    # Should not raise; should return *something*.
-    out = s(deep)
-    assert isinstance(out, dict)
+    with caplog.at_level(logging.WARNING, logger="baton.scrub"):
+        s(_wrapped(LEAKY, DEPTH_LIMIT))
+        s(_wrapped(LEAKY, DEPTH_LIMIT))
+    assert s.counts["depth_limit"] >= 2
+    warnings = [r for r in caplog.records if "depth" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "jane@client.com" not in caplog.text
+
+
+def test_depth_limit_does_not_crash_on_very_deep_input() -> None:
+    assert isinstance(Scrubber()(_wrapped("x@y.co", 5000)), dict)
 
 
 # =============================================================================

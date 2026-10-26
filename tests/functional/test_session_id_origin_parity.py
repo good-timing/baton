@@ -146,7 +146,8 @@ async def test_over_a_real_socket_the_origin_follows_the_rung(
     connection) is ``"observed"``, one id per caller. Stateless, fastmcp makes
     a new id per request: ``"minted"``, one per call, even when the URL
     carries SSE's ``session_id`` parameter. On mcp 2.x no rung answers, so
-    both callers share the install-time id: ``"minted"``."""
+    each request is its own session (SPEC §3.4 rung 5): ``"minted"``, one per
+    call."""
     import asyncio
     from importlib.metadata import version
 
@@ -183,10 +184,7 @@ async def test_over_a_real_socket_the_origin_follows_the_rung(
         start_ids = set().union(*ids_by_caller.values())
         origins = {ev["session_id_origin"] for ev in calls}
 
-        if mcp_major >= 2:
-            assert origins == {"minted"}
-            assert start_ids == {install_time_id}
-        elif stateless:
+        if mcp_major >= 2 or stateless:
             assert origins == {"minted"}
             assert len(start_ids) == 4, "one id per request"
             assert install_time_id not in start_ids

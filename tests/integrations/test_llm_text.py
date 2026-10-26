@@ -12,15 +12,20 @@ Load-bearing properties tied to Claude Code's empirically observed
 
 from __future__ import annotations
 
+import types
+from typing import Any
+
 import pytest
 
 from baton.integrations._llm_text import (
     _CLAUDE_CODE_TRUNCATION_CAP,
+    _OURS_START,
     build_annotation_tool_description,
     build_overall_task_param_description,
     build_refusal_text,
     build_server_instructions,
     required_param_names,
+    with_vendor_instructions,
 )
 
 
@@ -43,6 +48,40 @@ def test_instructions_raises_when_names_exceed_cap() -> None:
         build_server_instructions(
             vendor_display_name="A" * 200,
             annotation_tool_name="a_annotate",
+        )
+
+
+@pytest.mark.parametrize("proactive_mode", ["off", "on"])
+def test_the_error_paragraph_tells_the_agent_to_carry_on(proactive_mode: str) -> None:
+    """Without the sentence an agent can file the report and stop the user's task."""
+    rendered = build_server_instructions(
+        vendor_display_name="Acme",
+        annotation_tool_name="acme_annotate",
+        proactive_mode=proactive_mode,
+    )
+    error_paragraph = next(p for p in rendered.split("\n\n") if p.startswith("AFTER"))
+    assert error_paragraph.endswith(
+        "suggested_improvement (REQUIRED whenever you can articulate one). "
+        "Then keep going: work out why the call failed, fix the input, and try "
+        "again. Do not repeat the same failing call. Reporting is not a "
+        "substitute for recovering."
+    )
+
+
+@pytest.mark.parametrize("proactive_mode", ["off", "on"])
+def test_the_recovery_sentence_leaves_the_name_budget_alone(proactive_mode: str) -> None:
+    """The longest names that fit are the same with and without the sentence."""
+    longest = {"off": 68, "on": 34}[proactive_mode]
+    build_server_instructions(
+        vendor_display_name="X" * longest,
+        annotation_tool_name="x" * longest,
+        proactive_mode=proactive_mode,
+    )
+    with pytest.raises(ValueError, match="exceeds the"):
+        build_server_instructions(
+            vendor_display_name="X" * (longest + 1),
+            annotation_tool_name="x" * (longest + 1),
+            proactive_mode=proactive_mode,
         )
 
 
@@ -413,3 +452,37 @@ def test_the_refusal_names_the_next_step_for_each_sender() -> None:
         "what_happened. If neither is true, do NOT re-send: that would file a "
         "report for a call that did not go wrong."
     )
+
+
+def test_both_heads_open_with_the_text_that_marks_our_paragraph() -> None:
+    for mode in ("off", "on"):
+        rendered = build_server_instructions(
+            vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode=mode
+        )
+        assert rendered.startswith(_OURS_START)
+
+
+class TestWithVendorInstructions:
+    """SPEC §5.1.2 across repeated installs on one server."""
+
+    OURS = "This server is wrapped in the Acme usage and friction SDK. More."
+
+    def _server(self, instructions: str | None) -> Any:
+        return types.SimpleNamespace(instructions=instructions)
+
+    def test_a_second_install_replaces_our_paragraph(self) -> None:
+        mcp = self._server("Vendor v1.")
+        mcp.instructions = with_vendor_instructions(mcp, self.OURS)
+        assert with_vendor_instructions(mcp, self.OURS) == f"Vendor v1.\n\n{self.OURS}"
+
+    def test_text_the_vendor_set_between_installs_is_kept(self) -> None:
+        mcp = self._server("Vendor v1.")
+        mcp.instructions = with_vendor_instructions(mcp, self.OURS)
+        mcp.instructions = "Vendor v2."
+        assert with_vendor_instructions(mcp, self.OURS) == f"Vendor v2.\n\n{self.OURS}"
+
+    def test_vendor_text_added_after_an_install_with_none_is_kept(self) -> None:
+        mcp = self._server(None)
+        mcp.instructions = with_vendor_instructions(mcp, self.OURS)
+        mcp.instructions = "Vendor v2."
+        assert with_vendor_instructions(mcp, self.OURS) == f"Vendor v2.\n\n{self.OURS}"

@@ -191,7 +191,7 @@ async def test_concurrent_tasks_keep_their_own_blocks() -> None:
 def test_sequence_numbers_increase_when_the_clock_does_not(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("baton._library_session.time.time_ns", lambda: 1_700_000_000_000_000_000)
+    monkeypatch.setattr("baton._state.time.time_ns", lambda: 1_700_000_000_000_000_000)
     sink = _CollectingSink()
     client = _client(sink)
     with client.session():
@@ -237,7 +237,7 @@ def test_blank_intent_is_no_intent() -> None:
 def test_two_clients_in_one_process_never_repeat_a_number(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("baton._library_session.time.time_ns", lambda: 1_700_000_000_000_000_000)
+    monkeypatch.setattr("baton._state.time.time_ns", lambda: 1_700_000_000_000_000_000)
     sink_a, sink_b = _CollectingSink(), _CollectingSink()
     client_a, client_b = _client(sink_a), _client(sink_b)
     with client_a.session(session_id="shared"):

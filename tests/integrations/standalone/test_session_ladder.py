@@ -14,9 +14,12 @@ from fastmcp.server.http import set_http_request
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Response
 
-from baton.integrations._session import ResolvedSession
 from baton.integrations.standalone import _session
-from baton.integrations.standalone._session import extract_headers, resolve_call_session
+from baton.integrations.standalone._session import (
+    extract_headers,
+    observe_transport,
+    resolve_call_session,
+)
 from baton.integrations.standalone.middleware import BatonMiddleware
 from baton.sinks import HttpSink, Sink
 from tests._asgi import fake_http_request
@@ -111,17 +114,29 @@ requires_http_injection = pytest.mark.skipif(
 _fake_http_request = fake_http_request
 
 
+#: What ``_resolve`` returns for a rung 5 id, which is new on every call.
+PER_CALL = "<per-call>"
+
+
 async def _resolve(
     *,
     headers: dict[str, str] | None = None,
     fallback: str = "sdk-fallback",
-) -> ResolvedSession:
+) -> tuple[str, str]:
     """Takes no ``meta``: ``resolve_call_session`` has no meta parameter, so
     passing one would prove nothing. The meta rungs' absence is asserted
     through the real middleware, below."""
 
-    async def call() -> ResolvedSession:
-        return await resolve_call_session(headers=extract_headers(), fallback=fallback)
+    async def call() -> tuple[str, str]:
+        session = await resolve_call_session(
+            headers=extract_headers(),
+            fallback=fallback,
+            transport_observed=observe_transport(),
+        )
+        if session.per_call and session.id.startswith("sdk-"):
+            assert session.id != fallback
+            return PER_CALL, session.origin
+        return session.id, session.origin
 
     if headers is None:
         return await call()
@@ -204,25 +219,25 @@ class TestHeaderAndFallbackRungs:
         assert await _resolve() == ("sdk-fallback", "minted")
 
     @requires_http_injection
-    async def test_empty_header_value_falls_through_to_fallback(self) -> None:
-        assert await _resolve(headers={"mcp-session-id": ""}) == ("sdk-fallback", "minted")
+    async def test_empty_header_value_falls_through_to_rung_5(self) -> None:
+        assert await _resolve(headers={"mcp-session-id": ""}) == (PER_CALL, "minted")
 
     @requires_http_injection
     async def test_unrelated_headers_do_not_resolve(self) -> None:
-        assert await _resolve(headers={"x-request-id": "nope"}) == ("sdk-fallback", "minted")
+        assert await _resolve(headers={"x-request-id": "nope"}) == (PER_CALL, "minted")
 
 
 @pytest.mark.parametrize(
-    ("context", "kept"),
+    ("context", "scope"),
     [
-        (_FakeContext(initialized=True), True),
-        (_FakeContext(initialized=False), False),
-        (object(), False),
+        (_FakeContext(initialized=True), "connection"),
+        (_FakeContext(initialized=False), "request"),
+        (object(), "unknown"),
     ],
     ids=["initialized-sse-connection", "stateless-request", "unreadable"],
 )
-def test_the_session_check(context: Any, kept: bool) -> None:
-    assert _session._client_keeps_the_session(context) is kept
+def test_the_session_check(context: Any, scope: str) -> None:
+    assert _session._session_scope(context) == scope
 
 
 class TestRung4bFastmcpContext:
@@ -236,15 +251,17 @@ class TestRung4bFastmcpContext:
 
     @requires_http_injection
     @pytest.mark.parametrize(
-        ("kept", "origin"), [(True, "observed"), (False, "minted")], ids=["sse", "stateless"]
+        ("scope", "origin"),
+        [("connection", "observed"), ("request", "minted")],
+        ids=["sse", "stateless"],
     )
     async def test_used_on_an_http_request_with_no_session_header(
-        self, monkeypatch: pytest.MonkeyPatch, kept: bool, origin: str
+        self, monkeypatch: pytest.MonkeyPatch, scope: str, origin: str
     ) -> None:
         """On SSE fastmcp's id holds for the connection; on stateless streamable
         HTTP it makes one per request."""
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
-        monkeypatch.setattr(_session, "_client_keeps_the_session", lambda _context: kept)
+        monkeypatch.setattr(_session, "_session_scope", lambda _context: scope)
         monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("fastmcp-id"))
         assert await _resolve(headers={"host": "example.invalid"}) == ("fastmcp-id", origin)
 
@@ -284,11 +301,11 @@ class TestRung4bFastmcpContext:
     async def test_gated_off_where_the_cache_does_not_survive(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """On mcp 2.x the id is minted fresh per call, so the rung must not fire
-        — the fallback loses joins, but this rung would MANUFACTURE them."""
+        """On mcp 2.x fastmcp's id is minted fresh per call, so the rung must not
+        fire and the ladder goes on to rung 5."""
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", False)
         monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("fresh-every-call"))
-        assert await _resolve(headers={"host": "x"}) == ("sdk-fallback", "minted")
+        assert await _resolve(headers={"host": "x"}) == (PER_CALL, "minted")
 
     @requires_http_injection
     async def test_no_active_context_falls_through(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -300,7 +317,36 @@ class TestRung4bFastmcpContext:
 
         monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
         monkeypatch.setattr(_session, "get_context", boom)
-        assert await _resolve(headers={"host": "x"}) == ("sdk-fallback", "minted")
+        assert await _resolve(headers={"host": "x"}) == (PER_CALL, "minted")
+
+    @requires_http_injection
+    async def test_a_per_request_id_is_numbered_as_per_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stateless request's id is never seen again, so a per-session
+        counter entry for it would never be freed."""
+        monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
+        monkeypatch.setattr(_session, "get_context", lambda: _FakeContext(initialized=False))
+        with set_http_request(_fake_http_request({"host": "x"})):
+            session = await resolve_call_session(
+                headers=extract_headers(), fallback="sdk-fallback", transport_observed="http"
+            )
+        assert (session.id, session.per_call) == ("fastmcp-id", True)
+
+    @requires_http_injection
+    async def test_an_unreadable_session_keeps_the_counter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The id may be an SSE connection's, so switching it to the clock
+        would send its numbers backwards on the next readable call."""
+        monkeypatch.setattr(_session, "_SESSION_CACHE_SURVIVES", True)
+        monkeypatch.setattr(_session, "_session_scope", lambda _context: "unknown")
+        monkeypatch.setattr(_session, "get_context", lambda: _FakeContext("conn-id"))
+        with set_http_request(_fake_http_request({"host": "x"})):
+            session = await resolve_call_session(
+                headers=extract_headers(), fallback="sdk-fallback", transport_observed="http"
+            )
+        assert (session.id, session.origin, session.per_call) == ("conn-id", "minted", False)
 
     async def test_gate_matches_the_installed_mcp_major(self) -> None:
         """The gate is a claim about the INSTALLED stack, so pin it to that

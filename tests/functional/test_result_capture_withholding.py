@@ -62,6 +62,22 @@ class _Recorder:
         return any(needle in json.dumps(c, default=str) for c in self.calls)
 
 
+PUBLIC_MESSAGE = "Row not found. Check the row id and try again."
+
+
+def _raise(kind: str, tool_error: type[Exception]) -> None:
+    """``plain`` raises a vendor exception, ``public`` the library's tool-error
+    class, ``chained`` a tool-error raised from a vendor exception."""
+    if kind == "public":
+        raise tool_error(PUBLIC_MESSAGE)
+    if kind == "chained":
+        try:
+            raise ValueError(f"no such row {SECRET}")
+        except ValueError as exc:
+            raise tool_error(PUBLIC_MESSAGE) from exc
+    raise ValueError(f"no such row {SECRET}")
+
+
 def _payloads(path: Path, event_type: str) -> list[dict[str, Any]]:
     return [e["payload"] for e in read_events(path) if e["event_type"] == event_type]
 
@@ -71,8 +87,11 @@ def _payloads(path: Path, event_type: str) -> list[dict[str, Any]]:
 # =============================================================================
 
 
-async def _run_standalone(events_path: Path, mode: str, scrubber: Any, *, fail: bool) -> None:
+async def _run_standalone(
+    events_path: Path, mode: str, scrubber: Any, *, fail: bool, raises: str = "plain"
+) -> None:
     from fastmcp import Client, FastMCP
+    from fastmcp.exceptions import ToolError
 
     from baton.integrations.standalone import VendorConfig, install_baton
     from baton.sinks import FileSink
@@ -82,7 +101,7 @@ async def _run_standalone(events_path: Path, mode: str, scrubber: Any, *, fail: 
     @mcp.tool
     def fetch(row: str) -> dict[str, Any]:
         if fail:
-            raise ValueError(f"no such row {row}")
+            _raise(raises, ToolError)
         return {"record": SECRET}
 
     handle = install_baton(
@@ -109,9 +128,12 @@ async def _run_standalone(events_path: Path, mode: str, scrubber: Any, *, fail: 
         await handle.aclose()
 
 
-async def _run_official(events_path: Path, mode: str, scrubber: Any, *, fail: bool) -> None:
+async def _run_official(
+    events_path: Path, mode: str, scrubber: Any, *, fail: bool, raises: str = "plain"
+) -> None:
     from baton.integrations.official import VendorConfig, install_baton
     from baton.integrations.official._compat import MCPServerClass as FastMCP
+    from baton.integrations.official._compat import ToolErrorClass
     from baton.sinks import FileSink
     from tests._mcp_session import connected_session
 
@@ -120,7 +142,7 @@ async def _run_official(events_path: Path, mode: str, scrubber: Any, *, fail: bo
     @mcp.tool()
     def fetch(row: str) -> dict[str, Any]:
         if fail:
-            raise ValueError(f"no such row {row}")
+            _raise(raises, ToolErrorClass)
         return {"record": SECRET}
 
     handle = install_baton(
@@ -287,36 +309,72 @@ async def test_captured_events_carry_a_NULL_marker_not_a_missing_key(tmp_path: P
 # =============================================================================
 
 
+_MCP_DRIVERS = {"standalone": _run_standalone, "official": _run_official}
+
+
+async def _raised_errors(
+    tmp_path: Path, surface: str, mode: str, raises: str
+) -> tuple[dict[str, Any], _Recorder]:
+    path = tmp_path / f"{surface}-{mode}-{raises}.jsonl"
+    scrubber = _Recorder()
+    await _MCP_DRIVERS[surface](path, mode, scrubber, fail=True, raises=raises)
+    errors = _payloads(path, "tool_call_error")
+    assert len(errors) == 1, "the tool did not raise; the assertions would be vacuous"
+    return errors[0], scrubber
+
+
 @pytest.mark.anyio
-async def test_the_RAISE_shape_is_UNCHANGED_under_off(tmp_path: Path) -> None:
-    """§11.4.3(1): a raised exception's message is the vendor's own code speaking.
+@pytest.mark.parametrize("surface", ["standalone", "official"])
+@pytest.mark.parametrize("raises", ["plain", "chained"])
+async def test_a_raised_message_is_WITHHELD_under_off(
+    tmp_path: Path, surface: str, raises: str
+) -> None:
+    """§11.4.3(1): a raised message is the tool's answer on the failure path.
+    A tool-error chained onto a vendor exception may describe that exception,
+    so it is withheld too."""
+    withheld, scrubber = await _raised_errors(tmp_path, surface, "off", raises)
+    captured, _ = await _raised_errors(tmp_path, surface, "full", raises)
 
-    Nothing was withheld from this event, so it carries NO marker — and the
-    diagnostic that makes "write the fix" specificity possible survives the
-    strictest capture mode. A change that blanket-dropped ``error_body`` would
-    pass every other test in this file and fail here.
-    """
-    off = tmp_path / "raise-off.jsonl"
-    full = tmp_path / "raise-full.jsonl"
-    await _run_standalone(off, "off", _Recorder(), fail=True)
-    await _run_standalone(full, "full", _Recorder(), fail=True)
+    assert withheld["error_body"] == ""
+    assert withheld["result_capture"] == "off"
+    assert not scrubber.saw(SECRET)
+    assert withheld["error_type"] == captured["error_type"]
+    assert captured["error_body"], "the control must have a message to withhold"
 
-    off_errors = _payloads(off, "tool_call_error")
-    full_errors = _payloads(full, "tool_call_error")
-    assert off_errors, "the tool did not raise — the assertions below would be vacuous"
-    assert len(off_errors) == len(full_errors)
 
-    for withheld_run, captured_run in zip(off_errors, full_errors, strict=True):
-        # The assertion is EQUALITY across the two modes, not a match against a
-        # literal message: fastmcp wraps the vendor's ``ValueError`` in its own
-        # ``ToolError`` before this adapter sees it, so the class name here is
-        # the library's and pinning it would be testing fastmcp. What §11.4.3
-        # actually promises is that ``"off"`` changes this leg NOT AT ALL.
-        assert withheld_run["error_body"] == captured_run["error_body"]
-        assert withheld_run["error_type"] == captured_run["error_type"]
-        # ...and the control for THAT: there has to be something to preserve.
-        assert withheld_run["error_body"], "a blank body would satisfy equality vacuously"
-        assert withheld_run.get("result_capture") is None
+@pytest.mark.anyio
+@pytest.mark.parametrize("raises", ["plain", "public", "chained"])
+async def test_both_adapters_name_the_class_the_tool_raised(tmp_path: Path, raises: str) -> None:
+    """SPEC §11.4.3(1): ``error_type`` is the vendor's exception class, not the
+    wrapper fastmcp puts around it."""
+    standalone, _ = await _raised_errors(tmp_path, "standalone", "full", raises)
+    official, _ = await _raised_errors(tmp_path, "official", "full", raises)
+
+    expected = "ValueError" if raises == "plain" else "ToolError"
+    assert standalone["error_type"] == official["error_type"] == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("surface", ["standalone", "official"])
+async def test_a_ToolError_message_is_KEPT_under_off(tmp_path: Path, surface: str) -> None:
+    """§11.4.3(1): the vendor raised the library's tool-error class to give the
+    agent this message, so it is not withheld and the event carries no marker."""
+    kept, _ = await _raised_errors(tmp_path, surface, "off", "public")
+
+    assert PUBLIC_MESSAGE in kept["error_body"]
+    assert kept.get("result_capture") is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("surface", ["standalone", "official"])
+@pytest.mark.parametrize("raises", ["plain", "public", "chained"])
+async def test_full_mode_still_sends_every_raised_message(
+    tmp_path: Path, surface: str, raises: str
+) -> None:
+    captured, _ = await _raised_errors(tmp_path, surface, "full", raises)
+
+    assert captured["error_body"]
+    assert captured.get("result_capture") is None
 
 
 def test_the_RETURN_shape_withholds_BOTH_members(tmp_path: Path) -> None:
