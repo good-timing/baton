@@ -362,21 +362,18 @@ async def test_a_throwing_scrubber_does_not_break_the_ANNOTATION_tool(
     )
 
 
-async def test_the_annotation_workflow_field_goes_through_the_scrubber(
+async def test_an_annotate_call_with_the_retired_fields_is_still_filed(
     tmp_path: Path,
 ) -> None:
-    """SPEC §11.2(2) — the official twin of the standalone test.
-
-    ⚠ Both adapters carried the same unscrubbed `workflow` and the same
-    one-line fix, so testing one would leave a SPEC §11.2(2) fix half proven on
-    a path the vendor believes is scrubbed.
-    """
+    """A client holding the tool list from before still sends ``overall_task``
+    and ``expected_result``; the report is filed and they are not recorded."""
     res = await _drive(
         tmp_path / "w1.jsonl",
         lambda v: v.replace("alice@acme.com", "[REDACTED]") if isinstance(v, str) else v,
         call="annotate",
         args={
             "user_goal": "goal alice@acme.com",
+            "expected_result": "a list alice@acme.com",
             "overall_task": "task alice@acme.com",
             "what_happened": "the call came back unusable",
         },
@@ -385,9 +382,6 @@ async def test_the_annotation_workflow_field_goes_through_the_scrubber(
     ann = [e for e in events if e.get("event_type") == "annotation"]
     assert ann, f"no annotation event written: {events!r}"
     payload = ann[0]["payload"]
-    # The control: the field that was ALREADY scrubbed. Without it a scrubber
-    # the rig never wired up reads exactly like a working one.
     assert payload["intent"] == "goal [REDACTED]", payload
-    assert payload["workflow"] == "task [REDACTED]", (
-        f"`workflow` bypassed the vendor's scrubber: {payload['workflow']!r}"
-    )
+    assert payload.get("workflow") is None, payload
+    assert payload.get("expected_outcome") is None, payload

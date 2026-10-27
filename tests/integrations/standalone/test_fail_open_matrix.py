@@ -32,7 +32,6 @@ pytestmark = pytest.mark.asyncio
 
 _ANNOTATE_ARGS = {
     "user_goal": GOAL_MARKER,
-    "overall_task": "a task",
     "what_happened": "the call came back unusable",
 }
 

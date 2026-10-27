@@ -17,8 +17,6 @@ def _redact(value: Any) -> Any:
 def _build(**report: Any) -> Any:
     fields: dict[str, Any] = {
         "user_goal": "look something up",
-        "expected_result": None,
-        "overall_task": None,
         "suggested_improvement": None,
         "context": None,
         "what_happened": None,

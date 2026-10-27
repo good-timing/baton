@@ -202,7 +202,8 @@ def test_deriving_never_turns_a_working_install_into_a_raise() -> None:
     NOTHING enforces a 30-char ``vendor_display_name``
     → [[feedback_a_justification_must_name_the_case_it_covers]].
     """
-    long_display = "Acme Corporation Knowledge Platform"  # 35 chars, no rule against it
+    long_display = "Acme Corporation Knowledge Platform for Regional Sales and Support Teams"
+    assert len(long_display) == 72  # no rule against it
     # The pre-change name for this vendor, which renders today.
     build_server_instructions(
         vendor_display_name=long_display,
@@ -210,11 +211,11 @@ def test_deriving_never_turns_a_working_install_into_a_raise() -> None:
         proactive_mode="on",
     )
     # The name the server WOULD supply is legal and readable...
-    assert slug_server_name("Acme Corporation Knowledge Platform") is not None
+    assert slug_server_name(long_display) is not None
     # ...and is refused anyway, because taking it would make the boot fail.
     assert (
         annotation_tool_name_from_server(
-            FastMCP("Acme Corporation Knowledge Platform"),
+            FastMCP(long_display),
             vendor_display_name=long_display,
             proactive_mode="on",
         )

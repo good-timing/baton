@@ -112,13 +112,13 @@ class TestInstallation:
             await handle.aclose()
 
     @pytest.mark.parametrize("registered", ["before_install", "after_install"])
-    async def test_a_tool_with_its_own_overall_task_drops_the_subagent_sentence(
+    async def test_a_tool_with_its_own_user_goal_drops_the_subagent_sentence(
         self, events_path: str, registered: str
     ) -> None:
         """The sentence would send the turn number into the vendor's argument."""
         mcp = FastMCP("x")
 
-        def approve(doc: str, overall_task: str = "") -> str:
+        def approve(doc: str, user_goal: str = "") -> str:
             return doc
 
         if registered == "before_install":
@@ -184,7 +184,7 @@ class TestInstallation:
             "baton.integrations.official._tool_wrap.set_server_instructions", refuse
         )
 
-        def approve(doc: str, overall_task: str = "") -> str:
+        def approve(doc: str, user_goal: str = "") -> str:
             return doc
 
         try:
@@ -523,8 +523,6 @@ class TestAnnotationToolEndToEnd:
             handle.annotation_tool_name,
             {
                 "user_goal": "summarize PR comments",
-                "expected_result": "2-3 sentence paragraph",
-                "overall_task": "code-review",
             },
         )
         await handle.flush()
@@ -534,9 +532,6 @@ class TestAnnotationToolEndToEnd:
         assert len(annotations) == 1
         p = annotations[0]["payload"]
         assert p["intent"] == "summarize PR comments"
-        assert p["expected_outcome"] == "2-3 sentence paragraph"
-        # Agent sends `overall_task`; the wire carries `workflow`.
-        assert p["workflow"] == "code-review"
         assert p["what_happened"] is None
 
     async def test_reactive_annotation_with_what_happened(
@@ -596,7 +591,7 @@ class TestAllFourEventTypesInOneFlow:
 
         await mcp.call_tool(
             handle.annotation_tool_name,
-            {"user_goal": "find user", "expected_result": "user record"},
+            {"user_goal": "find user"},
         )
         await mcp.call_tool("lookup", {"name": "alice"})
         await mcp.call_tool(
@@ -859,7 +854,6 @@ class TestSurfaceSnapshot:
         ]
         echo_tool = next(t for t in snapshot["tools"] if t["name"] == "echo")
         assert "user_goal" not in echo_tool["inputSchema"].get("properties", {})
-        assert "expected_result" not in echo_tool["inputSchema"].get("properties", {})
 
     async def test_instructions_are_vendor_true(self, configured_mcp: tuple[Any, Any, str]) -> None:
         mcp, handle, path = configured_mcp
@@ -1227,7 +1221,7 @@ class TestMRTRHandling:
         self, configured_mcp: tuple[Any, Any, str]
     ) -> None:
         """A continuation suppresses the emitted tool_call_start, but the
-        injected user_goal/expected_result strip must still run — if a
+        injected user_goal strip must still run — if a
         continuation resends the original arguments, they must never reach
         the vendor handler."""
         mcp, handle, _path = configured_mcp
@@ -1483,7 +1477,7 @@ class TestVendorInstructionsAreKept:
     ) -> None:
         mcp, handle = self._install(events_path, VENDOR_INSTRUCTIONS)
 
-        def approve(doc: str, overall_task: str = "") -> str:
+        def approve(doc: str, user_goal: str = "") -> str:
             return doc
 
         try:

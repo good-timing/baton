@@ -16,14 +16,17 @@ import types
 from typing import Any
 
 import pytest
+from packaging.version import Version
 
+import baton
 from baton.integrations._llm_text import (
     _CLAUDE_CODE_TRUNCATION_CAP,
     _OURS_START,
     build_annotation_tool_description,
-    build_overall_task_param_description,
     build_refusal_text,
     build_server_instructions,
+    build_user_goal_param_description,
+    pop_goal_params,
     required_param_names,
     with_vendor_instructions,
 )
@@ -71,7 +74,7 @@ def test_the_error_paragraph_tells_the_agent_to_carry_on(proactive_mode: str) ->
 @pytest.mark.parametrize("proactive_mode", ["off", "on"])
 def test_the_recovery_sentence_leaves_the_name_budget_alone(proactive_mode: str) -> None:
     """The longest names that fit are the same with and without the sentence."""
-    longest = {"off": 68, "on": 34}[proactive_mode]
+    longest = {"off": 68, "on": 56}[proactive_mode]
     build_server_instructions(
         vendor_display_name="X" * longest,
         annotation_tool_name="x" * longest,
@@ -151,8 +154,6 @@ def test_annotation_description_lists_all_fields() -> None:
     rendered = build_annotation_tool_description(vendor_display_name="Acme")
     for field in (
         "user_goal",
-        "expected_result",
-        "overall_task",
         "what_happened",
         "tool_name",
         "suggested_improvement",
@@ -273,8 +274,6 @@ class TestProactiveMode:
             )
             for field in (
                 "user_goal",
-                "expected_result",
-                "overall_task",
                 "what_happened",
                 "tool_name",
                 "suggested_improvement",
@@ -287,10 +286,16 @@ class TestProactiveMode:
         assert "Populate proactively" not in off
 
 
-# The retired agent-facing names. These are still the WIRE keys, so they
-# legitimately appear all over the codebase — but never in text an agent reads,
-# where they would name a param that no longer exists.
-RETIRED_AGENT_FACING_NAMES = ("intent", "expected_outcome", "workflow")
+# Retired agent-facing names. Some are still WIRE keys, so they appear all over
+# the codebase — but never in text an agent reads, where they would name a
+# param that no longer exists.
+RETIRED_AGENT_FACING_NAMES = (
+    "intent",
+    "expected_outcome",
+    "workflow",
+    "expected_result",
+    "overall_task",
+)
 
 
 def test_no_agent_facing_text_still_asks_for_a_retired_param_name() -> None:
@@ -343,39 +348,39 @@ def test_no_agent_facing_text_still_asks_for_a_retired_param_name() -> None:
 
 class TestTurnNumber:
     """The wording asks for the user's message number at the start of
-    ``overall_task``; the text is the one the rig runs scored."""
+    ``user_goal``; the text is the one the rig runs scored."""
 
     BODY = (
-        "The number of the user's current message in this conversation "
-        "(1 for the first), a colon, then a short stable label for the broader "
-        "task this call serves (e.g. '3: prepare campaign approval'). Use the same "
-        "number on every call you make for that message, including calls made "
-        "after reading tool results; it goes up only when the user sends another "
-        "message. REPEAT the exact same label text after the colon on every call "
-        "serving the same task, across messages; change the label only when the "
-        "user starts a different task."
+        "Write it as '<n>: <what this call is for>; success is <what its result "
+        "should show>'. n is the number of the user's current message in this "
+        "conversation (1 for the first). Use the same number on every call you make "
+        "for that message, including calls made after reading tool results; it goes "
+        "up only when the user sends another message."
     )
     SUBAGENTS = (
         "When you hand work to a subagent that may call this server's tools, tell it "
         "the number of the user's current message in this conversation, and that it "
-        "must start overall_task with that number on every call to this server's "
+        "must start user_goal with that number on every call to this server's "
         "tools. This applies only to this server's tools."
     )
 
     def test_the_param_description_is_the_scored_text(self) -> None:
-        assert build_overall_task_param_description(intent_param_mode="required") == (
+        assert build_user_goal_param_description(intent_param_mode="required") == (
             "REQUIRED. " + self.BODY
         )
-        assert build_overall_task_param_description(intent_param_mode="optional") == (
+        assert build_user_goal_param_description(intent_param_mode="optional") == (
             "OPTIONAL. " + self.BODY
         )
 
-    def test_required_mode_escalates_all_three_params(self) -> None:
-        assert required_param_names(intent_param_mode="required") == (
-            "user_goal",
-            "expected_result",
-            "overall_task",
+    @pytest.mark.parametrize("proactive_mode", ["off", "on"])
+    def test_the_annotation_field_is_the_scored_text(self, proactive_mode: str) -> None:
+        desc = build_annotation_tool_description(
+            vendor_display_name="Acme", proactive_mode=proactive_mode
         )
+        assert "\n  - user_goal: " + self.BODY + "\n" in desc
+
+    def test_required_mode_escalates_the_one_param(self) -> None:
+        assert required_param_names(intent_param_mode="required") == ("user_goal",)
         assert required_param_names(intent_param_mode="optional") == ()
 
     @pytest.mark.parametrize("proactive_mode", ["off", "on"])
@@ -486,3 +491,36 @@ class TestWithVendorInstructions:
         mcp.instructions = with_vendor_instructions(mcp, self.OURS)
         mcp.instructions = "Vendor v2."
         assert with_vendor_instructions(mcp, self.OURS) == f"Vendor v2.\n\n{self.OURS}"
+
+
+def test_retired_names_are_popped_only_where_the_schema_is_known() -> None:
+    """With no dispositions the tool may declare a retired name itself, and
+    only ``user_goal`` is still reserved, so the vendor's argument stays."""
+    sent = {"user_goal": "1: g", "expected_result": "e", "overall_task": "t", "text": "x"}
+
+    unknown = dict(sent)
+    assert pop_goal_params("echo", unknown, None) == ("1: g", None, None)
+    assert unknown == {"expected_result": "e", "overall_task": "t", "text": "x"}
+
+    native = dict(sent)
+    dispositions = {"user_goal": "injected", "overall_task": "native"}
+    assert pop_goal_params("echo", native, dispositions) == ("1: g", "e", None)
+    assert native == {"overall_task": "t", "text": "x"}
+
+    blank = {"user_goal": " ", "expected_result": "  ", "overall_task": 3}
+    assert pop_goal_params("echo", blank, {}) == (None, None, None)
+    assert blank == {}
+
+
+# The release after next. Releases bump the patch number, so a stale tool list
+# from before the single-field release has been refreshed by then.
+_RETIRED_RECORDING_REMOVED_IN = (0, 8, 24)
+
+
+def test_retired_param_recording_is_removed_on_schedule() -> None:
+    """Remove ``pop_retired_params`` and the ``call_expected`` /
+    ``call_workflow`` it feeds in both adapters; SPEC §13 has the plan."""
+    current = Version(baton.__version__).release
+    assert current < _RETIRED_RECORDING_REMOVED_IN, (
+        "time to remove the retired expected_result / overall_task recording"
+    )

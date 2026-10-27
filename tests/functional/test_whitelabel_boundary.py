@@ -39,12 +39,11 @@ def _assert_no_baton_leak(surface_name: str, text: str | None) -> None:
 
 def _assert_injected_param_descriptions_clean(surface_name: str, schema: dict[str, Any]) -> None:
     properties = schema.get("properties") or {}
-    for param_name in ("user_goal", "expected_result"):
-        if param_name in properties:
-            _assert_no_baton_leak(
-                f"{surface_name} injected param {param_name!r} description",
-                properties[param_name].get("description"),
-            )
+    if "user_goal" in properties:
+        _assert_no_baton_leak(
+            f"{surface_name} injected param 'user_goal' description",
+            properties["user_goal"].get("description"),
+        )
 
 
 async def test_mcp_adapter_surfaces_are_whitelabeled(tmp_path: Path) -> None:

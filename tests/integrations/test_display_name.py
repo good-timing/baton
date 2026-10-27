@@ -41,13 +41,13 @@ KEY = "baton_pk_" + "z" * 43
 #: What the console mints, and what the stranger's instructions said.
 SEGMENT = "srv-51885073"
 
-#: 30 characters, the slug cap, so its tool name is the longest one derived
-#: (39). In proactive mode the pair renders to exactly the 1500-char cap.
+#: 30 characters, the slug cap, so its tool name is the longest one derived (39).
 THIRTY = "Toybox Pantry Inventory Keeper"
 THIRTY_TOOL = "toybox-pantry-inventory-keeper_annotate"
-#: One character past it. The slug cap cuts the extra "s", so the tool name is
-#: the same and only the display name grows.
-ONE_PAST = THIRTY + "s"
+#: In proactive mode, one character past the longest display name that fits
+#: beside ``THIRTY_TOOL``. The slug cap cuts the extra letters, so the tool name
+#: is the same and only the display name grows.
+ONE_PAST = THIRTY.ljust(72, "s")
 
 
 @pytest.fixture
@@ -237,7 +237,7 @@ async def test_a_thirty_character_name_fits_in_the_tightest_mode(
 async def test_a_name_that_would_not_fit_falls_back_for_the_display_name(
     install: Install, dsn: str
 ) -> None:
-    """One character past the case above, and the case that decides the order.
+    """One character past the cap, and the case that decides the order.
 
     The server's name fits beside ``srv-51885073_annotate`` and does not fit
     beside the readable tool name, so only one of the two can be readable. The
@@ -246,6 +246,9 @@ async def test_a_name_that_would_not_fit_falls_back_for_the_display_name(
     segment exactly as before.
     """
     # Preconditions, so a template change reads as this and not as a regression.
+    build_server_instructions(
+        vendor_display_name=ONE_PAST[:-1], annotation_tool_name=THIRTY_TOOL, proactive_mode="on"
+    )
     with pytest.raises(ValueError):
         build_server_instructions(
             vendor_display_name=ONE_PAST, annotation_tool_name=THIRTY_TOOL, proactive_mode="on"

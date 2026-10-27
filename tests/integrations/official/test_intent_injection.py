@@ -2,9 +2,9 @@
 
 Mirrors ``tests/integrations/standalone/test_intent_injection.py`` but targets the
 official ``mcp.server.fastmcp.FastMCP``: the adapter has no ``on_list_tools``
-middleware hook, so it injects ``user_goal``/``expected_result`` into each
+middleware hook, so it injects ``user_goal`` into each
 ``Tool.parameters`` dict at install time (that dict is what
-``FastMCP.list_tools`` advertises as ``inputSchema``) and strips both in the
+``FastMCP.list_tools`` advertises as ``inputSchema``) and strips it in the
 wrapped ``Tool.run``. Same contract as the middleware — inject on list, strip
 on call, ride ``user_goal`` as ``call_intent`` on ``tool_call_start``, never
 in a note.
@@ -18,12 +18,8 @@ from typing import Any
 import pytest
 
 from baton.integrations._llm_text import (
-    EXPECTED_RESULT_PARAM_NAME,
     INTENT_SOURCE_PARAM,
-    OVERALL_TASK_PARAM_NAME,
     USER_GOAL_PARAM_NAME,
-    build_expected_result_param_description,
-    build_overall_task_param_description,
     build_user_goal_param_description,
 )
 from baton.integrations.official import VendorConfig, install_baton
@@ -133,9 +129,7 @@ class TestListInjection:
         ``required`` list, so a description still opening "OPTIONAL." would
         contradict the schema it ships inside — and the model reads both.
         Pinned in BOTH directions: the ``optional`` leg is the control that
-        proves the mode is what moves the label, not the injection. All three
-        params are escalated, so each label moves in lockstep with its own
-        ``required`` entry.
+        proves the mode is what moves the label, not the injection.
         """
         for mode, expected_lead in (("optional", "OPTIONAL."), ("required", "REQUIRED.")):
             mcp = FastMCP("test-vendor-mcp")
@@ -168,19 +162,6 @@ class TestListInjection:
                     goal_desc[len(expected_lead) :]
                     == build_user_goal_param_description()[len("OPTIONAL.") :]
                 )
-                expected_desc = props[EXPECTED_RESULT_PARAM_NAME]["description"]
-                assert expected_desc == build_expected_result_param_description(
-                    intent_param_mode=mode
-                )
-                assert expected_desc.startswith(expected_lead)
-                # Only the label moved here too.
-                assert (
-                    expected_desc[len(expected_lead) :]
-                    == build_expected_result_param_description()[len("OPTIONAL.") :]
-                )
-                task_desc = props[OVERALL_TASK_PARAM_NAME]["description"]
-                assert task_desc == build_overall_task_param_description(intent_param_mode=mode)
-                assert task_desc.startswith(expected_lead)
             finally:
                 await handle.aclose()
 
@@ -216,8 +197,8 @@ class TestListInjection:
         not also process it.
 
         Checked through the injected DESCRIPTION, not the param name. The tool
-        now declares `user_goal`/`expected_result`/`overall_task` natively — the
-        same three names injection adds — so name-absence no longer separates a
+        declares `user_goal` natively, the same name injection adds, so
+        name-absence does not separate a
         tool injection skipped from one it rewrote, and asserting it would pass
         for the wrong reason. The description is what only injection writes.
         """
@@ -286,36 +267,20 @@ class TestListInjection:
         assert start["payload"].get("call_intent") is None
         assert not any(e["event_type"] == "annotation" for e in events)
 
-    async def test_expected_result_escalated_in_required_mode(self, events_path: str) -> None:
-        """``required`` escalates ``user_goal`` AND ``expected_result`` (D8,
-        2026-09-15) — but never ``overall_task``, asserted here as the control
-        so the boundary is pinned in one place."""
-        mcp = FastMCP("test-vendor-mcp")
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        handle = install_baton(
-            mcp,
-            VendorConfig(
-                vendor_id="test-vendor",
-                vendor_display_name="Test Vendor",
-                consent_token="ct_test",
-                sink=FileSink(events_path),
-                intent_param_mode="required",
-            ),
-        )
+    async def test_only_user_goal_is_injected(self, events_path: str) -> None:
+        mcp, handle = _install(events_path)
         try:
+
+            @mcp.tool()
+            def echo(text: str) -> str:
+                return text
+
             tools = await mcp.list_tools()
-            echo_tool = next(t for t in tools if t.name == "echo")
-            assert EXPECTED_RESULT_PARAM_NAME in _input_schema(echo_tool)["properties"]
-            required = _input_schema(echo_tool).get("required", [])
-            assert EXPECTED_RESULT_PARAM_NAME in required
-            assert USER_GOAL_PARAM_NAME in required
-            assert OVERALL_TASK_PARAM_NAME in required
+            schema = _input_schema(next(t for t in tools if t.name == "echo"))
         finally:
             await handle.aclose()
+
+        assert sorted(schema["properties"]) == ["text", USER_GOAL_PARAM_NAME]
 
 
 # =============================================================================
@@ -418,9 +383,7 @@ class TestNoCopiedNote:
                 "echo",
                 {
                     "text": "x",
-                    USER_GOAL_PARAM_NAME: "why the user called",
-                    EXPECTED_RESULT_PARAM_NAME: "a successful echo",
-                    OVERALL_TASK_PARAM_NAME: "1: echo things",
+                    USER_GOAL_PARAM_NAME: "1: echo x; success is x back",
                 },
             )
             await mcp.call_tool("echo", {"text": "y", USER_GOAL_PARAM_NAME: "second why"})
@@ -431,14 +394,11 @@ class TestNoCopiedNote:
         events = without_surface_snapshots(_read_events(events_path))
         assert not any(e["event_type"] == "annotation" for e in events)
         starts = [e for e in events if e["event_type"] == "tool_call_start"]
-        assert starts[0]["payload"]["call_intent"] == "why the user called"
-        assert starts[0]["payload"]["call_expected"] == "a successful echo"
-        assert starts[0]["payload"]["call_workflow"] == "1: echo things"
+        assert starts[0]["payload"]["call_intent"] == "1: echo x; success is x back"
         assert starts[0]["payload"]["intent_source"] == INTENT_SOURCE_PARAM
         assert starts[1]["payload"]["call_intent"] == "second why"
         for start in starts:
             assert USER_GOAL_PARAM_NAME not in start["payload"]["params"]
-            assert EXPECTED_RESULT_PARAM_NAME not in start["payload"]["params"]
 
     async def test_an_agent_written_note_is_the_only_note(self, events_path: str) -> None:
         """Requires proactive_mode="on": under the default the tool rejects
@@ -475,46 +435,44 @@ class TestNoCopiedNote:
 
 
 # =============================================================================
-# overall_task param (task-label grouping key, 2026-08-10)
+# retired params: a client listed before the upgrade still sends them
 # =============================================================================
 
 
-class TestOverallTaskParam:
-    async def test_overall_task_is_required_in_required_mode(self, events_path: str) -> None:
-        mcp = FastMCP("test-vendor-mcp")
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        handle = install_baton(
-            mcp,
-            VendorConfig(
-                vendor_id="test-vendor",
-                vendor_display_name="Test Vendor",
-                consent_token="ct_test",
-                sink=FileSink(events_path),
-                intent_param_mode="required",
-            ),
-        )
-        try:
-            tools = await mcp.list_tools()
-            echo_tool = next(t for t in tools if t.name == "echo")
-            assert OVERALL_TASK_PARAM_NAME in _input_schema(echo_tool)["properties"]
-            assert OVERALL_TASK_PARAM_NAME in _input_schema(echo_tool)["required"]
-        finally:
-            await handle.aclose()
-
-    async def test_overall_task_stripped_and_captured_as_call_workflow(
+class TestRetiredParams:
+    async def test_a_stale_call_is_served_and_the_retired_values_are_recorded(
         self, events_path: str
     ) -> None:
-        seen: dict[str, Any] = {}
+        mcp, handle, seen = _echo_server(events_path)
+        stale = {"expected_result": "a list", "overall_task": "3: mail jane@example.com"}
+        try:
+            async with connected_session(mcp) as session:
+                result = _wire(
+                    await session.call_tool(
+                        "echo", {"text": "a", USER_GOAL_PARAM_NAME: "1: echo a", **stale}
+                    )
+                )
+            await handle.flush()
+        finally:
+            await handle.aclose()
+
+        assert not result.get("isError"), result
+        assert seen == ["a"]
+        start = next(e for e in _read_events(events_path) if e["event_type"] == "tool_call_start")
+        assert start["payload"]["params"] == {"text": "a"}
+        assert start["payload"]["call_intent"] == "1: echo a"
+        assert start["payload"]["call_expected"] == "a list"
+        # Scrubbed like any intent value (the default scrubber redacts emails).
+        assert start["payload"]["call_workflow"] == "3: mail [REDACTED:email]"
+
+    async def test_a_tool_that_declares_a_retired_name_keeps_its_value(
+        self, events_path: str
+    ) -> None:
         mcp = FastMCP("test-vendor-mcp")
 
         @mcp.tool()
-        def echo(text: str) -> str:
-            seen["text"] = text
-            return text
+        def approve(doc: str, overall_task: str = "") -> str:
+            return f"{doc}|{overall_task}"
 
         handle = install_baton(
             mcp,
@@ -526,51 +484,15 @@ class TestOverallTaskParam:
             ),
         )
         try:
-            await mcp.call_tool("echo", {"text": "hello", OVERALL_TASK_PARAM_NAME: "file q3 notes"})
-            await handle.flush()
+            result = await mcp.call_tool("approve", {"doc": "d", "overall_task": "vendor-value"})
         finally:
             await handle.aclose()
 
-        assert seen == {"text": "hello"}
-        events = _read_events(events_path)
-        start = next(e for e in events if e["event_type"] == "tool_call_start")
-        assert start["payload"]["call_workflow"] == "file q3 notes"
-        assert start["payload"]["params"] == {"text": "hello"}
-
-    async def test_overall_task_repeats_on_every_start(self, events_path: str) -> None:
-        """The task label rides EVERY start that carried the param — it is the
-        rung-3b continuity key, so per-call capture is the point."""
-        mcp = FastMCP("test-vendor-mcp")
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        handle = install_baton(
-            mcp,
-            VendorConfig(
-                vendor_id="test-vendor",
-                vendor_display_name="Test Vendor",
-                consent_token="ct_test",
-                sink=FileSink(events_path),
-            ),
-        )
-        try:
-            await mcp.call_tool("echo", {"text": "1", OVERALL_TASK_PARAM_NAME: "file q3 notes"})
-            await mcp.call_tool("echo", {"text": "2", OVERALL_TASK_PARAM_NAME: "file q3 notes"})
-            await handle.flush()
-        finally:
-            await handle.aclose()
-
-        starts = [e for e in _read_events(events_path) if e["event_type"] == "tool_call_start"]
-        assert [s["payload"]["call_workflow"] for s in starts] == [
-            "file q3 notes",
-            "file q3 notes",
-        ]
+        assert "d|vendor-value" in json.dumps(result, default=str)
 
 
 # =============================================================================
-# the default: user_goal + expected_result advertised as required, never enforced
+# the default: user_goal advertised as required, never enforced
 # =============================================================================
 
 
@@ -606,8 +528,8 @@ def _echo_server(path: str, **overrides: Any) -> tuple[Any, Any, list[str]]:
 
 class TestRequiredByDefaultIsNeverEnforced:
     """``intent_param_mode`` defaults to ``required``, which ADVERTISES
-    the three injected params as required and must never refuse a call that
-    omits them.
+    the injected param as required and must never refuse a call that
+    omits it.
 
     Driven through a real client session, not ``mcp.call_tool``: the question
     is whether anything on the protocol path (the client, the low-level
@@ -634,8 +556,6 @@ class TestRequiredByDefaultIsNeverEnforced:
             await handle.aclose()
 
         assert USER_GOAL_PARAM_NAME in schema["required"]
-        assert EXPECTED_RESULT_PARAM_NAME in schema["required"]
-        assert OVERALL_TASK_PARAM_NAME in schema["required"]
         assert schema["properties"][USER_GOAL_PARAM_NAME]["description"].startswith("REQUIRED.")
         assert not without.get("isError"), without
         assert without["content"][0]["text"] == "echo:a"
@@ -643,7 +563,6 @@ class TestRequiredByDefaultIsNeverEnforced:
         assert seen == ["a", "b"], "the vendor's handler ran for both calls"
         starts = [e for e in _read_events(events_path) if e["event_type"] == "tool_call_start"]
         assert [s["payload"].get("call_intent") for s in starts] == [None, "why"]
-        assert [s["payload"].get("call_workflow") for s in starts] == [None, None]
 
     async def test_a_native_user_goal_is_left_alone(self, events_path: str) -> None:
         """A tool that declares its own ``user_goal`` keeps it: not added to
@@ -685,7 +604,6 @@ class TestRequiredByDefaultIsNeverEnforced:
         assert result["content"][0]["text"] == "x|vendor-value"
         start = next(e for e in _read_events(events_path) if e["event_type"] == "tool_call_start")
         assert start["payload"].get("call_intent") is None
-        assert start["payload"].get("call_expected") is None
 
     async def test_the_default_does_not_move_the_surface_hash(self, tmp_path: Any) -> None:
         """The snapshot hashes the vendor-true surface, so moving the default
@@ -709,8 +627,6 @@ class TestRequiredByDefaultIsNeverEnforced:
         assert payloads["default"]["seam_augmentations"]["intent_param"]["mode"] == "required"
         assert payloads["optional"]["seam_augmentations"]["intent_param"]["mode"] == "optional"
         assert payloads["default"]["seam_augmentations"]["intent_param"]["required_names"] == [
-            "expected_result",
-            "overall_task",
-            "user_goal",
+            "user_goal"
         ]
         assert payloads["optional"]["seam_augmentations"]["intent_param"]["required_names"] == []

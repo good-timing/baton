@@ -123,7 +123,7 @@ class TestInstallation:
             await handle.aclose()
 
     @pytest.mark.parametrize(("native", "served"), [(True, False), (False, True)])
-    async def test_a_tool_with_its_own_overall_task_drops_the_subagent_sentence(
+    async def test_a_tool_with_its_own_user_goal_drops_the_subagent_sentence(
         self, httpserver: HTTPServer, native: bool, served: bool
     ) -> None:
         """The sentence would send the turn number into the vendor's argument."""
@@ -140,7 +140,7 @@ class TestInstallation:
         if native:
 
             @mcp.tool()
-            def approve(doc: str, overall_task: str = "") -> str:
+            def approve(doc: str, user_goal: str = "") -> str:
                 return doc
         else:
 
@@ -393,9 +393,7 @@ class TestInstallation:
         self, httpserver: HTTPServer
     ) -> None:
         """proactive_mode="off" enforces at the handler, not just in the prompt.
-        A stray proactive annotation carries an umbrella `overall_task` label that
-        would outrank the per-call one in any consumer keying grouping on it,
-        so the call must not produce an event at all."""
+        A refused call must not produce an event at all."""
         captured: list[dict[str, Any]] = []
 
         def ingest(request: Any) -> Response:
@@ -539,8 +537,6 @@ class TestAnnotationToolEndToEnd:
                 handle.annotation_tool_name,
                 {
                     "user_goal": "summarize PR comments",
-                    "expected_result": "2-3 sentence paragraph",
-                    "overall_task": "code-review",
                 },
             )
 
@@ -551,9 +547,6 @@ class TestAnnotationToolEndToEnd:
         assert len(annotation_events) == 1
         payload = annotation_events[0]["payload"]
         assert payload["intent"] == "summarize PR comments"
-        assert payload["expected_outcome"] == "2-3 sentence paragraph"
-        # Agent sends `overall_task`; the wire carries `workflow`.
-        assert payload["workflow"] == "code-review"
         assert payload["what_happened"] is None
 
     async def test_reactive_annotation_with_what_happened(
@@ -761,7 +754,7 @@ class TestAllFourEventTypesInOneFlow:
             # 1. Proactive annotate
             await client.call_tool(
                 handle.annotation_tool_name,
-                {"user_goal": "find user", "expected_result": "user record"},
+                {"user_goal": "find user"},
             )
             # 2. Real tool call
             await client.call_tool("lookup", {"name": "alice"})
@@ -875,7 +868,7 @@ class TestSurfaceSnapshot:
         captured: list[dict[str, Any]],
     ) -> None:
         """The surface snapshot's ``tools`` must reflect the vendor's real
-        schema, not Baton's injected ``user_goal``/``expected_result`` — the
+        schema, not Baton's injected ``user_goal`` — the
         hash is the identity change specs are authored against and must not
         drift when e.g. ``intent_param_mode`` is toggled."""
         mcp, handle = configured_mcp
@@ -897,7 +890,6 @@ class TestSurfaceSnapshot:
         snapshot = next(ev for ev in captured if ev["event_type"] == "surface_snapshot")["payload"]
         echo_tool = next(t for t in snapshot["tools"] if t["name"] == "echo")
         assert "user_goal" not in echo_tool["inputSchema"].get("properties", {})
-        assert "expected_result" not in echo_tool["inputSchema"].get("properties", {})
 
     async def test_instructions_are_vendor_true(
         self,
@@ -1161,7 +1153,7 @@ class TestVendorInstructionsAreKept:
         try:
 
             @mcp.tool()
-            def approve(doc: str, overall_task: str = "") -> str:
+            def approve(doc: str, user_goal: str = "") -> str:
                 return doc
 
             async with Client(mcp) as client:

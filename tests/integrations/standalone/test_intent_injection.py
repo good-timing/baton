@@ -1,9 +1,9 @@
 """Tests for per-tool intent-param injection in the FastMCP middleware.
 
 Mirrors baton-extmcp's vendor-neutral intent-injection matrix, adapted to the
-in-process FastMCP Client harness: inject ``user_goal``/``expected_result`` on
-``tools/list``, strip both on ``tools/call``, and ride them on
-``tool_call_start`` as ``call_intent`` / ``call_expected``, never in a note.
+in-process FastMCP Client harness: inject ``user_goal`` on ``tools/list``,
+strip it on ``tools/call``, and ride it on ``tool_call_start`` as
+``call_intent``, never in a note.
 """
 
 from __future__ import annotations
@@ -17,12 +17,8 @@ from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Response
 
 from baton.integrations._llm_text import (
-    EXPECTED_RESULT_PARAM_NAME,
     INTENT_SOURCE_PARAM,
-    OVERALL_TASK_PARAM_NAME,
     USER_GOAL_PARAM_NAME,
-    build_expected_result_param_description,
-    build_overall_task_param_description,
     build_user_goal_param_description,
 )
 from baton.integrations.standalone import VendorConfig, install_baton
@@ -132,17 +128,6 @@ class TestListInjection:
                 goal_desc[len(expected_lead) :]
                 == build_user_goal_param_description()[len("OPTIONAL.") :]
             )
-            # expected_result IS escalated (D8), so its label tracks the mode.
-            expected_desc = props[EXPECTED_RESULT_PARAM_NAME]["description"]
-            assert expected_desc == build_expected_result_param_description(intent_param_mode=mode)
-            assert expected_desc.startswith(expected_lead)
-            assert (
-                expected_desc[len(expected_lead) :]
-                == build_expected_result_param_description()[len("OPTIONAL.") :]
-            )
-            task_desc = props[OVERALL_TASK_PARAM_NAME]["description"]
-            assert task_desc == build_overall_task_param_description(intent_param_mode=mode)
-            assert task_desc.startswith(expected_lead)
 
     async def test_off_mode_no_injection(self, sink: Sink) -> None:
         mcp = _build_mcp(sink, intent_param_mode="off")
@@ -180,10 +165,7 @@ class TestListInjection:
         start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
         assert start["payload"].get("call_intent") is None
 
-    async def test_expected_result_escalated_in_required_mode(self, sink: Sink) -> None:
-        """``required`` escalates ``user_goal`` AND ``expected_result`` (D8,
-        2026-09-15) — but never ``overall_task``, asserted here as the control
-        so the boundary is pinned in one place."""
+    async def test_only_user_goal_is_injected(self, sink: Sink) -> None:
         mcp = _build_mcp(sink, intent_param_mode="required")
 
         @mcp.tool()
@@ -191,21 +173,15 @@ class TestListInjection:
             return text
 
         async with Client(mcp) as client:
-            tools = await client.list_tools()
+            (echo_tool,) = await client.list_tools()
 
-        (echo_tool,) = tools
-        assert EXPECTED_RESULT_PARAM_NAME in echo_tool.inputSchema["properties"]
-        required = echo_tool.inputSchema.get("required", [])
-        assert EXPECTED_RESULT_PARAM_NAME in required
-        assert USER_GOAL_PARAM_NAME in required
-        assert OVERALL_TASK_PARAM_NAME in required
+        assert sorted(echo_tool.inputSchema["properties"]) == ["text", USER_GOAL_PARAM_NAME]
 
-    async def test_native_expected_result_left_untouched_independently(
+    async def test_a_tool_that_declares_a_retired_name_keeps_its_value(
         self, sink: Sink, captured: list[dict[str, Any]]
     ) -> None:
         """A tool with its own ``expected_result`` param is forwarded untouched
-        for that param, while ``user_goal`` injection still proceeds normally —
-        dispositions are tracked per param, not per tool."""
+        for that param, while ``user_goal`` injection still proceeds normally."""
         mcp = _build_mcp(sink)
 
         @mcp.tool()
@@ -304,9 +280,7 @@ class TestNoCopiedNote:
                 "echo",
                 {
                     "text": "x",
-                    USER_GOAL_PARAM_NAME: "why the user called",
-                    EXPECTED_RESULT_PARAM_NAME: "a successful echo",
-                    OVERALL_TASK_PARAM_NAME: "1: echo things",
+                    USER_GOAL_PARAM_NAME: "1: echo x; success is x back",
                 },
             )
             await client.call_tool("echo", {"text": "y", USER_GOAL_PARAM_NAME: "second why"})
@@ -315,61 +289,15 @@ class TestNoCopiedNote:
         tool_events = without_surface_snapshots(captured)
         assert not any(ev["event_type"] == "annotation" for ev in tool_events)
         starts = [ev for ev in tool_events if ev["event_type"] == "tool_call_start"]
-        assert starts[0]["payload"]["call_intent"] == "why the user called"
-        assert starts[0]["payload"]["call_expected"] == "a successful echo"
-        assert starts[0]["payload"]["call_workflow"] == "1: echo things"
+        assert starts[0]["payload"]["call_intent"] == "1: echo x; success is x back"
         assert starts[0]["payload"]["intent_source"] == INTENT_SOURCE_PARAM
         assert starts[1]["payload"]["call_intent"] == "second why"
         for start in starts:
             assert USER_GOAL_PARAM_NAME not in start["payload"]["params"]
-            assert EXPECTED_RESULT_PARAM_NAME not in start["payload"]["params"]
 
 
 # =============================================================================
-# overall_task param (task-label grouping key, 2026-08-10)
-# =============================================================================
-
-
-class TestOverallTaskParam:
-    async def test_overall_task_is_required_in_required_mode(self, sink: Sink) -> None:
-        mcp = _build_mcp(sink, intent_param_mode="required")
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            tools = await client.list_tools()
-
-        (echo_tool,) = tools
-        assert OVERALL_TASK_PARAM_NAME in echo_tool.inputSchema["properties"]
-        assert OVERALL_TASK_PARAM_NAME in echo_tool.inputSchema["required"]
-
-    async def test_overall_task_stripped_and_captured_as_call_workflow(
-        self, sink: Sink, captured: list[dict[str, Any]]
-    ) -> None:
-        seen: dict[str, Any] = {}
-        mcp = _build_mcp(sink)
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            seen["text"] = text
-            return text
-
-        async with Client(mcp) as client:
-            await client.call_tool(
-                "echo", {"text": "hello", OVERALL_TASK_PARAM_NAME: "file q3 notes"}
-            )
-
-        await sink.flush()
-        assert seen == {"text": "hello"}
-        start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
-        assert start["payload"]["call_workflow"] == "file q3 notes"
-        assert start["payload"]["params"] == {"text": "hello"}
-
-
-# =============================================================================
-# the default: user_goal + expected_result advertised as required, never enforced
+# the default: user_goal advertised as required, never enforced
 # =============================================================================
 
 
@@ -438,8 +366,6 @@ class TestRequiredByDefaultIsNeverEnforced:
             await handle.aclose()
 
         assert USER_GOAL_PARAM_NAME in schema["required"]
-        assert EXPECTED_RESULT_PARAM_NAME in schema["required"]
-        assert OVERALL_TASK_PARAM_NAME in schema["required"]
         assert schema["properties"][USER_GOAL_PARAM_NAME]["description"].startswith("REQUIRED.")
         assert not without.get("isError"), without
         assert without["content"][0]["text"] == "echo:a"
@@ -447,7 +373,6 @@ class TestRequiredByDefaultIsNeverEnforced:
         assert seen == ["a", "b"], "the vendor's handler ran for both calls"
         starts = [e for e in _read_events(path) if e["event_type"] == "tool_call_start"]
         assert [s["payload"].get("call_intent") for s in starts] == [None, "why"]
-        assert [s["payload"].get("call_workflow") for s in starts] == [None, None]
 
     async def test_a_native_user_goal_is_left_alone(self, tmp_path: Any) -> None:
         """A tool that declares its own ``user_goal`` keeps it: not added to
@@ -490,7 +415,6 @@ class TestRequiredByDefaultIsNeverEnforced:
         assert result["content"][0]["text"] == "x|vendor-value"
         start = next(e for e in _read_events(path) if e["event_type"] == "tool_call_start")
         assert start["payload"].get("call_intent") is None
-        assert start["payload"].get("call_expected") is None
 
     async def test_the_default_does_not_move_the_surface_hash(self, tmp_path: Any) -> None:
         """The snapshot hashes the vendor-true surface, so moving the default
@@ -514,8 +438,40 @@ class TestRequiredByDefaultIsNeverEnforced:
         assert payloads["default"]["seam_augmentations"]["intent_param"]["mode"] == "required"
         assert payloads["optional"]["seam_augmentations"]["intent_param"]["mode"] == "optional"
         assert payloads["default"]["seam_augmentations"]["intent_param"]["required_names"] == [
-            "expected_result",
-            "overall_task",
-            "user_goal",
+            "user_goal"
         ]
         assert payloads["optional"]["seam_augmentations"]["intent_param"]["required_names"] == []
+
+
+# =============================================================================
+# retired params: a client listed before the upgrade still sends them
+# =============================================================================
+
+
+class TestRetiredParams:
+    async def test_a_stale_call_is_served_and_the_retired_values_are_recorded(
+        self, tmp_path: Any
+    ) -> None:
+        path = str(tmp_path / "events.jsonl")
+        mcp, handle, seen = _echo_server(path)
+        stale = {"expected_result": "a list", "overall_task": "3: mail jane@example.com"}
+        try:
+            async with Client(mcp) as client:
+                await client.list_tools()
+                result = _wire(
+                    await client.call_tool_mcp(
+                        "echo", {"text": "a", USER_GOAL_PARAM_NAME: "1: echo a", **stale}
+                    )
+                )
+            await handle.flush()
+        finally:
+            await handle.aclose()
+
+        assert not result.get("isError"), result
+        assert seen == ["a"]
+        start = next(e for e in _read_events(path) if e["event_type"] == "tool_call_start")
+        assert start["payload"]["params"] == {"text": "a"}
+        assert start["payload"]["call_intent"] == "1: echo a"
+        assert start["payload"]["call_expected"] == "a list"
+        # Scrubbed like any intent value (the default scrubber redacts emails).
+        assert start["payload"]["call_workflow"] == "3: mail [REDACTED:email]"

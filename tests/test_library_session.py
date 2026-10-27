@@ -12,8 +12,6 @@ import pytest
 from baton import INTENT_PARAMS, AsyncClient, Client, Principal
 from baton.events import Event
 from baton.integrations._llm_text import (
-    build_expected_result_param_description,
-    build_overall_task_param_description,
     build_user_goal_param_description,
 )
 from baton.sinks import Sink
@@ -204,15 +202,11 @@ def test_sequence_numbers_increase_when_the_clock_does_not(
 
 
 def test_intent_params_carry_the_text_an_agent_reads() -> None:
-    builders = (
-        build_user_goal_param_description,
-        build_expected_result_param_description,
-        build_overall_task_param_description,
+    (param,) = INTENT_PARAMS
+    assert (param.name, param.trace_kwarg) == ("user_goal", "intent")
+    assert build_user_goal_param_description(intent_param_mode="optional") == (
+        "OPTIONAL. " + param.description
     )
-    assert [p.name for p in INTENT_PARAMS] == ["user_goal", "expected_result", "overall_task"]
-    assert [p.trace_kwarg for p in INTENT_PARAMS] == ["intent", "expected_outcome", "workflow"]
-    for param, build in zip(INTENT_PARAMS, builders, strict=True):
-        assert build(intent_param_mode="optional") == "OPTIONAL. " + param.description
 
 
 def test_a_trace_report_after_close_raises_the_closed_error() -> None:
