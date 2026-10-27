@@ -376,11 +376,9 @@ The SDK MUST register an annotation tool on the vendor's MCP server AND MUST set
 - **Signature:**
   ```
   <vendor>_annotate(
-    intent: string | null = null,
-    expected_outcome: string | null = null,
+    user_goal: string,
     what_happened: string | null = null,
     tool_name: string | null = null,
-    workflow: string | null = null,
     suggested_improvement: string | null = null,
     context: object | null = null,
   ) -> { ok: true }
@@ -388,7 +386,8 @@ The SDK MUST register an annotation tool on the vendor's MCP server AND MUST set
   - `what_happened` is the report: one or two plain sentences in the agent's own words saying what it asked for, what came back, and why that was unusable. **A filled `what_happened` is what makes an annotation a report (§11.4).** A value that is empty or only whitespace counts as absent. The tool text MUST ask for the agent's own words and MUST NOT offer a list of categories to pick from: sorting reports is the collector's job, not the agent's (§11.5.5).
   - `tool_name` is the ONE tool the report is about. It has three states: a name; "no tool", which is the agent SAYING no tool exists for what the user asked; and null, which is nothing stated (every report from a producer older than 0.8.15). The agent-facing text asks for the word `none` for "no tool", and a producer sends what the agent wrote: it MUST NOT rewrite the value, and MUST NOT turn an empty string into null. The worker reads `none` and its variants as "no tool" (§11.5.5) and stores that as `""` in `reported_tool`. A producer that only asks for reports MUST list `tool_name` under `required` in the annotation tool's advertised schema, so that an agent with no tool to name says so rather than leaving the field out; it MUST still take a report that omits it. A description that says "required" is not enough: measured 2026-10-09, with the field described as required but not listed, no agent sent `""` in six sessions with no tool to name and four left the field out; with it listed, one of six left it out. Asked for an empty string, no agent sent one in twelve sessions (three sent two quote characters, four sent `none`), which is why the text asks for the word `none` and the worker normalises (§11.5.5). It is never a list: an agent with a problem on two tools files two reports, and each becomes its own signal. The worker uses it to pick the call the report is about (§11.5.2).
   - There is no `signal_type` parameter. A producer from `baton-sdk` 0.8.15 MUST NOT advertise one and MUST NOT send one. A producer that only asks for reports (§5.1.2, the default) MUST refuse a call with no `what_happened`, and the refusal text MUST name only parameters the agent can see.
-  - `workflow` and `suggested_improvement` map directly to the same-named top-level fields in the signal payload (§3.1). Both were originally free-form `context.*` keys; promoted to top-level after empirical validation showed consistent recurrence across their relevant signal types.
+  - `user_goal` is written as the injected param asks (§11.5.1 rule 2: `'<n>: <what this call is for>; success is <what its result should show>'`) and lands in the payload's `intent`. The tool takes no `expected_result` or `overall_task` since the single-field change (§13, Unreleased), so an annotation from this SDK leaves `expected_outcome` and `workflow` null; older producers still fill them. An annotate call that still sends either name is served and the value dropped.
+  - `suggested_improvement` maps directly to the same-named top-level field in the signal payload (§3.1). It was originally a free-form `context.*` key, promoted to top-level after empirical validation showed consistent recurrence.
   - `context` is a free-form JSON object for any other structured information the agent thinks would help. It is the discovery surface for future structured fields — keys that recur across many signals are candidates for promotion. The SDK records `context` verbatim (subject to PII scrubbing per §7) and surfaces it on the wire as part of the signal payload (§3.1 — see "Implementation note" below).
   - **Informative — common `context` keys observed in the wild (validated 2026-05-13 spike, single-data-point caveat):**
     - When no tool covers the request: `requested_capability` (what the agent wished existed), `suggested_tool_signature` (a typed function signature the agent proposes), `why_existing_tools_dont_fit` (the agent's reasoning about gaps in the current tool surface).
@@ -625,7 +624,8 @@ A library producer emits the §11.4 envelope a middleware producer emits. Where 
 
 | Value | Middleware source | Library source | Field |
 |---|---|---|---|
-| Intent, expected outcome, task | injected params (§5.1) | `trace(intent=, expected_outcome=, workflow=)` | `tool_call_start.payload.call_intent` / `call_expected` / `call_workflow` |
+| Intent | the injected `user_goal` param (§5.1) | `trace(intent=)` | `tool_call_start.payload.call_intent` |
+| Expected outcome, task | none (producers before the single-field change injected `expected_result` / `overall_task`) | `trace(expected_outcome=, workflow=)` | `tool_call_start.payload.call_expected` / `call_workflow` |
 | Who is calling | the vendor's resolver | `client.session(principal=)` | `principal` |
 | Which client | `clientInfo`, registered headers | `client.session(client_info=, headers=)` | `client_observed` |
 | Session | the §3.4 ladder | `client.session(session_id=)`, else one minted id per block, or per call outside any block | `session_id`, `session_id_origin` |
@@ -1101,9 +1101,9 @@ Worker derives the canonical SignalPayload (§3) by:
 
 #### 11.4.2 `surface_snapshot` — vendor-true tool surface, for identity + drift
 
-Mirrors baton-proxy's `MessageProcessor._capture_surface` / `Emitter.enqueue_surface_snapshot`. The SDK snapshots the wrapped server's **vendor-true** surface — `server_info` / `capabilities` / `instructions` (captured once, at `install_baton(...)` time, BEFORE Baton mutates instructions) plus the full `tools` list with schemas (captured BEFORE Baton's `user_goal`/`expected_result` injection) — hashes it (canonical JSON, sorted keys), and emits `surface_snapshot` at most once per observed `surface_hash` per process. Repeated captures of an unchanged surface are deduped and never re-emitted.
+Mirrors baton-proxy's `MessageProcessor._capture_surface` / `Emitter.enqueue_surface_snapshot`. The SDK snapshots the wrapped server's **vendor-true** surface — `server_info` / `capabilities` / `instructions` (captured once, at `install_baton(...)` time, BEFORE Baton mutates instructions) plus the full `tools` list with schemas (captured BEFORE Baton's `user_goal` injection) — hashes it (canonical JSON, sorted keys), and emits `surface_snapshot` at most once per observed `surface_hash` per process. Repeated captures of an unchanged surface are deduped and never re-emitted.
 
-`surface_hash` is the identity change specs and recipes are authored against (proxy's own `base_surface_hash`). This is why the snapshot excludes anything Baton itself adds: Baton's own injected tool (the annotation tool) is omitted from `tools` and recorded instead in `payload.seam_augmentations.injected_tools`, and the schema-injected `user_goal`/`expected_result`/`overall_task` params never appear in `tools[].inputSchema` — toggling `intent_param_mode` MUST NOT change `surface_hash`.
+`surface_hash` is the identity change specs and recipes are authored against (proxy's own `base_surface_hash`). This is why the snapshot excludes anything Baton itself adds: Baton's own injected tool (the annotation tool) is omitted from `tools` and recorded instead in `payload.seam_augmentations.injected_tools`, and the schema-injected `user_goal` param never appears in `tools[].inputSchema` — toggling `intent_param_mode` MUST NOT change `surface_hash`.
 
 ```json
 {
@@ -1114,13 +1114,13 @@ Mirrors baton-proxy's `MessageProcessor._capture_surface` / `Emitter.enqueue_sur
   "tools": [{"name": "search", "description": "...", "inputSchema": {...}}, ...],
   "seam_augmentations": {
     "injected_tools": ["acme_annotate"],
-    "intent_param": {"names": ["expected_result", "overall_task", "user_goal"], "required_names": ["expected_result", "overall_task", "user_goal"], "mode": "required"},
+    "intent_param": {"names": ["user_goal"], "required_names": ["user_goal"], "mode": "required"},
     "instructions_suffix": true
   }
 }
 ```
 
-**`seam_augmentations.intent_param` has one shape in `baton-sdk`, `baton-ts` and `baton-proxy`** (plural `names: list[str]`). All three inject the same three params (`user_goal` + `expected_result` + `overall_task`), and all three send `required_names` from `baton-sdk` 0.8.12, `baton-ts` 0.5.3 and `baton-proxy` 0.6.18. An older release of any of them, and `baton-extmcp`, sends no `required_names`, so a consumer reads a missing `required_names` as unknown, never as empty. `baton-extmcp` is the exception: it injects two params (`user_goal` + `expected_result`) and records them as `seam_augmentations.injected`, not `intent_param`. Everything else in the payload (top-level fields, `injected_tools`, `instructions_suffix`) is identical across the three.
+**`seam_augmentations.intent_param` has one shape in `baton-sdk`, `baton-ts` and `baton-proxy`** (plural `names: list[str]`). `baton-sdk` from the single-field change (§13, Unreleased) injects one param, `user_goal`; `baton-ts` and `baton-proxy` inject three (`user_goal` + `expected_result` + `overall_task`) until they take the same change, so a consumer reads `names` as data. All three send `required_names` from `baton-sdk` 0.8.12, `baton-ts` 0.5.3 and `baton-proxy` 0.6.18. An older release of any of them, and `baton-extmcp`, sends no `required_names`, so a consumer reads a missing `required_names` as unknown, never as empty. `baton-extmcp` is the exception: it injects two params (`user_goal` + `expected_result`) and records them as `seam_augmentations.injected`, not `intent_param`. Everything else in the payload (top-level fields, `injected_tools`, `instructions_suffix`) is identical across the three.
 
 **Capture mechanism differs by adapter** (both converge on the same wire shape):
 - `baton.integrations.standalone` (standalone `fastmcp` library) has a real `on_list_tools` middleware hook — the snapshot is captured and (if new) emitted on every `tools/list` response, using the vendor-true tools `call_next` returns before this adapter's own injection loop runs.
@@ -1513,11 +1513,11 @@ The worker derives turn boundaries using this hierarchy (most-authoritative firs
 
 1. **A runtime-supplied TURN identifier** (§11.4.1, e.g. `vscode.requestId`), on both the event and the running turn, is definitive both ways: a different id opens a new turn, the same id keeps the event in the turn.
 
-2. **A turn number written by the agent.** An agent MAY start its task label with the number of the user's current message: `3: prepare campaign approval`. The label is `call_workflow` on a `tool_call_start` and `workflow` on an `annotation`. When no runtime turn identifier applies and both the event and the running turn carry a number, it is definitive both ways: a different number opens a new turn, the same number keeps the event in the turn whatever the gap. A `tool_call_end` or `tool_call_error` states no number. When the start with its `call_id` stated the running turn's number, the end stays in that turn whatever the gap, so a slow tool does not split its message; it never opens a turn, so a call that outlives its message does not cut the next one. The worker:
+2. **A turn number written by the agent.** An agent MAY start its intent with the number of the user's current message: `3: prepare campaign approval; success is a signed approval`. The intent is `call_intent` on a `tool_call_start` and `intent` on an `annotation`. Producers before the single-field change (§13, Unreleased) carried the number in the task label instead (`call_workflow` / `workflow`, e.g. `3: prepare campaign approval`), and `baton-ts` 0.5.3 is in production sending it there. The worker MUST read the number from the intent and, when the intent carries none, from the task label. When no runtime turn identifier applies and both the event and the running turn carry a number, it is definitive both ways: a different number opens a new turn, the same number keeps the event in the turn whatever the gap. A `tool_call_end` or `tool_call_error` states no number. When the start with its `call_id` stated the running turn's number, the end stays in that turn whatever the gap, so a slow tool does not split its message; it never opens a turn, so a call that outlives its message does not cut the next one. The worker:
    - MUST compare the leading integer only. The separator and the text after it are never part of the comparison: `3 - draft` and `3: review` are the same turn.
    - MUST NOT check the count. Any change cuts, including a number that goes down or skips; agents miscount, and the change still falls on a message boundary.
    - MUST treat a missing or malformed number as no number: the event falls through to the next rule. A producer MUST NOT reject or fail a call over it.
-   - MUST remove the number and its separator before the label is used as a task label (§3 `workflow`, and the task grouping below). The number says which message; the text says which task, and only the text is stable across messages.
+   - MUST remove the number and its separator before the text is used as an intent or a task label (§3 `workflow`, and the task grouping below). The number says which message; the text says what the call or task is.
 
    A label counts as numbered only when an integer of at most six digits is followed by a separator (`:`, `.`, `)` or a dash) and then a space or the end of the label, so `2024 tax prep`, `3-day forecast` and `10:30 standup` are plain labels. Known error: an agent sometimes repeats one number on two messages in a row, which merges them into one turn.
 
@@ -1661,6 +1661,14 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **Unreleased (SDK-only, specified 2026-10-27) — one injected field, `user_goal`, numbered.** No envelope, field or shape change.
+
+  **CHANGED: the injected params (§5.1, §5.6).** Both MCP adapters inject `user_goal` only. Its description asks for `'<n>: <what this call is for>; success is <what its result should show>'`, where `n` is the number of the user's current message. `expected_result` and `overall_task` are no longer injected, advertised or required, and the annotation tool no longer takes them. A tool call that still sends them, from a client holding the tool list from before, is served: the SDK removes them from the arguments unless the tool declares that name itself, and records them as `call_expected` / `call_workflow` so the turn number in `overall_task` still reaches the §11.5.1 rule 2 fallback.
+
+  **PLANNED REMOVAL: recording the retired names.** It covers only clients whose tool list predates the upgrade, which a reconnect refreshes. It is removed in `baton-sdk` 0.8.24, the second release after this one, and a test fails from that version until it is. From then on a retired name is removed from the arguments and not recorded. The console's `call_workflow` fallback stays until `baton-ts`, `baton-proxy` and every other producer stop sending the number there (decision 6), which is a separate condition. `INTENT_PARAMS` holds one entry. The sub-agent sentence in the instructions names `user_goal`, and is removed when a tool declares its own `user_goal`. Under `proactive_mode="on"` the pre-call request asks for `user_goal` alone.
+
+  **Consumer consequence:** `tool_call_start` from this SDK carries the number and the success clause inside `call_intent`, and `call_expected` / `call_workflow` only from a client still sending the retired names. An annotation never carries `expected_outcome` or `workflow`. A consumer MUST read the turn number from `call_intent` / `intent` first and fall back to `call_workflow` / `workflow` (§11.5.1 rule 2), because `baton-ts` 0.5.3 and `baton-proxy` still send it there. `seam_augmentations.intent_param.names` and `required_names` are `["user_goal"]`. `call_expected` / `call_workflow` remain on the wire for the library path (§5.6) and older producers.
 
 - **0.8.21 (SDK-only, 2026-10-27) — §3.4 rung 5 is built: on HTTP with no session to read, each request is its own session. The scrubber redacts at its depth limit (§7), and vendor instructions are kept (§5.1.2). The error paragraph of the instructions tells the agent to carry on with the user's task after reporting. Under `result_capture: "off"` a raised message is withheld unless it is a `ToolError` (§11.4.3).** No new envelope field or event type.
 
