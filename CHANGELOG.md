@@ -8,6 +8,13 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased: one numbered `user_goal` instead of three injected fields
+
+### Changed
+
+- Both MCP adapters inject one param, `user_goal`, written as `'<n>: <what this call is for>; success is <what its result should show>'`, where `n` numbers the user's message. `expected_result` and `overall_task` are no longer injected, and the annotation tool no longer takes them. A tool call that still sends them, from a client with an old tool list, is served: they are removed from the arguments unless the tool declares them, and recorded as `call_expected` / `call_workflow` so the turn number still reaches the Console. That recording is removed in 0.8.24. The sub-agent sentence names `user_goal`. `INTENT_PARAMS` has one entry. (SPEC §13, §11.5.1 rule 2.)
+- Events carry the number and success clause in `call_intent`; the MCP adapters set `call_expected` and `call_workflow` only for a client still sending the retired names.
+
 ## 0.8.21: one session per call on stateless HTTP, kept instructions, no unscrubbed deep values
 
 ### Fixed

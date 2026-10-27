@@ -388,34 +388,30 @@ class VendorConfig:
 
     intent_param_mode: str = "required"
     """Per-tool intent-param injection (mirrors baton-extmcp's vendor-neutral
-    naming). Every mode but ``"off"`` injects ``user_goal``, ``expected_result``
-    and ``overall_task`` string params into each wrapped tool's input schema
-    and strips all three before the vendor handler runs, so the tool never
-    sees them. This is what captures intent on runtimes that drop
-    ``instructions`` (notably Claude Desktop), where the annotation tool alone
-    yields nothing.
+    naming). Every mode but ``"off"`` injects a ``user_goal`` string param into
+    each wrapped tool's input schema and strips it before the vendor handler
+    runs, so the tool never sees it; its format is the description the
+    agent reads (``_llm_text._USER_GOAL_PARAM_BODY``). This is what captures
+    intent on runtimes that drop ``instructions`` (notably Claude Desktop),
+    where the annotation tool alone yields nothing.
 
-    ``"required"`` (default) also lists all three
-    in each tool's advertised ``required`` and leads their descriptions with
-    REQUIRED. That is an advertisement and nothing more: nothing Baton adds
-    rejects a call that omits one, the vendor's handler runs, and the event
-    carries no ``call_intent`` / ``call_expected`` / ``call_workflow``.
-    ``"optional"`` injects the same params without the ``required`` entries.
-    ``"off"`` disables injection.
-    A tool that already declares one of these names keeps its own."""
+    ``"required"`` (default) also lists it in each tool's advertised
+    ``required`` and leads its description with REQUIRED. That is an
+    advertisement and nothing more: nothing Baton adds rejects a call that
+    omits it, the vendor's handler runs, and the event carries no
+    ``call_intent``. ``"optional"`` injects the same param without the
+    ``required`` entry. ``"off"`` disables injection. A tool that already
+    declares ``user_goal`` keeps its own."""
 
     proactive_mode: str = "off"
     """Whether the server instructions ask the agent to file a *proactive*
     annotation before each tool call. ``"off"`` (default) removes that request;
     ``"on"`` restores it.
 
-    Off by default because the injected params supersede it: ``user_goal``,
-    ``expected_result`` and ``overall_task`` ride every ``tool_call_start`` as
-    ``call_intent``/``call_expected``/``call_workflow``, so a pre-call
-    annotation carries no field the call event doesn't — while costing an
-    extra inference turn per tool call. It also captures intent less reliably
-    than the params, and supplies conversation-scoped umbrella task labels
-    where the param supplies per-task ones.
+    Off by default because the injected param supersedes it: ``user_goal``
+    rides every ``tool_call_start`` as ``call_intent``, so a pre-call
+    annotation carries no field the call event doesn't, while costing an
+    extra inference turn per tool call.
 
     **This never disables reactive annotation.** The tool stays on the surface
     and the friction clauses of the instructions stay verbatim. Only the

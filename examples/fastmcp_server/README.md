@@ -10,15 +10,16 @@ is an ordinary bookmarks server; the only Baton-specific code is the
 - **`install_baton(mcp, VendorConfig(...))`** — the whole integration. Registers
   the middleware (emits `tool_call_start` / `tool_call_end` / `tool_call_error`),
   the vendor-namespaced annotation tool, and the server instructions.
-- **Intent-param injection**: Baton adds `user_goal`/`expected_result`/`overall_task`
-  parameters to every tool's schema and strips them before your handler runs,
-  capturing *why* a call happened and what success should look like. This works
+- **Intent-param injection**: Baton adds a `user_goal` parameter to every tool's
+  schema and strips it before your handler runs, capturing *why* a call
+  happened and what success should look like, as
+  `<message number>: <what the call is for>; success is <what it should show>`. This works
   even on clients that ignore server instructions (e.g. Claude Desktop), where
   the annotation tool alone would capture nothing. Toggle with
   `VendorConfig(intent_param_mode=...)`: `required` (default) | `optional` |
-  `off`. `required` lists all three as required in the advertised schema but
-  never refuses a call that omits one: your handler still runs, and the event
-  carries no `call_intent` / `call_expected` / `call_workflow`.
+  `off`. `required` lists it as required in the advertised schema but never
+  refuses a call that omits it: your handler still runs, and the event carries
+  no `call_intent`.
 - **Zero-config sink** — the example uses `StdoutSink()`, which writes one JSON
   envelope per line to stderr. No backend, no dependencies beyond the SDK. Swap in
   `HttpSink(...)` to ship to a Console (see [`../04_hosted_console/`](../04_hosted_console/)).
@@ -34,9 +35,9 @@ The demo drives the wrapped server with two tool calls and prints the captured
 events to stderr. You'll see:
 
 - `tool_call_start` / `tool_call_end` events. The start event carries the *why*
-  as `call_intent` / `call_expected` (`intent_source: "injected_param"`),
-  harvested from the injected params, and `params` holding exactly the
-  arguments your tool received (`user_goal`/`expected_result` stripped out).
+  as `call_intent` (`intent_source: "injected_param"`), harvested from the
+  injected param, and `params` holding exactly the arguments your tool
+  received (`user_goal` stripped out).
 
 ## The integration, in full
 

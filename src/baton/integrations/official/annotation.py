@@ -97,19 +97,14 @@ def register_annotation_tool(
     @mcp.tool(name=name, description=description)  # type: ignore[untyped-decorator]
     async def _annotate(
         user_goal: str,
-        expected_result: str | None = None,
         what_happened: str | None = None,
         tool_name: str | None = None,
-        overall_task: str | None = None,
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
         ctx: Context = None,
     ) -> dict[str, Any]:
         # proactive_mode="off": refuse pre-call annotations structurally rather
-        # than by instruction text alone. Text alone is only a request, and a
-        # single umbrella `overall_task` label from one stray proactive is
-        # enough to merge distinct tasks in any consumer that keys grouping
-        # on it (the annotation label outranks the per-call one there).
+        # than by instruction text alone, which is only a request.
         # Rejecting here, rather than requiring what_happened in the schema,
         # keeps the agent from inventing a problem just to get the call
         # through — that would corrupt the reports, which are the signal
@@ -210,8 +205,6 @@ def register_annotation_tool(
                 payload=build_annotation_payload(
                     scrubber,
                     user_goal=user_goal,
-                    expected_result=expected_result,
-                    overall_task=overall_task,
                     suggested_improvement=suggested_improvement,
                     context=context,
                     what_happened=what_happened,

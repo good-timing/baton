@@ -19,8 +19,8 @@ Why wrap ``Tool.run`` (instead of ``Tool.fn`` as the 0.2.x adapter did):
 
 Strategy:
 1. After ``install_baton``, iterate ``_tool_manager._tools`` and (a) inject the
-   ``user_goal``/``expected_result`` params into each tool's advertised schema
-   and (b) replace ``tool.run`` with a wrapper that strips them and emits
+   ``user_goal`` param into each tool's advertised schema
+   and (b) replace ``tool.run`` with a wrapper that strips it and emits
    Baton events.
 2. Monkey-patch ``_tool_manager.add_tool`` so tools registered AFTER
    ``install_baton`` are also injected + wrapped automatically.
@@ -52,10 +52,10 @@ shape, not an ``mcp_types`` import, so it's inert (always False) on mcp<2.0.
 The official SDK exposes no ``on_list_tools`` middleware hook, so instead of
 injecting into a per-request tool list we mutate each ``Tool.parameters`` dict
 once, in place, at install time — that dict is exactly what ``FastMCP.list_tools``
-advertises as ``inputSchema``. The vendor-neutral ``user_goal``/``expected_result``
-params (white-label rule — see ``integrations._llm_text``) are stripped back out
+advertises as ``inputSchema``. The vendor-neutral ``user_goal`` param
+(white-label rule — see ``integrations._llm_text``) is stripped back out
 in the wrapper before the vendor handler validates its arguments, so the tool
-never sees them. This is the capture path that survives runtimes which drop
+never sees it. This is the capture path that survives runtimes which drop
 ``instructions`` (notably Claude Desktop).
 """
 
@@ -99,10 +99,9 @@ from baton.integrations._llm_text import (
     INTENT_SOURCE_PARAM,
     OVERALL_TASK_PARAM_NAME,
     USER_GOAL_PARAM_NAME,
-    build_expected_result_param_description,
-    build_overall_task_param_description,
-    build_user_goal_param_description,
     drop_subagent_clause,
+    inject_goal_params,
+    pop_goal_params,
     required_param_names,
 )
 from baton.integrations._session import (
@@ -209,7 +208,7 @@ def install_wraps(
 
     def _maybe_wrap_entry(name: str, tool: Any) -> None:
         # Skip the annotation tool — its handler emits its own annotation
-        # event with the structured payload, and it takes ``intent`` explicitly
+        # event with the structured payload, and it takes ``user_goal`` itself
         # so it needs no injected goal params.
         if annotation_tool_name is not None and name == annotation_tool_name:
             return
@@ -242,7 +241,7 @@ def install_wraps(
             else:
                 if dispositions:
                     param_registry[name] = dispositions
-                if dispositions.get(OVERALL_TASK_PARAM_NAME) == "native":
+                if dispositions.get(USER_GOAL_PARAM_NAME) == "native":
                     drop_subagent_clause(mcp, name, set_server_instructions)
         # mcp's Tool is a Pydantic BaseModel; `run` is a method, not a field,
         # so plain attribute assignment is rejected. Bypass Pydantic with
@@ -310,64 +309,12 @@ def install_wraps(
 
 
 def _inject_goal_params(tool: Any, intent_param_mode: str) -> dict[str, str]:
-    """Inject the three intent params into ``tool.parameters`` in
-    place; return each param's disposition (``"injected"`` / ``"native"``),
-    keyed independently — a tool that already declares one of the names
-    is left untouched for that name only.
+    """``inject_goal_params`` on the tool's own schema, in place.
 
-    Unlike the FastMCP middleware — which deep-copies on every ``on_list_tools``
-    — this runs once at install and mutates the tool's canonical schema dict
-    directly, because that dict IS what ``FastMCP.list_tools`` advertises as
-    ``inputSchema``. So the wrapper forwards the caller's own value for a
-    ``"native"`` param instead of stripping it. Mirrors baton-extmcp's injector."""
-    schema = tool.parameters
-    if not isinstance(schema, dict):
-        return {}
-    props = schema.get("properties")
-    existing = props if isinstance(props, dict) else {}
-    dispositions: dict[str, str] = {}
-    to_inject: dict[str, dict[str, str]] = {}
-    for name, description in (
-        (
-            USER_GOAL_PARAM_NAME,
-            build_user_goal_param_description(intent_param_mode=intent_param_mode),
-        ),
-        (
-            EXPECTED_RESULT_PARAM_NAME,
-            build_expected_result_param_description(intent_param_mode=intent_param_mode),
-        ),
-        (
-            OVERALL_TASK_PARAM_NAME,
-            build_overall_task_param_description(intent_param_mode=intent_param_mode),
-        ),
-    ):
-        if name in existing:
-            dispositions[name] = "native"
-        else:
-            dispositions[name] = "injected"
-            to_inject[name] = {"type": "string", "description": description}
-    if not to_inject:
-        return dispositions
-    new_props = schema.setdefault("properties", {})
-    if not isinstance(new_props, dict):
-        return dispositions
-    new_props.update(to_inject)
-    # Only params this adapter actually injected are escalated — a tool that
-    # declares one of the names natively keeps its own, per-param.
-    escalated = [
-        name
-        for name in required_param_names(intent_param_mode=intent_param_mode)
-        if dispositions.get(name) == "injected"
-    ]
-    if escalated:
-        required = schema.get("required")
-        if isinstance(required, list):
-            for name in escalated:
-                if name not in required:
-                    required.append(name)
-        else:
-            schema["required"] = list(escalated)
-    return dispositions
+    Unlike the FastMCP middleware, which works on a copy on every
+    ``on_list_tools``, this runs once at install, because ``tool.parameters``
+    IS what ``FastMCP.list_tools`` advertises as ``inputSchema``."""
+    return inject_goal_params(tool.parameters, intent_param_mode=intent_param_mode)
 
 
 def _extract_goal_params(
@@ -376,48 +323,12 @@ def _extract_goal_params(
     intent_param_mode: str,
     param_registry: dict[str, dict[str, str]],
 ) -> tuple[str | None, str | None, str | None]:
-    """Pop the injected ``user_goal``/``expected_result``/``overall_task``
-    from ``arguments`` in place; return their values independently (any may
-    be absent).
-
-    Mutating in place is what keeps them off the vendor handler — the same
-    dict is forwarded to ``original_run``."""
+    """``pop_goal_params`` for this call. Mutating ``arguments`` in place is
+    what keeps them off the vendor handler: the same dict is forwarded to
+    ``original_run``."""
     if intent_param_mode == "off":
         return None, None, None
-    dispositions = param_registry.get(tool_name)
-    goal = _extract_one_goal_param(tool_name, arguments, USER_GOAL_PARAM_NAME, dispositions)
-    expected = _extract_one_goal_param(
-        tool_name, arguments, EXPECTED_RESULT_PARAM_NAME, dispositions
-    )
-    task = _extract_one_goal_param(tool_name, arguments, OVERALL_TASK_PARAM_NAME, dispositions)
-    return goal, expected, task
-
-
-def _extract_one_goal_param(
-    tool_name: str,
-    arguments: dict[str, Any],
-    param_name: str,
-    dispositions: dict[str, str] | None,
-) -> str | None:
-    """Registry dispositions mirror baton-extmcp: ``"native"`` → the param is
-    the vendor's, forward untouched; unknown (cold registry — a call arrived
-    before the tool was scanned) → strip with a warning, safe only because the
-    names are reserved. Never raises."""
-    if param_name not in arguments:
-        return None
-    disposition = dispositions.get(param_name) if dispositions is not None else None
-    if disposition == "native":
-        return None
-    if disposition is None:
-        logger.warning(
-            "baton: stripping %s from unlisted tool %r (cold registry)",
-            param_name,
-            tool_name,
-        )
-    raw = arguments.pop(param_name, None)
-    if isinstance(raw, str) and raw.strip():
-        return raw
-    return None
+    return pop_goal_params(tool_name, arguments, param_registry.get(tool_name))
 
 
 # =============================================================================
@@ -560,11 +471,7 @@ def _wrap_tool_run(
                         injected_tool_names=(
                             [annotation_tool_name] if annotation_tool_name else []
                         ),
-                        intent_param_names=[
-                            USER_GOAL_PARAM_NAME,
-                            EXPECTED_RESULT_PARAM_NAME,
-                            OVERALL_TASK_PARAM_NAME,
-                        ],
+                        intent_param_names=[USER_GOAL_PARAM_NAME],
                         intent_param_mode=intent_param_mode,
                         required_names=list(
                             required_param_names(intent_param_mode=intent_param_mode)
@@ -582,7 +489,7 @@ def _wrap_tool_run(
 
         # Strip the injected goal params IN PLACE, before snapshotting params —
         # ``arguments`` is the same object forwarded to the vendor handler, so
-        # the strip keeps ``user_goal``/``expected_result`` off the tool AND out
+        # the strip keeps ``user_goal`` off the tool AND out
         # of the captured ``params`` (which must equal the vendor-visible
         # arguments).
         call_intent: str | None = None
@@ -673,7 +580,7 @@ def _wrap_tool_run(
         # from an earlier InputRequiredResult pause — it's the SAME logical call
         # resuming, not a new one, so it gets no new tool_call_start. The goal-
         # param strip above still runs unconditionally regardless: if a
-        # continuation resends the original arguments, user_goal/expected_result
+        # continuation resends the original arguments, user_goal
         # must still never reach the vendor handler.
         is_continuation = _is_mrtr_continuation(context)
         if not is_continuation:

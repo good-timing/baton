@@ -241,7 +241,7 @@ def install_baton(
 
     # This adapter sees a tool's schema only when tools are listed, so the
     # sentence goes from the sessions that start after the first listing.
-    def on_native_overall_task(tool_name: str) -> None:
+    def on_native_user_goal(tool_name: str) -> None:
         drop_subagent_clause(mcp, tool_name, _set_instructions)
 
     # Middleware emits tool_call_* events; skips them for the annotation tool
@@ -261,7 +261,7 @@ def install_baton(
             result_capture_mode=config.result_capture_mode,
             resolve_principal_hook=config.resolve_principal,
             server_meta=server_meta,
-            on_native_overall_task=on_native_overall_task,
+            on_native_user_goal=on_native_user_goal,
         )
     )
 

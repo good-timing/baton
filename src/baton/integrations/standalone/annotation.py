@@ -3,8 +3,8 @@
 Registers a vendor-namespaced annotation tool on a FastMCP server — named
 after the server itself by default, falling back to ``{vendor_id}_annotate``
 (see ``integrations._annotation_name``). The tool accepts the
-annotation signature (intent / expected_outcome / what_happened / tool_name / overall_task /
-suggested_improvement / context, all optional per SPEC §5.1.1) and emits an
+annotation signature (user_goal / what_happened / tool_name /
+suggested_improvement / context, SPEC §5.1.1) and emits an
 ``annotation`` event when called.
 
 Tool-name validation: enforces ``^[a-zA-Z0-9_-]{1,64}$`` — the strictest known
@@ -88,18 +88,13 @@ def register_annotation_tool(
     async def _annotate(
         ctx: Context,
         user_goal: str,
-        expected_result: str | None = None,
         what_happened: str | None = None,
         tool_name: str | None = None,
-        overall_task: str | None = None,
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         # proactive_mode="off": refuse pre-call annotations structurally rather
-        # than by instruction text alone. Text alone is only a request, and a
-        # single umbrella `overall_task` label from one stray proactive is
-        # enough to merge distinct tasks in any consumer that keys grouping
-        # on it (the annotation label outranks the per-call one there).
+        # than by instruction text alone, which is only a request.
         # Rejecting here, rather than requiring what_happened in the schema,
         # keeps the agent from inventing a problem just to get the call
         # through — that would corrupt the reports, which are the signal
@@ -175,8 +170,6 @@ def register_annotation_tool(
                 payload=build_annotation_payload(
                     scrubber,
                     user_goal=user_goal,
-                    expected_result=expected_result,
-                    overall_task=overall_task,
                     suggested_improvement=suggested_improvement,
                     context=context,
                     what_happened=what_happened,

@@ -64,18 +64,15 @@ class ToolCallStartPayload(BaseModel):
     """Emitted before the vendor handler runs. ``params`` is PII-scrubbed at
     emit-time per SPEC §7.
 
-    ``call_intent`` / ``call_expected`` / ``call_workflow`` are the values the
-    SDK stripped from the injected ``user_goal`` / ``expected_result`` /
-    ``overall_task`` params (``integrations._llm_text``), or, on the library
-    API, what the vendor passed to ``trace()`` (SPEC §5.6); they ride as
-    SIBLINGS of ``params`` — ``params`` stays exactly the vendor-visible
-    arguments. ``call_intent``/``call_expected`` are call-scoped diagnostics;
-    ``call_workflow`` is the task-label grouping key (console rung 3b, exact
-    string continuity). ``intent_source`` records provenance
-    (``"injected_param"`` or ``"library_arg"``). All null when no intent was
-    given. The Console
-    reads these off ``payload`` (``worker/correlate.py``, ``cycle.py``); kept
-    in lockstep with the proxy's emitter output."""
+    ``call_intent`` is the value the SDK stripped from the injected
+    ``user_goal`` param (``integrations._llm_text``), or, on the library API,
+    what the vendor passed to ``trace()`` (SPEC §5.6). It rides as a SIBLING
+    of ``params``, which stays exactly the vendor-visible arguments.
+    ``call_expected`` / ``call_workflow`` come from the library API, from
+    older producers that injected ``expected_result`` / ``overall_task``, and
+    from a client that still sends those names from an old tool list.
+    ``intent_source`` records provenance (``"injected_param"`` or
+    ``"library_arg"``). All null when no intent was given."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -208,7 +205,8 @@ class ToolCallErrorPayload(BaseModel):
 class AnnotationPayload(BaseModel):
     """Agent-supplied context. All fields nullable per SPEC §5.1.1. A filled
     ``what_happened`` makes the annotation a report (SPEC §11.4); without it
-    the annotation is a note carrying ``intent``/``expected_outcome``/``workflow``."""
+    the annotation is a note carrying ``intent``. ``expected_outcome`` and
+    ``workflow`` come only from the library API and older producers."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -242,14 +240,12 @@ class SurfaceSnapshotPayload(BaseModel):
     invalidate every recipe pinned to the vendor's real surface.
 
     ``seam_augmentations.intent_param`` carries plural ``names: list[str]``,
-    now the same three names in both producers (``user_goal``,
-    ``expected_result``, ``overall_task``) since baton-proxy gained the third.
-    Older events still carry the shapes this field has had before — two names,
-    or proxy's original singular ``name: str`` — so console-side consumers MUST
-    keep handling all of them — a consumer building a surface view reads every
-    shape, not just the current one. The list is DATA,
-    not shape: it must never feed ``surface_hash``, or adding a param would
-    invalidate every recipe pinned to the vendor's real surface.
+    now ``["user_goal"]``. Older events still carry the shapes this field has
+    had before (two or three names, or proxy's original singular
+    ``name: str``), so a consumer building a surface view MUST read every
+    shape, not just the current one. The list is DATA, not shape: it must
+    never feed ``surface_hash``, or adding a param would invalidate every
+    recipe pinned to the vendor's real surface.
 
     ``seam_augmentations.intent_param.required_names: list[str]`` is which of
     ``names`` the producer advertised as required. Not every producer or older

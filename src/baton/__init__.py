@@ -9,8 +9,8 @@ Core (always installed):
 - ``__version__`` — embedded in every emitted event's ``sdk_version`` field
 - ``Client``, ``AsyncClient`` — library API for Skill-instrumented
   agent code (see the "Library API" section in ``README.md``)
-- ``INTENT_PARAMS`` / ``IntentParam`` — the injected params' names and the
-  text an agent reads, for a vendor adding them to its own API (SPEC §5.6)
+- ``INTENT_PARAMS`` / ``IntentParam`` — the injected param's name and the
+  text an agent reads, for a vendor adding it to its own API (SPEC §5.6)
 - ``Principal`` — the return type of a ``VendorConfig.resolve_principal`` hook.
   Exported because that hook cannot be written without constructing one.
 - ``principal_from_oauth_sub``, ``principal_from_oauth_email`` — ready-made
