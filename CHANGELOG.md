@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## 0.8.21 (unreleased): one session per call on stateless HTTP, kept instructions, no unscrubbed deep values
+## 0.8.21: one session per call on stateless HTTP, kept instructions, no unscrubbed deep values
 
 ### Fixed
 
