@@ -8,11 +8,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased: reports are opt-in
+## 0.8.23: reports are opt-in; the library API serves an MCP server you built yourself
 
 ### Changed
 
 - The MCP adapters no longer register the annotation tool by default. A new `VendorConfig.report_mode` turns it on: `"off"` (default) registers no tool, and the server instructions are `baton.INTENT_INSTRUCTIONS` alone, the sentence that passes the message number to subagents, below your own instructions. `"on"` restores 0.8.22's tool and instructions exactly. Each call's goal still reaches your dashboard through `user_goal`, which is unchanged. `proactive_mode` has no effect unless `report_mode="on"`, and warns if set without it. `intent_param_mode="off"` now needs `report_mode="on"` and `proactive_mode="on"`, or install raises. To keep receiving agent reports, set `report_mode="on"`. (SPEC §5.1, §13.)
+
+### Added
+
+- A server that handles MCP's JSON-RPC itself, with no FastMCP or `mcp` server object for `install_baton` to wrap, can now get what the adapters add through the library API. `client.list_tools(tools, server_info=..., capabilities=..., instructions=...)` returns your tools with `user_goal` added as the adapters add it, and sends a snapshot of your own tool list. `baton.INTENT_INSTRUCTIONS` is the sentence for your `initialize` result. `client.session(meta=...)` takes the request's `_meta`, so the client's conversation and turn ids reach your events, scrubbed. The README's "Serving MCP yourself" section shows the four places the code goes. (SPEC §5.6.)
 
 ### Fixed
 

@@ -139,7 +139,7 @@ wheels = [
 
 [[package]]
 name = "baton-sdk"
-version = "0.8.22"
+version = "0.8.23"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },

@@ -230,7 +230,8 @@ class SurfaceSnapshotPayload(BaseModel):
     ``enqueue_surface_snapshot`` payload's top-level fields (see
     ``baton_proxy.emitter.Emitter.enqueue_surface_snapshot``) so the Console
     worker materializes both into the same ``vendor_surfaces`` table. Emitted
-    at most once per observed ``surface_hash`` per process.
+    at most once per observed ``surface_hash`` per process by an adapter, and
+    per client by the library's ``list_tools``.
 
     ``tools`` excludes Baton's own injected tool(s) (e.g. the annotation
     tool) — those are recorded in ``seam_augmentations.injected_tools``
