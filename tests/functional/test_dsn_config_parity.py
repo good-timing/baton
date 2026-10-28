@@ -298,7 +298,7 @@ class TestWhatTheDsnDoesNotTakeOver:
         assert resolve_config(VendorConfig(dsn=dsn)).vendor_display_name == SERVER
 
         for mcp in (OfficialServer("Echo Official"), StandaloneServer("Echo Standalone")):
-            handle = install_baton(mcp, dsn=dsn)
+            handle = install_baton(mcp, VendorConfig(report_mode="on", dsn=dsn))
             try:
                 instructions = mcp.instructions
                 assert instructions is not None
@@ -326,7 +326,8 @@ class TestWhatTheDsnDoesNotTakeOver:
         from baton.sinks import StdoutSink
 
         assert isinstance(
-            resolve_sink(VendorConfig(vendor_id="v", vendor_display_name="V")), StdoutSink
+            resolve_sink(VendorConfig(vendor_id="v", vendor_display_name="V")),
+            StdoutSink,
         )
 
 
@@ -352,7 +353,11 @@ class TestAnAmbientDsnDoesNotBreakAnExplicitInstall:
         monkeypatch.setenv("BATON_DSN", f"https://{KEY}@h.example.com/{WORKSPACE}/{SERVER}")
         handle = install_baton(
             FastMCP("legacy"),
-            VendorConfig(vendor_id="legacy", vendor_display_name="Legacy", sink=StdoutSink()),
+            VendorConfig(
+                vendor_id="legacy",
+                vendor_display_name="Legacy",
+                sink=StdoutSink(),
+            ),
         )
         # The explicit config wins outright — not a merge, which would give a
         # server one half of each identity.

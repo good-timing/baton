@@ -51,6 +51,7 @@ async def configured_mcp(
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="test-vendor",
             vendor_display_name="Test Vendor",
             consent_token="ct_test",
@@ -109,6 +110,7 @@ class TestInstallation:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="acme",
                 vendor_display_name="ACME Corp",
                 consent_token="ct_test",
@@ -131,6 +133,7 @@ class TestInstallation:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="acme",
                 vendor_display_name="ACME Corp",
                 consent_token="ct_test",
@@ -167,6 +170,7 @@ class TestInstallation:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="acme",
                 vendor_display_name="ACME Corp",
                 consent_token="ct_test",
@@ -187,6 +191,7 @@ class TestInstallation:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="v",
                 vendor_display_name="V",
                 consent_token="ct_test",
@@ -210,6 +215,7 @@ class TestInstallation:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="v",
                 vendor_display_name="V",
                 consent_token="ct_test",
@@ -238,6 +244,7 @@ class TestInstallation:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="v",
                 vendor_display_name="V",
                 consent_token="ct_test",
@@ -270,6 +277,7 @@ class TestInstallation:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="srv-9f2a7c31",
                 vendor_display_name="Acme",
                 consent_token="ct_test",
@@ -302,6 +310,7 @@ class TestInstallation:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="v",
                 vendor_display_name="V",
                 consent_token="ct_test",
@@ -368,6 +377,7 @@ class TestInstallation:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="v",
                 vendor_display_name="V",
                 consent_token="ct_test",
@@ -405,6 +415,7 @@ class TestInstallation:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="v",
                 vendor_display_name="V",
                 consent_token="ct_test",
@@ -443,6 +454,7 @@ class TestInstallation:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="v",
                 vendor_display_name="V",
                 consent_token="ct_test",
@@ -1074,6 +1086,7 @@ class TestVendorInstructionsAreKept:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="acme-ads",
                 vendor_display_name="Acme Ads",
                 consent_token="ct_test",
@@ -1133,6 +1146,7 @@ class TestVendorInstructionsAreKept:
             again = install_baton(
                 mcp,
                 VendorConfig(
+                    report_mode="on",
                     vendor_id="acme-ads",
                     vendor_display_name="Acme Ads",
                     consent_token="ct_test",

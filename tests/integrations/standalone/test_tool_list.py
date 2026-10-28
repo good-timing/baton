@@ -27,6 +27,7 @@ async def test_a_paged_listing_sends_a_pair_per_page_counting_that_page(tmp_path
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="v",
             vendor_display_name="V",
             consent_token="ct",

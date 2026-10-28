@@ -21,7 +21,7 @@ from packaging.version import Version
 import baton
 from baton.integrations._llm_text import (
     _CLAUDE_CODE_TRUNCATION_CAP,
-    _OURS_START,
+    _OURS_STARTS,
     build_annotation_tool_description,
     build_refusal_text,
     build_server_instructions,
@@ -464,7 +464,7 @@ def test_both_heads_open_with_the_text_that_marks_our_paragraph() -> None:
         rendered = build_server_instructions(
             vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode=mode
         )
-        assert rendered.startswith(_OURS_START)
+        assert rendered.startswith(_OURS_STARTS[0])
 
 
 class TestWithVendorInstructions:

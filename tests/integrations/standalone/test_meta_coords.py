@@ -49,6 +49,7 @@ async def _drive(events_path: Path, **config: Any) -> dict[str, dict[str, Any]]:
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="coords",
             vendor_display_name="Coords Vendor",
             consent_token="ct_coords",

@@ -35,6 +35,7 @@ def _config(
     from baton.sinks import FileSink
 
     return config_class(
+        report_mode="on",
         **({} if scrubber is None else {"scrubber": scrubber}),
         vendor_id="parity",
         vendor_display_name="Parity Vendor",

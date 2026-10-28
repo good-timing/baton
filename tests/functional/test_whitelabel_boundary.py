@@ -63,6 +63,7 @@ async def test_mcp_adapter_surfaces_are_whitelabeled(tmp_path: Path) -> None:
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id=VENDOR_ID,
             vendor_display_name=VENDOR_DISPLAY_NAME,
             consent_token="ct_whitelabel",
@@ -105,6 +106,7 @@ async def test_fastmcp_adapter_surfaces_are_whitelabeled(tmp_path: Path) -> None
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id=VENDOR_ID,
             vendor_display_name=VENDOR_DISPLAY_NAME,
             consent_token="ct_whitelabel",

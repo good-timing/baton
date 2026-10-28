@@ -48,6 +48,7 @@ async def test_the_surface_snapshot_carries_no_client_and_caller_events_do(
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="oc",
             vendor_display_name="Observed Vendor",
             consent_token="ct_oc",

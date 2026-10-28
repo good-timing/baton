@@ -84,6 +84,7 @@ async def _run_official_path(
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="parity",
             vendor_display_name="Parity Vendor",
             consent_token="ct_parity",
@@ -125,6 +126,7 @@ async def _run_standalone_path(
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="parity",
             vendor_display_name="Parity Vendor",
             consent_token="ct_parity",

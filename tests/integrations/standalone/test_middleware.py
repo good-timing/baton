@@ -534,6 +534,7 @@ async def test_headers_are_read_once_per_request(
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="v",
             vendor_display_name="V",
             consent_token="ct",

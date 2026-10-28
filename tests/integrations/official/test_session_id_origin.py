@@ -34,6 +34,7 @@ def _server(events_path: Path) -> tuple[Any, Any]:
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="origin",
             vendor_display_name="Origin Vendor",
             consent_token="ct_origin",

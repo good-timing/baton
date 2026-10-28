@@ -88,6 +88,7 @@ def _running_server(
     install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="concurrency-probe",
             vendor_display_name="Concurrency Probe",
             consent_token="test-token",

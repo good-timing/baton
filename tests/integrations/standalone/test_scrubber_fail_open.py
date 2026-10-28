@@ -98,6 +98,7 @@ async def _drive(
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="failopen",
             vendor_display_name="Fail Open",
             consent_token="ct_failopen",

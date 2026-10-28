@@ -18,6 +18,7 @@ from baton.sinks import FileSink
 
 def _config(module: Any, path: str, proactive_mode: str) -> Any:
     return module.VendorConfig(
+        report_mode="on",
         vendor_id="v",
         vendor_display_name="V",
         consent_token="ct_test",

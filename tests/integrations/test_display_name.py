@@ -117,8 +117,8 @@ both_adapters = pytest.mark.parametrize(
 async def test_a_dsn_only_install_names_the_vendor_by_the_server(
     install: Install, dsn: str
 ) -> None:
-    """The stranger's install exactly: a named server and a DSN, nothing else."""
-    served = await install("toybox-pantry", dsn=dsn)
+    """The stranger's install with reports on: a named server and a DSN."""
+    served = await install("toybox-pantry", VendorConfig(report_mode="on", dsn=dsn))
     try:
         assert served.handle.annotation_tool_name == "toybox-pantry_annotate"
         assert served.instructions == build_server_instructions(
@@ -143,7 +143,7 @@ async def test_a_library_placeholder_keeps_the_dsn_segment_in_both_places(
     """``fastmcp`` is a library's name, not the vendor's, and so is whatever
     the library calls a server nobody named (``FastMCP-<4 hex>``, ``FastMCP``,
     ``mcp-server``). Neither name moves off what it was before 0.8.5."""
-    served = await install(server_name, dsn=dsn)
+    served = await install(server_name, VendorConfig(report_mode="on", dsn=dsn))
     try:
         assert served.handle.annotation_tool_name == f"{SEGMENT}_annotate"
         assert served.instructions == build_server_instructions(
@@ -177,7 +177,7 @@ async def test_a_library_placeholder_keeps_the_dsn_segment_in_both_places(
 async def test_an_explicit_name_wins(
     install: Install, dsn: str, overrides: dict[str, str], display: str, tool: str
 ) -> None:
-    served = await install("toybox-pantry", VendorConfig(dsn=dsn, **overrides))
+    served = await install("toybox-pantry", VendorConfig(report_mode="on", dsn=dsn, **overrides))
     try:
         assert served.handle.annotation_tool_name == tool
         assert served.instructions == build_server_instructions(
@@ -200,6 +200,7 @@ async def test_without_a_dsn_nothing_changes(
     served = await install(
         "toybox-pantry",
         VendorConfig(
+            report_mode="on",
             vendor_id="acme",
             vendor_display_name="Acme",
             sink=FileSink(str(tmp_path / "events.jsonl")),
@@ -213,7 +214,7 @@ async def test_without_a_dsn_nothing_changes(
         await served.handle.aclose()
 
     with pytest.raises(ValueError, match="vendor_display_name"):
-        await install("toybox-pantry", VendorConfig(vendor_id="acme"))
+        await install("toybox-pantry", VendorConfig(report_mode="on", vendor_id="acme"))
 
 
 @both_adapters
@@ -223,7 +224,7 @@ async def test_a_thirty_character_name_fits_in_the_tightest_mode(
     """Proactive mode interpolates the tool name 4x and the display name 5x,
     so it is where the two compete for the cap."""
     assert len(THIRTY) == 30
-    served = await install(THIRTY, VendorConfig(dsn=dsn, proactive_mode="on"))
+    served = await install(THIRTY, VendorConfig(report_mode="on", dsn=dsn, proactive_mode="on"))
     try:
         assert served.handle.annotation_tool_name == THIRTY_TOOL
         assert served.instructions == build_server_instructions(
@@ -259,7 +260,7 @@ async def test_a_name_that_would_not_fit_falls_back_for_the_display_name(
         proactive_mode="on",
     )
 
-    served = await install(ONE_PAST, VendorConfig(dsn=dsn, proactive_mode="on"))
+    served = await install(ONE_PAST, VendorConfig(report_mode="on", dsn=dsn, proactive_mode="on"))
     try:
         assert served.handle.annotation_tool_name == THIRTY_TOOL
         assert served.instructions == build_server_instructions(

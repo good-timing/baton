@@ -86,6 +86,7 @@ async def _drive(
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="uid",
             vendor_display_name="Identity Vendor",
             consent_token="ct_uid",

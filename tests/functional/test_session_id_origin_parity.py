@@ -52,6 +52,7 @@ def _config(config_class: Any, events_path: Path) -> Any:
     from baton.sinks import FileSink
 
     return config_class(
+        report_mode="on",
         vendor_id="origin",
         vendor_display_name="Origin Vendor",
         consent_token="ct_origin",

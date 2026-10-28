@@ -60,6 +60,7 @@ async def _drive_all(
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="rt",
             vendor_display_name="Runtime Vendor",
             consent_token="ct_rt",
@@ -195,6 +196,7 @@ async def test_the_context_kwarg_stays_out_of_the_public_tool_schema(tmp_path: P
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="rt",
             vendor_display_name="Runtime Vendor",
             consent_token="ct_rt",

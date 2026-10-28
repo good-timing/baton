@@ -48,6 +48,7 @@ def _install(events_path: str, **overrides: Any) -> tuple[Any, Any]:
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="test-vendor",
             vendor_display_name="Test Vendor",
             consent_token="ct_test",
@@ -175,6 +176,7 @@ class TestListInjection:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="test-vendor",
                 vendor_display_name="Test Vendor",
                 consent_token="ct_test",
@@ -412,6 +414,7 @@ class TestNoCopiedNote:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="test-vendor",
                 vendor_display_name="Test Vendor",
                 consent_token="ct_test",
@@ -477,6 +480,7 @@ class TestRetiredParams:
         handle = install_baton(
             mcp,
             VendorConfig(
+                report_mode="on",
                 vendor_id="test-vendor",
                 vendor_display_name="Test Vendor",
                 consent_token="ct_test",

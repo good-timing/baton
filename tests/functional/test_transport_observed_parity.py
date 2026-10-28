@@ -119,6 +119,7 @@ async def _run_standalone_in_memory(events_path: Path) -> None:
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="transport",
             vendor_display_name="Transport Vendor",
             consent_token="ct_transport",

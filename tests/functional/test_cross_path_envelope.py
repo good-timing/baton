@@ -60,6 +60,7 @@ async def _run_mcp_path(events_path: str) -> None:
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="cross-path",
             vendor_display_name="Cross Path Vendor",
             consent_token="ct_cross_path",
@@ -103,6 +104,7 @@ async def _run_fastmcp_path(events_path: str) -> None:
     handle = install_baton(
         mcp,
         VendorConfig(
+            report_mode="on",
             vendor_id="cross-path",
             vendor_display_name="Cross Path Vendor",
             consent_token="ct_cross_path",

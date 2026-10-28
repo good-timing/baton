@@ -161,7 +161,9 @@ def test_a_disabled_client_opens_a_block_without_scrubbing(
         raise AssertionError("the scrubber ran on a disabled client")
 
     client = Client(vendor_id="v1", sink=_CollectingSink(), scrubber=_never)
-    with client.session(client_info={"name": "x"}, headers={"user-agent": "y"}):
+    with client.session(
+        client_info={"name": "x"}, headers={"user-agent": "y"}, meta={"threadId": "t-1"}
+    ):
         _traced(client)
     client.close()
 
@@ -286,7 +288,7 @@ def test_trace_and_annotate_take_no_session_of_their_own() -> None:
     sync = _client(_CollectingSink())
     async_ = AsyncClient(vendor_id="v1", tenant_id="ten_abc", sink=_CollectingSink())
     for door in (sync.trace, sync.annotate, async_.trace, async_.annotate):
-        for name in ("session_id", "principal", "client_info", "headers", "turn_id"):
+        for name in ("session_id", "principal", "client_info", "headers", "turn_id", "meta"):
             with pytest.raises(TypeError):
                 door(tool_name="fetch", **{name: "x"})
     sync.close()
@@ -332,3 +334,121 @@ def test_a_block_without_a_turn_id_and_a_call_outside_any_block_send_no_runtime_
     client.close()
 
     assert {e["runtime_meta"] for e in _wire(sink)} == {None}
+
+
+def test_the_requests_meta_rides_scrubbed_with_the_vendors_turn_id() -> None:
+    sink = _CollectingSink()
+    client = _client(sink)
+    meta = {
+        "threadId": "thr-1",
+        "note": "mail jane@example.com",
+        "baton/turn_id": "from-the-client",
+        "location": {"latitude": 59.91273},
+    }
+    with client.session(turn_id="run-1", meta=meta):
+        _traced(client)
+    client.close()
+
+    runtime_meta = sink.events[0].runtime_meta
+    assert runtime_meta is not None
+    assert runtime_meta["threadId"] == "thr-1"
+    assert "jane@example.com" not in runtime_meta["note"]
+    assert runtime_meta["location"] == {"latitude": 59.9}
+    assert runtime_meta["baton/turn_id"] == "run-1"
+    assert meta["baton/turn_id"] == "from-the-client"
+
+
+def test_a_clients_turn_id_never_rides_without_the_vendors() -> None:
+    sink = _CollectingSink()
+    client = _client(sink)
+    with client.session(meta={"baton/turn_id": "from-the-client"}):
+        _traced(client)
+    with client.session(meta={"baton/turn_id": "c", "threadId": "thr-1"}):
+        _traced(client)
+    client.close()
+
+    assert [e.runtime_meta for e in sink.events] == [None, None] + [{"threadId": "thr-1"}] * 2
+
+
+def test_client_info_in_meta_is_preferred_and_client_info_is_the_fallback() -> None:
+    sink = _CollectingSink()
+    client = _client(sink)
+    declared = {"io.modelcontextprotocol/clientInfo": {"name": "codex", "version": "0.9"}}
+    with client.session(meta=declared, client_info={"name": "handshake", "version": "1"}):
+        _traced(client)
+    with client.session(meta={"threadId": "t"}, client_info={"name": "handshake"}):
+        _traced(client)
+    client.close()
+
+    infos = [e.client_observed.info if e.client_observed else None for e in sink.events]
+    assert [i.name if i else None for i in infos] == ["codex", "codex", "handshake", "handshake"]
+
+
+def test_meta_that_is_not_a_dict_is_dropped_not_raised(caplog: pytest.LogCaptureFixture) -> None:
+    sink = _CollectingSink()
+    client = _client(sink)
+    with caplog.at_level(logging.WARNING, logger="baton"):
+        with client.session(turn_id="run-1", meta=["not", "a", "dict"]):  # type: ignore[arg-type]
+            _traced(client)
+    client.close()
+
+    assert sink.events[0].runtime_meta == {"baton/turn_id": "run-1"}
+    assert "meta=" in caplog.text
+
+
+def test_a_scrubber_that_returns_no_dict_for_meta_costs_only_the_meta() -> None:
+    def scrub(value: Any) -> Any:
+        return "[gone]" if isinstance(value, dict) and "threadId" in value else value
+
+    sink = _CollectingSink()
+    client = Client(vendor_id="v1", tenant_id="ten_abc", sink=sink, scrubber=scrub)
+    with client.session(turn_id="run-1", meta={"threadId": "thr-1"}):
+        _traced(client)
+    client.close()
+
+    assert sink.events[0].runtime_meta == {"baton/turn_id": "run-1"}
+
+
+def test_any_mapping_is_accepted_as_meta() -> None:
+    from types import MappingProxyType
+
+    sink = _CollectingSink()
+    client = _client(sink)
+    with client.session(meta=MappingProxyType({"threadId": "thr-1"})):
+        _traced(client)
+    client.close()
+
+    assert sink.events[0].runtime_meta == {"threadId": "thr-1"}
+
+
+def test_headers_are_scrubbed_once_per_block() -> None:
+    seen: list[Any] = []
+
+    def scrub(value: Any) -> Any:
+        seen.append(value)
+        return value
+
+    client = Client(vendor_id="v1", tenant_id="ten_abc", sink=_CollectingSink(), scrubber=scrub)
+    with client.session(
+        meta={"threadId": "t"}, client_info={"name": "app"}, headers={"user-agent": "agent/1"}
+    ):
+        pass
+    client.close()
+    assert seen.count("agent/1") == 1
+
+
+def test_a_client_info_that_is_a_mapping_but_not_a_dict_is_read() -> None:
+    from types import MappingProxyType
+
+    sink = _CollectingSink()
+    client = _client(sink)
+    declared = MappingProxyType({"name": "cursor", "version": "1.2"})
+    with client.session(
+        meta={"io.modelcontextprotocol/clientInfo": declared}, client_info={"name": "app"}
+    ):
+        _traced(client)
+    client.close()
+
+    observed = sink.events[0].client_observed
+    assert observed is not None and observed.info is not None
+    assert observed.info.name == "cursor"
