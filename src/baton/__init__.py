@@ -11,6 +11,8 @@ Core (always installed):
   agent code (see the "Library API" section in ``README.md``)
 - ``INTENT_PARAMS`` / ``IntentParam`` — the injected param's name and the
   text an agent reads, for a vendor adding it to its own API (SPEC §5.6)
+- ``INTENT_INSTRUCTIONS`` — the server instructions that go with
+  ``user_goal``, for a vendor serving MCP itself (SPEC §5.6)
 - ``Principal`` — the return type of a ``VendorConfig.resolve_principal`` hook.
   Exported because that hook cannot be written without constructing one.
 - ``principal_from_oauth_sub``, ``principal_from_oauth_email`` — ready-made
@@ -52,6 +54,7 @@ except PackageNotFoundError:
     __version__ = "0.0.0+local"
 
 __all__ = [
+    "INTENT_INSTRUCTIONS",
     "INTENT_PARAMS",
     "AsyncClient",
     "AsyncTrace",
@@ -79,5 +82,5 @@ from baton.identity import Principal
 # the call, so neither optional extra is required to import ``baton``.
 from baton.install import install_baton
 from baton.integrations._config import VendorConfig
-from baton.integrations._llm_text import INTENT_PARAMS, IntentParam
+from baton.integrations._llm_text import INTENT_INSTRUCTIONS, INTENT_PARAMS, IntentParam
 from baton.integrations.oauth_hooks import principal_from_oauth_email, principal_from_oauth_sub

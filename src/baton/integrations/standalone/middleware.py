@@ -58,6 +58,7 @@ from baton.integrations._llm_text import (
     USER_GOAL_PARAM_NAME,
     drop_retired_params,
     inject_goal_params,
+    instructions_suffix_served,
     pop_goal_params,
     required_param_names,
 )
@@ -233,6 +234,9 @@ class BatonMiddleware(Middleware):
                 intent_param_mode=self._intent_param_mode,
                 required_names=list(
                     required_param_names(intent_param_mode=self._intent_param_mode)
+                ),
+                instructions_suffix=instructions_suffix_served(
+                    annotation_tool_name=self._annotation_tool_name, surface_tools=surface_tools
                 ),
             )
             seq = await self._counter.next(self._fallback_session_id)

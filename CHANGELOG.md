@@ -8,6 +8,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased: reports are opt-in
+
+### Changed
+
+- The MCP adapters no longer register the annotation tool by default. A new `VendorConfig.report_mode` turns it on: `"off"` (default) registers no tool, and the server instructions are `baton.INTENT_INSTRUCTIONS` alone, the sentence that passes the message number to subagents, below your own instructions. `"on"` restores 0.8.22's tool and instructions exactly. Each call's goal still reaches your dashboard through `user_goal`, which is unchanged. `proactive_mode` has no effect unless `report_mode="on"`, and warns if set without it. `intent_param_mode="off"` now needs `report_mode="on"` and `proactive_mode="on"`, or install raises. To keep receiving agent reports, set `report_mode="on"`. (SPEC §5.1, §13.)
+
 ## 0.8.22: one numbered `user_goal` instead of three injected fields
 
 ### Changed

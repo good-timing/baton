@@ -9,8 +9,8 @@ FastMCP`` (mcp 1.x) or ``from mcp.server.mcpserver import MCPServer`` (mcp
 refused up front with a message naming the other adapter.
 
 Five-line vendor integration via ``install_baton(mcp, VendorConfig(...))``;
-registers the BatonMiddleware on every MCP tool call and exposes the
-vendor-namespaced annotation tool.
+registers the BatonMiddleware on every MCP tool call and, under
+``report_mode="on"``, exposes the vendor-namespaced annotation tool.
 
 Requires the ``baton-sdk[fastmcp]`` install extra — note ``[fastmcp]``, not
 ``[mcp]``: the latter installs the official SDK, which this adapter does not

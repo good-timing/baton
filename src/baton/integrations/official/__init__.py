@@ -2,7 +2,8 @@
 
 Five-line vendor integration via ``install_baton(mcp, VendorConfig(...))``;
 wraps each registered tool's handler to emit ``tool_call_*`` events around
-the vendor's tool fn, and exposes the vendor-namespaced annotation tool.
+the vendor's tool fn, and, under ``report_mode="on"``, exposes the
+vendor-namespaced annotation tool.
 
 Targets the official Anthropic ``mcp`` package's server class — on mcp 1.x::
 

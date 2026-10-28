@@ -1,7 +1,7 @@
 """``install_baton`` — the vendor's MCP integration entry point.
 
-Wires together a ``Sink``, the ``BatonMiddleware``, the tool list capture, and
-the vendor-namespaced annotation tool. Vendor calls this once after constructing their FastMCP
+Wires together a ``Sink``, the ``BatonMiddleware``, the tool list capture, and,
+under ``report_mode="on"``, the vendor-namespaced annotation tool. Vendor calls this once after constructing their FastMCP
 server; everything downstream (event capture, sink-specific egress, dispatch
 back at the destination) is handled by the SDK.
 
@@ -57,7 +57,7 @@ from fastmcp.server.context import Context
 from baton._optout import capture_disabled
 from baton._state import SessionCounter
 from baton._uuid import uuid7
-from baton.integrations._annotation_name import resolve_annotation_names
+from baton.integrations._annotation_name import resolve_install_text
 from baton.integrations._config import (
     VendorConfig,
     _resolve_tenant_id,
@@ -71,11 +71,7 @@ from baton.integrations._lifecycle import (
     install_lifecycle_capture,
     warn_if_results_are_withheld,
 )
-from baton.integrations._llm_text import (
-    build_server_instructions,
-    drop_subagent_clause,
-    with_vendor_instructions,
-)
+from baton.integrations._llm_text import drop_subagent_clause, with_vendor_instructions
 from baton.integrations._surface import build_server_meta
 from baton.integrations.client_observed import meta_to_dict
 from baton.integrations.official._registry import get_tool_manager
@@ -210,11 +206,8 @@ def install_baton(
     counter = SessionCounter()
     sink = resolve_sink(config)
 
-    # Both LLM-facing names, the display name first so the tool name's budget
-    # check sees the real text. See ``resolve_annotation_names``.
-    vendor_display_name, annotation_tool_name = resolve_annotation_names(
-        mcp, config, display_name_given=display_name_given
-    )
+    text = resolve_install_text(mcp, config, display_name_given=display_name_given)
+    annotation_tool_name = text.names.annotation_tool_name if text.names else ""
 
     # Captured BEFORE any Baton mutation below — the vendor-true baseline the
     # surface-snapshot hash is authored against. See integrations._surface.
@@ -231,13 +224,7 @@ def install_baton(
         server_meta = {}
 
     # Server instructions — load-bearing on instruction-aware runtimes.
-    instructions = build_server_instructions(
-        vendor_display_name=vendor_display_name,
-        annotation_tool_name=annotation_tool_name,
-        proactive_mode=config.proactive_mode,
-        intent_param_mode=config.intent_param_mode,
-    )
-    _set_instructions(mcp, with_vendor_instructions(mcp, instructions))
+    _set_instructions(mcp, with_vendor_instructions(mcp, text.instructions))
 
     # This adapter sees a tool's schema only when tools are listed, so the
     # sentence goes from the sessions that start after the first listing.
@@ -299,27 +286,23 @@ def install_baton(
         read_access_token=_auth.current_access_token,
     )
 
-    register_annotation_tool(
-        mcp,
-        vendor_id=config.vendor_id,
-        vendor_display_name=vendor_display_name,
-        tenant_id=tenant_id,
-        consent_token=config.consent_token,
-        sink=sink,
-        counter=counter,
-        fallback_session_id=fallback_session_id,
-        # The RESOLVED name, not ``config.annotation_tool_name``. This used to
-        # pass the raw override and let ``register_annotation_tool`` re-derive,
-        # which agreed only while both sites were pure functions of
-        # ``(vendor_id, override)``. With the server object as a third input
-        # they diverge: the tool would register under ``srv-…_annotate`` while
-        # the capture layer skips a name nothing registered and the server
-        # instructions name a tool that does not exist.
-        annotation_tool_name=annotation_tool_name,
-        proactive_mode=config.proactive_mode,
-        scrubber=scrubber,
-        resolve_principal_hook=config.resolve_principal,
-    )
+    if text.names is not None:
+        register_annotation_tool(
+            mcp,
+            vendor_id=config.vendor_id,
+            vendor_display_name=text.names.vendor_display_name,
+            tenant_id=tenant_id,
+            consent_token=config.consent_token,
+            sink=sink,
+            counter=counter,
+            fallback_session_id=fallback_session_id,
+            # The RESOLVED name, not ``config.annotation_tool_name``, so the tool,
+            # the capture layer's skip and the instructions name the same tool.
+            annotation_tool_name=annotation_tool_name,
+            proactive_mode=config.proactive_mode,
+            scrubber=scrubber,
+            resolve_principal_hook=config.resolve_principal,
+        )
 
     return BatonHandle(
         sink=sink,

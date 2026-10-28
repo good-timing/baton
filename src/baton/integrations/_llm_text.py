@@ -237,6 +237,10 @@ _INSTRUCTIONS_SUBAGENT_CLAUSE = (
     "tools. This applies only to this server's tools."
 )
 
+#: The server instructions a vendor serving MCP itself puts in its
+#: ``initialize`` result beside ``user_goal`` (SPEC §5.6).
+INTENT_INSTRUCTIONS = _INSTRUCTIONS_SUBAGENT_CLAUSE.strip()
+
 
 def build_user_goal_param_description(*, intent_param_mode: str = "optional") -> str:
     """Build the injected ``user_goal`` param's ``description`` field.
@@ -263,7 +267,7 @@ def inject_goal_params(schema: Any, *, intent_param_mode: str) -> dict[str, str]
     if not isinstance(props, dict):
         return {}
     dispositions = {name: "native" for name in RETIRED_PARAM_NAMES if name in props}
-    if USER_GOAL_PARAM_NAME in props:
+    if declares_user_goal(schema):
         dispositions[USER_GOAL_PARAM_NAME] = "native"
         return dispositions
     dispositions[USER_GOAL_PARAM_NAME] = "injected"
@@ -320,9 +324,12 @@ def drop_subagent_clause(mcp: Any, tool_name: str, write: Callable[[Any, str], N
     # must not fail over this.
     try:
         current = mcp.instructions
-        if not isinstance(current, str) or _INSTRUCTIONS_SUBAGENT_CLAUSE not in current:
+        if current == INTENT_INSTRUCTIONS:
+            write(mcp, "")
+        elif isinstance(current, str) and _INSTRUCTIONS_SUBAGENT_CLAUSE in current:
+            write(mcp, current.replace(_INSTRUCTIONS_SUBAGENT_CLAUSE, ""))
+        else:
             return
-        write(mcp, current.replace(_INSTRUCTIONS_SUBAGENT_CLAUSE, ""))
     except Exception:
         logger.exception("baton: could not remove the subagent sentence from the instructions")
         return
@@ -331,6 +338,23 @@ def drop_subagent_clause(mcp: Any, tool_name: str, write: Callable[[Any, str], N
         "removed from the server instructions; a session that already started keeps it",
         tool_name,
     )
+
+
+def declares_user_goal(schema: Any) -> bool:
+    """Whether a tool's input ``schema`` declares ``user_goal`` itself."""
+    props = schema.get("properties") if isinstance(schema, dict) else None
+    return isinstance(props, dict) and USER_GOAL_PARAM_NAME in props
+
+
+def instructions_suffix_served(
+    *, annotation_tool_name: str | None, surface_tools: list[dict[str, Any]]
+) -> bool:
+    """Whether Baton's text is in the served instructions, given the
+    vendor-true tools. Without the annotation tool it is only the subagent
+    sentence, which a tool declaring its own ``user_goal`` removes."""
+    if annotation_tool_name:
+        return True
+    return not any(declares_user_goal(tool.get("inputSchema")) for tool in surface_tools)
 
 
 def build_server_instructions(
@@ -377,8 +401,9 @@ def build_server_instructions(
 
 
 _VENDOR_INSTRUCTIONS_ATTR = "_baton_vendor_instructions"
-# Where our paragraph begins; both heads share it.
-_OURS_START = _INSTRUCTIONS_HEAD_PROACTIVE.split("{", 1)[0]
+# Where our paragraph begins: both heads share the first; the second is the
+# whole text under ``report_mode="off"``.
+_OURS_STARTS = (_INSTRUCTIONS_HEAD_PROACTIVE.split("{", 1)[0], INTENT_INSTRUCTIONS)
 
 
 def _ends_in_ours(current: Any, vendor: Any) -> bool:
@@ -386,7 +411,7 @@ def _ends_in_ours(current: Any, vendor: Any) -> bool:
     if not isinstance(current, str):
         return False
     prefix = f"{vendor}\n\n" if isinstance(vendor, str) and vendor.strip() else ""
-    return current.startswith(prefix + _OURS_START)
+    return current.startswith(tuple(prefix + start for start in _OURS_STARTS))
 
 
 def with_vendor_instructions(mcp: Any, ours: str) -> str:

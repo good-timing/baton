@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 # Per-tool intent-param injection modes (mirrors baton-proxy's BATON_INTENT_PARAM).
 _INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required", "off"})
 _PROACTIVE_MODES: frozenset[str] = frozenset({"on", "off"})
+_REPORT_MODES: frozenset[str] = frozenset({"on", "off"})
 
 
 class CaseInsensitiveHeaders(dict[str, str]):
@@ -295,8 +296,8 @@ class VendorConfig:
     this value, and it is what the key is BOUND to."""
 
     vendor_display_name: str = ""
-    """Human-readable vendor name used in server instructions, annotation
-    tool description, and any LLM-facing strings. Whitelabel obligation
+    """Human-readable vendor name in the annotation tool's description and its
+    server instructions, under ``report_mode="on"``. Whitelabel obligation
     (SPEC §5.4): no Baton-branded strings reach the calling agent.
 
     Defaults, when a ``dsn`` is given and this is not, to your MCP server's own
@@ -403,23 +404,36 @@ class VendorConfig:
     ``required`` entry. ``"off"`` disables injection. A tool that already
     declares ``user_goal`` keeps its own."""
 
+    report_mode: str = "off"
+    """Whether the agent is given a tool to report problems with yours.
+
+    ``"off"`` (default) registers no annotation tool, and Baton's server
+    instructions are ``INTENT_INSTRUCTIONS`` alone: the one sentence that
+    passes the message number to subagents. Each call still carries its
+    goal and success clause in ``user_goal``, and its errors in its events.
+
+    ``"on"`` registers the annotation tool and adds the instructions that
+    tell the agent when to file a report. A report costs the agent an extra
+    call before it answers, and the tool and its instructions add to every
+    request's input."""
+
     proactive_mode: str = "off"
     """Whether the server instructions ask the agent to file a *proactive*
     annotation before each tool call. ``"off"`` (default) removes that request;
-    ``"on"`` restores it.
+    ``"on"`` restores it. It has no effect unless ``report_mode="on"``.
 
     Off by default because the injected param supersedes it: ``user_goal``
     rides every ``tool_call_start`` as ``call_intent``, so a pre-call
     annotation carries no field the call event doesn't, while costing an
     extra inference turn per tool call.
 
-    **This never disables reactive annotation.** The tool stays on the surface
-    and the friction clauses of the instructions stay verbatim. Only the
-    agent-initiated pre-call annotation goes away; the call's intent still
-    rides its ``tool_call_start``.
+    **This never disables reactive annotation.** Under ``report_mode="on"``
+    the tool stays on the surface and the friction clauses of the instructions
+    stay verbatim. Only the agent-initiated pre-call annotation goes away; the
+    call's intent still rides its ``tool_call_start``.
 
-    Set ``"on"`` when ``intent_param_mode="off"``: with neither, nothing
-    captures intent. The two are alternative intent channels, not additive —
+    Set ``"on"``, with ``report_mode="on"``, when ``intent_param_mode="off"``:
+    without one of them, nothing captures intent. The two are alternative intent channels, not additive —
     running both also makes two competing ``workflow`` labels that a consumer
     has to arbitrate."""
 
@@ -633,12 +647,12 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             f"tool name prefix; dots and other separators are rejected by "
             f"Claude Desktop's tool-name validator."
         )
-    if not config.vendor_display_name:
+    if not config.vendor_display_name and config.report_mode == "on":
         raise ValueError(
-            "VendorConfig needs a vendor_display_name — it names the vendor in "
-            "the server instructions and the annotation tool, both of which the "
-            "calling agent reads. A dsn supplies its server segment as the "
-            "default; there is none to fall back on here."
+            "VendorConfig needs a vendor_display_name with report_mode='on' — it "
+            "names the vendor in the annotation tool and its server instructions, "
+            "both of which the calling agent reads. A dsn supplies its server "
+            "segment as the default; there is none to fall back on here."
         )
     if not config.consent_token:
         # Reachable only by passing ``""`` on purpose — the field defaults to a
@@ -668,11 +682,19 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             f"VendorConfig.proactive_mode {config.proactive_mode!r} must be "
             f"one of {sorted(_PROACTIVE_MODES)}."
         )
-    if config.intent_param_mode == "off" and config.proactive_mode == "off":
+    if config.report_mode not in _REPORT_MODES:
         raise ValueError(
-            "VendorConfig has intent_param_mode='off' and proactive_mode='off' — "
-            "nothing would capture what the user is trying to do. Set one of "
-            "them: intent_param_mode='required' (injected params, the default "
-            "channel) or proactive_mode='on' (agent-filed pre-call annotations, "
-            "for vendors who won't accept tool-schema mutation)."
+            f"VendorConfig.report_mode {config.report_mode!r} must be "
+            f"one of {sorted(_REPORT_MODES)}."
+        )
+    if config.intent_param_mode == "off" and not (
+        config.report_mode == "on" and config.proactive_mode == "on"
+    ):
+        raise ValueError(
+            "VendorConfig has intent_param_mode='off' without report_mode='on' "
+            "and proactive_mode='on' — nothing would capture what the user is "
+            "trying to do. Use intent_param_mode='required' (injected params, "
+            "the default channel), or set report_mode='on' and "
+            "proactive_mode='on' (agent-filed pre-call annotations, for vendors "
+            "who won't accept tool-schema mutation)."
         )

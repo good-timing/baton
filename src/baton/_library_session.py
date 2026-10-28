@@ -11,7 +11,11 @@ from typing import Any
 from baton._uuid import uuid7
 from baton.events import ClientObserved, PrincipalWire
 from baton.integrations._session import SessionOrigin, clean_session_id
-from baton.integrations.client_observed import CLIENT_INFO_META_KEY, observe_client
+from baton.integrations.client_observed import (
+    clean_runtime_meta,
+    meta_to_dict,
+    observe_client,
+)
 from baton.integrations.identity_adapter import wire_vendor_principal
 
 logger = logging.getLogger(__name__)
@@ -30,7 +34,7 @@ class LibrarySession:
     session_id_origin: SessionOrigin
     principal: PrincipalWire | None = None
     client_observed: ClientObserved | None = None
-    turn_id: str | None = None
+    runtime_meta: dict[str, Any] | None = None
 
     def envelope(self) -> dict[str, Any]:
         return {
@@ -39,7 +43,7 @@ class LibrarySession:
             "transport_observed": TRANSPORT_LIBRARY,
             "principal": self.principal,
             "client_observed": self.client_observed,
-            "runtime_meta": {TURN_ID_META_KEY: self.turn_id} if self.turn_id else None,
+            "runtime_meta": self.runtime_meta,
         }
 
 
@@ -61,13 +65,27 @@ def _minted() -> LibrarySession:
     return LibrarySession(str(uuid7()), ORIGIN_MINTED)
 
 
-def _client_observed(
-    client_info: object, headers: Mapping[str, Any] | None, scrubber: Callable[[Any], Any]
-) -> ClientObserved | None:
-    if client_info is None and headers is None:
-        return None
-    meta = {CLIENT_INFO_META_KEY: client_info} if client_info is not None else None
-    return observe_client(meta, headers=headers, scrubber=scrubber)
+def _request_meta(meta: object) -> dict[str, Any] | None:
+    try:
+        as_dict = meta_to_dict(meta)
+    except Exception:
+        as_dict = None
+    if as_dict is None and meta is not None:
+        logger.warning("baton: meta=%r is not a mapping — ignoring it.", type(meta).__name__)
+    return as_dict
+
+
+def _runtime_meta(
+    meta: dict[str, Any] | None, turn_id: str | None, scrubber: Callable[[Any], Any]
+) -> dict[str, Any] | None:
+    # A client could send its own ``baton/turn_id``; on a library event that
+    # key is the vendor's (SPEC §11.4.1), so the client's copy never rides.
+    client_keys = {k: v for k, v in (meta or {}).items() if k != TURN_ID_META_KEY}
+    cleaned = clean_runtime_meta(scrubber, client_keys, logger) if client_keys else None
+    out = dict(cleaned) if isinstance(cleaned, dict) else {}
+    if turn_id is not None:
+        out[TURN_ID_META_KEY] = turn_id
+    return out or None
 
 
 def new_session(
@@ -77,6 +95,7 @@ def new_session(
     client_info: object = None,
     headers: Mapping[str, Any] | None = None,
     turn_id: object = None,
+    meta: object = None,
     scrubber: Callable[[Any], Any],
     disabled: bool,
 ) -> LibrarySession:
@@ -88,12 +107,19 @@ def new_session(
         # The kill switch stops the work too: no scrubber runs on a value that
         # will never be sent.
         return base
+    request_meta = _request_meta(meta)
     return LibrarySession(
         base.session_id,
         base.session_id_origin,
         principal=wire_vendor_principal(principal, logger=logger),
-        client_observed=_client_observed(client_info, headers, scrubber),
-        turn_id=_vendor_id("turn_id", turn_id),
+        client_observed=(
+            observe_client(
+                request_meta, client_info=client_info, headers=headers, scrubber=scrubber
+            )
+            if request_meta or client_info is not None or headers is not None
+            else None
+        ),
+        runtime_meta=_runtime_meta(request_meta, _vendor_id("turn_id", turn_id), scrubber),
     )
 
 

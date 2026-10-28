@@ -8,8 +8,10 @@ is an ordinary bookmarks server; the only Baton-specific code is the
 ## What it shows
 
 - **`install_baton(mcp, VendorConfig(...))`** — the whole integration. Registers
-  the middleware (emits `tool_call_start` / `tool_call_end` / `tool_call_error`),
-  the vendor-namespaced annotation tool, and the server instructions.
+  the middleware (emits `tool_call_start` / `tool_call_end` / `tool_call_error`)
+  and one sentence of server instructions. `VendorConfig(report_mode="on")`
+  also registers the vendor-namespaced annotation tool, which agents use to
+  report problems, and the instructions that tell them when.
 - **Intent-param injection**: Baton adds a `user_goal` parameter to every tool's
   schema and strips it before your handler runs, capturing *why* a call
   happened and what success should look like, as

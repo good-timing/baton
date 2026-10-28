@@ -32,7 +32,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from baton.integrations._llm_text import build_server_instructions
+from baton.integrations._llm_text import INTENT_INSTRUCTIONS, build_server_instructions
 
 if TYPE_CHECKING:
     from baton.integrations._config import VendorConfig
@@ -273,7 +273,8 @@ def resolve_annotation_names(
 ) -> AnnotationNames:
     """Both names in one call: the display name FIRST, then the tool name.
 
-    Both adapters call this once at install and thread the RESULT: the tool
+    Both adapters call this once at install, through ``resolve_install_text``
+    under ``report_mode="on"``, and thread the RESULT: the tool
     name to the capture layer, the server instructions, the handle and the
     registration; the display name to the server instructions and the
     annotation tool's description. One resolution, no second site to drift
@@ -359,3 +360,40 @@ def resolve_annotation_tool_name(server: Any, config: VendorConfig) -> str:
     ``baton-sdk`` by floor, so removing it would break them on upgrade.
     """
     return resolve_annotation_names(server, config, display_name_given=True).annotation_tool_name
+
+
+class InstallText(NamedTuple):
+    """What ``install_baton`` writes for the agent to read."""
+
+    instructions: str
+    names: AnnotationNames | None
+    """``None`` under ``report_mode="off"``: no annotation tool is registered."""
+
+
+def resolve_install_text(
+    server: Any, config: VendorConfig, *, display_name_given: bool
+) -> InstallText:
+    """Baton's server instructions and the annotation tool's names, per ``report_mode``."""
+    if config.report_mode == "off":
+        if config.proactive_mode == "on":
+            _warn_no_effect("proactive_mode", config.proactive_mode)
+        if config.annotation_tool_name is not None:
+            _warn_no_effect("annotation_tool_name", config.annotation_tool_name)
+        return InstallText(INTENT_INSTRUCTIONS, None)
+    names = resolve_annotation_names(server, config, display_name_given=display_name_given)
+    instructions = build_server_instructions(
+        vendor_display_name=names.vendor_display_name,
+        annotation_tool_name=names.annotation_tool_name,
+        proactive_mode=config.proactive_mode,
+        intent_param_mode=config.intent_param_mode,
+    )
+    return InstallText(instructions, names)
+
+
+def _warn_no_effect(field: str, value: str) -> None:
+    logger.warning(
+        "baton: %s=%r has no effect with report_mode='off', "
+        "because no annotation tool is registered",
+        field,
+        value,
+    )

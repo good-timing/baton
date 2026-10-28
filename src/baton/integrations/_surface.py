@@ -1,6 +1,7 @@
 """Shared ``surface_snapshot`` helpers — both adapters (``baton.integrations.standalone``,
-``baton.integrations.official``) build the vendor-true surface the same way; this
-module owns the canonical logic so they cannot drift.
+``baton.integrations.official``) and the library's ``list_tools`` build the
+vendor-true surface the same way; this module owns the canonical logic so they
+cannot drift.
 
 Mirrors baton-proxy's ``MessageProcessor._capture_surface`` (``proxy.py``):
 snapshot ``server_info``/``capabilities``/``instructions`` + the full ``tools``
@@ -88,13 +89,12 @@ def build_seam_augmentations(
     intent_param_names: list[str],
     intent_param_mode: str,
     required_names: list[str],
+    instructions_suffix: bool | None = True,
 ) -> dict[str, Any]:
     """The as-served delta Baton added on top of the vendor-true surface —
     mirrors proxy's ``seam_augmentations`` so a consumer can render both
-    layers. Always records ``instructions_suffix: True``: unlike proxy
-    (where the suffix is optional), the SDK's ``build_server_instructions``
-    unconditionally documents the annotation tool whenever ``install_baton``
-    runs.
+    layers. ``instructions_suffix`` is whether Baton's text reached the served
+    instructions, and ``None`` when the producer cannot tell.
 
     ``required_names`` is which of ``names`` the mode advertises as required.
     It is per surface, not per tool: a tool that declares one of the names
@@ -111,5 +111,5 @@ def build_seam_augmentations(
             if intent_param_mode != "off"
             else None
         ),
-        "instructions_suffix": True,
+        "instructions_suffix": instructions_suffix,
     }

@@ -33,7 +33,7 @@ On `mcp` 1.x the class is `mcp.server.fastmcp.FastMCP`; on standalone `fastmcp` 
 
 Copy the DSN from **/account**. It packs four values: the collector to send to, your workspace, this server, and the key that binds them. The SDK unpacks them and builds the sink itself. Tools registered before and after the call are both captured.
 
-**Installing changes what your server advertises.** Each tool handler is wrapped, a `<vendor>_annotate` tool is registered, a paragraph is added below your server's own `instructions`, and three intent parameters are added to every tool's schema and stripped again before your handler sees them. [What gets injected](https://goodtiming.ai/docs.html#injected-tools).
+**Installing changes what your server advertises.** Each tool handler is wrapped, one sentence is added below your server's own `instructions`, and a `user_goal` parameter is added to every tool's schema and stripped again before your handler sees it. With `VendorConfig(report_mode="on")`, a `<vendor>_annotate` tool is also registered, and the added text tells the agent when to report a problem with it. [What gets injected](https://goodtiming.ai/docs.html#injected-tools).
 
 **If you distribute your server, put the DSN in your source.** A stdio server runs on your user's machine, spawned by their MCP client, which passes it a fixed allowlist of environment variables (six names on macOS and Linux) plus whatever that user wrote in their own client config. Nothing from your `.env` is in either list. For a hosted server, set `BATON_DSN` and call `install_baton(mcp)` with no arguments.
 
@@ -57,16 +57,44 @@ with client.session(
 ):
     with client.trace(
         tool_name="chat.completions.create",
-        intent="summarize the user's question",
-        expected_outcome="2-3 sentence answer",
+        intent="1: summarize the user's question; success is a 2-3 sentence answer",
     ) as trace:
         response = vendor_client.chat.completions.create(...)
         trace.observed(response)
 ```
 
-Open one `client.session(...)` per request or conversation. Every `trace()` and `annotate()` inside it shares its session, principal, client and turn. A `trace()` outside a block gets a session of its own. Pass `client_info` or the request's `headers` when your request says which app the agent runs in; with neither, your dashboard shows "app not reported". Pass `turn_id` when one user request spans several of your requests, such as an agent working through a multi-step flow: its calls then stay one turn however long the agent pauses. `intent`, `expected_outcome` and `workflow` usually come from the agent: to ask for them on your own API with the wording an agent sees on an MCP server, use `baton.INTENT_PARAMS`.
+Open one `client.session(...)` per request or conversation. Every `trace()` and `annotate()` inside it shares its session, principal, client and turn. A `trace()` outside a block gets a session of its own. Pass `client_info` or the request's `headers` when your request says which app the agent runs in; with neither, your dashboard shows "app not reported". Pass `turn_id` when one user request spans several of your requests, such as an agent working through a multi-step flow: its calls then stay one turn however long the agent pauses. `intent` usually comes from the agent: to ask for it on your own API with the wording an agent sees on an MCP server, use `baton.INTENT_PARAMS`.
 
 `AsyncClient` is the async twin. Worked end to end in [`examples/skill_demo/`](https://github.com/good-timing/baton/tree/main/examples/skill_demo).
+
+### Serving MCP yourself
+
+If your server handles MCP's JSON-RPC in its own code, without FastMCP or the `mcp` package, there is no server object for `install_baton` to wrap. The library gives you the same capture, but the code goes in four places instead of one:
+
+```python
+from baton import INTENT_INSTRUCTIONS, INTENT_PARAMS, AsyncClient, Principal
+
+baton = AsyncClient(dsn="https://baton_pk_...")                   # 1. at startup
+
+# 2. initialize: add Baton's sentence to your instructions
+result["instructions"] = f"{your_instructions}\n\n{INTENT_INSTRUCTIONS}"
+
+# 3. tools/list: serve the list Baton returns; pass your own tools, before anything is added
+tools = await baton.list_tools(your_tools, server_info={"name": "your-server", "version": "1.0"})
+
+# 4. tools/call: wrap the call
+args = dict(params.get("arguments") or {})
+goals = {p.trace_kwarg: args.pop(p.name, None) for p in INTENT_PARAMS}
+with baton.session(principal=Principal(principal_id=token_subject),
+                   headers=request.headers, meta=params.get("_meta")):
+    async with baton.trace(tool_name=params["name"], params=args, **goals) as trace:
+        result = await run_tool(params["name"], args)
+        trace.observed(result)
+
+await baton.aclose()                                              # at shutdown
+```
+
+`list_tools` adds the `user_goal` param to each tool, as the MCP adapters do, and sends a snapshot of your own tool list once for each distinct list. A tool that already has its own `user_goal` argument keeps it: don't pop `user_goal` for that tool, and leave `INTENT_INSTRUCTIONS` out, or the agent writes Baton's turn number into your argument. `meta` is the request's `_meta`: the client's conversation and turn ids ride along, scrubbed. On a stateless server each request is its own session; pass `principal` so one person's calls group together.
 
 ## PII scrubbing
 

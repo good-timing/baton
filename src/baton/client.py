@@ -94,6 +94,7 @@ import logging
 import os
 import threading
 import traceback
+from collections import OrderedDict
 from collections.abc import Callable, Coroutine, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -110,6 +111,7 @@ from baton._library_session import (
     new_session,
     session_for_call,
 )
+from baton._library_surface import serve_tools, snapshot_payload
 from baton._optout import DisabledSink, capture_disabled, log_disabled
 from baton._result_capture import (
     WITHHELD,
@@ -124,6 +126,7 @@ from baton.events import (
     DEFAULT_CONSENT_TOKEN,
     AnnotationEvent,
     AnnotationPayload,
+    SurfaceSnapshotEvent,
     ToolCallEndEvent,
     ToolCallEndPayload,
     ToolCallErrorEvent,
@@ -141,6 +144,8 @@ from baton.scrub import (  # noqa: F401  identity_scrub kept exported
 from baton.sinks import HttpSink, Sink, build_or_none, safe_emit, safe_write
 
 T = TypeVar("T")
+
+SENT_SURFACES_CAP = 256
 
 logger = logging.getLogger(__name__)
 
@@ -934,13 +939,76 @@ class Trace:
 
 
 class _Sessions:
-    """``session()`` for both clients: one block, read by every call inside it."""
+    """What both clients share: the ``session()`` block every call inside it
+    reads, and the ``list_tools`` snapshot dedupe."""
 
     _scrubber: Any
     _disabled: bool
+    _tenant_id: str
+    _vendor_id: str
+    _consent_token: str
 
     def _next_seq(self) -> int:
         return PROCESS_SEQUENCE.next()
+
+    def _init_surfaces(self) -> None:
+        self._surface_session_id = str(uuid7())
+        # Bounded: a surface that changes per request must not grow memory.
+        self._sent_surfaces: OrderedDict[str, None] = OrderedDict()
+        self._surface_lock = threading.Lock()
+
+    def _serve(
+        self,
+        tools: list[Any],
+        server_info: Mapping[str, Any] | None,
+        capabilities: Mapping[str, Any] | None,
+        instructions: str | None,
+    ) -> tuple[list[Any], SurfaceSnapshotEvent | None]:
+        """The tools to serve, and the snapshot to send if this surface has not
+        been sent. The hash is marked sent here, and unmarked if the event
+        cannot be built or written."""
+        served, surface = serve_tools(
+            tools, server_info=server_info, capabilities=capabilities, instructions=instructions
+        )
+        if surface is None:
+            return served, None
+        payload, digest = surface
+        with self._surface_lock:
+            if digest in self._sent_surfaces:
+                self._sent_surfaces.move_to_end(digest)
+                return served, None
+            self._sent_surfaces[digest] = None
+            if len(self._sent_surfaces) > SENT_SURFACES_CAP:
+                self._sent_surfaces.popitem(last=False)
+        event = cast(
+            SurfaceSnapshotEvent | None,
+            build_or_none(lambda: self._snapshot_event(payload, digest), logger),
+        )
+        if event is None:
+            self._unmark_surface(digest)
+        return served, event
+
+    def _unmark_surface(self, digest: str) -> None:
+        with self._surface_lock:
+            self._sent_surfaces.pop(digest, None)
+
+    def _snapshot_write_failed(self, event: SurfaceSnapshotEvent) -> None:
+        logger.exception("baton: surface snapshot write failed; will retry")
+        self._unmark_surface(event.payload.surface_hash)
+
+    def _snapshot_event(self, surface: dict[str, Any], digest: str) -> SurfaceSnapshotEvent:
+        # A snapshot describes the server, so it takes no block's session,
+        # principal or client: SPEC §11.5.1's join must not count it.
+        return SurfaceSnapshotEvent(
+            tenant_id=self._tenant_id,
+            vendor_id=self._vendor_id,
+            consent_token=self._consent_token,
+            session_id=self._surface_session_id,
+            session_id_origin="minted",
+            sequence_number=self._next_seq(),
+            captured_at=datetime.now(UTC),
+            payload=snapshot_payload(surface, digest),
+        )
 
     @contextmanager
     def session(
@@ -951,6 +1019,7 @@ class _Sessions:
         client_info: Mapping[str, Any] | None = None,
         headers: Mapping[str, Any] | None = None,
         turn_id: str | None = None,
+        meta: Mapping[str, Any] | None = None,
     ) -> Iterator[LibrarySession]:
         """Give every ``trace()`` and ``annotate()`` inside the block one
         session, principal, client and turn (SPEC §5.6). Open one per request
@@ -963,7 +1032,10 @@ class _Sessions:
         are kept. ``turn_id`` is the vendor's own id for the user request the
         block's calls answer: pass the same value to every block that serves
         it, such as each step of one multi-step run, and those calls stay one
-        turn across pauses. A bad value is logged and dropped, never raised.
+        turn across pauses. ``meta`` is the MCP request's ``_meta``, for a
+        vendor serving MCP itself: it is sent scrubbed as ``runtime_meta``, and
+        a ``clientInfo`` in it is preferred to ``client_info``. A bad value is
+        logged and dropped, never raised.
         """
         block = new_session(
             session_id=session_id,
@@ -971,6 +1043,7 @@ class _Sessions:
             client_info=client_info,
             headers=headers,
             turn_id=turn_id,
+            meta=meta,
             scrubber=self._scrubber,
             disabled=self._disabled,
         )
@@ -1035,6 +1108,7 @@ class Client(_Sessions):
 
         self._closed = False
         self._close_lock = threading.Lock()
+        self._init_surfaces()
 
     def trace(
         self,
@@ -1141,6 +1215,37 @@ class Client(_Sessions):
                 context=context,
             )
         )
+
+    def list_tools(
+        self,
+        tools: list[Any],
+        *,
+        server_info: Mapping[str, Any] | None = None,
+        capabilities: Mapping[str, Any] | None = None,
+        instructions: str | None = None,
+    ) -> list[Any]:
+        """Return ``tools``, the vendor's own ``tools/list`` entries, with
+        ``user_goal`` added to each ``inputSchema`` as the MCP adapters add it,
+        and send a ``surface_snapshot`` of ``tools`` as passed, once per
+        distinct surface. For a vendor serving MCP itself (SPEC §5.6).
+
+        Pass the tools before anything of Baton's is added, so the snapshot
+        describes the vendor's own surface. ``server_info``, ``capabilities``
+        and ``instructions`` are the vendor's own ``initialize`` values. The
+        input is not changed. Never raises over the tool list: one it cannot
+        read is returned as it came.
+        """
+        if self._closed:
+            raise RuntimeError("Client is closed")
+        if self._bridge is None:
+            return tools
+        served, event = self._serve(tools, server_info, capabilities, instructions)
+        if event is not None:
+            try:
+                self._bridge.run(self._sink.write(event))
+            except Exception:
+                self._snapshot_write_failed(event)
+        return served
 
     def flush(self) -> None:
         """Block until pending events drain."""
@@ -1570,6 +1675,7 @@ class AsyncClient(_Sessions):
 
         self._sink: Sink = resolved.sink
         self._closed = False
+        self._init_surfaces()
 
     def trace(
         self,
@@ -1658,6 +1764,31 @@ class AsyncClient(_Sessions):
                 context=context,
             )
         )
+
+    async def list_tools(
+        self,
+        tools: list[Any],
+        *,
+        server_info: Mapping[str, Any] | None = None,
+        capabilities: Mapping[str, Any] | None = None,
+        instructions: str | None = None,
+    ) -> list[Any]:
+        """Async equivalent of ``Client.list_tools``."""
+        if self._closed:
+            raise RuntimeError("AsyncClient is closed")
+        if self._disabled:
+            return tools
+        served, event = self._serve(tools, server_info, capabilities, instructions)
+        if event is not None:
+            try:
+                await self._sink.write(event)
+            except Exception:
+                self._snapshot_write_failed(event)
+            except BaseException:
+                # A cancelled write must not leave the surface marked as sent.
+                self._unmark_surface(event.payload.surface_hash)
+                raise
+        return served
 
     async def flush(self) -> None:
         if self._closed:

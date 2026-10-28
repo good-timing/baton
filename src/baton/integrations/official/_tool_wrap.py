@@ -101,6 +101,7 @@ from baton.integrations._llm_text import (
     USER_GOAL_PARAM_NAME,
     drop_subagent_clause,
     inject_goal_params,
+    instructions_suffix_served,
     pop_goal_params,
     required_param_names,
 )
@@ -475,6 +476,10 @@ def _wrap_tool_run(
                         intent_param_mode=intent_param_mode,
                         required_names=list(
                             required_param_names(intent_param_mode=intent_param_mode)
+                        ),
+                        instructions_suffix=instructions_suffix_served(
+                            annotation_tool_name=annotation_tool_name,
+                            surface_tools=snapshot["tools"],
                         ),
                     )
                     try:

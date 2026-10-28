@@ -37,7 +37,7 @@ HEADER_VALUE_MAX_LEN = 256
 def meta_to_dict(meta: Any) -> dict[str, Any] | None:
     """Normalize an MCP ``_meta`` value to a plain dict.
 
-    Accepts a dict, an MCP ``RequestParams.Meta`` model, or ``None``. Uses
+    Accepts a mapping, an MCP ``RequestParams.Meta`` model, or ``None``. Uses
     ``by_alias=True`` so namespaced keys like ``claudecode/toolUseId`` survive
     the dump (they are model extras whose JSON form is the alias).
     """
@@ -45,6 +45,8 @@ def meta_to_dict(meta: Any) -> dict[str, Any] | None:
         return None
     if isinstance(meta, dict):
         return meta
+    if isinstance(meta, Mapping):
+        return dict(meta)
     if hasattr(meta, "model_dump"):
         return meta.model_dump(by_alias=True)  # type: ignore[no-any-return]
     return None
@@ -75,7 +77,7 @@ def _clean(value: Any, scrubber: Callable[[Any], Any] | None, max_len: int) -> s
 
 def _field(info: Any, name: str) -> Any:
     # An adapter may hand over a model where a dict is expected.
-    return info.get(name) if isinstance(info, dict) else getattr(info, name, None)
+    return info.get(name) if isinstance(info, Mapping) else getattr(info, name, None)
 
 
 def _usable(value: Any) -> bool:
@@ -102,10 +104,15 @@ def _declared_on_connection(context: Any) -> tuple[Any, Any] | None:
 
 
 def _observed_info(
-    meta: Mapping[str, Any] | None, context: Any, scrubber: Callable[[Any], Any] | None
+    meta: Mapping[str, Any] | None,
+    context: Any,
+    client_info: Any,
+    scrubber: Callable[[Any], Any] | None,
 ) -> ClientInfoObserved | None:
     # Both fields come from one source, so the pair is one the client sent.
-    declared = _declared_on_request(meta) or _declared_on_connection(context)
+    declared = (
+        _declared_on_request(meta) or _declared(client_info) or _declared_on_connection(context)
+    )
     if declared is None:
         return None
     name = _clean(declared[0], scrubber, CLIENT_INFO_MAX_LEN)
@@ -150,6 +157,7 @@ def observe_client(
     meta: Mapping[str, Any] | None,
     *,
     context: Any = None,
+    client_info: Any = None,
     headers: Mapping[str, Any] | None = None,
     scrubber: Callable[[Any], Any] | None = None,
 ) -> ClientObserved | None:
@@ -157,8 +165,10 @@ def observe_client(
 
     ``meta`` is the request's ``_meta`` as :func:`meta_to_dict` returns it,
     ``context`` the adapter's MCP context, read only for the cached handshake.
+    ``client_info`` is a handshake declaration the caller already holds; the
+    library passes the vendor's.
     """
-    info = _or_none(lambda: _observed_info(meta, context, scrubber))
+    info = _or_none(lambda: _observed_info(meta, context, client_info, scrubber))
     observed_headers = _or_none(lambda: _observed_headers(headers, scrubber))
     if info is None and observed_headers is None:
         return None

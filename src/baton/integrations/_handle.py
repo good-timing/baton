@@ -17,6 +17,8 @@ class BatonHandle:
     event. Vendor tools that need to correlate external artifacts (e.g., a
     Console-issued support ticket) with the Baton event stream should include
     this value in their payloads.
+
+    ``annotation_tool_name`` is ``""`` when no annotation tool was registered.
     """
 
     def __init__(
