@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased: one numbered `user_goal` instead of three injected fields
+## 0.8.22: one numbered `user_goal` instead of three injected fields
 
 ### Changed
 
