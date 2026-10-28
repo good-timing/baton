@@ -353,7 +353,7 @@ The Console returns this in response to a return-channel query (§8). It is also
 
 **Two emission surfaces.** The SDK exposes two parallel paths that emit the same event envelope (§11.4) to the same sink:
 
-1. **MCP middleware** (`install_baton(mcp, VendorConfig(...))`) — for vendors who expose their API as MCP tools. Intent / expected_outcome / reports come from the agent via the annotation tool described below; runtime context comes from the MCP `_meta` field.
+1. **MCP middleware** (`install_baton(mcp, VendorConfig(...))`) — for vendors who expose their API as MCP tools. Intent comes from the agent via the injected `user_goal` param; reports, when the vendor turns them on, via the annotation tool described below; runtime context comes from the MCP `_meta` field.
 2. **Library API** (`baton.Client` / `AsyncClient`) — for vendors whose customers reach the vendor API via agent-generated code (Skills pattern, not MCP). Intent / expected_outcome come from the developer as kwargs on `client.trace(intent=..., expected_outcome=..., workflow=...)`; reports come via `client.annotate(what_happened=..., tool_name=...)` or `trace.annotate(...)`.
 
 Everything downstream — event envelope, sink behavior, worker assembly, signal classification — is identical across both paths. §5.1 to §5.5 describe the **MCP path** mechanism. The library path has no transport to read and no tool schema to extend, so the vendor's code passes what the middleware would have observed; §5.6 states what it passes and where each value lands on the wire.
@@ -367,7 +367,7 @@ Conflating these costs us in both directions. They are separate sections below.
 
 ### 5.1 Agent-emitted: the vendor-namespaced annotation tool
 
-The SDK MUST register an annotation tool on the vendor's MCP server AND MUST set server-level `instructions` motivating its use. Both are required — tool registration alone is insufficient. Empirically: with description-only, calling agents do not call the annotation tool unprompted; with server-level instructions, they do, with high-quality content.
+**Reports are opt-in in `baton-sdk` from 0.8.23: `VendorConfig.report_mode`, default `"off"`.** `baton-ts` and `baton-proxy` still register the tool by default until they take the same change. Under `"off"` the SDK MUST NOT register an annotation tool, and the only server instructions it adds are the subagent sentence (§5.1.2). Under `"on"` the SDK MUST register an annotation tool on the vendor's MCP server AND MUST set server-level `instructions` motivating its use. Both are required — tool registration alone is insufficient. Empirically: with description-only, calling agents do not call the annotation tool unprompted; with server-level instructions, they do, with high-quality content.
 
 #### 5.1.1 Annotation tool
 
@@ -402,7 +402,7 @@ The SDK MUST register an annotation tool on the vendor's MCP server AND MUST set
 
 The MCP spec defines a server-supplied `instructions` string that clients SHOULD surface to the calling LLM (Claude Code folds these into the system prompt; other compliant clients do similarly).
 
-The SDK MUST set the FastMCP server's `instructions` to motivate annotation tool use. Behavior:
+Under `report_mode="on"` the SDK MUST set the FastMCP server's `instructions` to motivate annotation tool use. Under `report_mode="off"` (the default) the SDK's text is the subagent sentence alone, `INTENT_INSTRUCTIONS` (§5.6), with the same placement below the vendor's text; `proactive_mode` then has no effect and the SDK logs a warning if it is `"on"`. The sentence stays because a main agent that delegates before loading the tools never reads the `user_goal` description, so without it the subagent cannot number its calls. It is removed when a tool declares its own `user_goal`, as under `"on"`, and the SDK's text is then empty. With `intent_param_mode="off"`, the SDK refuses `report_mode="off"`, and `report_mode="on"` without `proactive_mode="on"`, because nothing would capture intent. Behavior:
 
 - If the vendor has NOT set `instructions` before installing the SDK: SDK sets a default template (see §5.4).
 - If the vendor HAS set `instructions`: SDK appends its template *below* the vendor's existing text (vendor's instructions stay primary; SDK's are additive). The vendor's text is kept byte for byte as the start of the result, followed by one blank line and the template. Empty or whitespace-only vendor text counts as not set.
@@ -429,7 +429,7 @@ The `instructions` field is part of the MCP spec but **clients are not uniformly
 | Cursor (Agent / Composer) | **Yes** (folded into LLM context) | Proactive + reactive, all top-level fields populated (`workflow`, `suggested_improvement` with concrete actionable content), rich context without duplication — equivalent to Claude Code behavior | `_meta.progressToken` only (per-request int). No Cursor-specific stable correlation key observed | Unknown — not directly tested | Default path; same as Claude Code. SPEC §5.1.2 instructions sufficient. |
 | Cowork / ChatGPT Desktop / other | Unknown | Unknown | Unknown | Unknown | Test before relying on. Add a row here when validated. |
 
-**Runtime coverage note:** the SDK ships server `instructions` because they help where supported and don't hurt where ignored. Graceful degradation: a Desktop user who connects to a Baton-wrapped vendor still gets the annotation tool available; their agent just won't proactively use it without explicit prompting.
+**Runtime coverage note:** the SDK ships server `instructions` because they help where supported and don't hurt where ignored. Graceful degradation: a Desktop user who connects to a Baton-wrapped vendor with `report_mode="on"` still gets the annotation tool available; their agent just won't proactively use it without explicit prompting.
 
 ### 5.2 Client-attached: the MCP `_meta` field
 
@@ -627,13 +627,23 @@ A library producer emits the §11.4 envelope a middleware producer emits. Where 
 | Intent | the injected `user_goal` param (§5.1) | `trace(intent=)` | `tool_call_start.payload.call_intent` |
 | Expected outcome, task | none (producers before the single-field change injected `expected_result` / `overall_task`) | `trace(expected_outcome=, workflow=)` | `tool_call_start.payload.call_expected` / `call_workflow` |
 | Who is calling | the vendor's resolver | `client.session(principal=)` | `principal` |
-| Which client | `clientInfo`, registered headers | `client.session(client_info=, headers=)` | `client_observed` |
+| Which client | `clientInfo`, registered headers | `client.session(meta=, client_info=, headers=)`: a `clientInfo` in `meta` first | `client_observed` |
 | Session | the §3.4 ladder | `client.session(session_id=)`, else one minted id per block, or per call outside any block | `session_id`, `session_id_origin` |
 | Turn (one user request) | the client's `_meta` (§11.4.1) | `client.session(turn_id=)` | `runtime_meta["baton/turn_id"]` |
+| The client's `_meta` | the request's `_meta` | `client.session(meta=)` | `runtime_meta` |
+| Tool surface | the server's tool list | `client.list_tools(tools, server_info=, capabilities=, instructions=)` | `surface_snapshot` (§11.4.2) |
 
 **The session block.** The vendor opens `client.session(...)` once per request or conversation, and every `trace()` and `annotate()` inside it takes the block's session, principal, client and turn. Only the block sets them, so a call has one place to take them from. A `session_id` passed to the block is the vendor's own and is sent as `"observed"`: an id the producer minted MUST NOT be passed back in, or its origin is mislabelled. A call outside any block mints its own session. The block sets a context variable that `trace()` and `annotate()` read, and does nothing else.
 
-**The turn.** A `turn_id` passed to the block is the vendor's own id for the user request its calls answer, such as one run of a multi-step flow that spans many blocks. Every event in the block carries it as `runtime_meta["baton/turn_id"]`, a turn identifier (§11.4.1). Without one, `runtime_meta` is null. The producer never makes one up.
+**The turn.** A `turn_id` passed to the block is the vendor's own id for the user request its calls answer, such as one run of a multi-step flow that spans many blocks. Every event in the block carries it as `runtime_meta["baton/turn_id"]`, a turn identifier (§11.4.1). The producer never makes one up.
+
+**A vendor serving MCP itself.** A vendor that handles MCP's JSON-RPC in its own code, with no MCP library for an adapter to wrap, gets what an adapter adds from three calls:
+
+- `client.list_tools(tools, ...)` in its `tools/list` handler. It returns the vendor's tools with `user_goal` added exactly as an adapter adds it under `intent_param_mode="required"`, and sends a `surface_snapshot` of the tools as passed.
+- `INTENT_INSTRUCTIONS` in its `initialize` result's `instructions`: the sentence that carries the turn number to a subagent (§5.1.2). The annotation tool's paragraphs are not part of it. It is exactly what the adapters send under `report_mode="off"`, their default.
+- `client.session(meta=params["_meta"])` in its `tools/call` handler.
+
+`runtime_meta` holds the `_meta` the vendor passed, scrubbed and with coordinates rounded as on the middleware path, plus `baton/turn_id` when the block has one. Null when it has neither.
 
 A library producer MUST:
 
@@ -642,6 +652,8 @@ A library producer MUST:
 3. **Number a session's events by time.** A vendor-supplied session id can span several processes, such as a stateless API behind several workers, so a counter that restarts at 1 per process puts their events out of order. Each number SHOULD be the larger of the session's previous number in this process plus one, and the current time in microseconds, which fits the field's 64-bit integer. The number orders events and is not their identity: two processes can reach the same number in one microsecond, and §11.2 rule 5 says what a consumer does then.
 4. **Apply §11.4's rules to what the vendor passes.** `principal` follows the object's rules, including absent-as-a-whole. `client_observed.headers` holds registered headers only. Every `client_observed` value is scrubbed and truncated as on the middleware path. A `session_id` or `turn_id` that is not a non-blank string is dropped. Both ids are sent as passed, without the scrubber: they are keys that events are grouped on, and a scrubber that rewrote part of an id could make two ids equal.
 5. **Send no `failure_kind`.** It names a failure the producer made above the vendor's handler (§11.4.3). A library rejects nothing itself: every failure it records is the vendor's code speaking.
+6. **Keep `baton/turn_id` the vendor's.** A `baton/turn_id` key inside the `_meta` passed to `session(meta=)` came from the client and is dropped. Only the block's `turn_id` writes that key.
+7. **Send a snapshot as the server's, not a caller's.** A `surface_snapshot` takes no block's session, principal or client: it has its own minted `session_id`, and no `transport_observed`, `principal` or `client_observed`, so §11.5.1's join neither counts nor joins it. It is sent once per distinct `surface_hash` per client, among the last 256 that client was sent, hashed over the tools as passed, sorted by name, before `user_goal` is added. `seam_augmentations.instructions_suffix` is null, because whether the vendor served `INTENT_INSTRUCTIONS` is not visible to the producer.
 
 **Consumers read a call's intent from the call.** A consumer that needs a turn's or a session's intent or expected outcome MUST read the calls' `call_intent` / `call_expected` first, and MAY fall back to a note's `intent` / `expected_outcome` for producers that send no call fields. Library events carry no note, so a consumer that reads only notes shows nothing for them.
 
@@ -649,7 +661,7 @@ A library producer SHOULD expose the injected params' names and descriptions (§
 
 **Agent reports** (`trace.annotate(...)` for a traced call, or `client.annotate(...)` inside the block) carry what the vendor's code relays from its caller, in the block's or the trace's session.
 
-**Out of scope on this path:** `surface_snapshot` and the tool list events, because a library has no tool surface it can list. `runtime_meta` holds the block's turn id and nothing else. `trace_context` stays optional and vendor-supplied.
+**Out of scope on this path:** the tool list events, and the annotation tool. A vendor serving MCP itself that wants agent reports registers its own tool and calls `client.annotate(...)`. `trace_context` stays optional and vendor-supplied.
 
 **`agent_runtime` is `"unknown"`.** The library cannot see the client any more than the middleware can name it, so it sends what the vendor passes as `client_observed` and leaves the name to the consumer (§11.4). `sdk_version` already names the producer.
 
@@ -1040,7 +1052,7 @@ Event types and their payload shapes:
 | `tool_call_end` | `{tool_name, result, duration_ms, result_capture?}` (result PII-scrubbed; `result_capture` present only when results are withheld — see below) | SDK middleware after vendor handler returns |
 | `tool_call_error` | `{tool_name, error_type, error_body, duration_ms, result?, result_capture?, failure_kind?}` (`result` PII-scrubbed; present only for the returned-flag shape — §11.4.3; `result_capture` present only when results are withheld — see below; `failure_kind` present only when the PRODUCER manufactured the failure above the vendor's handler — §11.4.3) | SDK middleware **on exception, or on a returned result whose MCP error flag is set** |
 | `annotation` | `{intent?, expected_outcome?, what_happened?, tool_name?, workflow?, suggested_improvement?, context?, signal_type?}` (all nullable; agent populates what it has) | SDK annotation tool handler / library `client.annotate(...)` / `trace.annotate(...)` |
-| `surface_snapshot` | `{surface_hash, server_info?, capabilities?, instructions?, tools, seam_augmentations}` — top-level fields mirror baton-proxy's `enqueue_surface_snapshot`; `seam_augmentations.intent_param` shape differs (§11.4.2) | SDK middleware/wrap layer, once per observed `surface_hash` per process; see §11.4.2 |
+| `surface_snapshot` | `{surface_hash, server_info?, capabilities?, instructions?, tools, seam_augmentations}` — top-level fields mirror baton-proxy's `enqueue_surface_snapshot`; `seam_augmentations.intent_param` shape differs (§11.4.2) | SDK middleware/wrap layer, once per observed `surface_hash` per process; the library's `list_tools`, once per hash per client (§5.6); see §11.4.2 |
 
 ⚠ **These five are the TOOL-call and annotation types, and they are not the whole enum.** Fifteen more are specified below: the twelve resource and prompt lifecycle types in **§11.4.4**, and the three tool list types in **§11.4.5**. `EventType` has twenty values; a consumer reading this table as exhaustive will reject conforming traffic, which §11.4.4 forbids outright.
 
@@ -1078,7 +1090,7 @@ The wire format is intentionally unified — both flavors share the same envelop
 
 On the MCP path, `session_id` is a process-lifetime identifier (the SDK's fallback UUID, generated at `install_baton(...)` time), NOT a conversation-turn identifier. A single MCP server process across multiple user prompts produces one `session_id`. To recover finer-grained turn and conversation boundaries, the worker MUST read `runtime_meta` when populated.
 
-On the MCP path the SDK populates `runtime_meta` with the raw `_meta` dict from the MCP request, with the vendor's PII scrubber applied. On the library path it holds only the vendor's turn id (§5.6). Examples of keys, by the level each identifies. Codex and ChatGPT keys were observed on the wire; VS Code's are read from its source and have not been observed:
+On the MCP path the SDK populates `runtime_meta` with the raw `_meta` dict from the MCP request, with the vendor's PII scrubber applied. On the library path it holds the `_meta` the vendor passed to `client.session(meta=)`, scrubbed the same way, and the vendor's turn id (§5.6). Examples of keys, by the level each identifies. Codex and ChatGPT keys were observed on the wire; VS Code's are read from its source and have not been observed:
 
 - **Conversation** — `openai/session` (ChatGPT), `threadId` (Codex CLI), `vscode.conversationId` (VS Code)
 - **Turn** (one user request) — `turn_id` inside `x-codex-turn-metadata` (Codex CLI), `vscode.requestId` (VS Code), `baton/turn_id` (a library producer, §5.6)
@@ -1087,7 +1099,7 @@ On the MCP path the SDK populates `runtime_meta` with the raw `_meta` dict from 
 
 Clients are not consistent about names. Codex CLI's `sessionId` carries the same value as its `threadId`, a conversation, while Baton's `session_id` is a process lifetime. A worker MUST level a key by what it was observed to identify, never by its name. A key that identifies a CONVERSATION MUST NOT be used as `session_id`, including through §3.4 rung 3's adapter table, which is for session-scoped keys only and has no entries today.
 
-`baton/turn_id` is the one key Baton defines rather than observes. It is a turn identifier by definition, whatever the client. A worker MUST read it only on events whose `transport_observed` is `"library"`: on any other event the key came from a client's `_meta`, and nothing says what that client meant by it.
+`baton/turn_id` is the one key Baton defines rather than observes. It is a turn identifier by definition, whatever the client. A worker MUST read it only on events whose `transport_observed` is `"library"`: on any other event the key came from a client's `_meta`, and nothing says what that client meant by it. A library producer drops a client's copy of the key (§5.6 rule 6), so on a library event it is always the vendor's. The client's own keys on a library event are levelled by client exactly as on the MCP path.
 
 The worker's correlation hierarchy is §11.5.1. It is stated there once.
 
@@ -1101,7 +1113,7 @@ Worker derives the canonical SignalPayload (§3) by:
 
 #### 11.4.2 `surface_snapshot` — vendor-true tool surface, for identity + drift
 
-Mirrors baton-proxy's `MessageProcessor._capture_surface` / `Emitter.enqueue_surface_snapshot`. The SDK snapshots the wrapped server's **vendor-true** surface — `server_info` / `capabilities` / `instructions` (captured once, at `install_baton(...)` time, BEFORE Baton mutates instructions) plus the full `tools` list with schemas (captured BEFORE Baton's `user_goal` injection) — hashes it (canonical JSON, sorted keys), and emits `surface_snapshot` at most once per observed `surface_hash` per process. Repeated captures of an unchanged surface are deduped and never re-emitted.
+Mirrors baton-proxy's `MessageProcessor._capture_surface` / `Emitter.enqueue_surface_snapshot`. The SDK snapshots the wrapped server's **vendor-true** surface — `server_info` / `capabilities` / `instructions` (captured once, at `install_baton(...)` time, BEFORE Baton mutates instructions) plus the full `tools` list with schemas (captured BEFORE Baton's `user_goal` injection) — hashes it (canonical JSON, sorted keys), and emits `surface_snapshot` at most once per observed `surface_hash` per process. Repeated captures of an unchanged surface are deduped and never re-emitted. A library producer snapshots the tool list its vendor passes to `client.list_tools(...)`, once per hash per client, with no `transport_observed`, `principal` or `client_observed` (§5.6 rule 7).
 
 `surface_hash` is the identity change specs and recipes are authored against (proxy's own `base_surface_hash`). This is why the snapshot excludes anything Baton itself adds: Baton's own injected tool (the annotation tool) is omitted from `tools` and recorded instead in `payload.seam_augmentations.injected_tools`, and the schema-injected `user_goal` param never appears in `tools[].inputSchema` — toggling `intent_param_mode` MUST NOT change `surface_hash`.
 
@@ -1120,7 +1132,7 @@ Mirrors baton-proxy's `MessageProcessor._capture_surface` / `Emitter.enqueue_sur
 }
 ```
 
-**`seam_augmentations.intent_param` has one shape in `baton-sdk`, `baton-ts` and `baton-proxy`** (plural `names: list[str]`). `baton-sdk` from the single-field change (§13, 0.8.22) injects one param, `user_goal`; `baton-ts` and `baton-proxy` inject three (`user_goal` + `expected_result` + `overall_task`) until they take the same change, so a consumer reads `names` as data. All three send `required_names` from `baton-sdk` 0.8.12, `baton-ts` 0.5.3 and `baton-proxy` 0.6.18. An older release of any of them, and `baton-extmcp`, sends no `required_names`, so a consumer reads a missing `required_names` as unknown, never as empty. `baton-extmcp` is the exception: it injects two params (`user_goal` + `expected_result`) and records them as `seam_augmentations.injected`, not `intent_param`. Everything else in the payload (top-level fields, `injected_tools`, `instructions_suffix`) is identical across the three.
+**`seam_augmentations.intent_param` has one shape in `baton-sdk`, `baton-ts` and `baton-proxy`** (plural `names: list[str]`). `baton-sdk` from the single-field change (§13, 0.8.22) injects one param, `user_goal`; `baton-ts` and `baton-proxy` inject three (`user_goal` + `expected_result` + `overall_task`) until they take the same change, so a consumer reads `names` as data. All three send `required_names` from `baton-sdk` 0.8.12, `baton-ts` 0.5.3 and `baton-proxy` 0.6.18. An older release of any of them, and `baton-extmcp`, sends no `required_names`, so a consumer reads a missing `required_names` as unknown, never as empty. `baton-extmcp` is the exception: it injects two params (`user_goal` + `expected_result`) and records them as `seam_augmentations.injected`, not `intent_param`. The top-level fields have the same shape across the three, and so do `injected_tools` and `instructions_suffix`, but their values follow each producer's settings. From `baton-sdk` 0.8.23 the MCP adapters register no annotation tool by default (§5.1), so `injected_tools` is `[]` while `baton-ts` and `baton-proxy` still list theirs. `instructions_suffix` is `false` when Baton's text is gone from the served instructions: under `report_mode="off"` that text is only the subagent sentence, which a tool declaring its own `user_goal` removes (§5.1.2). A library snapshot from `baton-sdk` 0.8.23 sends `instructions_suffix` null, meaning unknown, because the vendor serves the instructions itself. A consumer reads null as unknown, never as false.
 
 **Capture mechanism differs by adapter** (both converge on the same wire shape):
 - `baton.integrations.standalone` (standalone `fastmcp` library) has a real `on_list_tools` middleware hook — the snapshot is captured and (if new) emitted on every `tools/list` response, using the vendor-true tools `call_next` returns before this adapter's own injection loop runs.
@@ -1661,6 +1673,16 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **0.8.23 (SDK-only, 2026-10-28) — the library API covers a vendor serving MCP itself: `client.list_tools(...)`, `INTENT_INSTRUCTIONS` and `client.session(meta=)` (§5.6); and the MCP adapters' reports are opt-in (§5.1).** No envelope field or event type is added.
+
+  **CHANGED: reports off by default (§5.1, §5.1.2).** New `VendorConfig.report_mode`, `"off"` by default. Off, the adapters register no annotation tool, and their server instructions are `INTENT_INSTRUCTIONS` alone, below the vendor's own text. `"on"` restores 0.8.22's tool and instructions exactly. `user_goal` and its description are unchanged in both. `proactive_mode` has no effect under `"off"` and warns if set. `intent_param_mode="off"` now needs `report_mode="on"` and `proactive_mode="on"`, or install raises. **Consumer consequence:** a vendor on the default sends no `annotation` events and its `surface_snapshot.seam_augmentations.injected_tools` is empty, unlike `baton-ts` and `baton-proxy`, which still register the tool; `instructions_suffix` is `false` when a tool declaring its own `user_goal` has removed the only sentence Baton added. Each call's intent still rides `call_intent`. `vendor_display_name` is required only with `report_mode="on"`, the only place an agent reads it, and an `annotation_tool_name` set under `"off"` warns. A vendor that read reports turns them back on with `report_mode="on"`.
+
+  **NEW: `list_tools` and the library `surface_snapshot`.** `Client.list_tools` / `AsyncClient.list_tools` return the vendor's tool list with `user_goal` added as the adapters add it under `intent_param_mode="required"`, and send a `surface_snapshot` of the list as passed, once per distinct hash (§5.6 rule 7). `INTENT_INSTRUCTIONS` is the adapters' subagent sentence, for the vendor's `initialize` result.
+
+  **NEW: `client.session(meta=)`.** The request's `_meta` rides `runtime_meta`, scrubbed, beside `baton/turn_id`; a client's own `baton/turn_id` is dropped (§5.6 rule 6). A `clientInfo` in it is preferred to `client_info`.
+
+  **Consumer consequence:** a library producer can now send `surface_snapshot`. Its envelope has no `transport_observed`, `principal` or `client_observed`, `seam_augmentations.injected_tools` is empty and `instructions_suffix` is null, meaning unknown. A library event's `runtime_meta` can hold client keys beside `baton/turn_id`; a consumer that read only `baton/turn_id` there keeps working and sees nothing new until it levels those keys by client (§11.4.1).
 
 - **0.8.22 (SDK-only, 2026-10-27) — one injected field, `user_goal`, numbered.** No envelope, field or shape change.
 
