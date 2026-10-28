@@ -28,6 +28,7 @@ class Served:
     sink: CapturingSink
     schemas: dict[str, dict[str, Any]]
     call: Callable[[str, dict[str, Any]], Any]
+    later_sinks: list[CapturingSink]
 
     @property
     def instructions(self) -> str:
@@ -58,24 +59,24 @@ async def _official(
     mcp = MCPServerClass("toybox", instructions=instructions)
     for tool in tools:
         mcp.add_tool(tool)
-    sink = CapturingSink()
-    for _ in range(installs):
-        handle = install_baton(
-            mcp,
-            VendorConfig(**_config(sink, config)),
-        )
+    sinks = [CapturingSink() for _ in range(installs)]
+    handles = [install_baton(mcp, VendorConfig(**_config(sink, config))) for sink in sinks]
     try:
         async with connected_session(mcp) as session:
             listed = (await session.list_tools()).tools
             schemas = {t.name: getattr(t, "input_schema", None) or t.inputSchema for t in listed}
-            yield Served(mcp, handle, sink, schemas, session.call_tool)
+            yield Served(mcp, handles[0], sinks[0], schemas, session.call_tool, sinks[1:])
     finally:
-        await handle.aclose()
+        for handle in handles:
+            await handle.aclose()
 
 
 @asynccontextmanager
 async def _standalone(
-    tools: list[Callable[..., Any]], instructions: str | None = None, **config: Any
+    tools: list[Callable[..., Any]],
+    instructions: str | None = None,
+    installs: int = 1,
+    **config: Any,
 ) -> AsyncIterator[Served]:
     from fastmcp import Client, FastMCP
 
@@ -84,18 +85,16 @@ async def _standalone(
     mcp = FastMCP("toybox", instructions=instructions)
     for tool in tools:
         mcp.tool(tool)
-    sink = CapturingSink()
-    handle = install_baton(
-        mcp,
-        VendorConfig(**_config(sink, config)),
-    )
+    sinks = [CapturingSink() for _ in range(installs)]
+    handles = [install_baton(mcp, VendorConfig(**_config(sink, config))) for sink in sinks]
     try:
         async with Client(mcp) as client:
             listed = await client.list_tools()
             schemas = {t.name: getattr(t, "input_schema", None) or t.inputSchema for t in listed}
-            yield Served(mcp, handle, sink, schemas, client.call_tool)
+            yield Served(mcp, handles[0], sinks[0], schemas, client.call_tool, sinks[1:])
     finally:
-        await handle.aclose()
+        for handle in handles:
+            await handle.aclose()
 
 
 both_adapters = pytest.mark.parametrize(
@@ -140,9 +139,27 @@ async def test_the_vendors_instructions_stay_above_the_sentence(serve: Any) -> N
         assert served.instructions == f"Use lookup for names.\n\n{INTENT_INSTRUCTIONS}"
 
 
-async def test_a_second_install_replaces_the_sentence_rather_than_adding_one() -> None:
-    async with _official([lookup], instructions="Use lookup for names.", installs=2) as served:
-        assert served.instructions == f"Use lookup for names.\n\n{INTENT_INSTRUCTIONS}"
+@both_adapters
+@pytest.mark.parametrize("report_mode", ["off", "on"])
+async def test_a_second_install_keeps_the_first_ones_capture(serve: Any, report_mode: str) -> None:
+    async with serve(
+        [lookup], instructions="Use lookup for names.", installs=2, report_mode=report_mode
+    ) as served:
+        await served.call("lookup", {"name": "a", "user_goal": "1: find a; success is a"})
+        ours = build_server_instructions(
+            vendor_display_name="Toybox", annotation_tool_name="toybox_annotate"
+        )
+        assert served.instructions == "Use lookup for names.\n\n" + (
+            INTENT_INSTRUCTIONS if report_mode == "off" else ours
+        )
+        starts = [e for e in served.sink.events if e.event_type == "tool_call_start"]
+        assert [e.payload.call_intent for e in starts] == ["1: find a; success is a"]
+        (snapshot,) = [e for e in served.sink.events if e.event_type == "surface_snapshot"]
+        assert snapshot.payload.instructions == "Use lookup for names."
+        listing = {e.session_id for e in served.sink.events if e.event_type == "tool_list_start"}
+        assert listing == {starts[0].session_id}
+        (later,) = served.later_sinks
+        assert later.events == []
 
 
 @both_adapters

@@ -232,25 +232,29 @@ def install_baton(
         drop_subagent_clause(mcp, tool_name, _set_instructions)
 
     # Middleware emits tool_call_* events; skips them for the annotation tool
-    # (the annotation handler emits its own annotation event).
-    mcp.add_middleware(
-        BatonMiddleware(
-            tenant_id=tenant_id,
-            vendor_id=config.vendor_id,
-            consent_token=config.consent_token,
-            sink=sink,
-            counter=counter,
-            fallback_session_id=fallback_session_id,
-            scrubber=scrubber,
-            annotation_tool_name=annotation_tool_name,
-            annotation_requires_tool_name=config.proactive_mode == "off",
-            intent_param_mode=config.intent_param_mode,
-            result_capture_mode=config.result_capture_mode,
-            resolve_principal_hook=config.resolve_principal,
-            server_meta=server_meta,
-            on_native_user_goal=on_native_user_goal,
+    # (the annotation handler emits its own annotation event). A second install
+    # keeps the first one's, as the lifecycle capture and the official adapter
+    # do: two would each take the other's injected ``user_goal`` for the tool's own.
+    existing = getattr(mcp, "middleware", None)
+    if not (isinstance(existing, list) and any(isinstance(m, BatonMiddleware) for m in existing)):
+        mcp.add_middleware(
+            BatonMiddleware(
+                tenant_id=tenant_id,
+                vendor_id=config.vendor_id,
+                consent_token=config.consent_token,
+                sink=sink,
+                counter=counter,
+                fallback_session_id=fallback_session_id,
+                scrubber=scrubber,
+                annotation_tool_name=annotation_tool_name,
+                annotation_requires_tool_name=config.proactive_mode == "off",
+                intent_param_mode=config.intent_param_mode,
+                result_capture_mode=config.result_capture_mode,
+                resolve_principal_hook=config.resolve_principal,
+                server_meta=server_meta,
+                on_native_user_goal=on_native_user_goal,
+            )
         )
-    )
 
     async def read_request(_request_context: Any) -> CapturedRequest:
         # The handler runs below fastmcp, where no fastmcp context is current.
