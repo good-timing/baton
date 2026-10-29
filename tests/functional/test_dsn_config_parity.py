@@ -302,7 +302,7 @@ class TestWhatTheDsnDoesNotTakeOver:
             try:
                 instructions = mcp.instructions
                 assert instructions is not None
-                assert f"wrapped in the {mcp.name} usage and friction SDK" in instructions
+                assert f"report a {mcp.name} tool call" in instructions
                 assert SERVER not in instructions
             finally:
                 await handle.aclose()

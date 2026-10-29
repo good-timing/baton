@@ -4,38 +4,18 @@ Two adapters (``baton.integrations.standalone``, ``baton.integrations.official``
 surface identical text to the calling agent; this module owns the canonical
 copy so they cannot drift.
 
-**Split of responsibility (load-bearing for §5.1.2 under Claude Code's
-truncation cap):**
+Reports only (``proactive_mode="off"``): the instructions are one sentence
+pointing at the annotation tool, and the tool's description holds the
+triggers, the recovery rule and the fields, so each rule is written once.
 
-- *Server instructions* carry the MUST/REQUIRED behavioral framing —
-  the BEFORE/AFTER/IF triggers, the report fields, and the
-  "annotation doesn't replace answering" guardrail. Claude Code
-  truncates ``InitializeResult.instructions`` at ~2087 chars, so the
-  template is kept under ~1500 chars and the fixed recovery and subagent
-  sentences fit in the rest. Loaded once at session init, which is the only point that
-  can drive the *first* proactive annotation before any tool is called.
-- *Annotation tool description* carries the field-level reference (what
-  belongs in user_goal / suggested_improvement / context). Tool descriptions
-  are loaded on every call to the central annotation tool, so this is the
-  right place for the just-in-time dictionary.
+Proactive (``proactive_mode="on"``): the instructions carry the BEFORE/AFTER/IF
+triggers, because only text loaded at session start can drive an annotation
+before the first tool call. Claude Code truncates ``InitializeResult.instructions``
+at ~2087 chars, so the rendered template is capped at 1500.
 
-Why not put both in instructions: empirically the cap drops the tail
-silently. Why not put the behavioral framing in the description: per-call
-context overhead, and the description is read at *call* time — too late to
-drive the first proactive annotation.
-
-**Trigger discipline.** A live-Claude proxy test on 2026-06-12 surfaced
-an asymmetry the original templates baked in: only the "if a call
-returned an error" trigger was mechanical (an observable state Claude
-could check at the end of any tool call); the feature-gap path
-required vigilance, and vigilance loses to task completion every time.
-Three mechanical triggers now sit alongside each other in the IF
-block: (1) tool response lacks a structured field for what the user
-asked about, (2) intent satisfied via workaround because no tool
-matched, (3) user asked for something this server can't do. Each is a
-state Claude can check deterministically against its own behavior, on
-par with "the call returned an error". Ported from baton-proxy 0.1.3
-to the SDK on 2026-06-16.
+Every trigger names a state the agent can check against its own behavior
+(an error, a missing field, a workaround), not a judgement it has to remember
+to make.
 """
 
 from __future__ import annotations
@@ -47,16 +27,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# The head differs by proactive_mode in what it promises the tool is for:
-# with proactive on it records intent AND outcomes, with it off the injected
-# params carry intent and the tool is the friction channel alone.
-#
-# Only the reactive-only head names the missing-tool case and why filing
-# matters. The proactive head is shorter on purpose, not by oversight: with
-# that wording the 30-char long-name fixture rendered 1610 chars in proactive
-# mode, and 1557 with just the "so ... can improve their product" reason,
-# against the 1500 cap. The IF block already makes the missing-tool case
-# mandatory in both modes, so here the head would only repeat it.
+# Shorter than it could be on purpose: a longer head pushed the 30-char
+# long-name fixture past the 1500 cap.
 _INSTRUCTIONS_HEAD_PROACTIVE = (
     "This server is wrapped in the {vendor_display_name} usage and friction SDK. "
     "Use `{annotation_tool_name}` to record what the user is trying to do and "
@@ -64,16 +36,12 @@ _INSTRUCTIONS_HEAD_PROACTIVE = (
     "description for field-level detail.\n\n"
 )
 
-_INSTRUCTIONS_HEAD_REACTIVE_ONLY = (
-    "This server is wrapped in the {vendor_display_name} usage and friction SDK. "
-    "Use `{annotation_tool_name}` to report when a {vendor_display_name} tool "
-    "call goes wrong, or when a tool you needed does not exist, so "
-    "{vendor_display_name} can improve their product. See that tool's "
-    "description for field-level detail.\n\n"
+# The whole of Baton's report text in the instructions under proactive_mode="off".
+_INSTRUCTIONS_REPORT_POINTER = (
+    "Use `{annotation_tool_name}` to report a {vendor_display_name} tool call "
+    "that went wrong, or a request no tool covers; its description says when and how."
 )
 
-# Requested only when proactive_mode == "on". Off by default: the injected
-# param carries the same field on every call without an extra turn.
 _INSTRUCTIONS_PROACTIVE_CLAUSE = (
     "BEFORE invoking any {vendor_display_name} tool, you MUST call "
     "`{annotation_tool_name}` with user_goal (REQUIRED).\n\n"
@@ -86,12 +54,10 @@ _INSTRUCTIONS_RECOVERY_SENTENCE = (
     "substitute for recovering."
 )
 
-# Always present, in both modes — this is the product signal. `again` points
-# back at the BEFORE call, so it is rendered only where that call is asked for.
 _INSTRUCTIONS_REACTIVE_CLAUSES = (
     "AFTER any {vendor_display_name} tool errors, times out, returns an "
     "unhelpful or contradictory result, or the user shows signs of giving "
-    "up, you MUST call `{annotation_tool_name}` {again}with what_happened "
+    "up, you MUST call `{annotation_tool_name}` again with what_happened "
     "(REQUIRED, your own words, NOT a category), tool_name (REQUIRED) and "
     "suggested_improvement (REQUIRED whenever you can articulate one)."
     "{recovery}\n\n"
@@ -113,34 +79,50 @@ _ANNOTATION_LEAD_PROACTIVE = (
     "unhelpful (what_happened + tool_name + suggested_improvement).\n"
 )
 
-# proactive_mode="off": the injected params already carry intent on every
-# call, so asking for a pre-call annotation here would reintroduce exactly the
-# extra turn the mode exists to remove. intent stays REQUIRED because a
-# reactive annotation still needs to say what was being attempted.
-_ANNOTATION_LEAD_REACTIVE_ONLY = (
-    "Report a {vendor_display_name} tool call that went wrong — call this "
-    "AFTER a call returns an unhelpful, empty, failed or contradictory "
-    "result, or when no tool covers what the user asked for. Do NOT call it "
-    "before a tool call or to narrate normal successful work.\n"
+# Without its key list, no report put a diagnosis in context.
+_CONTEXT_FIELD = (
+    "  - context: supplementary info not covered above. Common keys: plan, "
+    "alternatives_considered, likely_cause, user_impact, error_class, "
+    "downstream_blocked, confidence_in_intent. When no tool covers the "
+    "request also missing_capability_field and requested_capability."
 )
 
-_DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
+_PROACTIVE_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
     "{lead}"
     "\n"
     "Fields:\n"
     "  - user_goal: {user_goal}\n"
-    "  - what_happened: REQUIRED on a report{omit_on_a_note}. "
+    "  - what_happened: REQUIRED on a report — omit on a proactive annotation. "
     "1-2 plain sentences in YOUR OWN WORDS: what you asked for, "
     "what came back, and why it was unusable. Do NOT pick a category or "
     "invent a label — describe it.\n"
     "  - tool_name: REQUIRED on a report. The {vendor_display_name} tool that "
     "went wrong. Write none if no tool exists for the request.\n"
-    "  - suggested_improvement: {report_only}"
-    "A concrete sentence about what product change would have helped.\n"
-    "  - context: supplementary info not covered above. Common keys: plan, "
-    "alternatives_considered, likely_cause, user_impact, error_class, "
-    "downstream_blocked, confidence_in_intent. When no tool covers the "
-    "request also missing_capability_field and requested_capability."
+    "  - suggested_improvement: reactive-only — omit on a proactive. "
+    "A concrete sentence about what product change would have helped.\n" + _CONTEXT_FIELD
+)
+
+_REPORT_TOOL_DESCRIPTION_TEMPLATE = (
+    "Report a {vendor_display_name} tool call that went wrong, so "
+    "{vendor_display_name} can fix it. Call this right after a call errors, times "
+    "out, or returns an empty, unhelpful or contradictory result. Also call it "
+    "once per user request when no tool or field covers what they asked for, or "
+    "you had to work around one. Do not call it before a tool call or for normal "
+    "successful work.\n"
+    "\n"
+    "A report does not replace the work: after it, work out why the call failed, "
+    "fix the input and try again (do not repeat the same failing call), and still "
+    "answer the user.\n"
+    "\n"
+    "Fields:\n"
+    "  - user_goal: the same '<n>: <what this call is for>; success is <what its "
+    "result should show>' as on this server's other tools.\n"
+    "  - what_happened: REQUIRED. 1-2 plain sentences in your own words: what you "
+    "asked for, what came back, and why it was unusable. Not a category.\n"
+    "  - tool_name: REQUIRED. The {vendor_display_name} tool that went wrong, or "
+    "none if no tool exists for the request.\n"
+    "  - suggested_improvement: one concrete sentence on the product change that "
+    "would have helped.\n" + _CONTEXT_FIELD
 )
 
 
@@ -366,21 +348,23 @@ def build_server_instructions(
 ) -> str:
     """Build the server-instructions text for the MCP ``instructions`` field.
 
-    ``proactive_mode="off"`` (the default) drops the pre-call annotation
-    request, and the word "again" that points back at it.
-    ``intent_param_mode="off"`` drops the subagent sentence: no tool then
-    carries a ``user_goal`` param for a subagent to fill.
+    ``proactive_mode="off"`` (the default) renders only the pointer to the
+    annotation tool. ``intent_param_mode="off"`` drops the subagent sentence:
+    no tool then carries a ``user_goal`` param for a subagent to fill.
     """
-    if proactive_mode == "on":
-        template = _INSTRUCTIONS_HEAD_PROACTIVE + _INSTRUCTIONS_PROACTIVE_CLAUSE
-    else:
-        template = _INSTRUCTIONS_HEAD_REACTIVE_ONLY
 
     def render(recovery: str) -> str:
-        return (template + _INSTRUCTIONS_REACTIVE_CLAUSES).format(
+        if proactive_mode != "on":
+            template = _INSTRUCTIONS_REPORT_POINTER
+        else:
+            template = (
+                _INSTRUCTIONS_HEAD_PROACTIVE
+                + _INSTRUCTIONS_PROACTIVE_CLAUSE
+                + _INSTRUCTIONS_REACTIVE_CLAUSES
+            )
+        return template.format(
             vendor_display_name=vendor_display_name,
             annotation_tool_name=annotation_tool_name,
-            again="again " if proactive_mode == "on" else "",
             recovery=recovery,
         )
 
@@ -401,9 +385,12 @@ def build_server_instructions(
 
 
 _VENDOR_INSTRUCTIONS_ATTR = "_baton_vendor_instructions"
-# Where our paragraph begins: both heads share the first; the second is the
-# whole text under ``report_mode="off"``.
-_OURS_STARTS = (_INSTRUCTIONS_HEAD_PROACTIVE.split("{", 1)[0], INTENT_INSTRUCTIONS)
+# Where our paragraph begins under proactive_mode "on", "off", and report_mode="off".
+_OURS_STARTS = (
+    _INSTRUCTIONS_HEAD_PROACTIVE.split("{", 1)[0],
+    _INSTRUCTIONS_REPORT_POINTER.split("{", 1)[0],
+    INTENT_INSTRUCTIONS,
+)
 
 
 def _ends_in_ours(current: Any, vendor: Any) -> bool:
@@ -447,22 +434,18 @@ def build_annotation_tool_description(
 ) -> str:
     """Build the annotation tool's ``description``.
 
-    ``proactive_mode="off"`` (the default) reframes the tool as reactive-only:
-    the same fields, but the agent is told to call it after a bad result
-    rather than before every call. It refuses a note, so no field's text
-    describes one.
+    ``proactive_mode="off"`` (the default) makes it the report tool, holding
+    the report rules the instructions only point at. Its ``user_goal`` line
+    refers to the other tools' template, which they always carry here: config
+    refuses ``intent_param_mode="off"`` without ``proactive_mode="on"``.
     """
-    takes_notes = proactive_mode == "on"
-    lead = (_ANNOTATION_LEAD_PROACTIVE if takes_notes else _ANNOTATION_LEAD_REACTIVE_ONLY).format(
-        vendor_display_name=vendor_display_name
-    )
-    return _DEFAULT_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
-        vendor_display_name=vendor_display_name,
-        lead=lead,
-        user_goal=_USER_GOAL_PARAM_BODY,
-        omit_on_a_note=" — omit on a proactive annotation" if takes_notes else "",
-        report_only="reactive-only — omit on a proactive. " if takes_notes else "",
-    )
+    if proactive_mode == "on":
+        return _PROACTIVE_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
+            vendor_display_name=vendor_display_name,
+            lead=_ANNOTATION_LEAD_PROACTIVE.format(vendor_display_name=vendor_display_name),
+            user_goal=_USER_GOAL_PARAM_BODY,
+        )
+    return _REPORT_TOOL_DESCRIPTION_TEMPLATE.format(vendor_display_name=vendor_display_name)
 
 
 def build_refusal_text(*, annotation_tool_name: str) -> str:

@@ -140,7 +140,7 @@ class TestInstallation:
                 assert "subagent" in mcp.instructions
                 mcp.add_tool(approve)
             assert "subagent" not in mcp.instructions
-            assert "NOT replace answering" in mcp.instructions
+            assert "its description says when and how" in mcp.instructions
         finally:
             await handle.aclose()
 
@@ -1459,7 +1459,7 @@ class TestVendorInstructionsAreKept:
     ) -> None:
         mcp, handle = self._install(events_path, instructions)
         try:
-            assert mcp.instructions.startswith("This server is wrapped")
+            assert mcp.instructions.startswith("Use `acme-ads_annotate` to report")
         finally:
             await handle.aclose()
 
@@ -1483,10 +1483,10 @@ class TestVendorInstructionsAreKept:
     async def test_too_long_together_warns_and_installs(
         self, events_path: str, caplog: pytest.LogCaptureFixture
     ) -> None:
-        mcp, handle = self._install(events_path, "x" * 800)
+        mcp, handle = self._install(events_path, "x" * 1800)
         try:
-            assert mcp.instructions.startswith("x" * 800)
-            assert "2087" in caplog.text and "800" in caplog.text
+            assert mcp.instructions.startswith("x" * 1800)
+            assert "2087" in caplog.text and "1800" in caplog.text
         finally:
             await handle.aclose()
 
@@ -1506,6 +1506,7 @@ class TestVendorInstructionsAreKept:
             )
             assert mcp.instructions.startswith(VENDOR_INSTRUCTIONS + "\n\n")
             assert mcp.instructions.count("This server is wrapped") == 1
+            assert "its description says when and how" not in mcp.instructions
             await again.aclose()
         finally:
             await handle.aclose()
