@@ -96,6 +96,23 @@ await baton.aclose()                                              # at shutdown
 
 `list_tools` adds the `user_goal` param to each tool, as the MCP adapters do, and sends a snapshot of your own tool list once for each distinct list. A tool that already has its own `user_goal` argument keeps it: don't pop `user_goal` for that tool, and leave `INTENT_INSTRUCTIONS` out, or the agent writes Baton's turn number into your argument. `meta` is the request's `_meta`: the client's conversation and turn ids ride along, scrubbed. On a stateless server each request is its own session; pass `principal` so one person's calls group together.
 
+## What leaves your server
+
+Only what crosses the MCP call. The SDK never reads your logs, your database or anything else in your process.
+
+| Sent | What |
+|---|---|
+| Always | The tool's name, its arguments (`params`, scrubbed), `user_goal`, how long the call took, and on failure the `error_type`. Your tool list and schemas, once per change. What the client declares about itself, such as its name and version. Who the caller is, only if you set `resolve_principal`. |
+| Only with `result_capture_mode="full"` (the default) | What the tool returned (`result`), the error text it returned (`error_body`), and the message of an exception it raised. |
+| With `report_mode="on"` | The reports the agent files, in its own words. |
+| Never | Anything that did not cross the MCP call. |
+
+**`result_capture_mode="off"` turns off responses, not requests.** Arguments are always sent, so the scrubber below is what protects them. Two things are still sent under `"off"`: a `ToolError`'s message, unless it was raised `from` another exception, and the message of a failed resource or prompt request.
+
+```python
+install_baton(mcp, VendorConfig(dsn="https://baton_pk_...", result_capture_mode="off"))
+```
+
 ## PII scrubbing
 
 **On by default.** `baton.scrub.Scrubber` walks every event payload and redacts email / `Bearer …` / `sk-*` / `AKIA*` / JWT / Luhn-validated card / NA-format phone, plus a list of sensitive field names. Opt out by passing a config instead of a bare DSN:
