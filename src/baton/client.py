@@ -94,7 +94,6 @@ import logging
 import os
 import threading
 import traceback
-from collections import OrderedDict
 from collections.abc import Callable, Coroutine, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -136,6 +135,7 @@ from baton.events import (
 )
 from baton.identity import Principal
 from baton.integrations._llm_text import INTENT_SOURCE_LIBRARY
+from baton.integrations._surface import SentSurfaces
 from baton.scrub import (  # noqa: F401  identity_scrub kept exported
     Scrubber,
     identity_scrub,
@@ -144,8 +144,6 @@ from baton.scrub import (  # noqa: F401  identity_scrub kept exported
 from baton.sinks import HttpSink, Sink, build_or_none, safe_emit, safe_write
 
 T = TypeVar("T")
-
-SENT_SURFACES_CAP = 256
 
 logger = logging.getLogger(__name__)
 
@@ -953,8 +951,7 @@ class _Sessions:
 
     def _init_surfaces(self) -> None:
         self._surface_session_id = str(uuid7())
-        # Bounded: a surface that changes per request must not grow memory.
-        self._sent_surfaces: OrderedDict[str, None] = OrderedDict()
+        self._sent_surfaces = SentSurfaces()
         self._surface_lock = threading.Lock()
 
     def _serve(
@@ -974,12 +971,9 @@ class _Sessions:
             return served, None
         payload, digest = surface
         with self._surface_lock:
-            if digest in self._sent_surfaces:
-                self._sent_surfaces.move_to_end(digest)
+            if self._sent_surfaces.was_sent(digest):
                 return served, None
-            self._sent_surfaces[digest] = None
-            if len(self._sent_surfaces) > SENT_SURFACES_CAP:
-                self._sent_surfaces.popitem(last=False)
+            self._sent_surfaces.mark(digest)
         event = cast(
             SurfaceSnapshotEvent | None,
             build_or_none(lambda: self._snapshot_event(payload, digest), logger),
@@ -990,7 +984,7 @@ class _Sessions:
 
     def _unmark_surface(self, digest: str) -> None:
         with self._surface_lock:
-            self._sent_surfaces.pop(digest, None)
+            self._sent_surfaces.unmark(digest)
 
     def _snapshot_write_failed(self, event: SurfaceSnapshotEvent) -> None:
         logger.exception("baton: surface snapshot write failed; will retry")

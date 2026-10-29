@@ -63,7 +63,12 @@ from baton.integrations._llm_text import (
     required_param_names,
 )
 from baton.integrations._session import next_sequence
-from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
+from baton.integrations._surface import (
+    SentSurfaces,
+    assemble_surface,
+    build_seam_augmentations,
+    surface_hash,
+)
 from baton.integrations.client_observed import clean_runtime_meta, meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
@@ -122,10 +127,9 @@ class BatonMiddleware(Middleware):
         # param, independently. A plain dict (no lock) is safe: all access is
         # on the one asyncio loop, so no statement interleaves.
         self._param_registry: dict[str, dict[str, str]] = {}
-        # Surface hashes already emitted this process — dedupe per
-        # integrations._surface. Plain set (no lock): single asyncio loop,
-        # no await between the membership check and the add.
-        self._surface_seen: set[str] = set()
+        # No lock: two concurrent listings of a new surface may both send it,
+        # and the consumer stores a hash once.
+        self._sent_surfaces = SentSurfaces()
 
     async def on_list_tools(
         self,
@@ -192,8 +196,8 @@ class BatonMiddleware(Middleware):
 
     async def _maybe_emit_surface_snapshot(self, tools: Sequence[Tool]) -> None:
         """Snapshot the vendor-true surface from a ``tools/list`` response and
-        emit ``surface_snapshot``, deduped on the surface hash for the process
-        lifetime. Fail-open: any error is logged and the response flows on
+        emit ``surface_snapshot`` unless its hash is among the last ones sent.
+        Fail-open: any error is logged and the response flows on
         untouched — this must never block the vendor's tools/list.
 
         Runs on the tools ``call_next`` just returned, i.e. BEFORE this
@@ -223,7 +227,7 @@ class BatonMiddleware(Middleware):
             )
             surface = assemble_surface(self._server_meta, surface_tools)
             digest = surface_hash(surface)
-            if digest in self._surface_seen:
+            if self._sent_surfaces.was_sent(digest):
                 return
 
             seam = build_seam_augmentations(
@@ -271,7 +275,7 @@ class BatonMiddleware(Middleware):
             except Exception:
                 logger.exception("baton: surface snapshot capture failed")
                 return
-            self._surface_seen.add(digest)
+            self._sent_surfaces.mark(digest)
         except Exception:
             logger.exception("baton: surface snapshot capture failed")
 

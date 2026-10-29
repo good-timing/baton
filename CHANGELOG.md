@@ -8,6 +8,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Fixed
+
+- The MCP adapters now remember only the last 256 tool-list snapshots they sent, as the library API already did. A tool list that differs per caller grew that memory for as long as the server ran. A snapshot that drops out is sent again; the Console stores it once. (SPEC §11.4.2.)
+
+---
+
 ## 0.8.23: reports are opt-in; the library API serves an MCP server you built yourself
 
 ### Changed

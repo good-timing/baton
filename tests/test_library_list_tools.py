@@ -331,7 +331,7 @@ def test_a_snapshot_that_cannot_be_built_is_retried(monkeypatch: pytest.MonkeyPa
 
 
 def test_the_sent_surfaces_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("baton.client.SENT_SURFACES_CAP", 2)
+    monkeypatch.setattr("baton.integrations._surface.SENT_SURFACES_CAP", 2)
     sink = _CollectingSink()
     client = _client(sink)
     for version in ("1", "2", "3", "1"):

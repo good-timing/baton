@@ -24,6 +24,7 @@ from baton.integrations.standalone.middleware import BatonMiddleware
 from baton.sinks import FileSink, HttpSink, Sink
 from tests._asgi import fake_http_request
 from tests._event_helpers import read_events, without_surface_snapshots
+from tests._forced_reorder import CapturingSink
 
 
 @pytest.fixture
@@ -267,6 +268,26 @@ class TestSurfaceSnapshotSinkFailureRetries:
         assert flaky.write_attempts == 2
         snapshots = [e for e in flaky.written if e.event_type == "surface_snapshot"]
         assert len(snapshots) == 1
+
+
+class TestSentSurfacesAreBounded:
+    async def test_a_hash_that_dropped_out_of_the_record_is_sent_again(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("baton.integrations._surface.SENT_SURFACES_CAP", 0)
+        sink = CapturingSink()
+        mcp = _build_mcp(sink)
+
+        @mcp.tool()
+        def echo(text: str) -> str:
+            return text
+
+        async with Client(mcp) as client:
+            await client.list_tools()
+            await client.list_tools()
+
+        snapshots = [e for e in sink.events if e.event_type == "surface_snapshot"]
+        assert len(snapshots) == 2
 
 
 # =============================================================================

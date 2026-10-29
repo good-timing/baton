@@ -785,6 +785,32 @@ class TestSurfaceSnapshot:
         assert "loud" in v2_props
         assert snapshots[0]["payload"]["surface_hash"] != snapshots[1]["payload"]["surface_hash"]
 
+    async def test_a_surface_that_dropped_out_of_the_record_is_sent_again(
+        self, configured_mcp: tuple[Any, Any, str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("baton.integrations._surface.SENT_SURFACES_CAP", 1)
+        mcp, handle, path = configured_mcp
+
+        def echo(text: str) -> str:
+            return text
+
+        def echo_loud(text: str, loud: bool = False) -> str:
+            return text
+
+        for version in (echo, echo_loud, echo):
+            mcp.add_tool(version, name="echo")
+            await mcp.call_tool("echo", {"text": "x"})
+            mcp.remove_tool("echo")
+        await handle.flush()
+
+        hashes = [
+            e["payload"]["surface_hash"]
+            for e in _read_events(path)
+            if e["event_type"] == "surface_snapshot"
+        ]
+        assert len(hashes) == 3
+        assert hashes[0] == hashes[2] != hashes[1]
+
     async def test_removed_tool_is_pruned_not_left_as_a_phantom(
         self, configured_mcp: tuple[Any, Any, str]
     ) -> None:

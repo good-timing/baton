@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import OrderedDict
 from collections.abc import Mapping
 from typing import Any
+
+SENT_SURFACES_CAP = 256
 
 
 def surface_hash(surface: Mapping[str, Any]) -> str:
@@ -37,6 +40,29 @@ def surface_hash(surface: Mapping[str, Any]) -> str:
     """
     canonical = json.dumps(surface, sort_keys=True, separators=(",", ":"), default=str)
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class SentSurfaces:
+    """The last ``SENT_SURFACES_CAP`` surface hashes sent, least recent dropped
+    first. Bounded because a tool list that differs per caller would otherwise
+    grow it for the life of the process; a dropped hash is only sent again."""
+
+    def __init__(self) -> None:
+        self._hashes: OrderedDict[str, None] = OrderedDict()
+
+    def was_sent(self, digest: str) -> bool:
+        if digest not in self._hashes:
+            return False
+        self._hashes.move_to_end(digest)
+        return True
+
+    def mark(self, digest: str) -> None:
+        self._hashes[digest] = None
+        if len(self._hashes) > SENT_SURFACES_CAP:
+            self._hashes.popitem(last=False)
+
+    def unmark(self, digest: str) -> None:
+        self._hashes.pop(digest, None)
 
 
 def build_server_meta(lowlevel_server: Any) -> dict[str, Any]:

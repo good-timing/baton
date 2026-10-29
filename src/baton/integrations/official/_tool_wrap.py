@@ -111,7 +111,12 @@ from baton.integrations._session import (
     next_sequence,
     session_id_from_headers,
 )
-from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
+from baton.integrations._surface import (
+    SentSurfaces,
+    assemble_surface,
+    build_seam_augmentations,
+    surface_hash,
+)
 from baton.integrations.client_observed import clean_runtime_meta, meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
@@ -152,7 +157,7 @@ class _SurfaceState:
     def __init__(self, server_meta: dict[str, Any]) -> None:
         self.server_meta = server_meta
         self.raw_tools: dict[str, dict[str, Any]] = {}
-        self.emitted_hashes: set[str] = set()
+        self.sent_surfaces = SentSurfaces()
         self.dirty = False
 
     def note_tool(self, name: str, tool: Any) -> None:
@@ -456,7 +461,7 @@ def _wrap_tool_run(
         # re-throw identically every call) is one attempt per surface
         # change, not a retry storm. A WRITE failure is different — sink
         # health can recover — so that path re-sets ``dirty = True`` to
-        # retry on the next call, and ``emitted_hashes`` is only updated
+        # retry on the next call, and ``sent_surfaces`` is only updated
         # AFTER a successful write (a transient failure must not
         # permanently drop this surface, unlike a genuine dedup skip).
         if surface_state.dirty:
@@ -467,7 +472,7 @@ def _wrap_tool_run(
             except Exception:
                 logger.exception("baton: surface snapshot capture failed")
             else:
-                if digest not in surface_state.emitted_hashes:
+                if not surface_state.sent_surfaces.was_sent(digest):
                     seam = build_seam_augmentations(
                         injected_tool_names=(
                             [annotation_tool_name] if annotation_tool_name else []
@@ -490,7 +495,7 @@ def _wrap_tool_run(
                         logger.exception("baton: surface snapshot capture failed")
                         surface_state.dirty = True
                     else:
-                        surface_state.emitted_hashes.add(digest)
+                        surface_state.sent_surfaces.mark(digest)
 
         # Strip the injected goal params IN PLACE, before snapshotting params —
         # ``arguments`` is the same object forwarded to the vendor handler, so
