@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.8.24: shorter report text with report_mode="on"
 
 ### Changed
 
