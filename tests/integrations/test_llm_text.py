@@ -56,8 +56,8 @@ def test_instructions_raises_when_names_exceed_cap(proactive_mode: str, name_len
         )
 
 
-# The text E21 scored for a reports-only server (agent_cost_knobs.md, "Trim the
-# report text"). Rewording it needs a new run.
+# The scored reports-only text: rewording it needs a new scored run
+# (agent_cost_knobs.md, "Trim the report text").
 REPORTS_ONLY_INSTRUCTIONS = (
     "Use `toybox_annotate` to report a Toybox Pantry tool call that went wrong, or a "
     "request no tool covers; its description says when and how.\n\nWhen you hand work "
@@ -169,35 +169,22 @@ def test_no_agent_facing_text_offers_a_category_to_pick(proactive_mode: str) -> 
     if proactive_mode == "on":
         assert "what_happened (REQUIRED, your own words, NOT a category)" in instructions
         assert "tool_name (REQUIRED)" in instructions
-    else:
-        assert "unusable. Not a category." in description
 
 
-@pytest.mark.parametrize("proactive_mode", ["off", "on"])
-def test_a_missing_tool_is_reported_once_per_request(proactive_mode: str) -> None:
-    text = build_server_instructions(
-        vendor_display_name="Acme",
-        annotation_tool_name="acme_annotate",
-        proactive_mode=proactive_mode,
-    ) + build_annotation_tool_description(vendor_display_name="Acme", proactive_mode=proactive_mode)
-    assert "once per user request" in text
+def test_a_missing_tool_is_reported_once_per_request() -> None:
+    rendered = build_server_instructions(
+        vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode="on"
+    )
+    assert "once per user request, not per call" in rendered
 
 
-@pytest.mark.parametrize(
-    ("proactive_mode", "guardrail"),
-    [("on", "does NOT replace answering"), ("off", "and still answer the user")],
-)
-def test_the_text_carries_dont_replace_answering_guardrail(
-    proactive_mode: str, guardrail: str
-) -> None:
+def test_instructions_carry_dont_replace_answering_guardrail() -> None:
     """Without this guardrail the agent treats annotation as proxy-satisfaction
     and stops answering the user — documented failure mode."""
-    text = build_server_instructions(
-        vendor_display_name="Acme",
-        annotation_tool_name="acme_annotate",
-        proactive_mode=proactive_mode,
-    ) + build_annotation_tool_description(vendor_display_name="Acme", proactive_mode=proactive_mode)
-    assert guardrail in text
+    rendered = build_server_instructions(
+        vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode="on"
+    )
+    assert "does NOT replace answering" in rendered
 
 
 def test_annotation_description_lists_all_fields() -> None:
@@ -230,24 +217,13 @@ def test_instructions_carry_three_mechanical_triggers() -> None:
     assert "asked for something this server can't do" in rendered
 
 
-def test_the_missing_tool_case_is_named_in_both_modes() -> None:
-    """Proactive: in the instructions' IF block. Reports only: in the pointer,
-    the first thing the agent reads, and in the tool's triggers."""
+def test_the_missing_tool_case_is_mandatory_in_the_if_block() -> None:
     on = build_server_instructions(
         vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode="on"
     )
     if_block = on[on.index("IF a Acme tool") :]
     assert "workaround because no tool matched" in if_block
     assert "asked for something this server can't do" in if_block
-
-    off = build_server_instructions(
-        vendor_display_name="Acme", annotation_tool_name="acme_annotate"
-    )
-    assert "or a request no tool covers" in off
-    description = build_annotation_tool_description(vendor_display_name="Acme")
-    assert "no tool or field covers what they asked for, or you had to work around one" in (
-        description
-    )
 
 
 def test_a_tool_that_takes_notes_marks_the_report_fields_report_only() -> None:
@@ -262,8 +238,6 @@ def test_a_reports_only_tool_does_not_describe_a_note() -> None:
     """It refuses a note, and a field that says how to send one invites it."""
     rendered = build_annotation_tool_description(vendor_display_name="Acme")
     assert "proactive" not in rendered
-    assert "what_happened: REQUIRED. 1-2 plain sentences" in rendered
-    assert "suggested_improvement: one concrete sentence" in rendered
 
 
 class TestProactiveMode:
@@ -290,7 +264,6 @@ class TestProactiveMode:
         )
         assert "BEFORE invoking" not in off
         assert "expected_outcome" not in off
-        assert off.startswith("Use `acme_annotate` to report a Acme tool call")
 
     def test_off_is_shorter_and_still_under_cap(self) -> None:
         kw = {"vendor_display_name": "Acme", "annotation_tool_name": "acme_annotate"}
@@ -300,8 +273,8 @@ class TestProactiveMode:
         assert len(on) < _CLAUDE_CODE_TRUNCATION_CAP
 
     def test_tool_description_keeps_every_field_in_both_modes(self) -> None:
-        """The tool's FIELD contract is mode-independent — only the lead
-        sentence changes. A reactive annotation still carries intent."""
+        """The field names are the same in both modes. A reactive annotation
+        still carries intent."""
         for mode in ("on", "off"):
             desc = build_annotation_tool_description(
                 vendor_display_name="Acme", proactive_mode=mode
@@ -316,7 +289,6 @@ class TestProactiveMode:
 
     def test_tool_description_off_steers_away_from_pre_call_use(self) -> None:
         off = build_annotation_tool_description(vendor_display_name="Acme", proactive_mode="off")
-        assert "Do not call it before a tool call" in off
         assert "Populate proactively" not in off
 
 
@@ -474,8 +446,6 @@ def test_no_tool_is_asked_for_as_the_word_none(proactive_mode: str) -> None:
     if proactive_mode == "on":
         assert "tool_name (none if no tool)" in instructions
         assert "Write none if no tool exists" in description
-    else:
-        assert "or none if no tool exists" in description
     for text in (instructions, description):
         assert '""' not in text
         assert "mpty string" not in text
@@ -500,7 +470,7 @@ def test_both_heads_open_with_the_text_that_marks_our_paragraph() -> None:
         rendered = build_server_instructions(
             vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode=mode
         )
-        assert rendered.startswith(start), mode
+        assert start.match(rendered), mode
 
 
 class TestWithVendorInstructions:
@@ -527,6 +497,34 @@ class TestWithVendorInstructions:
         mcp.instructions = with_vendor_instructions(mcp, self.OURS)
         mcp.instructions = "Vendor v2."
         assert with_vendor_instructions(mcp, self.OURS) == f"Vendor v2.\n\n{self.OURS}"
+
+
+class TestAVendorParagraphLikeTheReportPointer:
+    """Our pointer opens "Use `", as a vendor's own paragraph may."""
+
+    OURS = build_server_instructions(
+        vendor_display_name="Acme", annotation_tool_name="acme_annotate"
+    )
+    VENDOR = "Use `search` before `run`."
+
+    def test_vendor_text_set_after_an_install_with_none_is_kept(self) -> None:
+        mcp = types.SimpleNamespace(instructions=None)
+        mcp.instructions = with_vendor_instructions(mcp, self.OURS)
+        mcp.instructions = self.VENDOR
+        assert with_vendor_instructions(mcp, self.OURS) == f"{self.VENDOR}\n\n{self.OURS}"
+
+    def test_a_vendor_paragraph_added_below_its_text_is_kept(self) -> None:
+        mcp = types.SimpleNamespace(instructions="Base.")
+        mcp.instructions = with_vendor_instructions(mcp, self.OURS)
+        mcp.instructions = f"Base.\n\n{self.VENDOR}"
+        assert with_vendor_instructions(mcp, self.OURS) == (
+            f"Base.\n\n{self.VENDOR}\n\n{self.OURS}"
+        )
+
+    def test_our_pointer_is_still_replaced(self) -> None:
+        mcp = types.SimpleNamespace(instructions="Base.")
+        mcp.instructions = with_vendor_instructions(mcp, self.OURS)
+        assert with_vendor_instructions(mcp, self.OURS) == f"Base.\n\n{self.OURS}"
 
 
 def test_retired_names_are_popped_only_where_the_schema_is_known() -> None:

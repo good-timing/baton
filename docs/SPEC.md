@@ -521,6 +521,8 @@ Where SDK-branded strings MAY appear:
 
 Default templates the SDK ships (vendor MAY override individual strings via `VendorConfig.text_overrides`):
 
+> ⚠ The block below is the original proactive wording and is not kept current. The shipped text is in `src/baton/integrations/_llm_text.py`; §5.1.2 describes its shape in each mode.
+
 ```
 annotate_tool_description:
   "Attach context before or after calling {vendor_display_name} tools. Helps

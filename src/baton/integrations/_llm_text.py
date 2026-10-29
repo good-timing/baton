@@ -21,6 +21,7 @@ to make.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -36,7 +37,7 @@ _INSTRUCTIONS_HEAD_PROACTIVE = (
     "description for field-level detail.\n\n"
 )
 
-# The whole of Baton's report text in the instructions under proactive_mode="off".
+# Holds no report rule: each is written once, in the report tool's description.
 _INSTRUCTIONS_REPORT_POINTER = (
     "Use `{annotation_tool_name}` to report a {vendor_display_name} tool call "
     "that went wrong, or a request no tool covers; its description says when and how."
@@ -79,6 +80,9 @@ _ANNOTATION_LEAD_PROACTIVE = (
     "unhelpful (what_happened + tool_name + suggested_improvement).\n"
 )
 
+# The Console splits user_goal on "; success is" (SPEC §11.5.1 rule 2).
+_USER_GOAL_FORMAT = "'<n>: <what this call is for>; success is <what its result should show>'"
+
 # Without its key list, no report put a diagnosis in context.
 _CONTEXT_FIELD = (
     "  - context: supplementary info not covered above. Common keys: plan, "
@@ -88,8 +92,7 @@ _CONTEXT_FIELD = (
 )
 
 _PROACTIVE_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
-    "{lead}"
-    "\n"
+    _ANNOTATION_LEAD_PROACTIVE + "\n"
     "Fields:\n"
     "  - user_goal: {user_goal}\n"
     "  - what_happened: REQUIRED on a report — omit on a proactive annotation. "
@@ -115,8 +118,7 @@ _REPORT_TOOL_DESCRIPTION_TEMPLATE = (
     "answer the user.\n"
     "\n"
     "Fields:\n"
-    "  - user_goal: the same '<n>: <what this call is for>; success is <what its "
-    "result should show>' as on this server's other tools.\n"
+    "  - user_goal: the same " + _USER_GOAL_FORMAT + " as on this server's other tools.\n"
     "  - what_happened: REQUIRED. 1-2 plain sentences in your own words: what you "
     "asked for, what came back, and why it was unusable. Not a category.\n"
     "  - tool_name: REQUIRED. The {vendor_display_name} tool that went wrong, or "
@@ -201,8 +203,7 @@ INTENT_SOURCE_LIBRARY = "library_arg"
 # "OPTIONAL." / "REQUIRED." label tracks ``intent_param_mode``, so it agrees
 # with the schema's ``required`` list.
 _USER_GOAL_PARAM_BODY = (
-    "Write it as '<n>: <what this call is for>; success is <what its result "
-    "should show>'. n is the number of the user's current message in this "
+    f"Write it as {_USER_GOAL_FORMAT}. n is the number of the user's current message in this "
     "conversation (1 for the first). Use the same number on every call you make "
     "for that message, including calls made after reading tool results; it goes "
     "up only when the user sends another message."
@@ -352,25 +353,23 @@ def build_server_instructions(
     annotation tool. ``intent_param_mode="off"`` drops the subagent sentence:
     no tool then carries a ``user_goal`` param for a subagent to fill.
     """
-
-    def render(recovery: str) -> str:
-        if proactive_mode != "on":
-            template = _INSTRUCTIONS_REPORT_POINTER
-        else:
-            template = (
-                _INSTRUCTIONS_HEAD_PROACTIVE
-                + _INSTRUCTIONS_PROACTIVE_CLAUSE
-                + _INSTRUCTIONS_REACTIVE_CLAUSES
-            )
-        return template.format(
-            vendor_display_name=vendor_display_name,
-            annotation_tool_name=annotation_tool_name,
-            recovery=recovery,
+    names = {
+        "vendor_display_name": vendor_display_name,
+        "annotation_tool_name": annotation_tool_name,
+    }
+    if proactive_mode == "on":
+        template = (
+            _INSTRUCTIONS_HEAD_PROACTIVE
+            + _INSTRUCTIONS_PROACTIVE_CLAUSE
+            + _INSTRUCTIONS_REACTIVE_CLAUSES
         )
-
-    # The cap is the budget the two names share. The fixed sentences have no
-    # names in them, so they come out of the headroom under the truncation cap.
-    budgeted = len(render(""))
+        # The cap is the budget the two names share. The recovery sentence has
+        # no names in it, so it comes out of the headroom under the truncation cap.
+        budgeted = len(template.format(**names, recovery=""))
+        rendered = template.format(**names, recovery=_INSTRUCTIONS_RECOVERY_SENTENCE)
+    else:
+        rendered = _INSTRUCTIONS_REPORT_POINTER.format(**names)
+        budgeted = len(rendered)
     if budgeted > _INSTRUCTIONS_LENGTH_CAP:
         raise ValueError(
             f"Rendered server instructions are {budgeted} chars, which exceeds "
@@ -378,18 +377,26 @@ def build_server_instructions(
             f"(Claude Code truncates at ~{_CLAUDE_CODE_TRUNCATION_CAP}). "
             f"Shorten vendor_display_name or annotation_tool_name."
         )
-    rendered = render(_INSTRUCTIONS_RECOVERY_SENTENCE)
     if intent_param_mode != "off":
         rendered += _INSTRUCTIONS_SUBAGENT_CLAUSE
     return rendered
 
 
 _VENDOR_INSTRUCTIONS_ATTR = "_baton_vendor_instructions"
+
+
+def _whole_sentence(template: str) -> re.Pattern[str]:
+    parts = re.split(r"\{[a-z_]+\}", template)
+    return re.compile(".+?".join(map(re.escape, parts)))
+
+
 # Where our paragraph begins under proactive_mode "on", "off", and report_mode="off".
+# The pointer is matched whole: its opening, "Use `", is how a vendor's own
+# paragraph may start (``TestAVendorParagraphLikeTheReportPointer``).
 _OURS_STARTS = (
-    _INSTRUCTIONS_HEAD_PROACTIVE.split("{", 1)[0],
-    _INSTRUCTIONS_REPORT_POINTER.split("{", 1)[0],
-    INTENT_INSTRUCTIONS,
+    re.compile(re.escape(_INSTRUCTIONS_HEAD_PROACTIVE.split("{", 1)[0])),
+    _whole_sentence(_INSTRUCTIONS_REPORT_POINTER),
+    re.compile(re.escape(INTENT_INSTRUCTIONS)),
 )
 
 
@@ -398,7 +405,9 @@ def _ends_in_ours(current: Any, vendor: Any) -> bool:
     if not isinstance(current, str):
         return False
     prefix = f"{vendor}\n\n" if isinstance(vendor, str) and vendor.strip() else ""
-    return current.startswith(tuple(prefix + start for start in _OURS_STARTS))
+    return current.startswith(prefix) and any(
+        start.match(current, len(prefix)) for start in _OURS_STARTS
+    )
 
 
 def with_vendor_instructions(mcp: Any, ours: str) -> str:
@@ -441,9 +450,7 @@ def build_annotation_tool_description(
     """
     if proactive_mode == "on":
         return _PROACTIVE_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
-            vendor_display_name=vendor_display_name,
-            lead=_ANNOTATION_LEAD_PROACTIVE.format(vendor_display_name=vendor_display_name),
-            user_goal=_USER_GOAL_PARAM_BODY,
+            vendor_display_name=vendor_display_name, user_goal=_USER_GOAL_PARAM_BODY
         )
     return _REPORT_TOOL_DESCRIPTION_TEMPLATE.format(vendor_display_name=vendor_display_name)
 
