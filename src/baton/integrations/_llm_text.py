@@ -83,7 +83,7 @@ _ANNOTATION_LEAD_PROACTIVE = (
 # The Console splits user_goal on "; success is" (SPEC §11.5.1 rule 2).
 _USER_GOAL_FORMAT = "'<n>: <what this call is for>; success is <what its result should show>'"
 
-# Without its key list, no report put a diagnosis in context.
+# Keep the key list: without it, agents leave context empty.
 _CONTEXT_FIELD = (
     "  - context: supplementary info not covered above. Common keys: plan, "
     "alternatives_considered, likely_cause, user_impact, error_class, "
