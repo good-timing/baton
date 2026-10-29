@@ -14,6 +14,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 - With `report_mode="on"` and `proactive_mode="off"`, Baton's text is shorter: the server instructions are one sentence pointing at the annotation tool, followed by the subagent sentence, and the annotation tool's description holds when to report, how to recover after a report, and the fields. For a vendor named "Toybox Pantry" the two together are 1,694 characters, down from 2,783. `proactive_mode="on"` and the default `report_mode="off"` are unchanged. (SPEC §5.1.2.)
 
+- The retired `expected_result` / `overall_task` are still recorded as `call_expected` / `call_workflow`. The removal planned for 0.8.24 now waits until no vendor runs a release older than 0.8.22. (SPEC §13.)
+
 ### Fixed
 
 - The MCP adapters now remember only the last 256 tool-list snapshots they sent, as the library API already did. A tool list that differs per caller grew that memory for as long as the server ran. A snapshot that drops out is sent again; the Console stores it once. (SPEC §11.4.2.)

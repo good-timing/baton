@@ -16,9 +16,7 @@ import types
 from typing import Any
 
 import pytest
-from packaging.version import Version
 
-import baton
 from baton.integrations._llm_text import (
     _CLAUDE_CODE_TRUNCATION_CAP,
     _OURS_STARTS,
@@ -544,17 +542,3 @@ def test_retired_names_are_popped_only_where_the_schema_is_known() -> None:
     blank = {"user_goal": " ", "expected_result": "  ", "overall_task": 3}
     assert pop_goal_params("echo", blank, {}) == (None, None, None)
     assert blank == {}
-
-
-# The release after next. Releases bump the patch number, so a stale tool list
-# from before the single-field release has been refreshed by then.
-_RETIRED_RECORDING_REMOVED_IN = (0, 8, 24)
-
-
-def test_retired_param_recording_is_removed_on_schedule() -> None:
-    """Remove ``pop_retired_params`` and the ``call_expected`` /
-    ``call_workflow`` it feeds in both adapters; SPEC §13 has the plan."""
-    current = Version(baton.__version__).release
-    assert current < _RETIRED_RECORDING_REMOVED_IN, (
-        "time to remove the retired expected_result / overall_task recording"
-    )
