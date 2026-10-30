@@ -43,6 +43,7 @@ For any normal patch / minor release.
 5. **Approve the publish in the Actions tab.** The workflow pauses at the `publish` job with a "Review pending deployment" banner. Click **Review deployments** → check `pypi` → **Approve and deploy**.
 
 The package is live on PyPI within ~30 seconds of approval.
+6. **Update the version on the website.** The Install section of goodtiming.ai/docs.html names the latest release of `baton-sdk`, `@goodtiming/baton-sdk` and `baton-proxy`. Change the number for the package you released, in the website repo, once it is live.
 
 ---
 
@@ -70,6 +71,7 @@ Run before tagging:
 - [ ] Wire-format changes (if any) also entered in `docs/SPEC.md §13`
 - [ ] Version bump committed and pushed (the tag must point at the bumped commit, not an earlier one)
 - [ ] No uncommitted changes in the working tree
+- [ ] After publish, the latest version on goodtiming.ai/docs.html (Install) is updated
 
 ---
 
