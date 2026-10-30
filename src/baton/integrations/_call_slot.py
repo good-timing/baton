@@ -17,7 +17,6 @@ Goals = tuple[str | None, str | None, str | None]
 
 @dataclass
 class CallSlot:
-    tool_name: str
     goals: Goals | None
     """``user_goal`` and the retired names, when the outer seam stripped them."""
     claimed: bool = False
@@ -26,14 +25,15 @@ class CallSlot:
 current_slot: ContextVar[CallSlot | None] = ContextVar("baton_call_slot", default=None)
 
 
-def claim_call(tool_name: str) -> CallSlot | None:
+def claim_call() -> CallSlot | None:
     """Mark the open call as captured by the inner seam, and return its slot.
 
-    ``None`` when no outer seam opened one for this tool, or it is already
-    claimed: a tool that calls another tool from inside its handler must not
-    take its caller's goal."""
+    ``None`` when no outer seam opened one, or it is already claimed: a tool
+    that calls another tool from inside its handler must not take its caller's
+    goal. Not matched by name, because a server may route a call to a tool of
+    another name, and that is still this request."""
     slot = current_slot.get()
-    if slot is None or slot.claimed or slot.tool_name != tool_name:
+    if slot is None or slot.claimed:
         return None
     slot.claimed = True
     return slot

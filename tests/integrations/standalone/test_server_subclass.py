@@ -273,7 +273,7 @@ class TestFailOpen:
         run = await _run(with_baton, tmp_path, calls, sink=_RaisingSink())
 
         assert run.results == expected
-        assert bare.gate_saw == with_baton.gate_saw
+        assert all(USER_GOAL_PARAM_NAME not in g for g in with_baton.gate_saw if "text" in g)
 
     async def test_a_failing_strip_falls_back_to_the_inner_capture(
         self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch

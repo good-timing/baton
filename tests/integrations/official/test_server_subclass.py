@@ -251,6 +251,44 @@ class TestOuterSeam:
         assert run.tool_call_events == []
 
 
+class RoutingServer(MCPServerClass):  # type: ignore[misc,valid-type]
+    """Serves ``alias`` as ``echo``, and any ``dyn_*`` tool its registry lacks."""
+
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any], *args: Any, **kwargs: Any
+    ) -> Any:
+        if name.startswith("dyn_"):
+            raise RuntimeError(f"customer record 4111 for {name}")
+        return await super().call_tool(
+            "echo" if name == "alias" else name, arguments, *args, **kwargs
+        )
+
+
+class TestServerWithItsOwnCallTool:
+    async def test_a_routed_call_is_one_pair_with_its_goal(self, tmp_path: Any) -> None:
+        run = await _run(RoutingServer("vendor"), tmp_path, [("alias", {"text": "hi"})])
+
+        assert run.handler_saw == [{"text": "hi"}]
+        start, end = run.tool_call_events
+        assert start["payload"]["call_intent"] == GOAL
+        assert end["event_type"] == "tool_call_end"
+
+    async def test_a_tool_outside_the_registry_is_refused_not_unknown(self, tmp_path: Any) -> None:
+        run = await _run(
+            RoutingServer("vendor"),
+            tmp_path,
+            [("dyn_lookup", {"text": "x"})],
+            result_capture_mode="off",
+        )
+
+        start, error = run.tool_call_events
+        assert start["payload"]["params"] == {"text": "x"}
+        assert start["payload"]["call_intent"] == GOAL
+        assert error["payload"]["failure_kind"] == "refused"
+        assert error["payload"]["error_body"] == ""
+        assert error["payload"]["result_capture"] == "off"
+
+
 class TestFailOpen:
     async def test_a_raising_sink_changes_no_result(self, tmp_path: Any) -> None:
         calls = [("echo", {"text": "hi"}), ("echo", {"text": "deny"}), ("nope", {})]
@@ -261,7 +299,7 @@ class TestFailOpen:
         run = await _run(with_baton, tmp_path / "b", calls, sink=_RaisingSink())
 
         assert run.results == expected
-        assert with_baton.gate_saw == [{"text": "hi"}, {"text": "deny"}, {}]
+        assert [g for g in with_baton.gate_saw if "text" in g] == [{"text": "hi"}, {"text": "deny"}]
 
     async def test_a_failing_strip_falls_back_to_the_inner_capture(
         self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch

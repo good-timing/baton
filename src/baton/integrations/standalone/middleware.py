@@ -345,7 +345,7 @@ class BatonMiddleware(Middleware):
         call_intent: str | None = None
         call_expected: str | None = None
         call_task: str | None = None
-        slot = claim_call(tool_name)
+        slot = claim_call()
         if slot is not None and slot.goals is not None:
             call_intent, call_expected, call_task = slot.goals
         elif isinstance(msg.arguments, dict):

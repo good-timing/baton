@@ -277,8 +277,10 @@ def install_lifecycle_capture(
         goals = None
         try:
             dispositions = await call_seam.dispositions(name)
-            if dispositions is None and call_seam.knows_tool(name) is False:
-                dispositions = {}
+            # No dispositions and a tool the server may still have: the inner
+            # capture resolves them in its own context, so the strip waits.
+            if dispositions is None and call_seam.knows_tool(name) is not False:
+                arguments = None
             if arguments is not None:
                 stripped = dict(arguments)
                 goals = pop_goal_params(name, stripped, dispositions)
@@ -288,7 +290,7 @@ def install_lifecycle_capture(
         except Exception:
             logger.exception("baton: the tools/call strip failed; the inner capture strips instead")
             goals = None
-        slot = CallSlot(tool_name=name, goals=goals)
+        slot = CallSlot(goals=goals)
         token = current_slot.set(slot)
         started_at = monotonic()
         try:
@@ -296,49 +298,41 @@ def install_lifecycle_capture(
         except Exception as exc:
             current_slot.reset(token)
             if not slot.claimed:
-                await refused(
-                    call_seam,
-                    read_request_context,
-                    params,
-                    name,
-                    arguments,
-                    goals,
-                    started_at,
-                    exc,
-                    None,
-                )
+                await refused(call_seam, read_request_context, params, slot, started_at, raised=exc)
             raise
         except BaseException:
             current_slot.reset(token)
             raise
         current_slot.reset(token)
         if not slot.claimed and is_error_result(getattr(result, "root", result)):
-            await refused(
-                call_seam,
-                read_request_context,
-                params,
-                name,
-                arguments,
-                goals,
-                started_at,
-                None,
-                result,
-            )
+            await refused(call_seam, read_request_context, params, slot, started_at, result=result)
         return result
 
     async def refused(
         call_seam: CallSeam,
         read_request_context: Callable[[], Any],
         params: Any,
-        name: str,
-        arguments: dict[str, Any] | None,
-        goals: tuple[str | None, str | None, str | None] | None,
+        slot: CallSlot,
         started_at: float,
-        raised: Exception | None,
-        result: Any,
+        *,
+        raised: Exception | None = None,
+        result: Any = None,
     ) -> None:
-        """Send the pair for a call that failed before the inner capture ran."""
+        """Send the pair for a call that failed before the inner capture ran.
+
+        ``params`` is the request as the server got it, stripped where the
+        outer seam stripped it."""
         duration_ms = int((monotonic() - started_at) * 1000)
+        name, arguments = _call_target(params)
+        goals = slot.goals
+        if name is None:
+            return
+        if goals is None and arguments is not None:
+            # The outer seam left the strip to an inner capture that never ran,
+            # so the reserved name is taken out of the reported copy here.
+            arguments = dict(arguments)
+            goal = arguments.pop(USER_GOAL_PARAM_NAME, None)
+            goals = (goal if isinstance(goal, str) and goal.strip() else None, None, None)
         try:
             request = await opened(_CALL_FAMILY, read_request_context, params, name, arguments)
             if request is None:

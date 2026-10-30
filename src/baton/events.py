@@ -198,8 +198,9 @@ class ToolCallErrorPayload(BaseModel):
     value SPEC registers later rather than raise on a path §11.2 requires to
     fail open.
 
-    The MCP adapters emit ``unknown_tool`` and ``refused``, from the outer
-    ``tools/call`` seam (``integrations/_lifecycle.py``).
+    The MCP adapters emit ``refused``, and the official adapter
+    ``unknown_tool``, from the outer ``tools/call`` seam
+    (``integrations/_lifecycle.py``).
     """
 
 

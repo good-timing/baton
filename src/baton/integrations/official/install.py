@@ -215,7 +215,7 @@ def install_baton(
             annotation_tool_name=annotation_tool_name,
             result_capture_mode=config.result_capture_mode,
             dispositions=_registry_lookup(param_registry),
-            knows_tool=lambda name: name in get_tool_registry(mcp),
+            knows_tool=_registry_answers(mcp),
         ),
     )
 
@@ -253,3 +253,11 @@ def _registry_lookup(
         return param_registry.get(name)
 
     return dispositions
+
+
+def _registry_answers(mcp: Any) -> Callable[[str], bool | None]:
+    """Whether a tool exists, as far as the registry can say. A server whose
+    ``call_tool`` is its own may serve tools the registry does not hold."""
+    if type(mcp).call_tool is not FastMCP.call_tool:
+        return lambda _name: None
+    return lambda name: name in get_tool_registry(mcp)
