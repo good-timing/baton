@@ -13,8 +13,8 @@ Core (always installed):
   text an agent reads, for a vendor adding it to its own API (SPEC §5.6)
 - ``INTENT_INSTRUCTIONS`` — the server instructions that go with
   ``user_goal``, for a vendor serving MCP itself (SPEC §5.6)
-- ``Principal`` — the return type of a ``VendorConfig.resolve_principal`` hook.
-  Exported because that hook cannot be written without constructing one.
+- ``Principal``, ``Organization`` — what a ``VendorConfig.resolve_principal``
+  hook returns. Exported because that hook cannot be written without them.
 - ``principal_from_oauth_sub``, ``principal_from_oauth_email`` — ready-made
   ``resolve_principal`` hooks reading the verified OAuth token's ``sub`` or
   ``email`` claim. Nothing resolves a principal unless a hook is configured.
@@ -60,6 +60,7 @@ __all__ = [
     "AsyncTrace",
     "Client",
     "IntentParam",
+    "Organization",
     "Principal",
     "Trace",
     "VendorConfig",
@@ -75,7 +76,7 @@ __all__ = [
 # Trace + AsyncTrace are re-exported so typed callers can write
 # ``def f(t: baton.Trace) -> ...`` without reaching into ``baton.client``.
 from baton.client import AsyncClient, AsyncTrace, Client, Trace
-from baton.identity import Principal
+from baton.identity import Organization, Principal
 
 # One entry point for both adapters, detecting on structure — see
 # ``baton.install``. Imported last: it pulls in ``integrations`` lazily inside

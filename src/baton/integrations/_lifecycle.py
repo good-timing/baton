@@ -49,7 +49,7 @@ from baton.integrations._session import ResolvedSession, next_sequence
 from baton.integrations.client_observed import clean_runtime_meta, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
-    resolve_call_principal,
+    resolve_caller,
     token_claims,
 )
 from baton.scrub import scrub_or_none
@@ -162,7 +162,7 @@ def install_lifecycle_capture(
         ``None`` when a read failed and the request is served without events."""
         try:
             request = await read_request(read_request_context())
-            principal = await resolve_call_principal(
+            caller = await resolve_caller(
                 hook=resolve_principal_hook,
                 hook_context=(
                     SessionResolutionContext(
@@ -195,7 +195,8 @@ def install_lifecycle_capture(
                     headers=request.headers,
                     scrubber=scrubber,
                 ),
-                "principal": principal,
+                "principal": caller.principal,
+                "organization": caller.organization,
                 "transport_observed": request.transport_observed,
                 "runtime_meta": clean_runtime_meta(scrubber, request.meta, logger),
             }

@@ -8,6 +8,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Added
+
+- `organization`: the company or workspace the caller belongs to. A `resolve_principal` hook can return `Principal(..., organization=Organization(organization_id=..., display_name=...))`, or `Organization(...)` alone when it knows only the company. Both MCP adapters send it as a new optional envelope member beside `principal`. Either one is dropped alone when unusable. The library API's `client.session(principal=...)` takes the same values. (SPEC §11.4, §11.5.1, §13.)
+
+---
+
 ## 0.9.0: proactive mode and intent_param_mode="off" are removed
 
 ### Removed

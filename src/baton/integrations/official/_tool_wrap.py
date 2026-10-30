@@ -74,7 +74,6 @@ from baton._state import SessionCounter
 from baton._uuid import uuid7
 from baton.events import (
     ClientObserved,
-    PrincipalWire,
     SurfaceSnapshotEvent,
     SurfaceSnapshotPayload,
     ToolCallEndEvent,
@@ -120,8 +119,9 @@ from baton.integrations._surface import (
 )
 from baton.integrations.client_observed import clean_runtime_meta, meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
+    ResolvedCaller,
     ResolvePrincipalHook,
-    resolve_call_principal,
+    resolve_caller,
     token_claims,
 )
 from baton.integrations.official import _auth
@@ -350,7 +350,7 @@ _EmitBefore = Callable[
         str | None,  # call_expected
         str | None,  # call_workflow
         ClientObserved | None,  # client_observed
-        PrincipalWire | None,  # principal
+        ResolvedCaller,  # principal and organization
         str,  # call_id
         str | None,  # transport_observed
     ],
@@ -365,7 +365,7 @@ _EmitAfter = Callable[
         float,  # duration_s
         dict[str, Any] | None,  # runtime_meta
         ClientObserved | None,  # client_observed
-        PrincipalWire | None,  # principal
+        ResolvedCaller,  # principal and organization
         str,  # call_id
         str | None,  # transport_observed
     ],
@@ -386,7 +386,7 @@ _EmitError = Callable[
         float,  # duration_s
         dict[str, Any] | None,  # runtime_meta
         ClientObserved | None,  # client_observed
-        PrincipalWire | None,  # principal
+        ResolvedCaller,  # principal and organization
         str,  # call_id
         str | None,  # transport_observed
         # ⚠ The RAW inputs to the result-derived members, never the members
@@ -515,10 +515,10 @@ def _wrap_tool_run(
         meta_dict = _extract_meta_from_context(context)
         # Identity resolves HERE, in one place per call, before anything is
         # emitted.
-        # ``resolve_call_principal`` returns the FINISHED wire value — a hash or
+        # ``resolve_caller`` returns the FINISHED wire values — a hash or
         # a deliberate raw principal — so the raw identity never travels past
         # this line into the emitters, mirroring baton-proxy's edge-hash
-        # chokepoint. ``None`` when no hook is set or it has no answer.
+        # chokepoint. Empty when no hook is set or it has no answer.
         #
         # ⚠ This comment used to read "Unauthenticated calls (every stdio one)
         # get ``None``". That stopped being true when ``resolve_principal`` landed:
@@ -548,7 +548,7 @@ def _wrap_tool_run(
             if resolve_principal_hook is not None
             else None
         )
-        call_principal = await resolve_call_principal(
+        caller = await resolve_caller(
             hook=resolve_principal_hook,
             hook_context=identity_hook_context,
             logger=logger,
@@ -609,7 +609,7 @@ def _wrap_tool_run(
                 scrubbed_expected,
                 scrubbed_task,
                 call_client,
-                call_principal,
+                caller,
                 call_id,
                 call_transport,
             )
@@ -628,7 +628,7 @@ def _wrap_tool_run(
                 monotonic() - called_at,
                 scrubbed_meta,
                 call_client,
-                call_principal,
+                caller,
                 call_id,
                 call_transport,
                 original_exc,
@@ -656,7 +656,7 @@ def _wrap_tool_run(
                     monotonic() - called_at,
                     scrubbed_meta,
                     call_client,
-                    call_principal,
+                    caller,
                     call_id,
                     call_transport,
                     None,
@@ -670,7 +670,7 @@ def _wrap_tool_run(
                     monotonic() - called_at,
                     scrubbed_meta,
                     call_client,
-                    call_principal,
+                    caller,
                     call_id,
                     call_transport,
                 )
@@ -865,7 +865,7 @@ def _make_emitters(
         call_expected: str | None,
         call_workflow: str | None,
         client_observed: ClientObserved | None,
-        principal: PrincipalWire | None,
+        caller: ResolvedCaller,
         call_id: str,
         transport_observed: str | None,
     ) -> None:
@@ -885,7 +885,8 @@ def _make_emitters(
                 sequence_number=_seq_n,
                 captured_at=datetime.now(UTC),
                 client_observed=client_observed,
-                principal=principal,
+                principal=caller.principal,
+                organization=caller.organization,
                 transport_observed=transport_observed,
                 call_id=call_id,
                 runtime_meta=runtime_meta,
@@ -908,7 +909,7 @@ def _make_emitters(
         duration_s: float,
         runtime_meta: dict[str, Any] | None,
         client_observed: ClientObserved | None,
-        principal: PrincipalWire | None,
+        caller: ResolvedCaller,
         call_id: str,
         transport_observed: str | None,
     ) -> None:
@@ -939,7 +940,8 @@ def _make_emitters(
                 sequence_number=_seq_n,
                 captured_at=datetime.now(UTC),
                 client_observed=client_observed,
-                principal=principal,
+                principal=caller.principal,
+                organization=caller.organization,
                 transport_observed=transport_observed,
                 call_id=call_id,
                 runtime_meta=runtime_meta,
@@ -960,7 +962,7 @@ def _make_emitters(
         duration_s: float,
         runtime_meta: dict[str, Any] | None,
         client_observed: ClientObserved | None,
-        principal: PrincipalWire | None,
+        caller: ResolvedCaller,
         call_id: str,
         transport_observed: str | None,
         raised: BaseException | None,
@@ -1009,7 +1011,8 @@ def _make_emitters(
                 sequence_number=_seq_n,
                 captured_at=datetime.now(UTC),
                 client_observed=client_observed,
-                principal=principal,
+                principal=caller.principal,
+                organization=caller.organization,
                 transport_observed=transport_observed,
                 call_id=call_id,
                 runtime_meta=runtime_meta,

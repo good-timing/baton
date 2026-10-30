@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from baton import INTENT_PARAMS, AsyncClient, Client, Principal
+from baton import INTENT_PARAMS, AsyncClient, Client, Organization, Principal
 from baton.events import Event
 from baton.integrations._llm_text import (
     build_user_goal_param_description,
@@ -71,6 +71,30 @@ def test_every_event_in_a_block_carries_its_session_principal_and_client() -> No
             "info": {"name": "claude-code", "version": "2.1"},
             "headers": {"user-agent": "agent/1.0"},
         }
+
+
+def test_a_block_sends_the_organization_beside_the_principal_or_alone() -> None:
+    sink = _CollectingSink()
+    client = _client(sink)
+    acme = Organization(organization_id="org_acme", display_name="Acme")
+    with client.session(principal=Principal(principal_id="user-7", organization=acme)):
+        _traced(client)
+    with client.session(principal=acme):
+        _traced(client)
+    with client.session(principal=Principal(principal_id=" ", organization=acme)):
+        _traced(client)
+    client.close()
+
+    acme_wire = {"id": "org_acme", "source": "asserted", "form": "raw", "display_name": "Acme"}
+    events = _wire(sink)
+    assert [(e["principal"] and e["principal"]["id"], e["organization"]) for e in events] == [
+        ("user-7", acme_wire),
+        ("user-7", acme_wire),
+        (None, acme_wire),
+        (None, acme_wire),
+        (None, acme_wire),
+        (None, acme_wire),
+    ]
 
 
 def test_a_block_without_a_session_id_mints_one_for_all_its_calls() -> None:

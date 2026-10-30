@@ -9,14 +9,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from baton._uuid import uuid7
-from baton.events import ClientObserved, PrincipalWire
+from baton.events import ClientObserved, OrganizationWire, PrincipalWire
 from baton.integrations._session import SessionOrigin, clean_session_id
 from baton.integrations.client_observed import (
     clean_runtime_meta,
     meta_to_dict,
     observe_client,
 )
-from baton.integrations.identity_adapter import wire_vendor_principal
+from baton.integrations.identity_adapter import wire_vendor_caller
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ class LibrarySession:
     session_id: str
     session_id_origin: SessionOrigin
     principal: PrincipalWire | None = None
+    organization: OrganizationWire | None = None
     client_observed: ClientObserved | None = None
     runtime_meta: dict[str, Any] | None = None
 
@@ -42,6 +43,7 @@ class LibrarySession:
             "session_id_origin": self.session_id_origin,
             "transport_observed": TRANSPORT_LIBRARY,
             "principal": self.principal,
+            "organization": self.organization,
             "client_observed": self.client_observed,
             "runtime_meta": self.runtime_meta,
         }
@@ -108,10 +110,12 @@ def new_session(
         # will never be sent.
         return base
     request_meta = _request_meta(meta)
+    caller = wire_vendor_caller(principal, logger=logger)
     return LibrarySession(
         base.session_id,
         base.session_id_origin,
-        principal=wire_vendor_principal(principal, logger=logger),
+        principal=caller.principal,
+        organization=caller.organization,
         client_observed=(
             observe_client(
                 request_meta, client_info=client_info, headers=headers, scrubber=scrubber

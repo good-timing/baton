@@ -382,6 +382,11 @@ class PrincipalWire(BaseModel):
     # without anything having to reject it.
 
 
+class OrganizationWire(PrincipalWire):
+    """The organization AS EMITTED (SPEC §11.4): the company the caller
+    belongs to, with ``principal``'s members and rules and its own ``form``."""
+
+
 class _EventEnvelope(BaseModel):
     """Fields every Baton event carries. Concrete event classes (below)
     inherit this + add a ``event_type`` literal and typed ``payload``.
@@ -425,6 +430,9 @@ class _EventEnvelope(BaseModel):
 
     Was the flat field ``user_id`` until 0.8.6, then the flat ``principal_id``,
     and became this object at the release SPEC §13 leaves unnumbered."""
+    organization: OrganizationWire | None = None
+    """The company the caller belongs to, from the same resolver as
+    ``principal`` and independent of it (SPEC §11.4). Never a person."""
     call_id: str | None = None
     """The minted per-call correlation key (SPEC §11.4). Required on
     ``tool_call_start``, ``tool_call_end`` and ``tool_call_error``, the SAME
@@ -884,6 +892,7 @@ __all__ = [
     "AnnotationPayload",
     "Event",
     "EventType",
+    "OrganizationWire",
     "PrincipalWire",
     "PromptGetEndEvent",
     "PromptGetEndPayload",

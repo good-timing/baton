@@ -21,11 +21,12 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
-from baton.events import PrincipalWire
-from baton.identity import PRINCIPAL_FORM_RAW, PRINCIPAL_FORMS, Principal
+from baton.events import OrganizationWire, PrincipalWire
+from baton.identity import PRINCIPAL_FORM_RAW, PRINCIPAL_FORMS, Organization, Principal
 from baton.integrations._hooks import run_vendor_hook
 
 if TYPE_CHECKING:
@@ -87,8 +88,21 @@ def wire_display_name(value: object) -> str | None:
 #: name are inherited from ``resolve_session_id``, which shared it until that
 #: hook was removed 2026-09-12; this is now its only caller.
 ResolvePrincipalHook = Callable[
-    ["SessionResolutionContext"], "Awaitable[Principal | None] | Principal | None"
+    ["SessionResolutionContext"],
+    "Awaitable[Principal | Organization | None] | Principal | Organization | None",
 ]
+
+
+@dataclass(frozen=True)
+class ResolvedCaller:
+    """The envelope's ``principal`` and ``organization`` for one request.
+    Either, both or neither may be set: SPEC §11.4 keeps them independent."""
+
+    principal: PrincipalWire | None = None
+    organization: OrganizationWire | None = None
+
+
+NO_CALLER = ResolvedCaller()
 
 
 async def resolve_principal_via_hook(
@@ -96,7 +110,7 @@ async def resolve_principal_via_hook(
     context: SessionResolutionContext,
     *,
     logger: logging.Logger,
-) -> Principal | None:
+) -> Principal | Organization | None:
     """Call a vendor's ``resolve_principal`` hook and normalize its result.
 
     Never raises. An exception is logged and treated as a miss, so the event
@@ -116,36 +130,30 @@ async def resolve_principal_via_hook(
             exc_info=True,
         )
         return None
-    return _usable_principal(result, where="resolve_principal hook returned", logger=logger)
+    return _usable_caller(result, where="resolve_principal hook returned", logger=logger)
 
 
-def _usable_principal(value: object, *, where: str, logger: logging.Logger) -> Principal | None:
-    if value is None:
-        return None
-    if not isinstance(value, Principal):
-        logger.warning(
-            "baton: %s %s, not a baton.Principal — ignoring it; the event ships "
-            "without a principal. Pass Principal(principal_id=...) or None.",
-            where,
-            type(value).__name__,
-        )
-        return None
-    if not isinstance(value.principal_id, str) or not value.principal_id.strip():
-        # A blank id names nobody, and every such caller would merge into one
-        # actor.
-        logger.warning(
-            "baton: %s a Principal with an empty or non-string principal_id — ignoring it.",
-            where,
-        )
-        return None
-    return value
+def wire_vendor_caller(value: object, *, logger: logging.Logger) -> ResolvedCaller:
+    """What the vendor's code passed as ``principal=`` (the library API), as
+    wire objects. It takes what a hook may return. Never raises: a bad value is
+    logged and dropped, as from a hook."""
+    usable = _usable_caller(value, where="principal= was given", logger=logger)
+    return _wire_caller(usable, logger=logger)
 
 
-def wire_vendor_principal(value: object, *, logger: logging.Logger) -> PrincipalWire | None:
-    """A principal the vendor's code passed directly (the library API), as the
-    wire object. Never raises: a bad value is logged and dropped, as from a hook."""
-    principal = _usable_principal(value, where="principal= was given", logger=logger)
-    return _wire_principal(principal, logger=logger)
+def _usable_caller(
+    value: object, *, where: str, logger: logging.Logger
+) -> Principal | Organization | None:
+    if value is None or isinstance(value, (Principal, Organization)):
+        return value
+    logger.warning(
+        "baton: %s %s, not a baton.Principal or baton.Organization — ignoring it; "
+        "the event ships without a principal. "
+        "Pass Principal(principal_id=...), Organization(organization_id=...) or None.",
+        where,
+        type(value).__name__,
+    )
+    return None
 
 
 def token_claims(token: Any) -> Mapping[str, Any] | None:
@@ -182,49 +190,105 @@ def token_claims(token: Any) -> Mapping[str, Any] | None:
         return None
 
 
-def _wire_principal(principal: Principal | None, *, logger: logging.Logger) -> PrincipalWire | None:
-    """The resolver's principal as the wire object, or ``None``.
+_Wire = TypeVar("_Wire", PrincipalWire, OrganizationWire)
+
+
+def _wire_identity(
+    wire: type[_Wire],
+    value_id: object,
+    form: object,
+    display_name: object,
+    *,
+    field: str,
+    logger: logging.Logger,
+) -> _Wire | None:
+    """One resolved identity as its wire object, or ``None``.
 
     The id is sent as given: not scrubbed, since a scrubber that redacts emails
     would map every user onto one redaction constant and merge them into a
     single actor.
     """
-    if principal is None:
+    if not isinstance(value_id, str) or not value_id.strip():
+        # A blank id names nobody, and every such caller would merge into one.
+        logger.warning("baton: an empty or non-string %s — ignoring it.", field)
         return None
-    if _UNSENDABLE.search(principal.principal_id):
-        logger.warning(
-            "baton: a principal_id holding a lone surrogate or U+0000 — ignoring "
-            "it; the event ships without a principal."
-        )
+    if _UNSENDABLE.search(value_id):
+        logger.warning("baton: a %s holding a lone surrogate or U+0000 — ignoring it.", field)
         return None
-    form: str = principal.form
     if not isinstance(form, str) or form not in PRINCIPAL_FORMS:
         # A type checker refuses this at the hook or ``principal=``; this is
         # for a caller nobody type-checks. SPEC §11.4: anything not "hashed" is personal data.
         logger.warning(
-            "baton: a principal with form %r, expected one of %s — sending it as %r.",
+            "baton: %s with form %r, expected one of %s — sending it as %r.",
+            field,
             form,
             sorted(PRINCIPAL_FORMS),
             PRINCIPAL_FORM_RAW,
         )
         form = PRINCIPAL_FORM_RAW
-    return PrincipalWire(
-        id=principal.principal_id[:PRINCIPAL_ID_MAX_LEN],
+    return wire(
+        id=value_id[:PRINCIPAL_ID_MAX_LEN],
         source=PRINCIPAL_SOURCE_ASSERTED,
         form=form,
-        display_name=wire_display_name(principal.display_name),
+        display_name=wire_display_name(display_name),
     )
 
 
-async def resolve_call_principal(
+def _wire_principal(principal: Principal, *, logger: logging.Logger) -> PrincipalWire | None:
+    return _wire_identity(
+        PrincipalWire,
+        principal.principal_id,
+        principal.form,
+        principal.display_name,
+        field="principal_id",
+        logger=logger,
+    )
+
+
+def _wire_organization(organization: object, *, logger: logging.Logger) -> OrganizationWire | None:
+    if organization is None:
+        return None
+    if not isinstance(organization, Organization):
+        logger.warning(
+            "baton: a Principal's organization is %s, not a baton.Organization — ignoring it.",
+            type(organization).__name__,
+        )
+        return None
+    return _wire_identity(
+        OrganizationWire,
+        organization.organization_id,
+        organization.form,
+        organization.display_name,
+        field="organization_id",
+        logger=logger,
+    )
+
+
+def _wire_caller(
+    resolved: Principal | Organization | None, *, logger: logging.Logger
+) -> ResolvedCaller:
+    """The resolver's answer as wire objects. An unusable principal or
+    organization is dropped alone (SPEC §11.4)."""
+    if resolved is None:
+        return NO_CALLER
+    if isinstance(resolved, Organization):
+        return ResolvedCaller(organization=_wire_organization(resolved, logger=logger))
+    return ResolvedCaller(
+        principal=_wire_principal(resolved, logger=logger),
+        organization=_wire_organization(resolved.organization, logger=logger),
+    )
+
+
+async def resolve_caller(
     *,
     hook: ResolvePrincipalHook | None,
     hook_context: SessionResolutionContext | None,
     logger: logging.Logger,
-) -> PrincipalWire | None:
-    """The envelope's ``principal`` for one call: the vendor's hook, or nothing.
+) -> ResolvedCaller:
+    """The envelope's ``principal`` and ``organization`` for one call: the
+    vendor's hook, or nothing.
 
-    ``None`` when no hook is configured or it has no answer, which is the
+    ``NO_CALLER`` when no hook is configured or it has no answer, which is the
     common case and never an error. SPEC §11.4 carries the consumer-side rules.
     There is no fallback: a vendor who wants the token's subject passes
     ``baton.principal_from_oauth_sub`` as the hook.
@@ -238,9 +302,9 @@ async def resolve_call_principal(
 
     Fail-open throughout, like everything on this path: a hook that raises,
     returns the wrong type, or returns ``None`` costs the event its
-    ``principal`` and nothing else.
+    ``principal`` and ``organization`` and nothing else.
     """
     if hook is None or hook_context is None:
-        return None
-    principal = await resolve_principal_via_hook(hook, hook_context, logger=logger)
-    return _wire_principal(principal, logger=logger)
+        return NO_CALLER
+    resolved = await resolve_principal_via_hook(hook, hook_context, logger=logger)
+    return _wire_caller(resolved, logger=logger)

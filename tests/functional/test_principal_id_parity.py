@@ -34,7 +34,7 @@ from typing import Any
 import pytest
 
 from baton import principal_from_oauth_email, principal_from_oauth_sub
-from baton.events import PrincipalWire
+from baton.events import OrganizationWire, PrincipalWire
 from tests._asgi import fake_http_request, starlette_headers
 from tests._event_helpers import principal_of, without_surface_snapshots
 
@@ -81,6 +81,10 @@ async def _run_official_path(
     def lookup(name: str) -> dict[str, Any]:
         return {"found": True, "name": name}
 
+    @mcp.tool()
+    def boom() -> None:
+        raise ValueError("simulated failure")
+
     handle = install_baton(
         mcp,
         VendorConfig(
@@ -96,6 +100,7 @@ async def _run_official_path(
     try:
         async with connected_session(mcp) as client:
             await client.call_tool("lookup", {"name": "alice"})
+            await client.call_tool("boom", {})
             await client.call_tool(
                 handle.annotation_tool_name,
                 {"user_goal": "look up", "what_happened": "the call came back unusable"},
@@ -123,6 +128,10 @@ async def _run_standalone_path(
     def lookup(name: str) -> dict[str, Any]:
         return {"found": True, "name": name}
 
+    @mcp.tool
+    def boom() -> None:
+        raise ValueError("simulated failure")
+
     handle = install_baton(
         mcp,
         VendorConfig(
@@ -138,6 +147,7 @@ async def _run_standalone_path(
     try:
         async with Client(mcp) as client:
             await client.call_tool("lookup", {"name": "alice"})
+            await client.call_tool("boom", {}, raise_on_error=False)
             await client.call_tool(
                 handle.annotation_tool_name,
                 {"user_goal": "look up", "what_happened": "the call came back unusable"},
@@ -434,6 +444,7 @@ async def test_the_hook_sees_the_calls_own_context_not_an_install_time_value(
     # The client lists the tools once, and a listing names no tool.
     assert _principal_ids(official_path) == {
         "user-of-lookup",
+        "user-of-boom",
         f"user-of-{annotate}",
         "user-of-None",
     }
@@ -574,3 +585,80 @@ async def test_a_duplicated_header_line_still_resolves_differently_per_adapter()
     with set_http_request(request):
         standalone = CaseInsensitiveHeaders(get_http_headers(include_all=True))
     assert standalone["X-Forwarded-User"] == "bob", "standalone: the dict build keeps the last"
+
+
+def _callers(path: Path) -> set[tuple[PrincipalWire | None, OrganizationWire | None]]:
+    """Every event's ``(principal, organization)``, PARSED, as ``_principals``
+    does and for its reason."""
+    events = without_surface_snapshots(_read_events(path))
+    assert events, f"no events captured at {path} — the assertion would be vacuous"
+    assert "tool_call_error" in {ev["event_type"] for ev in events}, "the error path was not run"
+    return {
+        (
+            None if (p := principal_of(ev)) is None else PrincipalWire.model_validate(p),
+            None if (o := ev.get("organization")) is None else OrganizationWire.model_validate(o),
+        )
+        for ev in events
+    }
+
+
+ACME = {"id": "org_acme", "source": "asserted", "form": "hashed", "display_name": "Acme"}
+
+
+@pytest.mark.parametrize(
+    ("resolved", "principal", "organization"),
+    [
+        pytest.param(
+            "both",
+            {"id": HOOK_SUB, "source": "asserted", "form": "raw", "display_name": None},
+            ACME,
+            id="a-person-and-their-company",
+        ),
+        pytest.param("organization-only", None, ACME, id="only-the-company"),
+        pytest.param("blank-principal-id", None, ACME, id="an-unusable-person-keeps-the-company"),
+        pytest.param(
+            "blank-organization-id",
+            {"id": HOOK_SUB, "source": "asserted", "form": "raw", "display_name": None},
+            None,
+            id="an-unusable-company-keeps-the-person",
+        ),
+    ],
+)
+async def test_the_organization_rides_beside_the_principal_on_both_adapters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    event_schema: dict[str, Any],
+    resolved: str,
+    principal: dict[str, Any] | None,
+    organization: dict[str, Any] | None,
+) -> None:
+    """On every event of both emit paths, and each one schema-valid. Either
+    identity can be dropped without the other (SPEC §11.4)."""
+    import jsonschema
+
+    from baton.identity import Organization, Principal
+
+    acme = Organization(organization_id="org_acme", display_name="Acme", form="hashed")
+    returned = {
+        "both": Principal(principal_id=HOOK_SUB, organization=acme),
+        "organization-only": acme,
+        "blank-principal-id": Principal(principal_id="  ", organization=acme),
+        "blank-organization-id": Principal(
+            principal_id=HOOK_SUB, organization=Organization(organization_id="")
+        ),
+    }[resolved]
+    official_path = tmp_path / "official.jsonl"
+    standalone_path = tmp_path / "standalone.jsonl"
+    await _run_official_path(official_path, None, monkeypatch, resolve_principal=_hook(returned))
+    await _run_standalone_path(
+        standalone_path, None, monkeypatch, resolve_principal=_hook(returned)
+    )
+
+    for path in (official_path, standalone_path):
+        expected = (
+            None if principal is None else PrincipalWire.model_validate(principal),
+            None if organization is None else OrganizationWire.model_validate(organization),
+        )
+        assert _callers(path) == {expected}, path.name
+        for event in _read_events(path):
+            jsonschema.validate(event, event_schema)

@@ -418,13 +418,17 @@ class VendorConfig:
 
     resolve_principal: ResolvePrincipalHook | None = None
     """Optional vendor-supplied identity resolver — the ONLY source of
-    ``principal`` (SPEC §11.4). Unset, no event carries one.
+    ``principal`` and ``organization`` (SPEC §11.4). Unset, no event carries
+    either.
 
     Takes a ``SessionResolutionContext`` — headers, meta, tool name, arguments
-    and the verified token's ``claims`` — and returns ``Principal | None``.
-    ``None``, a wrong type, or a raised exception (logged, never propagated)
-    means the event ships without a ``principal``. Sync or async. Import the
-    return type as ``from baton import Principal``.
+    and the verified token's ``claims`` — and returns ``Principal | Organization
+    | None``. Return ``Principal(..., organization=Organization(...))`` for a
+    person and their company, or ``Organization(...)`` alone when only the
+    company is known: a company returned as a ``Principal`` is counted as a
+    person. ``None``, a wrong type, or a raised exception (logged, never
+    propagated) means the event ships with neither. Sync or async. Import the
+    return types as ``from baton import Organization, Principal``.
 
     Called once per tool call, and once per ``tools/list``, resource and
     prompt request. On a request that is not a tool call ``tool_name`` is

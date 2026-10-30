@@ -18,9 +18,22 @@ PRINCIPAL_FORMS = frozenset({PRINCIPAL_FORM_RAW, PRINCIPAL_FORM_HASHED})
 
 
 @dataclass(frozen=True)
+class Organization:
+    """The company or workspace the caller belongs to, as the vendor sees it.
+
+    Sent as ``organization`` (SPEC §11.4), beside ``principal`` or alone. It is
+    never counted as a person. ``form`` describes ``organization_id`` alone.
+    """
+
+    organization_id: str
+    display_name: str | None = None
+    form: Literal["raw", "hashed"] = "raw"
+
+
+@dataclass(frozen=True)
 class Principal:
-    """A resolved principal — a person, a service account or an organisation,
-    whichever the resolver can honestly name.
+    """A resolved principal — a person or a service account, whichever the
+    resolver can honestly name. A company is an ``Organization``.
 
     ``principal_id``, ``form`` and ``display_name`` reach the wire as given
     (SPEC §11.4). ``user_data`` is what a hook hands back and nothing more —
@@ -37,10 +50,12 @@ class Principal:
     a pseudonym the resolver derived itself. A consumer treats anything not
     ``"hashed"`` as personal data, so leave it unset unless the resolver
     hashed the value."""
+    organization: Organization | None = None
 
 
 class IdentityResolver(Protocol):
-    """Turns a modality-native carrier into a ``Principal``. Returns ``None``
+    """Turns a modality-native carrier into a ``Principal`` or an
+    ``Organization``. Returns ``None``
     when no identity is available — the core then omits ``principal``
     (fail-open).
 
@@ -55,7 +70,7 @@ class IdentityResolver(Protocol):
 
     It stays because ``baton_proxy.identity`` carries this Protocol verbatim
     and the two copies are kept in lockstep; deleting it here diverges them for
-    no gain. The return contract — ``Principal | None``, never raising — is
+    no gain. The return contract — ``Principal | Organization | None``, never raising — is
     what ``resolve_principal`` honours."""
 
-    def resolve(self, carrier: Any) -> Principal | None: ...
+    def resolve(self, carrier: Any) -> Principal | Organization | None: ...

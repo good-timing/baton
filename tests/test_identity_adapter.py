@@ -32,7 +32,7 @@ from baton.identity import Principal
 from baton.integrations._config import SessionResolutionContext
 from baton.integrations.identity_adapter import (
     PRINCIPAL_ID_MAX_LEN,
-    resolve_call_principal,
+    resolve_caller,
     token_claims,
 )
 
@@ -73,10 +73,8 @@ def _sub(token: Any) -> Principal | None:
 def _resolve(token: Any, hook: Any = principal_from_oauth_sub) -> PrincipalWire | None:
     """The whole call-level path a vendor gets by passing the hook."""
     return asyncio.run(
-        resolve_call_principal(
-            hook=hook, hook_context=_ctx(token), logger=logging.getLogger("test")
-        )
-    )
+        resolve_caller(hook=hook, hook_context=_ctx(token), logger=logging.getLogger("test"))
+    ).principal
 
 
 # --------------------------------------------------------------------------

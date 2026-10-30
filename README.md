@@ -102,7 +102,7 @@ Only what crosses the MCP call. The SDK never reads your logs, your database or 
 
 | Sent | What |
 |---|---|
-| Always | The tool's name, its arguments (`params`, scrubbed), `user_goal`, how long the call took, and on failure the `error_type`. Your tool list and schemas, once per change. What the client declares about itself, such as its name and version. Who the caller is, only if you set `resolve_principal`. |
+| Always | The tool's name, its arguments (`params`, scrubbed), `user_goal`, how long the call took, and on failure the `error_type`. Your tool list and schemas, once per change. What the client declares about itself, such as its name and version. Who the caller is and their company, only if you set `resolve_principal`. |
 | Only with `result_capture_mode="full"` (the default) | What the tool returned (`result`), the error text it returned (`error_body`), and the message of an exception it raised. |
 | With `report_mode="on"` | The reports the agent files, in its own words. |
 | Never | Anything that did not cross the MCP call. |
@@ -131,7 +131,7 @@ install_baton(mcp, VendorConfig(
 
 ## Who is calling
 
-**Nothing is captured about the person behind a call unless you say how to find them.** Pass a `resolve_principal` hook: it receives the request's headers, `_meta`, tool name, arguments and verified OAuth token claims, and returns a `Principal` or `None`. It runs on every tool call and on every `tools/list`, resource and prompt request; on a request that is not a tool call the tool name is `None` and the arguments are empty. Two ready-made hooks cover OAuth:
+**Nothing is captured about the person behind a call unless you say how to find them.** Pass a `resolve_principal` hook: it receives the request's headers, `_meta`, tool name, arguments and verified OAuth token claims, and returns a `Principal`, an `Organization` or `None`. It runs on every tool call and on every `tools/list`, resource and prompt request; on a request that is not a tool call the tool name is `None` and the arguments are empty. Two ready-made hooks cover OAuth:
 
 ```python
 from baton import install_baton, VendorConfig, principal_from_oauth_email
@@ -145,6 +145,16 @@ install_baton(mcp, VendorConfig(
 `principal_from_oauth_email` keys on the token's `email` claim (the whole address); `principal_from_oauth_sub` on its subject. Each returns `None` when the claim is missing, so they compose: `lambda ctx: principal_from_oauth_email(ctx) or principal_from_oauth_sub(ctx)`. A token exists only on HTTP with auth configured; on stdio, write a hook that names the user from whatever you authenticated them with. Set `Principal(display_name=...)` to choose what your dashboard shows for a person; it is sent as-is, even when ids are hashed. The email hook sets it to the part before `@`.
 
 The id is sent exactly as your hook returns it, so your dashboard shows who it is: the hook decides what is safe to send. To send a pseudonym instead, hash the id in your hook and return `Principal(principal_id=..., form="hashed")`.
+
+If your users belong to your customers' companies, return the company too, so you can filter by it:
+
+```python
+from baton import Organization, Principal
+
+Principal(principal_id="u_123", organization=Organization(organization_id="org_acme", display_name="Acme"))
+```
+
+If you know only the company, for example from an org-wide API key, return `Organization(...)` alone. A company is never counted as a person. It has its own `form`, so you can hash one id and not the other. The library API takes the same values in `client.session(principal=...)`. If you pass only a company there, also pass your own `session_id`: without a person, Baton cannot join that block's calls to the next one.
 
 ## Turning capture off
 

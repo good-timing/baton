@@ -24,14 +24,15 @@ from typing import Any, NamedTuple
 import pytest
 
 from baton.events import PrincipalWire
-from baton.identity import Principal
+from baton.identity import Organization, Principal
 from baton.integrations._config import (
     CaseInsensitiveHeaders,
     SessionResolutionContext,
     _validate_vendor_config,
 )
 from baton.integrations.identity_adapter import (
-    resolve_call_principal,
+    ResolvedCaller,
+    resolve_caller,
     resolve_principal_via_hook,
 )
 
@@ -80,7 +81,13 @@ async def _resolve(hook: Any, **kw: Any) -> PrincipalWire | None:
         "logger": logging.getLogger("test"),
     }
     params.update(kw)
-    return await resolve_call_principal(**params)
+    return (await _resolve_caller(**params)).principal
+
+
+async def _resolve_caller(**kw: Any) -> ResolvedCaller:
+    params: dict[str, Any] = {"hook_context": CTX_WITH_TOKEN, "logger": logging.getLogger("test")}
+    params.update(kw)
+    return await resolve_caller(**params)
 
 
 async def test_the_hooks_principal_is_sent_as_given_and_asserted() -> None:
@@ -525,3 +532,22 @@ async def test_the_shipped_hooks_never_touch_the_hook_thread_pool(
     # The control: without it, a pool that was never consulted at all would
     # pass the line above for the wrong reason.
     assert await _resolve(lambda _c: Principal(principal_id="employee-1")) is None
+
+
+async def test_an_organization_that_is_not_an_Organization_is_dropped_alone() -> None:
+    caller = await _resolve_caller(
+        hook=lambda _c: Principal(principal_id="employee-1", organization="org_acme"),  # type: ignore[arg-type]
+    )
+    assert caller.principal == PrincipalWire(id="employee-1", source="asserted", form="raw")
+    assert caller.organization is None
+
+
+async def test_the_organization_keeps_its_own_form() -> None:
+    caller = await _resolve_caller(
+        hook=lambda _c: Principal(
+            principal_id="employee-1",
+            organization=Organization(organization_id="9F2C", form="hashed"),
+        ),
+    )
+    assert caller.principal is not None and caller.principal.form == "raw"
+    assert caller.organization is not None and caller.organization.form == "hashed"

@@ -133,7 +133,7 @@ from baton.events import (
     ToolCallStartEvent,
     ToolCallStartPayload,
 )
-from baton.identity import Principal
+from baton.identity import Organization, Principal
 from baton.integrations._llm_text import INTENT_SOURCE_LIBRARY
 from baton.integrations._surface import SentSurfaces
 from baton.scrub import (  # noqa: F401  identity_scrub kept exported
@@ -1009,7 +1009,7 @@ class _Sessions:
         self,
         *,
         session_id: str | None = None,
-        principal: Principal | None = None,
+        principal: Principal | Organization | None = None,
         client_info: Mapping[str, Any] | None = None,
         headers: Mapping[str, Any] | None = None,
         turn_id: str | None = None,
@@ -1021,7 +1021,12 @@ class _Sessions:
 
         ``session_id`` is the vendor's own id for the conversation; without
         one, the block mints an id. ``principal`` is who the vendor says is
-        calling. ``client_info`` (``{"name": ..., "version": ...}``) and
+        calling: a ``Principal``, which may carry its ``Organization``, or an
+        ``Organization`` alone when only the company is known. A block with
+        only a company and no ``session_id`` is never joined to another (SPEC
+        §11.5.1), so pass your own ``session_id`` then.
+
+        ``client_info`` (``{"name": ..., "version": ...}``) and
         ``headers`` are what the calling client sent; only registered headers
         are kept. ``turn_id`` is the vendor's own id for the user request the
         block's calls answer: pass the same value to every block that serves

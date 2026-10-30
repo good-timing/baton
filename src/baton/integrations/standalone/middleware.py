@@ -73,7 +73,7 @@ from baton.integrations._surface import (
 from baton.integrations.client_observed import clean_runtime_meta, meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
-    resolve_call_principal,
+    resolve_caller,
     token_claims,
 )
 from baton.integrations.standalone import _auth
@@ -373,8 +373,8 @@ class BatonMiddleware(Middleware):
             scrubber=self._scrubber,
         )
         # Identity resolves here, in one place per call, producing the
-        # FINISHED wire value so the raw principal never reaches the event
-        # constructions below. ``None`` on any call where
+        # FINISHED wire values so the raw principal never reaches the event
+        # constructions below. Empty on any call where
         # no hook is set or it has no answer, which is most of them.
         #
         # The context is built only when a hook exists: the token read is not
@@ -390,7 +390,7 @@ class BatonMiddleware(Middleware):
             if self._resolve_principal_hook is not None
             else None
         )
-        call_principal = await resolve_call_principal(
+        caller = await resolve_caller(
             hook=self._resolve_principal_hook,
             hook_context=identity_hook_context,
             logger=logger,
@@ -437,7 +437,8 @@ class BatonMiddleware(Middleware):
                     sequence_number=seq_start,
                     captured_at=datetime.now(UTC),
                     client_observed=client,
-                    principal=call_principal,
+                    principal=caller.principal,
+                    organization=caller.organization,
                     transport_observed=call_transport,
                     session_id_origin=call_session.origin,
                     call_id=call_id,
@@ -492,7 +493,8 @@ class BatonMiddleware(Middleware):
                     sequence_number=seq_err,
                     captured_at=datetime.now(UTC),
                     client_observed=client,
-                    principal=call_principal,
+                    principal=caller.principal,
+                    organization=caller.organization,
                     transport_observed=call_transport,
                     session_id_origin=call_session.origin,
                     call_id=call_id,
@@ -566,7 +568,8 @@ class BatonMiddleware(Middleware):
                     sequence_number=seq_err,
                     captured_at=datetime.now(UTC),
                     client_observed=client,
-                    principal=call_principal,
+                    principal=caller.principal,
+                    organization=caller.organization,
                     transport_observed=call_transport,
                     session_id_origin=call_session.origin,
                     call_id=call_id,
@@ -605,7 +608,8 @@ class BatonMiddleware(Middleware):
                 sequence_number=seq_end,
                 captured_at=datetime.now(UTC),
                 client_observed=client,
-                principal=call_principal,
+                principal=caller.principal,
+                organization=caller.organization,
                 transport_observed=call_transport,
                 session_id_origin=call_session.origin,
                 call_id=call_id,

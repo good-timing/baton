@@ -628,7 +628,7 @@ A library producer emits the §11.4 envelope a middleware producer emits. Where 
 |---|---|---|---|
 | Intent | the injected `user_goal` param (§5.1) | `trace(intent=)` | `tool_call_start.payload.call_intent` |
 | Expected outcome, task | none (producers before the single-field change injected `expected_result` / `overall_task`) | `trace(expected_outcome=, workflow=)` | `tool_call_start.payload.call_expected` / `call_workflow` |
-| Who is calling | the vendor's resolver | `client.session(principal=)` | `principal` |
+| Who is calling, and their company | the vendor's resolver | `client.session(principal=)`, which takes what the resolver may return | `principal`, `organization` |
 | Which client | `clientInfo`, registered headers | `client.session(meta=, client_info=, headers=)`: a `clientInfo` in `meta` first | `client_observed` |
 | Session | the §3.4 ladder | `client.session(session_id=)`, else one minted id per block, or per call outside any block | `session_id`, `session_id_origin` |
 | Turn (one user request) | the client's `_meta` (§11.4.1) | `client.session(turn_id=)` | `runtime_meta["baton/turn_id"]` |
@@ -865,6 +865,9 @@ Every event has these fields:
     "form": "raw",                           //   WHETHER it is a pseudonym or personal data, as the resolver stated
     "display_name": "jane"                   //   optional; what a person reads — the vendor chose it; see below
   },
+  "organization": {                          // optional; the company the caller belongs to, as the vendor resolved it; see below
+    "id": "org_acme", "source": "asserted", "form": "raw", "display_name": "Acme"
+  },
   "transport_observed": "http",              // optional; what the SDK OBSERVED beneath the call, never what it concluded; see below
   "session_id_origin": "minted",             // optional; whether `session_id` names a session the client keeps; see below
   "client_observed": {                       // optional; what the client said about itself, uninterpreted; see below
@@ -877,7 +880,7 @@ Every event has these fields:
 }
 ```
 
-**`principal` — who the vendor resolved behind this call (OPTIONAL object, nullable).** A person, a service account or an organisation: whatever the vendor's resolver returned. **Absent as a whole whenever no identity was resolved**, which is the common case and never an error. Four members: when the object is present **the first three are REQUIRED**, and `display_name` is optional:
+**`principal` — who the vendor resolved behind this call (OPTIONAL object, nullable).** A person, a service account or an organisation: whatever the vendor's resolver returned. A resolver that knows the company SHOULD send it as `organization` (below) instead, which is never counted as a person. **Absent as a whole whenever no identity was resolved**, which is the common case and never an error. Four members: when the object is present **the first three are REQUIRED**, and `display_name` is optional:
 
 | member | holds |
 |---|---|
@@ -967,6 +970,26 @@ Keep all of it apart from `agent_runtime`. `agent_runtime` is what the client *s
 **`form` is the only discriminator, and from 0.8.11 it is the only thing that could be one.** The redundancy that used to exist — a tag that named the key and thereby implied the form — is gone, and its removal is why the rule is now simple to state: **a value carries no facts about itself.** Whether `id` is a pseudonym is `form`, in every mode including `"raw"`, which no tag ever reached.
 
 **`principal` goes in its own envelope member, never inside `runtime_meta`.** That dict is the client's `_meta` forwarded verbatim (§11.4.1). A claim the producer makes about its own resolution must stay separable from text the client supplied.
+
+**`organization` — the company or workspace the caller belongs to, as the vendor sees it (OPTIONAL object, nullable).** It is the vendor's own customer. The same resolver that returns `principal` returns it, beside a principal or alone, for instance when an org-wide API key names the company but not the person. **Absent as a whole when the resolver returned none.**
+
+| member | holds |
+|---|---|
+| `id` | REQUIRED. The organization's id, under every rule `principal.id` follows: untagged, sent exactly as the resolver returned it, never hashed or rewritten by the producer, bounded at 128 code points. A blank `id`, one that is not well-formed Unicode, or one containing U+0000 yields no `organization` |
+| `source` | REQUIRED. As `principal.source`: `"asserted"` from every current producer |
+| `form` | REQUIRED. As `principal.form`, stated for this `id` alone |
+| `display_name` | Optional. As `principal.display_name`: a label, never a key, not scrubbed, and dropped alone when unusable |
+
+- **All-or-nothing, like `principal`.** A producer emits the three required members or omits `organization`.
+- **It has its own `form`.** The organization's id can be hashed while the person's id is raw, or the other way round. A value carries no facts about itself, so one `form` cannot describe both.
+- **It is independent of `principal`.** Either can be present without the other. An unusable organization is dropped alone and `principal` still ships; an unusable principal does not drop the organization.
+- **Its one provenance is the vendor's resolver.** A producer MUST NOT derive it from token claims, from `principal`, or from anything else the resolver did not return.
+- **It is never a person.** A consumer MUST NOT count an organization as a principal or an MCP user. An event with an organization and no principal has no principal.
+- **A consumer MAY group and filter by `(tenant_id, vendor_id, organization.id)`**, at whatever grain the vendor resolved, and SHOULD show the most recent non-null `display_name` for an `id`, as for `principal`.
+- **It never joins two sessions.** §11.5.1 reads it only to keep sessions apart.
+- **It goes in its own envelope member, never inside `runtime_meta`**, for the reason `principal` does.
+
+**Ordering.** A collector that refuses unknown envelope members rejects the whole event, so the collector MUST accept `organization` before any producer sends it.
 
 **`call_id` — the minted per-call correlation key (REQUIRED on `tool_call_start`, `tool_call_end` and `tool_call_error`; absent or null on every other type).** The SAME non-empty value on a tool call's start and its end or error. It is the only key a worker pairs the two legs on (§11.5.4), so a collector MAY reject a tool-call leg that carries none, and a leg stored without one stays unpaired.
 
@@ -1448,7 +1471,7 @@ nulls `result` on this event type drops the body this change exists to keep.
 
 **The envelope is §11.4's, unchanged.** That is what lets one collector endpoint accept every event type and one worker order them on `(session_id, sequence_number)`. A conforming producer MUST fill the same required envelope fields it fills on a tool call.
 
-**`principal` is carried.** A producer that has a resolver (§11.4) calls it once for each of these requests and puts what it returns on the start and on the terminal event of that request, as §11.4.5 states for a `tools/list` request. The resolver is given the request with no tool name and no arguments: the URI, the prompt name and the prompt arguments are not passed to it. A producer with no resolver sends none, so a consumer MUST read the value and MUST NOT expect one on these types.
+**`principal` and `organization` are carried.** A producer that has a resolver (§11.4) calls it once for each of these requests and puts what it returns on the start and on the terminal event of that request, as §11.4.5 states for a `tools/list` request. The resolver is given the request with no tool name and no arguments: the URI, the prompt name and the prompt arguments are not passed to it. A producer with no resolver sends none, so a consumer MUST read the value and MUST NOT expect one on these types.
 
 **No payload here carries a BODY, and that is normative rather than an omission.**
 
@@ -1504,7 +1527,7 @@ A producer sends these when a client asks for the server's tools (`tools/list`).
 
 **The envelope is §11.4's, unchanged**, `client_observed` included. No `call_id`, as in §11.4.4.
 
-**`principal` is carried.** A producer that has a resolver (§11.4) calls it once for each `tools/list` request and puts what it returns on the start and on the terminal event of that request. The resolver is given the request with no tool name and no arguments. Every rule §11.4 sets for `principal` applies. Where a producer gives each request a session id of its own, `principal` is the only member that ties a listing to the calls of the same principal.
+**`principal` and `organization` are carried.** A producer that has a resolver (§11.4) calls it once for each `tools/list` request and puts what it returns on the start and on the terminal event of that request. The resolver is given the request with no tool name and no arguments. Every rule §11.4 sets for `principal` and `organization` applies. Where a producer gives each request a session id of its own, `principal` is the only member that ties a listing to the calls of the same principal.
 
 **One pair per request.** A producer emits a start and one terminal event for every `tools/list` request it serves. A client that pages through the list makes several requests and gets a pair for each. A listing the server's own library runs for itself, with no request from a client behind it, gets no events.
 
@@ -1554,7 +1577,7 @@ Turns are assembled at correlation time, not at emit time — the SDK does not i
 
 1. **Each session is stateless HTTP, or a library session with no vendor session id.** It has at least one event with `transport_observed` exactly `"http"`, or at least one exactly `"library"`, and no event with any other non-null `transport_observed`. Every event carrying that value has `session_id_origin` exactly `"minted"` (or, for `"http"`, is treated as minted under §11.4's clause for older producers). A library producer mints one session per `client.session` block, or per call outside one (§5.6), so its sessions split a conversation the same way. Both sessions of a join carry the same value. Events with `transport_observed` absent or null, such as a `surface_snapshot`, neither qualify a session nor disqualify it.
 2. **Each session carries exactly one principal id (§11.4), and it is the same on both.** Events with no principal do not count against this, but a session with no principal at all is never joined, and neither is a session with two. Both `"attested"` and `"asserted"` principals qualify: a vendor's statement about its own users is what the field is for.
-3. **The client is the same on both, and so is the conversation.** Where both sessions state a client (`client_observed`, or `agent_runtime` when not `"unknown"`) and the two differ, they are not joined. Likewise where both state a runtime conversation identifier (rule 1 above) and the two differ: one turn never spans two conversations, so a group must not either. The same identifier on both is never a reason to join: it only keeps apart, as the grouping rule above requires.
+3. **The client is the same on both, and so is the conversation.** Where both sessions state a client (`client_observed`, or `agent_runtime` when not `"unknown"`) and the two differ, they are not joined. Likewise where both state a runtime conversation identifier (rule 1 above) and the two differ: one turn never spans two conversations, so a group must not either. The same identifier on both is never a reason to join: it only keeps apart, as the grouping rule above requires. The same holds for `organization` (§11.4): where both sessions state one and the two differ, they are not joined, a session that states two is never joined, and the same one on both is never a reason to join. This matters only when one person works for two of the vendor's customers, since rule 2 already requires one principal.
 4. **Both sessions have the same `tenant_id` and `vendor_id`.**
 5. **The gap is under the idle limit, or an id says they belong together.** Time is the fence only when no id decides. Where the group's last event and the later session's first event carry the same runtime turn identifier (rule 1 above), or the same turn number (rule 2) with the same label text after it, the sessions are joined across the idle limit, because those rules keep the events in one turn and a fence must not split what they keep together. A new chat restarts at turn number 1, so across the fence the number alone cannot tell a paused turn from a person's next chat; the label can, because it is repeated verbatim within a task. The text is compared exactly, as rule 2 removes it from the number, and a session's first and last numbered events supply it. This comparison is the join's only: inside a group, rule 2 still compares the number alone. The hold lasts at most 24 hours, so labels that do repeat cannot join one person's chats days apart. Otherwise the later session's first event must come less than M after the group's last event. Workers SHOULD make M configurable per tenant and document it; the reference worker uses 30 minutes. Whatever the gap or the id, a group spans at most 24 hours from its first event: a caller that never goes idle, such as a scheduled agent, would otherwise grow one group without end.
 
@@ -1678,6 +1701,15 @@ Defined error codes:
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
 
 - **Unreleased (SDK) — a call refused before the tool ran is captured (§11.4.3).** The MCP adapters add an outer seam on the low-level `tools/call` handler. It strips `user_goal` and the retired names before any vendor code sees them, including a server subclass's own `call_tool`. A call that fails before the tool's handler runs is sent as `tool_call_start` + `tool_call_error` with `failure_kind` `"refused"` (a new registered value) or `"unknown_tool"`. `refused`'s `error_body` and `result` are withheld under `result_capture: "off"`. Before this, such a call produced no event. No envelope field or event type changes, and `failure_kind` stays a free string in the schema. **Consumer consequence:** a refused call now appears, with `error_type` `"tool_error"` (or the exception class when the low-level server let it raise) and `failure_kind: "refused"`.
+
+- **Unreleased — `organization`, the company the caller belongs to, beside `principal` (§11.4, §11.5.1).** Additive: a producer that never sends it stays conformant.
+
+  **NEW: envelope member `organization`** (`id`, `source`, `form`, optional `display_name`), with `principal`'s rules for each member. It is returned by the same vendor resolver, is independent of `principal`, and has its own `form`.
+
+  **NEW: a §11.5.1 keep-apart condition.** Two sessions that state different organizations, or one session that states two, are not joined.
+
+  **Consumer consequence:** a collector that refuses unknown members MUST accept `organization` before any producer sends it. An organization is never counted as a principal. The library API (§5.6) takes it through `client.session(principal=)`. A library block with only an organization and no `session_id` is never joined (rule 2), so a vendor that knows only the company passes its own `session_id`.
+
 - **0.9.0 (SDK-only) — `proactive_mode` and `intent_param_mode="off"` are removed (§5.1.2).** No envelope field or event type changes. `VendorConfig` has no `proactive_mode` field, so a config that passes one fails at construction. `intent_param_mode="off"` raises at install; `"required"` (the default) and `"optional"` are unchanged. The text served under `report_mode="on"` and `"off"` is unchanged, and the annotation tool refuses a call with no `what_happened` in every configuration, as it did by default. **Consumer consequence:** once a vendor that had set `proactive_mode="on"` removes the field, agent-filed notes stop arriving from it, and `seam_augmentations.intent_param` is never null from this producer.
 
 - **ts 0.5.8, proxy 0.6.19, extmcp 0.2.1 (2026-10-29) — the other three producers take 0.8.22's one numbered `user_goal` and 0.8.23's opt-in reports.** No envelope field or event type changes.

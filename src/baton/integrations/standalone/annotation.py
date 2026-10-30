@@ -35,7 +35,7 @@ from baton.integrations._session import next_sequence
 from baton.integrations.client_observed import clean_runtime_meta, meta_to_dict, observe_client
 from baton.integrations.identity_adapter import (
     ResolvePrincipalHook,
-    resolve_call_principal,
+    resolve_caller,
     token_claims,
 )
 from baton.integrations.standalone import _auth
@@ -136,7 +136,7 @@ def register_annotation_tool(
             if resolve_principal_hook is not None
             else None
         )
-        annotation_principal = await resolve_call_principal(
+        annotation_caller = await resolve_caller(
             hook=resolve_principal_hook,
             hook_context=identity_hook_context,
             logger=logger,
@@ -159,7 +159,8 @@ def register_annotation_tool(
                 sequence_number=seq,
                 captured_at=datetime.now(UTC),
                 client_observed=client,
-                principal=annotation_principal,
+                principal=annotation_caller.principal,
+                organization=annotation_caller.organization,
                 transport_observed=call_transport,
                 session_id_origin=call_session.origin,
                 runtime_meta=scrubbed_meta,
