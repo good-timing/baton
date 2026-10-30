@@ -45,6 +45,7 @@ this call. See ``baton._optout``.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from baton._optout import capture_disabled
@@ -60,6 +61,7 @@ from baton.integrations._config import (
 )
 from baton.integrations._handle import BatonHandle, disabled_handle
 from baton.integrations._lifecycle import (
+    CallSeam,
     CapturedRequest,
     install_lifecycle_capture,
     warn_if_results_are_withheld,
@@ -75,6 +77,7 @@ from baton.integrations.official._compat import (
     require_high_level_server,
     set_server_instructions,
 )
+from baton.integrations.official._registry import get_tool_registry
 from baton.integrations.official._tool_wrap import (
     _extract_headers_from_context,
     _extract_meta_from_context,
@@ -167,7 +170,7 @@ def install_baton(
     set_server_instructions(mcp, with_vendor_instructions(mcp, text.instructions))
 
     # Wrap currently-registered tools + patch add_tool for future ones.
-    install_wraps(
+    param_registry = install_wraps(
         mcp,
         tenant_id=tenant_id,
         vendor_id=config.vendor_id,
@@ -208,6 +211,12 @@ def install_baton(
         resolve_principal_hook=config.resolve_principal,
         read_request=read_request,
         read_access_token=_auth.current_access_token,
+        call_seam=CallSeam(
+            annotation_tool_name=annotation_tool_name,
+            result_capture_mode=config.result_capture_mode,
+            dispositions=_registry_lookup(param_registry),
+            knows_tool=lambda name: name in get_tool_registry(mcp),
+        ),
     )
 
     # Register the annotation tool LAST so the wrap layer's add_tool patch
@@ -235,3 +244,12 @@ def install_baton(
         vendor_id=config.vendor_id,
         session_id=fallback_session_id,
     )
+
+
+def _registry_lookup(
+    param_registry: dict[str, dict[str, str]],
+) -> Callable[[str], Awaitable[dict[str, str] | None]]:
+    async def dispositions(name: str) -> dict[str, str] | None:
+        return param_registry.get(name)
+
+    return dispositions

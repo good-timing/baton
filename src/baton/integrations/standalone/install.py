@@ -67,6 +67,7 @@ from baton.integrations._config import (
 )
 from baton.integrations._handle import BatonHandle, disabled_handle
 from baton.integrations._lifecycle import (
+    CallSeam,
     CapturedRequest,
     install_lifecycle_capture,
     warn_if_results_are_withheld,
@@ -236,24 +237,32 @@ def install_baton(
     # keeps the first one's, as the lifecycle capture and the official adapter
     # do: two would each take the other's injected ``user_goal`` for the tool's own.
     existing = getattr(mcp, "middleware", None)
-    if not (isinstance(existing, list) and any(isinstance(m, BatonMiddleware) for m in existing)):
-        mcp.add_middleware(
-            BatonMiddleware(
-                tenant_id=tenant_id,
-                vendor_id=config.vendor_id,
-                consent_token=config.consent_token,
-                sink=sink,
-                counter=counter,
-                fallback_session_id=fallback_session_id,
-                scrubber=scrubber,
-                annotation_tool_name=annotation_tool_name,
-                intent_param_mode=config.intent_param_mode,
-                result_capture_mode=config.result_capture_mode,
-                resolve_principal_hook=config.resolve_principal,
-                server_meta=server_meta,
-                on_native_user_goal=on_native_user_goal,
-            )
+    middleware = (
+        next(
+            (m for m in existing if isinstance(m, BatonMiddleware)),
+            None,
         )
+        if isinstance(existing, list)
+        else None
+    )
+    if middleware is None:
+        middleware = BatonMiddleware(
+            tenant_id=tenant_id,
+            vendor_id=config.vendor_id,
+            consent_token=config.consent_token,
+            sink=sink,
+            counter=counter,
+            fallback_session_id=fallback_session_id,
+            scrubber=scrubber,
+            annotation_tool_name=annotation_tool_name,
+            intent_param_mode=config.intent_param_mode,
+            result_capture_mode=config.result_capture_mode,
+            resolve_principal_hook=config.resolve_principal,
+            server_meta=server_meta,
+            on_native_user_goal=on_native_user_goal,
+        )
+        mcp.add_middleware(middleware)
+    resolve_dispositions = middleware.resolve_dispositions
 
     async def read_request(_request_context: Any) -> CapturedRequest:
         # The handler runs below fastmcp, where no fastmcp context is current.
@@ -287,6 +296,12 @@ def install_baton(
         resolve_principal_hook=config.resolve_principal,
         read_request=read_request,
         read_access_token=_auth.current_access_token,
+        call_seam=CallSeam(
+            annotation_tool_name=annotation_tool_name,
+            result_capture_mode=config.result_capture_mode,
+            dispositions=lambda name: resolve_dispositions(name, mcp),
+            knows_tool=lambda name: None,
+        ),
     )
 
     if text.names is not None:

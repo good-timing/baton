@@ -1,14 +1,19 @@
-"""The tool list, resource and prompt events (SPEC §11.4.4, §11.4.5), shared
-by both adapters.
+"""The tool list, resource and prompt events (SPEC §11.4.4, §11.4.5), and the
+outer ``tools/call`` seam (SPEC §11.4.3), shared by both adapters.
 
 Captured on the low-level server's request handlers, below either library's
 own layer, because that is the one place that sees each request a client sent
 and the response it got. An adapter supplies the reads that differ between the
 two libraries; everything else is decided here, once.
+
+The ``tools/call`` seam strips Baton's params before any vendor code runs,
+including a server subclass's own ``call_tool``, and files a call that failed
+before the adapter's inner capture ran (``_call_slot``).
 """
 
 from __future__ import annotations
 
+import functools
 import logging
 import sys
 import warnings
@@ -23,8 +28,23 @@ from pydantic import TypeAdapter
 
 from baton._result_capture import ResultCaptureMode
 from baton._state import SessionCounter
+from baton._uuid import uuid7
 from baton.events import Event
+from baton.integrations._call_slot import CallSlot, current_slot
 from baton.integrations._config import SessionResolutionContext
+from baton.integrations._error_result import (
+    TOOL_ERROR_TYPE,
+    is_error_result,
+    raised_error_fields,
+    returned_error_fields,
+)
+from baton.integrations._llm_text import (
+    EXPECTED_RESULT_PARAM_NAME,
+    INTENT_SOURCE_PARAM,
+    OVERALL_TASK_PARAM_NAME,
+    USER_GOAL_PARAM_NAME,
+    pop_goal_params,
+)
 from baton.integrations._session import ResolvedSession, next_sequence
 from baton.integrations.client_observed import clean_runtime_meta, observe_client
 from baton.integrations.identity_adapter import (
@@ -32,6 +52,7 @@ from baton.integrations.identity_adapter import (
     resolve_call_principal,
     token_claims,
 )
+from baton.scrub import scrub_or_none
 from baton.sinks import Sink, safe_emit
 
 logger = logging.getLogger(__name__)
@@ -61,6 +82,24 @@ class _Family:
     subject_key: str | None = None
     count_key: str | None = None
     start_params: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+
+
+@dataclass(frozen=True)
+class CallSeam:
+    """What the outer ``tools/call`` seam needs from an adapter."""
+
+    annotation_tool_name: str | None
+    result_capture_mode: ResultCaptureMode
+    dispositions: Callable[[str], Awaitable[dict[str, str] | None]]
+    """The tool's param dispositions, or ``None`` when the adapter has none,
+    which strips ``user_goal`` alone (``pop_goal_params``)."""
+    knows_tool: Callable[[str], bool | None]
+    """Whether the server has the tool; ``None`` when the adapter cannot say."""
+
+
+class _NeverPublic(Exception):
+    """No refusal's message is marked public: a refusal the inner capture never
+    saw is withheld under ``"off"`` whatever raised it."""
 
 
 # SPEC §11.4.4 records that the two start payloads build ``params``
@@ -100,9 +139,11 @@ def install_lifecycle_capture(
     resolve_principal_hook: ResolvePrincipalHook | None,
     read_request: Callable[[Any], Awaitable[CapturedRequest]],
     read_access_token: Callable[[], Any],
+    call_seam: CallSeam | None = None,
 ) -> None:
     """Send the tool list, resource and prompt events of the low-level ``mcp``
-    server ``find_server`` returns.
+    server ``find_server`` returns, and with ``call_seam``, install the outer
+    ``tools/call`` seam.
 
     ``read_request`` is given the low-level request context, or ``None`` where
     there is none. Never raises: a version with no known handler layout is
@@ -111,7 +152,11 @@ def install_lifecycle_capture(
     """
 
     async def opened(
-        family: _Family, read_request_context: Callable[[], Any], params: Any
+        family: _Family,
+        read_request_context: Callable[[], Any],
+        params: Any,
+        tool_name: str | None = None,
+        arguments: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], ResolvedSession] | None:
         """The envelope, the request's params, the subject and the session, or
         ``None`` when a read failed and the request is served without events."""
@@ -123,8 +168,8 @@ def install_lifecycle_capture(
                     SessionResolutionContext(
                         headers=request.headers,
                         meta=request.meta,
-                        tool_name=None,
-                        arguments={},
+                        tool_name=tool_name,
+                        arguments=arguments or {},
                         claims=token_claims(read_access_token()),
                     )
                     if resolve_principal_hook is not None
@@ -218,10 +263,150 @@ def install_lifecycle_capture(
         )
         return result
 
+    async def around_call(
+        call_seam: CallSeam,
+        read_request_context: Callable[[], Any],
+        params: Any,
+        serve: Callable[[Any], Awaitable[Any]],
+        with_arguments: Callable[[dict[str, Any]], Any],
+    ) -> Any:
+        name, arguments = _call_target(params)
+        if name is None or name == call_seam.annotation_tool_name:
+            return await serve(params)
+        goals = None
+        try:
+            dispositions = await call_seam.dispositions(name)
+            if dispositions is None and call_seam.knows_tool(name) is False:
+                dispositions = {}
+            if arguments is not None:
+                stripped = dict(arguments)
+                goals = pop_goal_params(name, stripped, dispositions)
+                if len(stripped) != len(arguments):
+                    arguments = stripped
+                    params = with_arguments(stripped)
+        except Exception:
+            logger.exception("baton: the tools/call strip failed; the inner capture strips instead")
+            goals = None
+        slot = CallSlot(tool_name=name, goals=goals)
+        token = current_slot.set(slot)
+        started_at = monotonic()
+        try:
+            result = await serve(params)
+        except Exception as exc:
+            current_slot.reset(token)
+            if not slot.claimed:
+                await refused(
+                    call_seam,
+                    read_request_context,
+                    params,
+                    name,
+                    arguments,
+                    goals,
+                    started_at,
+                    exc,
+                    None,
+                )
+            raise
+        except BaseException:
+            current_slot.reset(token)
+            raise
+        current_slot.reset(token)
+        if not slot.claimed and is_error_result(getattr(result, "root", result)):
+            await refused(
+                call_seam,
+                read_request_context,
+                params,
+                name,
+                arguments,
+                goals,
+                started_at,
+                None,
+                result,
+            )
+        return result
+
+    async def refused(
+        call_seam: CallSeam,
+        read_request_context: Callable[[], Any],
+        params: Any,
+        name: str,
+        arguments: dict[str, Any] | None,
+        goals: tuple[str | None, str | None, str | None] | None,
+        started_at: float,
+        raised: Exception | None,
+        result: Any,
+    ) -> None:
+        """Send the pair for a call that failed before the inner capture ran."""
+        duration_ms = int((monotonic() - started_at) * 1000)
+        try:
+            request = await opened(_CALL_FAMILY, read_request_context, params, name, arguments)
+            if request is None:
+                return
+            envelope, _, _, session = request
+            envelope = {**envelope, "call_id": str(uuid7())}
+            intent, expected, task = goals or (None, None, None)
+            scrubbed_goals = (
+                scrub_or_none(scrubber, intent, USER_GOAL_PARAM_NAME, logger),
+                scrub_or_none(scrubber, expected, EXPECTED_RESULT_PARAM_NAME, logger),
+                scrub_or_none(scrubber, task, OVERALL_TASK_PARAM_NAME, logger),
+            )
+            # SPEC §11.4.3: an unknown tool's message is the library's and stays
+            # under "off"; a refusal's is the vendor's and is withheld.
+            if call_seam.knows_tool(name) is False:
+                failure_kind, mode = "unknown_tool", "full"
+            else:
+                failure_kind, mode = "refused", call_seam.result_capture_mode
+            root = getattr(result, "root", result)
+            if raised is not None:
+                error_type = type(raised).__name__
+                fields = raised_error_fields(
+                    mode=mode, scrubber=scrubber, raised=raised, tool_error=_NeverPublic
+                )
+            else:
+                error_type = TOOL_ERROR_TYPE
+                fields = returned_error_fields(mode=mode, scrubber=scrubber, result=root)
+            start_payload = {
+                "tool_name": name,
+                "params": scrub_or_none(scrubber, arguments or {}, "params", logger) or {},
+                "call_intent": scrubbed_goals[0],
+                "call_expected": scrubbed_goals[1],
+                "call_workflow": scrubbed_goals[2],
+                "intent_source": (
+                    INTENT_SOURCE_PARAM if any(g is not None for g in scrubbed_goals) else None
+                ),
+            }
+            error_payload = {
+                "tool_name": name,
+                "error_type": error_type,
+                "error_body": fields.error_body,
+                "duration_ms": duration_ms,
+                "result": fields.result,
+                "result_capture": fields.result_capture,
+                "failure_kind": failure_kind,
+            }
+            for leg, payload in (("start", start_payload), ("error", error_payload)):
+                sequence_number = await next_sequence(counter, session)
+                await safe_emit(
+                    sink,
+                    _event_builder(
+                        {
+                            **envelope,
+                            "event_type": f"tool_call_{leg}",
+                            "sequence_number": sequence_number,
+                            "payload": payload,
+                        }
+                    ),
+                    logger,
+                )
+        except Exception:
+            logger.exception("baton: a refused tool call was not captured")
+
     try:
         server = find_server()
         for family in _FAMILIES:
             _wrap_handler(server, family, around)
+        if call_seam is not None:
+            _wrap_call_handler(server, functools.partial(around_call, call_seam))
     except Exception:
         logger.exception(
             "baton: tool list, resource and prompt events may be missing; "
@@ -338,6 +523,72 @@ def _wrap_handler(
             lambda: server.request_context,
             getattr(request, "params", None),
             lambda: serve_request(request),
+        )
+
+    setattr(handle_request, _WRAPPED, True)
+    handlers[request_type] = handle_request
+
+
+def _event_builder(fields: dict[str, Any]) -> Callable[[], Event]:
+    return lambda: _EVENT.validate_python({**fields, "captured_at": datetime.now(UTC)})
+
+
+_CALL_FAMILY = _Family("tools/call", "CallToolRequest", "tool_call")
+
+
+def _call_target(params: Any) -> tuple[str | None, dict[str, Any] | None]:
+    """The tool name and arguments a ``tools/call`` request carries."""
+    name = getattr(params, "name", None)
+    arguments = getattr(params, "arguments", None)
+    return (
+        name if isinstance(name, str) else None,
+        arguments if isinstance(arguments, dict) else None,
+    )
+
+
+def _wrap_call_handler(
+    server: Any,
+    around_call: Callable[
+        [Callable[[], Any], Any, Callable[[Any], Awaitable[Any]], Callable[[dict[str, Any]], Any]],
+        Awaitable[Any],
+    ],
+) -> None:
+    """Route every ``tools/call`` through ``around_call``, which may replace the
+    request's arguments before the server's own handler sees them."""
+    handlers = getattr(server, "request_handlers", None)
+    if handlers is None:  # mcp 2.x
+        entry = server.get_request_handler(_CALL_FAMILY.method)
+        if entry is None or getattr(entry.handler, _WRAPPED, False):
+            return
+        serve_params = entry.handler
+
+        async def handle_params(request_context: Any, params: Any) -> Any:
+            return await around_call(
+                lambda: request_context,
+                params,
+                lambda p: serve_params(request_context, p),
+                lambda arguments: params.model_copy(update={"arguments": arguments}),
+            )
+
+        setattr(handle_params, _WRAPPED, True)
+        server.add_request_handler(_CALL_FAMILY.method, entry.params_type, handle_params)
+        return
+
+    import mcp.types as mcp_types
+
+    request_type = getattr(mcp_types, _CALL_FAMILY.mcp1_request_class)
+    serve_request = handlers.get(request_type)
+    if serve_request is None or getattr(serve_request, _WRAPPED, False):
+        return
+
+    async def handle_request(request: Any) -> Any:
+        return await around_call(
+            lambda: server.request_context,
+            request.params,
+            lambda p: serve_request(
+                request if p is request.params else request.model_copy(update={"params": p})
+            ),
+            lambda arguments: request.params.model_copy(update={"arguments": arguments}),
         )
 
     setattr(handle_request, _WRAPPED, True)

@@ -84,6 +84,7 @@ from baton.events import (
     ToolCallStartEvent,
     ToolCallStartPayload,
 )
+from baton.integrations._call_slot import claim_call
 from baton.integrations._config import (
     SessionResolutionContext,
 )
@@ -194,8 +195,11 @@ def install_wraps(
     result_capture_mode: ResultCaptureMode = "full",
     server_meta: dict[str, Any] | None = None,
     resolve_principal_hook: ResolvePrincipalHook | None = None,
-) -> None:
-    """Inject + wrap all currently-registered tools AND future registrations."""
+) -> dict[str, dict[str, str]]:
+    """Inject + wrap all currently-registered tools AND future registrations.
+
+    Returns each tool's param dispositions, which the outer ``tools/call`` seam
+    strips by."""
     # tool_name -> {param_name: "injected" | "native"}. Populated as tools are
     # injected; read in the wrapper to decide strip-vs-forward, per param,
     # independently. A plain dict (no lock) is safe: all access is on the one
@@ -307,6 +311,7 @@ def install_wraps(
         return result
 
     manager.remove_tool = remove_tool_with_prune
+    return param_registry
 
 
 # =============================================================================
@@ -491,7 +496,10 @@ def _wrap_tool_run(
         call_intent: str | None = None
         call_expected: str | None = None
         call_task: str | None = None
-        if isinstance(arguments, dict):
+        slot = claim_call(name)
+        if slot is not None and slot.goals is not None:
+            call_intent, call_expected, call_task = slot.goals
+        elif isinstance(arguments, dict):
             call_intent, call_expected, call_task = pop_goal_params(
                 name, arguments, param_registry.get(name)
             )

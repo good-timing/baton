@@ -43,6 +43,7 @@ from baton.events import (
     ToolCallStartPayload,
 )
 from baton.integrations._annotation_payload import with_tool_name_required
+from baton.integrations._call_slot import claim_call
 from baton.integrations._config import SessionResolutionContext
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
@@ -272,7 +273,7 @@ class BatonMiddleware(Middleware):
         except Exception:
             logger.exception("baton: surface snapshot capture failed")
 
-    async def _resolve_dispositions(self, tool_name: str, server: Any) -> dict[str, str] | None:
+    async def resolve_dispositions(self, tool_name: str, server: Any) -> dict[str, str] | None:
         """Per-name dispositions for ``tool_name`` (see ``_inject_goal_params``).
 
         Warm path: whatever ``on_list_tools`` recorded. Cold path: ask the
@@ -316,7 +317,7 @@ class BatonMiddleware(Middleware):
         """``pop_goal_params`` for this call. Mutating ``arguments`` in place
         is what keeps them off the vendor handler: the same dict is forwarded
         downstream."""
-        dispositions = await self._resolve_dispositions(tool_name, server)
+        dispositions = await self.resolve_dispositions(tool_name, server)
         return pop_goal_params(tool_name, arguments, dispositions)
 
     async def on_call_tool(
@@ -344,7 +345,10 @@ class BatonMiddleware(Middleware):
         call_intent: str | None = None
         call_expected: str | None = None
         call_task: str | None = None
-        if isinstance(msg.arguments, dict):
+        slot = claim_call(tool_name)
+        if slot is not None and slot.goals is not None:
+            call_intent, call_expected, call_task = slot.goals
+        elif isinstance(msg.arguments, dict):
             fctx = context.fastmcp_context
             call_intent, call_expected, call_task = await self._extract_goal_params(
                 tool_name, msg.arguments, getattr(fctx, "fastmcp", None) if fctx else None

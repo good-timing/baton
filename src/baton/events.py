@@ -165,6 +165,8 @@ class ToolCallErrorPayload(BaseModel):
     ``invalid_argument``         the handler never ran: arguments rejected
     ``output_schema_mismatch``   the handler RETURNED and our conversion of
                                  its output rejected it
+    ``refused``                  the handler never ran: code above it, such
+                                 as the server's own ``call_tool``, refused
     ===========================  ==========================================
 
     **Absent means the vendor's handler ran and spoke for itself** — a tool
@@ -186,19 +188,18 @@ class ToolCallErrorPayload(BaseModel):
     nothing it returned exists. Their ``error_body`` STAYS under
     ``result_capture: "off"`` (scrubbed: the argument-rejection message can
     echo argument values). ``output_schema_mismatch``'s message describes what
-    the tool RETURNED, so it GOES. A producer sorts these by whether its inner
-    tool wrapper fired, not by inspecting the result object — all four arrive
-    as the same shape.
+    the tool RETURNED, so it GOES. ``refused``'s message is the vendor's own
+    code speaking, so it GOES too. A producer sorts these by whether its inner
+    tool wrapper fired, not by inspecting the result object — all of them
+    arrive as the same shape.
 
     ``str``, not a ``Literal`` and not a closed enum in the generated schema,
     for the reason ``result_capture`` is: a producer must stay able to emit a
     value SPEC registers later rather than raise on a path §11.2 requires to
     fail open.
 
-    Declared here, unused here: emitting it needs a second capture seam above
-    the executor, which is a separate change. This is the wire schema
-    PERMITTING the member, which has to be published before any producer emits
-    it — ``extra="forbid"`` above is why.
+    The MCP adapters emit ``unknown_tool`` and ``refused``, from the outer
+    ``tools/call`` seam (``integrations/_lifecycle.py``).
     """
 
 

@@ -1,22 +1,25 @@
-"""``baton.install_baton`` on a vendor's subclass of ``fastmcp.FastMCP``.
+"""``baton.install_baton`` on a vendor's subclass of ``fastmcp.FastMCP``, and the
+outer ``tools/call`` seam that runs above the subclass's own ``call_tool``.
 
-On fastmcp 3 and later, a ``call_tool`` override runs twice: first BEFORE the
-middleware chain, where the gate sees ``user_goal``, then again from inside it
-with the stripped arguments. A call the gate rejects on the first run is not
-captured. fastmcp 2 has no public ``call_tool``, so the wire never reaches an
-override there. Capturing rejected calls would change these tests on purpose.
+On fastmcp 3 and later a ``call_tool`` override runs twice per call, once above
+the middleware chain and once inside it; the outer seam strips ``user_goal``
+before both, and a call the override refuses is captured with
+``failure_kind: "refused"``. fastmcp 2 has no public ``call_tool``, so the wire
+never reaches an override there.
 """
 
 from __future__ import annotations
 
 from typing import Any, NamedTuple
 
+import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 
 from baton import VendorConfig, install_baton
+from baton.integrations import _lifecycle
 from baton.integrations._llm_text import USER_GOAL_PARAM_NAME
-from baton.sinks import FileSink
+from baton.sinks import FileSink, Sink
 from tests._event_helpers import read_events, without_surface_snapshots
 
 GOAL = "1: echo the text; success is the same text back"
@@ -44,55 +47,96 @@ class GatedServer(FastMCP):  # type: ignore[misc]
         return await super().call_tool(name, arguments, *args, **kwargs)
 
 
+class _RaisingSink(Sink):
+    async def write(self, event: Any) -> None:
+        raise OSError("disk full")
+
+    async def flush(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
+        pass
+
+
 class Run(NamedTuple):
-    properties: list[str]
-    is_error: bool
-    handler_saw: list[str]
+    results: list[Any]
+    handler_saw: list[dict[str, Any]]
     tool_call_events: list[dict[str, Any]]
+    properties: list[str]
 
 
-async def _run(mcp: Any, tmp_path: Any, text: str) -> Run:
-    """Install, then list and call ``echo`` once over a client session."""
-    handler_saw: list[str] = []
-
+def _register(mcp: Any, handler_saw: list[dict[str, Any]]) -> None:
     @mcp.tool
     def echo(text: str) -> str:
-        handler_saw.append(text)
+        handler_saw.append({"text": text})
         return text
 
-    events_path = tmp_path / "events.jsonl"
-    handle = install_baton(
-        mcp,
-        VendorConfig(
-            vendor_id="test-vendor",
-            vendor_display_name="Test Vendor",
-            consent_token="ct_test",
-            sink=FileSink(str(events_path)),
-        ),
-    )
-    try:
-        async with Client(mcp) as client:
-            listed = await client.list_tools()
-            result = await client.call_tool(
-                "echo", {"text": text, USER_GOAL_PARAM_NAME: GOAL}, raise_on_error=False
-            )
-        await handle.flush()
-    finally:
-        await handle.aclose()
+    @mcp.tool
+    def boom(text: str) -> str:
+        raise ValueError("tool broke")
 
+
+async def _call_all(mcp: Any, calls: list[tuple[str, dict[str, Any]]]) -> tuple[list[Any], Any]:
+    results = []
+    async with Client(mcp) as client:
+        listed = await client.list_tools()
+        for tool, arguments in calls:
+            result = await client.call_tool(tool, arguments, raise_on_error=False)
+            results.append(
+                (bool(result.is_error), [getattr(c, "text", None) for c in result.content])
+            )
+    return results, listed
+
+
+async def _run(
+    mcp: Any,
+    tmp_path: Any,
+    calls: list[tuple[str, dict[str, Any]]],
+    *,
+    installs: int = 1,
+    sink: Sink | None = None,
+    **config: Any,
+) -> Run:
+    """Register ``echo`` and ``boom``, install, then make ``calls`` over a client
+    session. A call is ``(tool, arguments)``; ``GOAL`` is added to each."""
+    handler_saw: list[dict[str, Any]] = []
+    _register(mcp, handler_saw)
+    events_path = tmp_path / "events.jsonl"
+    handles = [
+        install_baton(
+            mcp,
+            VendorConfig(
+                vendor_id="test-vendor",
+                vendor_display_name="Test Vendor",
+                consent_token="ct_test",
+                sink=sink or FileSink(str(events_path)),
+                **config,
+            ),
+        )
+        for _ in range(installs)
+    ]
+    try:
+        results, listed = await _call_all(
+            mcp, [(tool, {**arguments, USER_GOAL_PARAM_NAME: GOAL}) for tool, arguments in calls]
+        )
+        for handle in handles:
+            await handle.flush()
+    finally:
+        for handle in handles:
+            await handle.aclose()
+
+    events = read_events(events_path) if events_path.exists() else []
     return Run(
+        results=results,
+        handler_saw=handler_saw,
+        tool_call_events=[
+            e for e in without_surface_snapshots(events) if e["event_type"].startswith("tool_call_")
+        ],
         properties=list(
             next(t for t in listed if t.name == "echo").model_dump(by_alias=True)["inputSchema"][
                 "properties"
             ]
         ),
-        is_error=bool(result.is_error),
-        handler_saw=handler_saw,
-        tool_call_events=[
-            e
-            for e in without_surface_snapshots(read_events(events_path))
-            if e["event_type"].startswith("tool_call_")
-        ],
     )
 
 
@@ -102,11 +146,11 @@ def _types(run: Run) -> list[str]:
 
 class TestPlainSubclass:
     async def test_installs_injects_strips_and_captures(self, tmp_path: Any) -> None:
-        run = await _run(VendorServer("vendor"), tmp_path, "hi")
+        run = await _run(VendorServer("vendor"), tmp_path, [("echo", {"text": "hi"})])
 
         assert USER_GOAL_PARAM_NAME in run.properties
-        assert not run.is_error
-        assert run.handler_saw == ["hi"]
+        assert not run.results[0][0]
+        assert run.handler_saw == [{"text": "hi"}]
         start, end = run.tool_call_events
         assert start["event_type"] == "tool_call_start"
         assert start["payload"]["tool_name"] == "echo"
@@ -117,29 +161,144 @@ class TestPlainSubclass:
 
 
 class TestSubclassOverridingCallTool:
-    async def test_the_gate_runs_before_the_strip(self, tmp_path: Any) -> None:
+    async def test_the_gate_never_sees_user_goal(self, tmp_path: Any) -> None:
         mcp = GatedServer("vendor")
-        run = await _run(mcp, tmp_path, "hi")
+        run = await _run(mcp, tmp_path, [("echo", {"text": "hi"})])
 
-        assert not run.is_error
-        assert run.handler_saw == ["hi"]
+        assert run.handler_saw == [{"text": "hi"}]
         assert _types(run) == ["tool_call_start", "tool_call_end"]
-        if HAS_PUBLIC_CALL_TOOL:
-            assert mcp.gate_saw == [{"text": "hi", USER_GOAL_PARAM_NAME: GOAL}, {"text": "hi"}]
-        else:
-            assert mcp.gate_saw == []
+        assert run.tool_call_events[0]["payload"]["call_intent"] == GOAL
+        assert mcp.gate_saw == ([{"text": "hi"}, {"text": "hi"}] if HAS_PUBLIC_CALL_TOOL else [])
 
-    async def test_a_call_the_gate_rejects_is_not_captured(self, tmp_path: Any) -> None:
+    async def test_a_call_the_gate_refuses_is_captured(self, tmp_path: Any) -> None:
         mcp = GatedServer("vendor")
-        run = await _run(mcp, tmp_path, "deny")
+        run = await _run(mcp, tmp_path, [("echo", {"text": "deny"})])
 
-        if HAS_PUBLIC_CALL_TOOL:
-            assert mcp.gate_saw == [{"text": "deny", USER_GOAL_PARAM_NAME: GOAL}]
-            assert run.is_error
-            assert run.handler_saw == []
-            assert run.tool_call_events == []
-        else:
+        if not HAS_PUBLIC_CALL_TOOL:
             assert mcp.gate_saw == []
-            assert not run.is_error
-            assert run.handler_saw == ["deny"]
+            assert run.handler_saw == [{"text": "deny"}]
             assert _types(run) == ["tool_call_start", "tool_call_end"]
+            return
+        assert mcp.gate_saw == [{"text": "deny"}]
+        assert run.results[0][0]
+        assert run.handler_saw == []
+        start, error = run.tool_call_events
+        assert start["event_type"] == "tool_call_start"
+        assert start["payload"]["params"] == {"text": "deny"}
+        assert start["payload"]["call_intent"] == GOAL
+        assert error["event_type"] == "tool_call_error"
+        assert error["call_id"] == start["call_id"]
+        assert error["payload"]["error_type"] == "tool_error"
+        assert error["payload"]["failure_kind"] == "refused"
+        assert "out of credits" in error["payload"]["error_body"]
+
+    @pytest.mark.skipif(not HAS_PUBLIC_CALL_TOOL, reason="the gate never runs on this fastmcp")
+    async def test_a_refusals_message_is_withheld_under_off(self, tmp_path: Any) -> None:
+        run = await _run(
+            GatedServer("vendor"),
+            tmp_path,
+            [("echo", {"text": "deny"})],
+            result_capture_mode="off",
+        )
+
+        error = run.tool_call_events[1]["payload"]
+        assert error["failure_kind"] == "refused"
+        assert error["error_body"] == ""
+        assert error["result"] is None
+        assert error["result_capture"] == "off"
+
+    @pytest.mark.skipif(not HAS_PUBLIC_CALL_TOOL, reason="the gate never runs on this fastmcp")
+    async def test_two_installs_capture_a_refusal_once(self, tmp_path: Any) -> None:
+        run = await _run(GatedServer("vendor"), tmp_path, [("echo", {"text": "deny"})], installs=2)
+
+        assert _types(run) == ["tool_call_start", "tool_call_error"]
+
+
+class TestOuterSeam:
+    async def test_a_tool_that_raises_keeps_its_exception_class_in_one_pair(
+        self, tmp_path: Any
+    ) -> None:
+        run = await _run(VendorServer("vendor"), tmp_path, [("boom", {"text": "x"})])
+
+        start, error = run.tool_call_events
+        assert error["call_id"] == start["call_id"]
+        assert error["payload"]["error_type"] == "ValueError"
+        assert error["payload"]["failure_kind"] is None
+
+    async def test_an_unknown_tool_is_captured_once(self, tmp_path: Any) -> None:
+        run = await _run(VendorServer("vendor"), tmp_path, [("nope", {})])
+
+        start, error = run.tool_call_events
+        assert start["payload"]["tool_name"] == "nope"
+        assert start["payload"]["call_intent"] == GOAL
+        assert error["event_type"] == "tool_call_error"
+        assert error["call_id"] == start["call_id"]
+
+    async def test_a_tools_own_user_goal_reaches_it(self, tmp_path: Any) -> None:
+        mcp = GatedServer("vendor")
+        received: list[str] = []
+
+        @mcp.tool
+        def approve(doc: str, user_goal: str = "") -> str:
+            received.append(user_goal)
+            return doc
+
+        await _run(mcp, tmp_path, [("approve", {"doc": "d"})])
+
+        assert received == [GOAL]
+
+    async def test_a_rejected_argument_on_the_annotation_tool_files_no_tool_call(
+        self, tmp_path: Any
+    ) -> None:
+        run = await _run(
+            VendorServer("vendor"),
+            tmp_path,
+            [("test-vendor_annotate", {"what_happened": 3})],
+            report_mode="on",
+            annotation_tool_name="test-vendor_annotate",
+        )
+
+        assert run.results[0][0]
+        assert run.tool_call_events == []
+
+
+class TestFailOpen:
+    async def test_a_raising_sink_changes_no_result(self, tmp_path: Any) -> None:
+        calls = [("echo", {"text": "hi"}), ("echo", {"text": "deny"}), ("nope", {})]
+        bare = GatedServer("vendor")
+        _register(bare, [])
+        expected, _ = await _call_all(bare, calls)
+
+        with_baton = GatedServer("vendor")
+        run = await _run(with_baton, tmp_path, calls, sink=_RaisingSink())
+
+        assert run.results == expected
+        assert bare.gate_saw == with_baton.gate_saw
+
+    async def test_a_failing_strip_falls_back_to_the_inner_capture(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken(*_: Any, **__: Any) -> Any:
+            raise RuntimeError("strip broke")
+
+        monkeypatch.setattr(_lifecycle, "pop_goal_params", broken)
+        run = await _run(VendorServer("vendor"), tmp_path, [("echo", {"text": "hi"})])
+
+        assert not run.results[0][0]
+        assert run.handler_saw == [{"text": "hi"}]
+        assert run.tool_call_events[0]["payload"]["call_intent"] == GOAL
+
+    @pytest.mark.skipif(not HAS_PUBLIC_CALL_TOOL, reason="the gate never runs on this fastmcp")
+    async def test_a_failing_refusal_capture_changes_no_result(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken() -> str:
+            raise RuntimeError("id broke")
+
+        monkeypatch.setattr(_lifecycle, "uuid7", broken)
+        mcp = GatedServer("vendor")
+        run = await _run(mcp, tmp_path, [("echo", {"text": "deny"})])
+
+        assert run.results[0] == (True, ["out of credits"])
+        assert mcp.gate_saw == [{"text": "deny"}]
+        assert run.tool_call_events == []
