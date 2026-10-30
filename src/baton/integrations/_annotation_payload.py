@@ -17,7 +17,7 @@ session-id and ``_meta`` resolution and stay separate.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeGuard
 
 from baton.events import AnnotationPayload
 
@@ -30,7 +30,7 @@ def build_annotation_payload(
     user_goal: str | None,
     suggested_improvement: str | None,
     context: dict[str, Any] | None,
-    what_happened: str | None,
+    what_happened: str,
     tool_name: str | None,
 ) -> AnnotationPayload:
     """``AnnotationPayload`` with every free-text member PII-scrubbed.
@@ -41,14 +41,14 @@ def build_annotation_payload(
     """
     return AnnotationPayload(
         intent=scrubber(user_goal) if user_goal else None,
-        what_happened=scrubber(what_happened) if is_report(what_happened) else None,
+        what_happened=scrubber(what_happened),
         tool_name=scrubber(tool_name) if tool_name else tool_name,
         suggested_improvement=(scrubber(suggested_improvement) if suggested_improvement else None),
         context=scrubber(context) if context else None,
     )
 
 
-def is_report(what_happened: str | None) -> bool:
+def is_report(what_happened: str | None) -> TypeGuard[str]:
     """SPEC §11.4: an annotation is a report when its account is filled."""
     return bool(what_happened and what_happened.strip())
 

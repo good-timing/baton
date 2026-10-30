@@ -8,8 +8,8 @@ path's tests pass while the product broke.
 **Rung 4 reads the ``mcp-session-id`` header, not ``Context.session_id``.**
 That property caches its id on mcp's ``ServerSession`` (on fastmcp 4, on its
 ``_connection``), and mcp 2 rebuilds both for every request. Every call would
-get a new id: sequence numbers restart, the once-per-session proactive fires
-every call, and an annotation lands apart from its call.
+get a new id: sequence numbers restart every call, and an annotation lands
+apart from its call.
 
 **Rung 4b is ``Context.session_id``, below the header.** SSE never sends the
 header (its id is a ``session_id`` query parameter), so reading only the header

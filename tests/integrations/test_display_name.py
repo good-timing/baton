@@ -44,10 +44,10 @@ SEGMENT = "srv-51885073"
 #: 30 characters, the slug cap, so its tool name is the longest one derived (39).
 THIRTY = "Toybox Pantry Inventory Keeper"
 THIRTY_TOOL = "toybox-pantry-inventory-keeper_annotate"
-#: In proactive mode, one character past the longest display name that fits
-#: beside ``THIRTY_TOOL``. The slug cap cuts the extra letters, so the tool name
+#: One character past the longest display name that fits beside
+#: ``THIRTY_TOOL``. The slug cap cuts the extra letters, so the tool name
 #: is the same and only the display name grows.
-ONE_PAST = THIRTY.ljust(72, "s")
+ONE_PAST = THIRTY.ljust(1352, "s")
 
 
 @pytest.fixture
@@ -218,17 +218,13 @@ async def test_without_a_dsn_nothing_changes(
 
 
 @both_adapters
-async def test_a_thirty_character_name_fits_in_the_tightest_mode(
-    install: Install, dsn: str
-) -> None:
-    """Proactive mode interpolates the tool name 4x and the display name 5x,
-    so it is where the two compete for the cap."""
+async def test_a_thirty_character_name_fits(install: Install, dsn: str) -> None:
     assert len(THIRTY) == 30
-    served = await install(THIRTY, VendorConfig(report_mode="on", dsn=dsn, proactive_mode="on"))
+    served = await install(THIRTY, VendorConfig(report_mode="on", dsn=dsn))
     try:
         assert served.handle.annotation_tool_name == THIRTY_TOOL
         assert served.instructions == build_server_instructions(
-            vendor_display_name=THIRTY, annotation_tool_name=THIRTY_TOOL, proactive_mode="on"
+            vendor_display_name=THIRTY, annotation_tool_name=THIRTY_TOOL
         )
     finally:
         await served.handle.aclose()
@@ -247,27 +243,21 @@ async def test_a_name_that_would_not_fit_falls_back_for_the_display_name(
     segment exactly as before.
     """
     # Preconditions, so a template change reads as this and not as a regression.
-    build_server_instructions(
-        vendor_display_name=ONE_PAST[:-1], annotation_tool_name=THIRTY_TOOL, proactive_mode="on"
-    )
+    build_server_instructions(vendor_display_name=ONE_PAST[:-1], annotation_tool_name=THIRTY_TOOL)
     with pytest.raises(ValueError):
-        build_server_instructions(
-            vendor_display_name=ONE_PAST, annotation_tool_name=THIRTY_TOOL, proactive_mode="on"
-        )
+        build_server_instructions(vendor_display_name=ONE_PAST, annotation_tool_name=THIRTY_TOOL)
     build_server_instructions(
-        vendor_display_name=ONE_PAST,
-        annotation_tool_name=f"{SEGMENT}_annotate",
-        proactive_mode="on",
+        vendor_display_name=ONE_PAST, annotation_tool_name=f"{SEGMENT}_annotate"
     )
 
-    served = await install(ONE_PAST, VendorConfig(report_mode="on", dsn=dsn, proactive_mode="on"))
+    served = await install(ONE_PAST, VendorConfig(report_mode="on", dsn=dsn))
     try:
         assert served.handle.annotation_tool_name == THIRTY_TOOL
         assert served.instructions == build_server_instructions(
-            vendor_display_name=SEGMENT, annotation_tool_name=THIRTY_TOOL, proactive_mode="on"
+            vendor_display_name=SEGMENT, annotation_tool_name=THIRTY_TOOL
         )
         assert served.annotate_description == build_annotation_tool_description(
-            vendor_display_name=SEGMENT, proactive_mode="on"
+            vendor_display_name=SEGMENT
         )
     finally:
         await served.handle.aclose()
@@ -359,30 +349,24 @@ def test_an_unusable_name_keeps_the_segment_and_does_not_raise(server: object) -
     assert names == (SEGMENT, f"{SEGMENT}_annotate")
 
 
-@pytest.mark.parametrize("proactive_mode", ["off", "on"])
-def test_no_server_name_turns_a_booting_install_into_a_raise_or_a_rename(
-    proactive_mode: str,
-) -> None:
-    """Swept over every length from 1 to 120 in both modes, for two properties.
+def test_no_server_name_turns_a_booting_install_into_a_raise_or_a_rename() -> None:
+    """Swept over every length up to past the cap, for two properties.
 
     The pair always renders, so a cosmetic default never stops a boot. And the
     tool name is the one 0.8.4 derived beside the DSN segment, so no install
     renames its tool on upgrade. The display name is the only thing that moves.
     """
-    config = _resolved(proactive_mode=proactive_mode)
+    config = _resolved()
     moved = 0
-    for n in range(1, 121):
+    for n in range(1, 1501):
         server = FastMCP("p" * n)
         names = resolve_annotation_names(server, config, display_name_given=False)
         build_server_instructions(
             vendor_display_name=names.vendor_display_name,
             annotation_tool_name=names.annotation_tool_name,
-            proactive_mode=proactive_mode,
         )
         before = (
-            annotation_tool_name_from_server(
-                server, vendor_display_name=SEGMENT, proactive_mode=proactive_mode
-            )
+            annotation_tool_name_from_server(server, vendor_display_name=SEGMENT)
             or f"{SEGMENT}_annotate"
         )
         assert names.annotation_tool_name == before, n

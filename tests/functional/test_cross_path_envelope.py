@@ -5,7 +5,7 @@ core (``envelope_assertions.py``) so a divergence in any one adapter's
 emission (e.g. a forgotten field on the error path) fails loudly instead of
 only being caught by a per-adapter test that happens to check for it.
 
-Each path runs the same logical scenario: one proactive-intent call, one
+Each path runs the same logical scenario: one annotation, one
 plain successful call, one call that raises. Sink: ``FileSink`` → JSONL
 read-back — the collector's on-the-wire JSON view (the same
 ``model_dump(mode="json")`` serialization ``HttpSink`` POSTs), not
@@ -113,8 +113,6 @@ async def _run_fastmcp_path(events_path: str) -> None:
     )
     try:
         async with Client(mcp) as client:
-            # Reactive, not proactive: proactive_mode defaults to "off", and
-            # this test deliberately runs the default config a real vendor gets.
             await client.call_tool(
                 handle.annotation_tool_name,
                 {

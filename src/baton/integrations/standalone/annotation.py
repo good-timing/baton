@@ -74,15 +74,12 @@ def register_annotation_tool(
     counter: SessionCounter,
     fallback_session_id: str,
     annotation_tool_name: str,
-    proactive_mode: str = "off",
     scrubber: Callable[[Any], Any] = identity_scrub,
     resolve_principal_hook: ResolvePrincipalHook | None = None,
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
     name = annotation_tool_name
-    description = build_annotation_tool_description(
-        vendor_display_name=vendor_display_name, proactive_mode=proactive_mode
-    )
+    description = build_annotation_tool_description(vendor_display_name=vendor_display_name)
 
     @mcp.tool(name=name, description=description)
     async def _annotate(
@@ -93,14 +90,13 @@ def register_annotation_tool(
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        # proactive_mode="off": refuse pre-call annotations structurally rather
-        # than by instruction text alone, which is only a request.
+        # Refuse pre-call annotations structurally rather than by instruction
+        # text alone, which is only a request.
         # Rejecting here, rather than requiring what_happened in the schema,
         # keeps the agent from inventing a problem just to get the call
         # through — that would corrupt the reports, which are the signal
         # worth protecting.
-        reporting = is_report(what_happened)
-        if proactive_mode == "off" and not reporting:
+        if not is_report(what_happened):
             return {
                 "ok": False,
                 "error": build_refusal_text(annotation_tool_name=name),

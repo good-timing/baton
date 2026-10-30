@@ -101,7 +101,6 @@ class BatonMiddleware(Middleware):
         counter: SessionCounter | None = None,
         fallback_session_id: str | None = None,
         annotation_tool_name: str | None = None,
-        annotation_requires_tool_name: bool = False,
         intent_param_mode: str = "required",
         result_capture_mode: ResultCaptureMode = "full",
         server_meta: dict[str, Any] | None = None,
@@ -116,7 +115,6 @@ class BatonMiddleware(Middleware):
         self._counter = counter or SessionCounter()
         self._fallback_session_id = fallback_session_id or f"sdk-{uuid7()}"
         self._annotation_tool_name = annotation_tool_name
-        self._annotation_requires_tool_name = annotation_requires_tool_name
         self._intent_param_mode = intent_param_mode
         self._result_capture_mode = result_capture_mode
         self._server_meta = server_meta or {}
@@ -156,9 +154,6 @@ class BatonMiddleware(Middleware):
             if tool.name == self._annotation_tool_name:
                 out.append(self._annotation_tool_as_advertised(tool))
                 continue
-            if self._intent_param_mode == "off":
-                out.append(tool)
-                continue
             try:
                 new_tool, dispositions = self._inject_goal_params(tool)
             except Exception:
@@ -176,8 +171,6 @@ class BatonMiddleware(Middleware):
         return out
 
     def _annotation_tool_as_advertised(self, tool: Tool) -> Tool:
-        if not self._annotation_requires_tool_name:
-            return tool
         try:
             return tool.model_copy(update={"parameters": with_tool_name_required(tool.parameters)})
         except Exception:
@@ -323,8 +316,6 @@ class BatonMiddleware(Middleware):
         """``pop_goal_params`` for this call. Mutating ``arguments`` in place
         is what keeps them off the vendor handler: the same dict is forwarded
         downstream."""
-        if self._intent_param_mode == "off":
-            return None, None, None
         dispositions = await self._resolve_dispositions(tool_name, server)
         return pop_goal_params(tool_name, arguments, dispositions)
 

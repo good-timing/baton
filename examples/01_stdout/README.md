@@ -17,17 +17,15 @@ python demo.py
 
 ## What you should see
 
-Six event envelopes — one per emission:
+Five event envelopes — one per emission:
 
 | Sequence | Event type | Why |
 |---|---|---|
-| 1 | `tool_call_start` | `search_orders` invoked |
-| 2 | `annotation` | proactive: agent's intent + expected outcome |
-| 3 | `tool_call_end` | `search_orders` returned |
-| 4 | `tool_call_start` | `refund_order` invoked |
-| 5 | `annotation` | proactive: intent for the second call |
-| 6 | `tool_call_error` | `refund_order` raised |
-| 7 | `annotation` | reactive: `dead_end` signal |
+| 1 | `tool_call_start` | `search_orders` invoked, carrying its intent |
+| 2 | `tool_call_end` | `search_orders` returned |
+| 3 | `tool_call_start` | `refund_order` invoked, carrying its intent |
+| 4 | `tool_call_error` | `refund_order` raised |
+| 5 | `annotation` | reactive: what went wrong with `search_orders` |
 
 Each envelope is the SPEC §11.4 wire shape — identical across all four example rungs (01 → 04). Only the sink changes; the data the SDK captures does not.
 

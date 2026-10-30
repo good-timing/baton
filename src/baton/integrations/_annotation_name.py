@@ -45,22 +45,9 @@ TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 _SUFFIX = "_annotate"
 
-#: Cap on the SLUG, and the binding constraint is NOT this pattern's 64.
-#:
-#: The tool name is interpolated into the server instructions 4x in proactive
-#: mode, and ``build_server_instructions`` raises above a 1500-char cap — so
-#: the tool name and ``vendor_display_name`` share one budget and a longer name
-#: buys a shorter legal display name. At this cap a 39-char tool name leaves 30
-#: characters of display name.
-#:
-#: ⚠ **The cap alone is NOT the safety property, and reasoning that it was is
-#: how this shipped a boot failure in review.** "A display name that fits the
-#: cap gets a tool name that fits too" is true and useless: nothing anywhere
-#: enforces a 30-char ``vendor_display_name``. A vendor with a SHORT
-#: ``vendor_id`` and a long display name — ``vendor_id="acme"`` gives a 13-char
-#: ``acme_annotate`` — has budget today that a 39-char derived name spends,
-#: so deriving could turn a working install into a ``ValueError`` at import.
-#: ``_fits_the_instructions_budget`` below is the actual guard; the cap just
+#: Cap on the slug. The tool name and ``vendor_display_name`` share
+#: ``build_server_instructions``' 1500-char budget, and nothing caps the display
+#: name, so ``_fits_the_instructions_budget`` below is the actual guard; the cap
 #: keeps the common case well clear of it.
 SLUG_CAP = 30
 
@@ -116,9 +103,7 @@ def slug_server_name(server_name: str) -> str | None:
     return collapsed[:SLUG_CAP].strip("-") or None
 
 
-def _fits_the_instructions_budget(
-    candidate: str, vendor_display_name: str, proactive_mode: str
-) -> bool:
+def _fits_the_instructions_budget(candidate: str, vendor_display_name: str) -> bool:
     """Would this name still let ``build_server_instructions`` render?
 
     Asked by RENDERING rather than by arithmetic, so the answer cannot drift
@@ -135,16 +120,13 @@ def _fits_the_instructions_budget(
         build_server_instructions(
             vendor_display_name=vendor_display_name,
             annotation_tool_name=candidate,
-            proactive_mode=proactive_mode,
         )
         return True
     except ValueError:
         return False
 
 
-def annotation_tool_name_from_server(
-    server: Any, *, vendor_display_name: str, proactive_mode: str
-) -> str | None:
+def annotation_tool_name_from_server(server: Any, *, vendor_display_name: str) -> str | None:
     """A readable ``{slug}_annotate`` from ``server.name``, or ``None``.
 
     Best-effort by contract. Returns only a name it has already run the
@@ -169,9 +151,7 @@ def annotation_tool_name_from_server(
     server_name = _name_the_vendor_chose(server)
     if server_name is None:
         return None
-    return _tool_name_within_budget(
-        server_name, vendor_display_name=vendor_display_name, proactive_mode=proactive_mode
-    )
+    return _tool_name_within_budget(server_name, vendor_display_name=vendor_display_name)
 
 
 def _name_the_vendor_chose(server: Any) -> str | None:
@@ -216,15 +196,13 @@ def _tool_name_candidate(raw: str) -> str | None:
     return candidate
 
 
-def _tool_name_within_budget(
-    raw: str, *, vendor_display_name: str, proactive_mode: str
-) -> str | None:
+def _tool_name_within_budget(raw: str, *, vendor_display_name: str) -> str | None:
     """``_tool_name_candidate``, or ``None`` if it would not render beside
     ``vendor_display_name``."""
     candidate = _tool_name_candidate(raw)
     if candidate is None:
         return None
-    if not _fits_the_instructions_budget(candidate, vendor_display_name, proactive_mode):
+    if not _fits_the_instructions_budget(candidate, vendor_display_name):
         logger.warning(
             "baton: the server-derived annotation tool name %r does not fit the "
             "server-instructions budget alongside vendor_display_name (%d chars); "
@@ -321,7 +299,7 @@ def resolve_annotation_names(
             or _tool_name_candidate(server_name)
             or f"{config.vendor_id}{_SUFFIX}"
         )
-        if _fits_the_instructions_budget(proposed, server_name, config.proactive_mode):
+        if _fits_the_instructions_budget(proposed, server_name):
             vendor_display_name = server_name
         else:
             logger.warning(
@@ -338,11 +316,7 @@ def resolve_annotation_names(
         config.vendor_id,
         config.annotation_tool_name
         or (
-            _tool_name_within_budget(
-                server_name,
-                vendor_display_name=vendor_display_name,
-                proactive_mode=config.proactive_mode,
-            )
+            _tool_name_within_budget(server_name, vendor_display_name=vendor_display_name)
             if server_name is not None
             else None
         ),
@@ -375,25 +349,16 @@ def resolve_install_text(
 ) -> InstallText:
     """Baton's server instructions and the annotation tool's names, per ``report_mode``."""
     if config.report_mode == "off":
-        if config.proactive_mode == "on":
-            _warn_no_effect("proactive_mode", config.proactive_mode)
         if config.annotation_tool_name is not None:
-            _warn_no_effect("annotation_tool_name", config.annotation_tool_name)
+            logger.warning(
+                "baton: annotation_tool_name=%r has no effect with report_mode='off', "
+                "because no annotation tool is registered",
+                config.annotation_tool_name,
+            )
         return InstallText(INTENT_INSTRUCTIONS, None)
     names = resolve_annotation_names(server, config, display_name_given=display_name_given)
     instructions = build_server_instructions(
         vendor_display_name=names.vendor_display_name,
         annotation_tool_name=names.annotation_tool_name,
-        proactive_mode=config.proactive_mode,
-        intent_param_mode=config.intent_param_mode,
     )
     return InstallText(instructions, names)
-
-
-def _warn_no_effect(field: str, value: str) -> None:
-    logger.warning(
-        "baton: %s=%r has no effect with report_mode='off', "
-        "because no annotation tool is registered",
-        field,
-        value,
-    )

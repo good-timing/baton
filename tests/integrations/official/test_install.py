@@ -57,9 +57,6 @@ async def configured_mcp(events_path: str) -> Any:
             vendor_display_name="Test Vendor",
             consent_token="ct_test",
             sink=FileSink(events_path),
-            # These suites exercise the agent-initiated proactive path,
-            # which proactive_mode="off" (the default) now rejects.
-            proactive_mode="on",
         ),
     )
     yield mcp, handle, events_path
@@ -91,9 +88,9 @@ class TestInstallation:
         await handle.flush()
         await handle.aclose()
 
-    @pytest.mark.parametrize(("intent_param_mode", "served"), [("required", True), ("off", False)])
-    async def test_the_subagent_sentence_follows_the_configured_mode(
-        self, events_path: str, intent_param_mode: str, served: bool
+    @pytest.mark.parametrize("intent_param_mode", ["required", "optional"])
+    async def test_the_subagent_sentence_is_served_in_every_mode(
+        self, events_path: str, intent_param_mode: str
     ) -> None:
         mcp = FastMCP("x")
         handle = install_baton(
@@ -105,11 +102,10 @@ class TestInstallation:
                 consent_token="ct_test",
                 sink=FileSink(events_path),
                 intent_param_mode=intent_param_mode,
-                proactive_mode="on",
             ),
         )
         try:
-            assert ("subagent" in mcp.instructions) is served
+            assert "subagent" in mcp.instructions
         finally:
             await handle.aclose()
 
@@ -234,9 +230,8 @@ class TestInstallation:
             await handle.aclose()
 
     async def test_annotation_tool_requires_the_goal(self, events_path: str) -> None:
-        """``intent`` is the one load-bearing field on every annotation —
-        proactives describe what's being attempted, reactives describe
-        what the failed attempt was attempting. Without it the annotation
+        """``intent`` is the one load-bearing field on every annotation: it
+        says what the failed attempt was attempting. Without it the annotation
         is a payloadless event. Mirrors baton-proxy 0.1.3 (proxy.py:93)
         which made a single explicit required schema property
         instead of relying on Python's None default to leave it optional."""
@@ -525,25 +520,6 @@ class TestEndToEndToolCall:
 
 
 class TestAnnotationToolEndToEnd:
-    async def test_proactive_annotation_emits_annotation_event(
-        self, configured_mcp: tuple[Any, Any, str]
-    ) -> None:
-        mcp, handle, path = configured_mcp
-        await mcp.call_tool(
-            handle.annotation_tool_name,
-            {
-                "user_goal": "summarize PR comments",
-            },
-        )
-        await handle.flush()
-
-        events = _read_events(path)
-        annotations = [e for e in events if e["event_type"] == "annotation"]
-        assert len(annotations) == 1
-        p = annotations[0]["payload"]
-        assert p["intent"] == "summarize PR comments"
-        assert p["what_happened"] is None
-
     async def test_reactive_annotation_with_what_happened(
         self, configured_mcp: tuple[Any, Any, str]
     ) -> None:
@@ -574,7 +550,9 @@ class TestAnnotationToolEndToEnd:
         """The wrap layer MUST skip wrapping the annotation tool — its handler
         emits an annotation event, not a tool_call_start/end pair."""
         mcp, handle, path = configured_mcp
-        await mcp.call_tool(handle.annotation_tool_name, {"user_goal": "x"})
+        await mcp.call_tool(
+            handle.annotation_tool_name, {"user_goal": "x", "what_happened": "it failed"}
+        )
         await handle.flush()
 
         events = _read_events(path)
@@ -585,12 +563,12 @@ class TestAnnotationToolEndToEnd:
 
 
 # =============================================================================
-# Full thesis flow: proactive + tool + reactive
+# Full thesis flow: tool + reactive
 # =============================================================================
 
 
 class TestAllFourEventTypesInOneFlow:
-    async def test_proactive_annotate_then_tool_call_then_reactive_annotate(
+    async def test_tool_call_then_reactive_annotate(
         self, configured_mcp: tuple[Any, Any, str]
     ) -> None:
         mcp, handle, path = configured_mcp
@@ -599,10 +577,6 @@ class TestAllFourEventTypesInOneFlow:
         def lookup(name: str) -> str:
             return f"found: {name}"
 
-        await mcp.call_tool(
-            handle.annotation_tool_name,
-            {"user_goal": "find user"},
-        )
         await mcp.call_tool("lookup", {"name": "alice"})
         await mcp.call_tool(
             handle.annotation_tool_name,
@@ -616,7 +590,7 @@ class TestAllFourEventTypesInOneFlow:
         await handle.flush()
         events = _read_events(path)
         types = [e["event_type"] for e in events]
-        assert types.count("annotation") == 2
+        assert types.count("annotation") == 1
         assert types.count("tool_call_start") == 1
         assert types.count("tool_call_end") == 1
 
@@ -1498,15 +1472,14 @@ class TestVendorInstructionsAreKept:
                 VendorConfig(
                     report_mode="on",
                     vendor_id="acme-ads",
-                    vendor_display_name="Acme Ads",
+                    vendor_display_name="Acme Ads Two",
                     consent_token="ct_test",
-                    proactive_mode="on",
                     sink=FileSink(events_path + ".2"),
                 ),
             )
             assert mcp.instructions.startswith(VENDOR_INSTRUCTIONS + "\n\n")
-            assert mcp.instructions.count("This server is wrapped") == 1
-            assert "its description says when and how" not in mcp.instructions
+            assert mcp.instructions.count("its description says when and how") == 1
+            assert "a Acme Ads Two tool call" in mcp.instructions
             await again.aclose()
         finally:
             await handle.aclose()

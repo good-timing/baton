@@ -16,22 +16,19 @@ from baton.integrations.official._compat import MCPServerClass as OfficialServer
 from baton.sinks import FileSink
 
 
-def _config(module: Any, path: str, proactive_mode: str) -> Any:
+def _config(module: Any, path: str) -> Any:
     return module.VendorConfig(
         report_mode="on",
         vendor_id="v",
         vendor_display_name="V",
         consent_token="ct_test",
         sink=FileSink(path),
-        proactive_mode=proactive_mode,
     )
 
 
-async def _official(
-    path: str, proactive_mode: str, report: dict[str, Any]
-) -> tuple[list[str], str]:
+async def _official(path: str, report: dict[str, Any]) -> tuple[list[str], str]:
     mcp = OfficialServer("srv")
-    handle = official.install_baton(mcp, _config(official, path, proactive_mode))
+    handle = official.install_baton(mcp, _config(official, path))
     try:
         tool = next(t for t in await mcp.list_tools() if t.name == handle.annotation_tool_name)
         answer = await mcp.call_tool(handle.annotation_tool_name, report)
@@ -40,11 +37,9 @@ async def _official(
         await handle.aclose()
 
 
-async def _standalone(
-    path: str, proactive_mode: str, report: dict[str, Any]
-) -> tuple[list[str], str]:
+async def _standalone(path: str, report: dict[str, Any]) -> tuple[list[str], str]:
     mcp = StandaloneServer("srv")
-    handle = standalone.install_baton(mcp, _config(standalone, path, proactive_mode))
+    handle = standalone.install_baton(mcp, _config(standalone, path))
     try:
         async with Client(mcp) as client:
             tool = next(
@@ -66,7 +61,7 @@ REPORT = {"user_goal": "remove the milk", "what_happened": "nothing removes an i
 async def test_a_reports_only_tool_lists_tool_name_as_required(adapter: Any, tmp_path: Any) -> None:
     path = str(tmp_path / "events.jsonl")
 
-    required, _ = await adapter(path, "off", REPORT)
+    required, _ = await adapter(path, REPORT)
 
     assert "tool_name" in required
     assert "what_happened" not in required
@@ -80,22 +75,13 @@ async def test_a_reports_only_tool_lists_tool_name_as_required(adapter: Any, tmp
 
 
 @pytest.mark.parametrize("adapter", [_official, _standalone])
-async def test_a_tool_that_also_takes_notes_leaves_tool_name_optional(
-    adapter: Any, tmp_path: Any
-) -> None:
-    required, _ = await adapter(str(tmp_path / "events.jsonl"), "on", REPORT)
-
-    assert "tool_name" not in required
-
-
-@pytest.mark.parametrize("adapter", [_official, _standalone])
 @pytest.mark.parametrize("account", [{}, {"what_happened": "   "}])
 async def test_a_reports_only_tool_refuses_a_call_with_no_account(
     adapter: Any, account: dict[str, str], tmp_path: Any
 ) -> None:
     path = tmp_path / "events.jsonl"
 
-    _, answer = await adapter(str(path), "off", {"user_goal": "about to look", **account})
+    _, answer = await adapter(str(path), {"user_goal": "about to look", **account})
 
     refusal = build_refusal_text(annotation_tool_name="v_annotate")
     assert refusal in answer

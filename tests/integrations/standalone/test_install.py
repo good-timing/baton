@@ -56,9 +56,6 @@ async def configured_mcp(
             vendor_display_name="Test Vendor",
             consent_token="ct_test",
             sink=HttpSink(url=httpserver.url_for(""), api_key="test-api-key"),
-            # These suites exercise the agent-initiated proactive path,
-            # which proactive_mode="off" (the default) now rejects.
-            proactive_mode="on",
         ),
     )
 
@@ -102,9 +99,9 @@ class TestInstallation:
         await handle.flush()
         await handle.aclose()
 
-    @pytest.mark.parametrize(("intent_param_mode", "served"), [("required", True), ("off", False)])
-    async def test_the_subagent_sentence_follows_the_configured_mode(
-        self, httpserver: HTTPServer, intent_param_mode: str, served: bool
+    @pytest.mark.parametrize("intent_param_mode", ["required", "optional"])
+    async def test_the_subagent_sentence_is_served_in_every_mode(
+        self, httpserver: HTTPServer, intent_param_mode: str
     ) -> None:
         mcp = FastMCP("x")
         handle = install_baton(
@@ -116,11 +113,10 @@ class TestInstallation:
                 consent_token="ct_test",
                 sink=HttpSink(url=httpserver.url_for(""), api_key="k"),
                 intent_param_mode=intent_param_mode,
-                proactive_mode="on",
             ),
         )
         try:
-            assert ("subagent" in mcp.instructions) is served
+            assert "subagent" in mcp.instructions
         finally:
             await handle.aclose()
 
@@ -205,9 +201,8 @@ class TestInstallation:
             await handle.aclose()
 
     async def test_annotation_tool_requires_the_goal(self, httpserver: HTTPServer) -> None:
-        """``intent`` is the one load-bearing field on every annotation —
-        proactives describe what's being attempted, reactives describe
-        what the failed attempt was attempting. Without it the annotation
+        """``intent`` is the one load-bearing field on every annotation: it
+        says what the failed attempt was attempting. Without it the annotation
         is a payloadless event. Mirrors baton-proxy 0.1.3 (proxy.py:93)
         which made a single explicit required schema property
         instead of relying on Python's None default to leave it optional."""
@@ -338,11 +333,11 @@ class TestInstallation:
                 ),
             )
 
-    async def test_both_capture_channels_off_is_rejected(self, httpserver: HTTPServer) -> None:
-        """intent_param_mode='off' + proactive_mode='off' captures no intent at
-        all — a silent no-op install. Fail loudly at construction instead."""
+    async def test_intent_param_mode_off_is_rejected(self, httpserver: HTTPServer) -> None:
+        """Nothing else captures what the user is trying to do, so an install
+        with no injected param fails loudly instead of silently."""
         mcp = FastMCP("x")
-        with pytest.raises(ValueError, match="nothing would capture"):
+        with pytest.raises(ValueError, match="intent_param_mode='off' would leave nothing"):
             install_baton(
                 mcp,
                 VendorConfig(
@@ -351,27 +346,12 @@ class TestInstallation:
                     consent_token="ct_test",
                     sink=HttpSink(url=httpserver.url_for(""), api_key="k"),
                     intent_param_mode="off",
-                    proactive_mode="off",
                 ),
             )
 
-    async def test_proactive_mode_must_be_valid(self, httpserver: HTTPServer) -> None:
-        mcp = FastMCP("x")
-        with pytest.raises(ValueError, match="proactive_mode"):
-            install_baton(
-                mcp,
-                VendorConfig(
-                    vendor_id="v",
-                    vendor_display_name="V",
-                    consent_token="ct_test",
-                    sink=HttpSink(url=httpserver.url_for(""), api_key="k"),
-                    proactive_mode="disabled",
-                ),
-            )
-
-    async def test_annotation_tool_survives_proactive_off(self, httpserver: HTTPServer) -> None:
-        """The reactive channel is the product. Default (proactive off) must
-        still expose the annotation tool and still accept a reactive call."""
+    async def test_annotation_tool_accepts_a_report(self, httpserver: HTTPServer) -> None:
+        """The reactive channel is the product: the annotation tool is listed
+        and accepts a report."""
         httpserver.expect_request("/v0/events").respond_with_response(Response(status=202))
         mcp = FastMCP("x")
         handle = install_baton(
@@ -399,11 +379,9 @@ class TestInstallation:
         finally:
             await handle.aclose()
 
-    async def test_proactive_annotation_is_rejected_by_default(
-        self, httpserver: HTTPServer
-    ) -> None:
-        """proactive_mode="off" enforces at the handler, not just in the prompt.
-        A refused call must not produce an event at all."""
+    async def test_a_pre_call_annotation_is_refused(self, httpserver: HTTPServer) -> None:
+        """Refused at the handler, not just in the prompt. A refused call must
+        not produce an event at all."""
         captured: list[dict[str, Any]] = []
 
         def ingest(request: Any) -> Response:
@@ -438,11 +416,11 @@ class TestInstallation:
             for ev in (batch if isinstance(batch, list) else [batch])
             if ev.get("event_type") == "annotation"
         ]
-        assert annotations == [], "a rejected proactive must not reach the sink"
+        assert annotations == [], "a refused pre-call annotation must not reach the sink"
 
     async def test_reactive_annotation_still_lands_by_default(self, httpserver: HTTPServer) -> None:
-        """The mirror of the above — rejecting proactives must not cost us the
-        friction signal, which is the product."""
+        """The mirror of the above — refusing pre-call annotations must not
+        cost us the friction signal, which is the product."""
         captured: list[dict[str, Any]] = []
 
         def ingest(request: Any) -> Response:
@@ -537,30 +515,6 @@ class TestEndToEndToolCall:
 
 
 class TestAnnotationToolEndToEnd:
-    async def test_proactive_annotation_emits_annotation_event(
-        self,
-        configured_mcp: tuple[FastMCP, Any],
-        captured: list[dict[str, Any]],
-    ) -> None:
-        mcp, handle = configured_mcp
-
-        async with Client(mcp) as client:
-            await client.call_tool(
-                handle.annotation_tool_name,
-                {
-                    "user_goal": "summarize PR comments",
-                },
-            )
-
-        await handle.flush()
-        # Only annotation events emit; the middleware skips tool_call_*
-        # for the annotation tool itself.
-        annotation_events = [ev for ev in captured if ev["event_type"] == "annotation"]
-        assert len(annotation_events) == 1
-        payload = annotation_events[0]["payload"]
-        assert payload["intent"] == "summarize PR comments"
-        assert payload["what_happened"] is None
-
     async def test_reactive_annotation_with_what_happened(
         self,
         configured_mcp: tuple[FastMCP, Any],
@@ -611,7 +565,9 @@ class TestAnnotationToolEndToEnd:
             names = [t.name for t in await client.list_tools()]
             assert handle.annotation_tool_name in names
             assert handle.annotation_tool_name == "test-vendor-mcp_annotate"
-            await client.call_tool(handle.annotation_tool_name, {"user_goal": "x"})
+            await client.call_tool(
+                handle.annotation_tool_name, {"user_goal": "x", "what_happened": "it failed"}
+            )
 
         await handle.flush()
         types = [ev["event_type"] for ev in captured]
@@ -637,7 +593,11 @@ class TestAnnotationToolObservedClient:
         declared = mcp_types.Implementation(name="claude-ai", version="1.2.3")
         async with Client(mcp, client_info=declared) as client:
             await client.call_tool("echo", {"text": "x"}, meta=meta)
-            await client.call_tool(handle.annotation_tool_name, {"user_goal": "x"}, meta=meta)
+            await client.call_tool(
+                handle.annotation_tool_name,
+                {"user_goal": "x", "what_happened": "it failed"},
+                meta=meta,
+            )
 
         await handle.flush()
         by_type = {
@@ -699,14 +659,14 @@ class TestRuntimeMetaCapture:
         captured: list[dict[str, Any]],
     ) -> None:
         """Annotation events MUST carry ``runtime_meta`` for the same
-        correlation reason — proactive annotations are turn boundaries; the
-        worker needs the runtime ID alongside them."""
+        correlation reason: the worker needs the runtime ID to join an
+        annotation to the call it is about."""
         mcp, handle = configured_mcp
 
         async with Client(mcp) as client:
             await client.call_tool(
                 handle.annotation_tool_name,
-                {"user_goal": "find user"},
+                {"user_goal": "find user", "what_happened": "it failed"},
                 meta={"claudecode/toolUseId": "tool-use-1"},
             )
 
@@ -749,12 +709,12 @@ class TestRuntimeMetaCapture:
 
 
 class TestAllFourEventTypesInOneFlow:
-    async def test_proactive_annotate_then_tool_call_then_reactive_annotate(
+    async def test_tool_call_then_reactive_annotate(
         self,
         configured_mcp: tuple[FastMCP, Any],
         captured: list[dict[str, Any]],
     ) -> None:
-        """The canonical agent flow: announce intent, call tool, react to result.
+        """The canonical agent flow: call a tool, react to its result.
         Worker stitches these into a SignalPayload per SPEC §11.5."""
         mcp, handle = configured_mcp
 
@@ -763,15 +723,7 @@ class TestAllFourEventTypesInOneFlow:
             return f"found: {name}"
 
         async with Client(mcp) as client:
-            # 1. Proactive annotate
-            await client.call_tool(
-                handle.annotation_tool_name,
-                {"user_goal": "find user"},
-            )
-            # 2. Real tool call
             await client.call_tool("lookup", {"name": "alice"})
-            # 3. Reactive annotate — intent restated so the reactive
-            # carries the same task framing the proactive opened.
             await client.call_tool(
                 handle.annotation_tool_name,
                 {
@@ -783,7 +735,7 @@ class TestAllFourEventTypesInOneFlow:
 
         await handle.flush()
         types = [ev["event_type"] for ev in captured]
-        assert types.count("annotation") == 2  # proactive + reactive
+        assert types.count("annotation") == 1
         assert types.count("tool_call_start") == 1
         assert types.count("tool_call_end") == 1
 
@@ -812,7 +764,9 @@ class TestAllFourEventTypesInOneFlow:
             return text
 
         async with Client(mcp) as client:
-            await client.call_tool(handle.annotation_tool_name, {"user_goal": "x"})
+            await client.call_tool(
+                handle.annotation_tool_name, {"user_goal": "x", "what_happened": "it failed"}
+            )
             await client.call_tool("echo", {"text": "y"})
 
         await handle.flush()
@@ -983,9 +937,9 @@ class TestIntentInjectionInstalled:
             return text
 
         async with Client(mcp) as client:
-            # Agent's real proactive annotation (not a report) fires first.
             await client.call_tool(
-                handle.annotation_tool_name, {"user_goal": "real proactive intent"}
+                handle.annotation_tool_name,
+                {"user_goal": "report intent", "what_happened": "it failed"},
             )
             # Then the wrapped tool call carrying an injected intent.
             await client.call_tool("echo", {"text": "x", "user_goal": "param intent"})
@@ -994,7 +948,7 @@ class TestIntentInjectionInstalled:
 
         anns = [ev for ev in captured if ev["event_type"] == "annotation"]
         assert len(anns) == 1
-        assert anns[0]["payload"]["intent"] == "real proactive intent"
+        assert anns[0]["payload"]["intent"] == "report intent"
         start = next(ev for ev in captured if ev["event_type"] == "tool_call_start")
         assert start["payload"]["call_intent"] == "param intent"
 
@@ -1148,15 +1102,14 @@ class TestVendorInstructionsAreKept:
                 VendorConfig(
                     report_mode="on",
                     vendor_id="acme-ads",
-                    vendor_display_name="Acme Ads",
+                    vendor_display_name="Acme Ads Two",
                     consent_token="ct_test",
-                    proactive_mode="on",
                     sink=FileSink(str(tmp_path / "second.jsonl")),
                 ),
             )
             assert mcp.instructions.startswith(VENDOR_INSTRUCTIONS + "\n\n")
-            assert mcp.instructions.count("This server is wrapped") == 1
-            assert "its description says when and how" not in mcp.instructions
+            assert mcp.instructions.count("its description says when and how") == 1
+            assert "a Acme Ads Two tool call" in mcp.instructions
             await again.aclose()
         finally:
             await handle.aclose()

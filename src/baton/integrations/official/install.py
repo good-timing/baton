@@ -225,7 +225,6 @@ def install_baton(
             # The RESOLVED name, not ``config.annotation_tool_name``, so the tool,
             # the capture layer's skip and the instructions name the same tool.
             annotation_tool_name=annotation_tool_name,
-            proactive_mode=config.proactive_mode,
             resolve_principal_hook=config.resolve_principal,
             scrubber=scrubber,
         )

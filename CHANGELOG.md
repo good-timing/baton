@@ -8,6 +8,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Removed
+
+- `VendorConfig.proactive_mode` is removed. A `VendorConfig` that passes it now fails at construction with a `TypeError`. The annotation tool refuses a call with no `what_happened` in every configuration, as it did by default, and the text an agent reads under `report_mode="on"` and `"off"` is unchanged. (SPEC §5.1.2, §13.)
+- `intent_param_mode="off"` is removed. Install now raises a `ValueError` for it, because nothing else would capture what the user is trying to do. Use `"required"` (the default) or `"optional"`. (SPEC §5.1.2, §13.)
+
+---
+
 ## 0.8.24: shorter report text with report_mode="on"
 
 ### Changed

@@ -18,8 +18,8 @@ is an ordinary bookmarks server; the only Baton-specific code is the
   `<message number>: <what the call is for>; success is <what it should show>`. This works
   even on clients that ignore server instructions (e.g. Claude Desktop), where
   the annotation tool alone would capture nothing. Toggle with
-  `VendorConfig(intent_param_mode=...)`: `required` (default) | `optional` |
-  `off`. `required` lists it as required in the advertised schema but never
+  `VendorConfig(intent_param_mode=...)`: `required` (default) | `optional`.
+  `required` lists it as required in the advertised schema but never
   refuses a call that omits it: your handler still runs, and the event carries
   no `call_intent`.
 - **Zero-config sink** — the example uses `StdoutSink()`, which writes one JSON

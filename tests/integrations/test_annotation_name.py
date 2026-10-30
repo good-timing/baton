@@ -24,10 +24,10 @@ from baton.integrations._annotation_name import (
 )
 from baton.integrations._llm_text import build_server_instructions
 
-#: Budget arguments for the tests that are not about the budget. ``"off"`` is
-#: the default mode and a short display name leaves ~84 chars of tool name, so
+#: Budget arguments for the tests that are not about the budget: a short
+#: display name leaves the tool name far more room than a slug can use, so
 #: nothing here is silently refused for a reason the test does not name.
-_ROOMY = {"vendor_display_name": "V", "proactive_mode": "off"}
+_ROOMY = {"vendor_display_name": "V"}
 
 
 class _Server:
@@ -188,37 +188,34 @@ def test_every_derived_name_is_already_valid() -> None:
     assert produced >= 4, f"only {produced} of {len(awkward)} names produced anything"
 
 
+def _widest_display_beside(tool_name: str, stem: str) -> str:
+    """``stem`` padded to the longest display name that still renders beside
+    ``tool_name``."""
+    for width in range(1500, len(stem), -1):
+        candidate = stem.ljust(width, "x")
+        try:
+            build_server_instructions(vendor_display_name=candidate, annotation_tool_name=tool_name)
+        except ValueError:
+            continue
+        return candidate
+    raise AssertionError("nothing renders")
+
+
 def test_deriving_never_turns_a_working_install_into_a_raise() -> None:
-    """The property the SLUG_CAP comment used to claim, and did not have.
+    """The server instructions have a hard cap that RAISES, so the tool name
+    shares a budget with ``vendor_display_name``. A derived name is LONGER
+    than a short ``{vendor_id}_annotate``, so without a guard this cosmetic
+    default can stop a server that booted before.
 
-    The tool name enters the server instructions 4x under
-    ``proactive_mode="on"`` against a hard cap that RAISES, so it shares a
-    budget with ``vendor_display_name``. A derived name is LONGER than a short
-    ``{vendor_id}_annotate`` — so without a guard this cosmetic default can
-    stop a server that booted before the upgrade.
-
-    The earlier version of this test asserted that a 30-char display name fits
-    and a 31-char one does not. Both are true and neither protects anything:
-    NOTHING enforces a 30-char ``vendor_display_name``
-    → [[feedback_a_justification_must_name_the_case_it_covers]].
+    Asserting that some display length fits and the next does not protects
+    nothing: NOTHING enforces a maximum ``vendor_display_name``.
     """
-    long_display = "Acme Corporation Knowledge Platform for Regional Sales and Support Teams"
-    assert len(long_display) == 72  # no rule against it
-    # The pre-change name for this vendor, which renders today.
-    build_server_instructions(
-        vendor_display_name=long_display,
-        annotation_tool_name="acme_annotate",
-        proactive_mode="on",
-    )
+    long_display = _widest_display_beside("acme_annotate", "Acme Corporation Knowledge Platform ")
     # The name the server WOULD supply is legal and readable...
     assert slug_server_name(long_display) is not None
     # ...and is refused anyway, because taking it would make the boot fail.
     assert (
-        annotation_tool_name_from_server(
-            FastMCP(long_display),
-            vendor_display_name=long_display,
-            proactive_mode="on",
-        )
+        annotation_tool_name_from_server(FastMCP(long_display), vendor_display_name=long_display)
         is None
     )
 
@@ -229,18 +226,7 @@ def test_a_name_that_fits_is_still_taken() -> None:
     assert (
         annotation_tool_name_from_server(
             FastMCP("Acme Corporation Knowledge Platform"),
-            vendor_display_name="Acme",
-            proactive_mode="on",
-        )
-        == "acme-corporation-knowledge-pla_annotate"
-    )
-    # And the SAME long display name keeps it in the default reactive-only
-    # mode, where the name is interpolated 3x instead of 4x and there is room.
-    assert (
-        annotation_tool_name_from_server(
-            FastMCP("Acme Corporation Knowledge Platform"),
             vendor_display_name="Acme Corporation Knowledge Platform",
-            proactive_mode="off",
         )
         == "acme-corporation-knowledge-pla_annotate"
     )
@@ -250,18 +236,12 @@ def test_the_guard_does_not_rescue_a_fallback_that_never_fitted() -> None:
     """When ``{vendor_id}_annotate`` itself blows the budget, that raise is
     pre-existing and stays — the guard makes this change harmless, it does not
     take on fixing a config that was already broken."""
-    huge = "A" * 120
+    huge = "A" * 1500
     with pytest.raises(ValueError):
-        build_server_instructions(
-            vendor_display_name=huge,
-            annotation_tool_name="acme_annotate",
-            proactive_mode="on",
-        )
+        build_server_instructions(vendor_display_name=huge, annotation_tool_name="acme_annotate")
     assert (
         annotation_tool_name_from_server(
-            FastMCP("Acme Corporation Knowledge Platform"),
-            vendor_display_name=huge,
-            proactive_mode="on",
+            FastMCP("Acme Corporation Knowledge Platform"), vendor_display_name=huge
         )
         is None
     )

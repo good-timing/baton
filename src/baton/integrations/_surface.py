@@ -128,14 +128,10 @@ def build_seam_augmentations(
     """
     return {
         "injected_tools": sorted(injected_tool_names),
-        "intent_param": (
-            {
-                "names": sorted(intent_param_names),
-                "required_names": sorted(required_names),
-                "mode": intent_param_mode,
-            }
-            if intent_param_mode != "off"
-            else None
-        ),
+        "intent_param": {
+            "names": sorted(intent_param_names),
+            "required_names": sorted(required_names),
+            "mode": intent_param_mode,
+        },
         "instructions_suffix": instructions_suffix,
     }

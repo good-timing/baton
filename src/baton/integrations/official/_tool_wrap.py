@@ -239,7 +239,7 @@ def install_wraps(
         # Inject BEFORE wrapping so the advertised schema carries the params on
         # the very first tools/list. Idempotent: a re-scan (via add_tool) skips
         # tools already in the registry rather than re-detecting them "native".
-        if intent_param_mode != "off" and name not in param_registry:
+        if name not in param_registry:
             try:
                 dispositions = _inject_goal_params(tool, intent_param_mode)
             except Exception:
@@ -321,20 +321,6 @@ def _inject_goal_params(tool: Any, intent_param_mode: str) -> dict[str, str]:
     ``on_list_tools``, this runs once at install, because ``tool.parameters``
     IS what ``FastMCP.list_tools`` advertises as ``inputSchema``."""
     return inject_goal_params(tool.parameters, intent_param_mode=intent_param_mode)
-
-
-def _extract_goal_params(
-    tool_name: str,
-    arguments: dict[str, Any],
-    intent_param_mode: str,
-    param_registry: dict[str, dict[str, str]],
-) -> tuple[str | None, str | None, str | None]:
-    """``pop_goal_params`` for this call. Mutating ``arguments`` in place is
-    what keeps them off the vendor handler: the same dict is forwarded to
-    ``original_run``."""
-    if intent_param_mode == "off":
-        return None, None, None
-    return pop_goal_params(tool_name, arguments, param_registry.get(tool_name))
 
 
 # =============================================================================
@@ -506,8 +492,8 @@ def _wrap_tool_run(
         call_expected: str | None = None
         call_task: str | None = None
         if isinstance(arguments, dict):
-            call_intent, call_expected, call_task = _extract_goal_params(
-                name, arguments, intent_param_mode, param_registry
+            call_intent, call_expected, call_task = pop_goal_params(
+                name, arguments, param_registry.get(name)
             )
         # scrub_or_none: OUTSIDE any `safe_emit` build thunk, so a raising
         # vendor scrubber here would break the vendor's tool call (SPEC §11.2).

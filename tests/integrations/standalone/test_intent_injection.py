@@ -129,19 +129,6 @@ class TestListInjection:
                 == build_user_goal_param_description()[len("OPTIONAL.") :]
             )
 
-    async def test_off_mode_no_injection(self, sink: Sink) -> None:
-        mcp = _build_mcp(sink, intent_param_mode="off")
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        async with Client(mcp) as client:
-            tools = await client.list_tools()
-
-        (echo_tool,) = tools
-        assert USER_GOAL_PARAM_NAME not in echo_tool.inputSchema.get("properties", {})
-
     async def test_native_param_left_untouched(
         self, sink: Sink, captured: list[dict[str, Any]]
     ) -> None:

@@ -166,34 +166,6 @@ class TestListInjection:
             finally:
                 await handle.aclose()
 
-    async def test_off_mode_no_injection(self, events_path: str) -> None:
-        mcp = FastMCP("test-vendor-mcp")
-
-        @mcp.tool()
-        def echo(text: str) -> str:
-            return text
-
-        handle = install_baton(
-            mcp,
-            VendorConfig(
-                report_mode="on",
-                vendor_id="test-vendor",
-                vendor_display_name="Test Vendor",
-                consent_token="ct_test",
-                sink=FileSink(events_path),
-                intent_param_mode="off",
-                # Both channels off is a config error — this test isolates
-                # param injection, so keep the annotation channel alive.
-                proactive_mode="on",
-            ),
-        )
-        try:
-            tools = await mcp.list_tools()
-            echo_tool = next(t for t in tools if t.name == "echo")
-            assert USER_GOAL_PARAM_NAME not in _input_schema(echo_tool).get("properties", {})
-        finally:
-            await handle.aclose()
-
     async def test_annotation_tool_not_injected(self, events_path: str) -> None:
         """The annotation tool declares its goal params itself; injection must
         not also process it.
@@ -403,8 +375,6 @@ class TestNoCopiedNote:
             assert USER_GOAL_PARAM_NAME not in start["payload"]["params"]
 
     async def test_an_agent_written_note_is_the_only_note(self, events_path: str) -> None:
-        """Requires proactive_mode="on": under the default the tool rejects
-        pre-call annotations."""
         mcp = FastMCP("test-vendor-mcp")
 
         @mcp.tool()
@@ -419,11 +389,13 @@ class TestNoCopiedNote:
                 vendor_display_name="Test Vendor",
                 consent_token="ct_test",
                 sink=FileSink(events_path),
-                proactive_mode="on",
             ),
         )
         try:
-            await mcp.call_tool(handle.annotation_tool_name, {"user_goal": "real proactive"})
+            await mcp.call_tool(
+                handle.annotation_tool_name,
+                {"user_goal": "report intent", "what_happened": "it failed"},
+            )
             await mcp.call_tool("echo", {"text": "x", USER_GOAL_PARAM_NAME: "injected why"})
             await handle.flush()
         finally:
@@ -432,7 +404,7 @@ class TestNoCopiedNote:
         events = _read_events(events_path)
         annotations = [e for e in events if e["event_type"] == "annotation"]
         assert len(annotations) == 1
-        assert annotations[0]["payload"]["intent"] == "real proactive"
+        assert annotations[0]["payload"]["intent"] == "report intent"
         start = next(e for e in events if e["event_type"] == "tool_call_start")
         assert start["payload"]["call_intent"] == "injected why"
 

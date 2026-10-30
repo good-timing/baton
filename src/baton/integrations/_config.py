@@ -23,8 +23,7 @@ from baton.sinks import HttpSink, Sink, StdoutSink
 logger = logging.getLogger(__name__)
 
 # Per-tool intent-param injection modes (mirrors baton-proxy's BATON_INTENT_PARAM).
-_INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required", "off"})
-_PROACTIVE_MODES: frozenset[str] = frozenset({"on", "off"})
+_INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required"})
 _REPORT_MODES: frozenset[str] = frozenset({"on", "off"})
 
 
@@ -371,8 +370,8 @@ class VendorConfig:
     still work. A failed resource or prompt request still carries its
     message in both modes, and installing with ``"off"`` warns once to say so.
 
-    **A mode string, not a boolean**, matching ``intent_param_mode`` /
-    ``proactive_mode``, and leaving room for the
+    **A mode string, not a boolean**, matching ``intent_param_mode`` and
+    ``report_mode``, and leaving room for the
     content ladder's partial rung as a third value rather than a second field.
 
     **Not a scrubber rule, deliberately** (SPEC §7). A scrubber TRANSFORMS a
@@ -389,8 +388,8 @@ class VendorConfig:
 
     intent_param_mode: str = "required"
     """Per-tool intent-param injection (mirrors baton-extmcp's vendor-neutral
-    naming). Every mode but ``"off"`` injects a ``user_goal`` string param into
-    each wrapped tool's input schema and strips it before the vendor handler
+    naming). Both modes inject a ``user_goal`` string param into
+    each wrapped tool's input schema and strip it before the vendor handler
     runs, so the tool never sees it; its format is the description the
     agent reads (``_llm_text._USER_GOAL_PARAM_BODY``). This is what captures
     intent on runtimes that drop ``instructions`` (notably Claude Desktop),
@@ -401,8 +400,8 @@ class VendorConfig:
     advertisement and nothing more: nothing Baton adds rejects a call that
     omits it, the vendor's handler runs, and the event carries no
     ``call_intent``. ``"optional"`` injects the same param without the
-    ``required`` entry. ``"off"`` disables injection. A tool that already
-    declares ``user_goal`` keeps its own."""
+    ``required`` entry. A tool that already declares ``user_goal`` keeps its
+    own."""
 
     report_mode: str = "off"
     """Whether the agent is given a tool to report problems with yours.
@@ -416,26 +415,6 @@ class VendorConfig:
     tell the agent when to file a report. A report costs the agent an extra
     call before it answers, and the tool and its instructions add to every
     request's input."""
-
-    proactive_mode: str = "off"
-    """Whether the server instructions ask the agent to file a *proactive*
-    annotation before each tool call. ``"off"`` (default) removes that request;
-    ``"on"`` restores it. It has no effect unless ``report_mode="on"``.
-
-    Off by default because the injected param supersedes it: ``user_goal``
-    rides every ``tool_call_start`` as ``call_intent``, so a pre-call
-    annotation carries no field the call event doesn't, while costing an
-    extra inference turn per tool call.
-
-    **This never disables reactive annotation.** Under ``report_mode="on"``
-    the tool stays on the surface and the friction clauses of the instructions
-    stay verbatim. Only the agent-initiated pre-call annotation goes away; the
-    call's intent still rides its ``tool_call_start``.
-
-    Set ``"on"``, with ``report_mode="on"``, when ``intent_param_mode="off"``:
-    without one of them, nothing captures intent. The two are alternative intent channels, not additive —
-    running both also makes two competing ``workflow`` labels that a consumer
-    has to arbitrate."""
 
     resolve_principal: ResolvePrincipalHook | None = None
     """Optional vendor-supplied identity resolver — the ONLY source of
@@ -672,29 +651,18 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             f"the wrong thing."
         )
     validate_mode(config.result_capture_mode, field="VendorConfig.result_capture_mode")
+    if config.intent_param_mode == "off":
+        raise ValueError(
+            "VendorConfig.intent_param_mode='off' would leave nothing capturing what "
+            "the user is trying to do. Use 'required' (the default) or 'optional'."
+        )
     if config.intent_param_mode not in _INTENT_PARAM_MODES:
         raise ValueError(
             f"VendorConfig.intent_param_mode {config.intent_param_mode!r} must be "
             f"one of {sorted(_INTENT_PARAM_MODES)}."
         )
-    if config.proactive_mode not in _PROACTIVE_MODES:
-        raise ValueError(
-            f"VendorConfig.proactive_mode {config.proactive_mode!r} must be "
-            f"one of {sorted(_PROACTIVE_MODES)}."
-        )
     if config.report_mode not in _REPORT_MODES:
         raise ValueError(
             f"VendorConfig.report_mode {config.report_mode!r} must be "
             f"one of {sorted(_REPORT_MODES)}."
-        )
-    if config.intent_param_mode == "off" and not (
-        config.report_mode == "on" and config.proactive_mode == "on"
-    ):
-        raise ValueError(
-            "VendorConfig has intent_param_mode='off' without report_mode='on' "
-            "and proactive_mode='on' — nothing would capture what the user is "
-            "trying to do. Use intent_param_mode='required' (injected params, "
-            "the default channel), or set report_mode='on' and "
-            "proactive_mode='on' (agent-filed pre-call annotations, for vendors "
-            "who won't accept tool-schema mutation)."
         )

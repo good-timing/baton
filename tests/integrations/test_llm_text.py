@@ -19,6 +19,7 @@ import pytest
 
 from baton.integrations._llm_text import (
     _CLAUDE_CODE_TRUNCATION_CAP,
+    _INSTRUCTIONS_LENGTH_CAP,
     _OURS_STARTS,
     build_annotation_tool_description,
     build_refusal_text,
@@ -30,28 +31,19 @@ from baton.integrations._llm_text import (
 )
 
 
-@pytest.mark.parametrize("proactive_mode", ["off", "on"])
-def test_instructions_under_truncation_cap(proactive_mode: str) -> None:
-    """A 30-char display name fits in both modes. This rendered only the
-    default until 2026-09-11, so a proactive head at 1610 chars passed CI."""
+def test_instructions_under_truncation_cap() -> None:
     rendered = build_server_instructions(
         vendor_display_name="VeryLongVendorDisplayName Inc.",
         annotation_tool_name="very_long_vendor_display_name_annotate",
-        proactive_mode=proactive_mode,
     )
     assert len(rendered) < _CLAUDE_CODE_TRUNCATION_CAP
 
 
-@pytest.mark.parametrize(("proactive_mode", "name_length"), [("off", 1500), ("on", 200)])
-def test_instructions_raises_when_names_exceed_cap(proactive_mode: str, name_length: int) -> None:
+def test_instructions_raises_when_names_exceed_cap() -> None:
     """build_server_instructions raises ValueError if rendered length exceeds cap,
     rather than silently returning a string Claude Code will truncate."""
     with pytest.raises(ValueError, match="exceeds the"):
-        build_server_instructions(
-            vendor_display_name="A" * name_length,
-            annotation_tool_name="a_annotate",
-            proactive_mode=proactive_mode,
-        )
+        build_server_instructions(vendor_display_name="A" * 1500, annotation_tool_name="a_annotate")
 
 
 # The scored reports-only text: rewording it needs a new scored run
@@ -103,86 +95,17 @@ def test_reports_only_instructions_hold_no_report_rules() -> None:
         assert rule not in rendered, rule
 
 
-def test_the_error_paragraph_tells_the_agent_to_carry_on() -> None:
-    """Without the sentence an agent can file the report and stop the user's task."""
-    rendered = build_server_instructions(
-        vendor_display_name="Acme",
-        annotation_tool_name="acme_annotate",
-        proactive_mode="on",
-    )
-    error_paragraph = next(p for p in rendered.split("\n\n") if p.startswith("AFTER"))
-    assert error_paragraph.endswith(
-        "suggested_improvement (REQUIRED whenever you can articulate one). "
-        "Then keep going: work out why the call failed, fix the input, and try "
-        "again. Do not repeat the same failing call. Reporting is not a "
-        "substitute for recovering."
-    )
-
-
-def test_the_recovery_sentence_leaves_the_name_budget_alone() -> None:
-    """The longest names that fit are the same with and without the sentence."""
-    longest = 56
-    build_server_instructions(
-        vendor_display_name="X" * longest,
-        annotation_tool_name="x" * longest,
-        proactive_mode="on",
-    )
-    with pytest.raises(ValueError, match="exceeds the"):
-        build_server_instructions(
-            vendor_display_name="X" * (longest + 1),
-            annotation_tool_name="x" * (longest + 1),
-            proactive_mode="on",
-        )
-
-
-def test_instructions_carry_must_required_framing() -> None:
-    """The BEFORE/AFTER MUST/REQUIRED framing is load-bearing per SPEC §5.4 —
-    milder framing under-populates fields. Don't drop it accidentally."""
-    rendered = build_server_instructions(
-        vendor_display_name="Acme",
-        annotation_tool_name="acme_annotate",
-        proactive_mode="on",
-    )
-    assert "BEFORE" in rendered
-    assert "AFTER" in rendered
-    assert "MUST" in rendered
-    assert "REQUIRED" in rendered
-
-
-@pytest.mark.parametrize("proactive_mode", ["off", "on"])
-def test_no_agent_facing_text_offers_a_category_to_pick(proactive_mode: str) -> None:
+def test_no_agent_facing_text_offers_a_category_to_pick() -> None:
     """The agent describes and does not classify (SPEC §5.1.1): neither text
     names ``signal_type`` or any of its eight values as something to fill in."""
     instructions = build_server_instructions(
         vendor_display_name="Acme",
         annotation_tool_name="acme_annotate",
-        proactive_mode=proactive_mode,
     )
-    description = build_annotation_tool_description(
-        vendor_display_name="Acme", proactive_mode=proactive_mode
-    )
+    description = build_annotation_tool_description(vendor_display_name="Acme")
     for text in (instructions, description):
         for word in ("signal_type", "retry_loop", "dead_end", "parameter_confusion", "feature_gap"):
             assert word not in text, word
-    if proactive_mode == "on":
-        assert "what_happened (REQUIRED, your own words, NOT a category)" in instructions
-        assert "tool_name (REQUIRED)" in instructions
-
-
-def test_a_missing_tool_is_reported_once_per_request() -> None:
-    rendered = build_server_instructions(
-        vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode="on"
-    )
-    assert "once per user request, not per call" in rendered
-
-
-def test_instructions_carry_dont_replace_answering_guardrail() -> None:
-    """Without this guardrail the agent treats annotation as proxy-satisfaction
-    and stops answering the user — documented failure mode."""
-    rendered = build_server_instructions(
-        vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode="on"
-    )
-    assert "does NOT replace answering" in rendered
 
 
 def test_annotation_description_lists_all_fields() -> None:
@@ -197,97 +120,10 @@ def test_annotation_description_lists_all_fields() -> None:
         assert field in rendered, f"annotation field {field!r} missing from description"
 
 
-def test_instructions_carry_three_mechanical_triggers() -> None:
-    """Per the 2026-06-12 live-Claude finding (ported from baton-proxy
-    0.1.3), every signal_type prompt needs a mechanical trigger — an
-    observable state Claude can check at the end of a tool call —
-    rather than a vigilance trigger. The IF block must surface all
-    three triggers: (1) lacks structured field, (2) intent satisfied
-    via workaround because no tool matched, (3) user asked for
-    something this server can't do."""
-    rendered = build_server_instructions(
-        vendor_display_name="Acme",
-        annotation_tool_name="acme_annotate",
-        proactive_mode="on",
-    )
-    assert "lacks a structured field" in rendered
-    assert "workaround because no tool matched" in rendered
-    assert "asked for something this server can't do" in rendered
-
-
-def test_the_missing_tool_case_is_mandatory_in_the_if_block() -> None:
-    on = build_server_instructions(
-        vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode="on"
-    )
-    if_block = on[on.index("IF a Acme tool") :]
-    assert "workaround because no tool matched" in if_block
-    assert "asked for something this server can't do" in if_block
-
-
-def test_a_tool_that_takes_notes_marks_the_report_fields_report_only() -> None:
-    """Filling a report field on a proactive annotation makes it read as a
-    report it is not, so the description says which fields are report-only."""
-    rendered = build_annotation_tool_description(vendor_display_name="Acme", proactive_mode="on")
-    assert "what_happened: REQUIRED on a report — omit on a proactive annotation. 1-2" in rendered
-    assert "suggested_improvement: reactive-only — omit on a proactive. A concrete" in rendered
-
-
 def test_a_reports_only_tool_does_not_describe_a_note() -> None:
     """It refuses a note, and a field that says how to send one invites it."""
     rendered = build_annotation_tool_description(vendor_display_name="Acme")
     assert "proactive" not in rendered
-
-
-class TestProactiveMode:
-    """``VendorConfig.proactive_mode`` gates the pre-call annotation request.
-    The reactive channel is the product signal and must survive in both
-    modes — a regression here silently deletes the friction capture the whole
-    SDK exists to produce.
-    """
-
-    def test_off_is_the_default(self) -> None:
-        assert build_server_instructions(
-            vendor_display_name="Acme", annotation_tool_name="acme_annotate"
-        ) == build_server_instructions(
-            vendor_display_name="Acme",
-            annotation_tool_name="acme_annotate",
-            proactive_mode="off",
-        )
-
-    def test_off_drops_the_pre_call_request(self) -> None:
-        off = build_server_instructions(
-            vendor_display_name="Acme",
-            annotation_tool_name="acme_annotate",
-            proactive_mode="off",
-        )
-        assert "BEFORE invoking" not in off
-        assert "expected_outcome" not in off
-
-    def test_off_is_shorter_and_still_under_cap(self) -> None:
-        kw = {"vendor_display_name": "Acme", "annotation_tool_name": "acme_annotate"}
-        on = build_server_instructions(**kw, proactive_mode="on")
-        off = build_server_instructions(**kw, proactive_mode="off")
-        assert len(off) < len(on)
-        assert len(on) < _CLAUDE_CODE_TRUNCATION_CAP
-
-    def test_tool_description_keeps_every_field_in_both_modes(self) -> None:
-        """The field names are the same in both modes. A reactive annotation
-        still carries intent."""
-        for mode in ("on", "off"):
-            desc = build_annotation_tool_description(
-                vendor_display_name="Acme", proactive_mode=mode
-            )
-            for field in (
-                "user_goal",
-                "what_happened",
-                "tool_name",
-                "suggested_improvement",
-            ):
-                assert field in desc, (mode, field)
-
-    def test_tool_description_off_steers_away_from_pre_call_use(self) -> None:
-        off = build_annotation_tool_description(vendor_display_name="Acme", proactive_mode="off")
-        assert "Populate proactively" not in off
 
 
 # Retired agent-facing names. Some are still WIRE keys, so they appear all over
@@ -305,11 +141,9 @@ RETIRED_AGENT_FACING_NAMES = (
 def test_no_agent_facing_text_still_asks_for_a_retired_param_name() -> None:
     """Presence tests are not enough, and this is not hypothetical.
 
-    Both description tests check that each CURRENT field name appears. That
-    passed while `_ANNOTATION_LEAD_PROACTIVE` still told the agent to populate
-    "intent + expected_outcome + workflow" — three names the schema no longer
-    accepts — because the field dictionary below it listed the new ones and the
-    assertion only ever asked "is the new name here somewhere".
+    The description test checks that each CURRENT field name appears, and
+    would pass beside a line telling the agent to populate a retired name,
+    because it only asks "is the new name here somewhere".
 
     An agent reading the lead line fills in params that are then silently
     dropped: the call succeeds, the annotation emits, and the goal text is
@@ -326,18 +160,10 @@ def test_no_agent_facing_text_still_asks_for_a_retired_param_name() -> None:
     import re
 
     surfaces = {
-        "instructions (proactive on)": build_server_instructions(
-            vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode="on"
+        "instructions": build_server_instructions(
+            vendor_display_name="Acme", annotation_tool_name="acme_annotate"
         ),
-        "instructions (proactive off)": build_server_instructions(
-            vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode="off"
-        ),
-        "tool description (on)": build_annotation_tool_description(
-            vendor_display_name="Acme", proactive_mode="on"
-        ),
-        "tool description (off)": build_annotation_tool_description(
-            vendor_display_name="Acme", proactive_mode="off"
-        ),
+        "tool description": build_annotation_tool_description(vendor_display_name="Acme"),
     }
     for where, text in surfaces.items():
         for retired in RETIRED_AGENT_FACING_NAMES:
@@ -376,49 +202,29 @@ class TestTurnNumber:
             "OPTIONAL. " + self.BODY
         )
 
-    def test_the_annotation_field_is_the_scored_text(self) -> None:
-        """Reports only, the field points at the other tools' text instead
-        (``test_reports_only_text_is_the_scored_text``)."""
-        desc = build_annotation_tool_description(vendor_display_name="Acme", proactive_mode="on")
-        assert "\n  - user_goal: " + self.BODY + "\n" in desc
-
     def test_required_mode_escalates_the_one_param(self) -> None:
         assert required_param_names(intent_param_mode="required") == ("user_goal",)
         assert required_param_names(intent_param_mode="optional") == ()
 
-    @pytest.mark.parametrize("proactive_mode", ["off", "on"])
-    def test_instructions_end_with_the_subagent_sentence(self, proactive_mode: str) -> None:
+    def test_instructions_end_with_the_subagent_sentence(self) -> None:
         """A main agent that never loads the tool schema reads only this."""
         rendered = build_server_instructions(
-            vendor_display_name="Acme",
-            annotation_tool_name="acme_annotate",
-            proactive_mode=proactive_mode,
+            vendor_display_name="Acme", annotation_tool_name="acme_annotate"
         )
         assert rendered.endswith("\n\n" + self.SUBAGENTS)
 
-    def test_no_subagent_sentence_when_no_param_is_injected(self) -> None:
-        rendered = build_server_instructions(
-            vendor_display_name="Acme",
-            annotation_tool_name="acme_annotate",
-            proactive_mode="on",
-            intent_param_mode="off",
-        )
-        assert "subagent" not in rendered
-
     def test_the_sentence_spends_headroom_and_not_the_name_budget(self) -> None:
         """The longest text that renders still clears Claude Code's cut."""
-        kw = {"annotation_tool_name": "a_annotate", "proactive_mode": "on"}
         longest = max(
             n
-            for n in range(1, 400)
-            if _renders(vendor_display_name="A" * n, intent_param_mode="off", **kw)
+            for n in range(1, 1500)
+            if _renders(vendor_display_name="A" * n, annotation_tool_name="a_annotate")
         )
-        with_sentence = build_server_instructions(vendor_display_name="A" * longest, **kw)
-        without = build_server_instructions(
-            vendor_display_name="A" * longest, intent_param_mode="off", **kw
+        rendered = build_server_instructions(
+            vendor_display_name="A" * longest, annotation_tool_name="a_annotate"
         )
-        assert len(with_sentence) == len(without) + len("\n\n" + self.SUBAGENTS)
-        assert len(with_sentence) < _CLAUDE_CODE_TRUNCATION_CAP
+        assert len(rendered) - len("\n\n" + self.SUBAGENTS) == _INSTRUCTIONS_LENGTH_CAP
+        assert len(rendered) < _CLAUDE_CODE_TRUNCATION_CAP
 
 
 def _renders(**kwargs: str) -> bool:
@@ -429,21 +235,14 @@ def _renders(**kwargs: str) -> bool:
     return True
 
 
-@pytest.mark.parametrize("proactive_mode", ["off", "on"])
-def test_no_tool_is_asked_for_as_the_word_none(proactive_mode: str) -> None:
+def test_no_tool_is_asked_for_as_the_word_none() -> None:
     """Shown ``""`` or told "empty string", agents send the quote characters."""
     instructions = build_server_instructions(
-        vendor_display_name="Acme",
-        annotation_tool_name="acme_annotate",
-        proactive_mode=proactive_mode,
+        vendor_display_name="Acme", annotation_tool_name="acme_annotate"
     )
-    description = build_annotation_tool_description(
-        vendor_display_name="Acme", proactive_mode=proactive_mode
-    )
+    description = build_annotation_tool_description(vendor_display_name="Acme")
 
-    if proactive_mode == "on":
-        assert "tool_name (none if no tool)" in instructions
-        assert "Write none if no tool exists" in description
+    assert "or none if no tool exists" in description
     for text in (instructions, description):
         assert '""' not in text
         assert "mpty string" not in text
@@ -463,18 +262,19 @@ def test_the_refusal_names_the_next_step_for_each_sender() -> None:
     )
 
 
-def test_both_heads_open_with_the_text_that_marks_our_paragraph() -> None:
-    for mode, start in (("on", _OURS_STARTS[0]), ("off", _OURS_STARTS[1])):
-        rendered = build_server_instructions(
-            vendor_display_name="Acme", annotation_tool_name="acme_annotate", proactive_mode=mode
-        )
-        assert start.match(rendered), mode
+def test_the_pointer_opens_with_the_text_that_marks_our_paragraph() -> None:
+    rendered = build_server_instructions(
+        vendor_display_name="Acme", annotation_tool_name="acme_annotate"
+    )
+    assert _OURS_STARTS[0].match(rendered)
 
 
 class TestWithVendorInstructions:
     """SPEC §5.1.2 across repeated installs on one server."""
 
-    OURS = "This server is wrapped in the Acme usage and friction SDK. More."
+    OURS = build_server_instructions(
+        vendor_display_name="Acme", annotation_tool_name="acme_annotate"
+    )
 
     def _server(self, instructions: str | None) -> Any:
         return types.SimpleNamespace(instructions=instructions)

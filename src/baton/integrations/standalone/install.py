@@ -247,7 +247,6 @@ def install_baton(
                 fallback_session_id=fallback_session_id,
                 scrubber=scrubber,
                 annotation_tool_name=annotation_tool_name,
-                annotation_requires_tool_name=config.proactive_mode == "off",
                 intent_param_mode=config.intent_param_mode,
                 result_capture_mode=config.result_capture_mode,
                 resolve_principal_hook=config.resolve_principal,
@@ -303,7 +302,6 @@ def install_baton(
             # The RESOLVED name, not ``config.annotation_tool_name``, so the tool,
             # the capture layer's skip and the instructions name the same tool.
             annotation_tool_name=annotation_tool_name,
-            proactive_mode=config.proactive_mode,
             scrubber=scrubber,
             resolve_principal_hook=config.resolve_principal,
         )

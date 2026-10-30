@@ -43,7 +43,6 @@ def _config(
         sink=FileSink(str(events_path)),
         resolve_principal=hook,
         intent_param_mode=mode,
-        proactive_mode="on" if mode == "off" else "off",
     )
 
 
@@ -236,19 +235,6 @@ async def test_a_hook_that_raises_costs_the_principal_not_the_listing(
     assert (start["event_type"], end["event_type"]) == ("tool_list_start", "tool_list_end")
     assert principal_of(start) is None
     assert principal_of(end) is None
-
-
-@pytest.mark.parametrize("list_once", ADAPTERS)
-async def test_a_listing_is_sent_with_the_intent_params_off(
-    list_once: Driver, tmp_path: Path
-) -> None:
-    events_path = tmp_path / "events.jsonl"
-
-    received = await list_once(events_path, mode="off")
-
-    start, end = _listing_events(events_path)
-    assert (start["event_type"], end["event_type"]) == ("tool_list_start", "tool_list_end")
-    assert end["payload"]["count"] == received
 
 
 @pytest.mark.parametrize("list_once", ADAPTERS)

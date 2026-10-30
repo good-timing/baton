@@ -4,14 +4,10 @@ Two adapters (``baton.integrations.standalone``, ``baton.integrations.official``
 surface identical text to the calling agent; this module owns the canonical
 copy so they cannot drift.
 
-Reports only (``proactive_mode="off"``): the instructions are one sentence
-pointing at the annotation tool, and the tool's description holds the
-triggers, the recovery rule and the fields, so each rule is written once.
-
-Proactive (``proactive_mode="on"``): the instructions carry the BEFORE/AFTER/IF
-triggers, because only text loaded at session start can drive an annotation
-before the first tool call. Claude Code truncates ``InitializeResult.instructions``
-at ~2087 chars, so the rendered template is capped at 1500.
+The instructions are one sentence pointing at the annotation tool, and the
+tool's description holds the triggers, the recovery rule and the fields, so
+each rule is written once. Claude Code truncates ``InitializeResult.instructions``
+at ~2087 chars, so the rendered pointer is capped at 1500.
 
 Every trigger names a state the agent can check against its own behavior
 (an error, a missing field, a workaround), not a judgement it has to remember
@@ -28,56 +24,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Shorter than it could be on purpose: a longer head pushed the 30-char
-# long-name fixture past the 1500 cap.
-_INSTRUCTIONS_HEAD_PROACTIVE = (
-    "This server is wrapped in the {vendor_display_name} usage and friction SDK. "
-    "Use `{annotation_tool_name}` to record what the user is trying to do and "
-    "how each {vendor_display_name} tool call went. See that tool's "
-    "description for field-level detail.\n\n"
-)
-
 # Holds no report rule: each is written once, in the report tool's description.
 _INSTRUCTIONS_REPORT_POINTER = (
     "Use `{annotation_tool_name}` to report a {vendor_display_name} tool call "
     "that went wrong, or a request no tool covers; its description says when and how."
-)
-
-_INSTRUCTIONS_PROACTIVE_CLAUSE = (
-    "BEFORE invoking any {vendor_display_name} tool, you MUST call "
-    "`{annotation_tool_name}` with user_goal (REQUIRED).\n\n"
-)
-
-# Without it an agent can file the report and stop the user's task.
-_INSTRUCTIONS_RECOVERY_SENTENCE = (
-    " Then keep going: work out why the call failed, fix the input, and try "
-    "again. Do not repeat the same failing call. Reporting is not a "
-    "substitute for recovering."
-)
-
-_INSTRUCTIONS_REACTIVE_CLAUSES = (
-    "AFTER any {vendor_display_name} tool errors, times out, returns an "
-    "unhelpful or contradictory result, or the user shows signs of giving "
-    "up, you MUST call `{annotation_tool_name}` again with what_happened "
-    "(REQUIRED, your own words, NOT a category), tool_name (REQUIRED) and "
-    "suggested_improvement (REQUIRED whenever you can articulate one)."
-    "{recovery}\n\n"
-    "IF a {vendor_display_name} tool response lacks a structured field for "
-    "what the user asked about, OR you satisfied the user's intent via a "
-    "workaround because no tool matched what they asked for, OR the user "
-    "asked for something this server can't do — you MUST call "
-    "`{annotation_tool_name}` once per user request, not per call, with "
-    "what_happened and tool_name (none if no tool) AND still answer the "
-    "user with your best inference. Filing the annotation does NOT replace "
-    "answering."
-)
-
-
-_ANNOTATION_LEAD_PROACTIVE = (
-    "Record structured signal about a {vendor_display_name} tool call — "
-    "what the user is trying to do, and how it went. Populate proactively "
-    "before the call (user_goal) and reactively after if the result was "
-    "unhelpful (what_happened + tool_name + suggested_improvement).\n"
 )
 
 # The Console splits user_goal on "; success is" (SPEC §11.5.1 rule 2).
@@ -89,20 +39,6 @@ _CONTEXT_FIELD = (
     "alternatives_considered, likely_cause, user_impact, error_class, "
     "downstream_blocked, confidence_in_intent. When no tool covers the "
     "request also missing_capability_field and requested_capability."
-)
-
-_PROACTIVE_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE = (
-    _ANNOTATION_LEAD_PROACTIVE + "\n"
-    "Fields:\n"
-    "  - user_goal: {user_goal}\n"
-    "  - what_happened: REQUIRED on a report — omit on a proactive annotation. "
-    "1-2 plain sentences in YOUR OWN WORDS: what you asked for, "
-    "what came back, and why it was unusable. Do NOT pick a category or "
-    "invent a label — describe it.\n"
-    "  - tool_name: REQUIRED on a report. The {vendor_display_name} tool that "
-    "went wrong. Write none if no tool exists for the request.\n"
-    "  - suggested_improvement: reactive-only — omit on a proactive. "
-    "A concrete sentence about what product change would have helped.\n" + _CONTEXT_FIELD
 )
 
 _REPORT_TOOL_DESCRIPTION_TEMPLATE = (
@@ -129,7 +65,7 @@ _REPORT_TOOL_DESCRIPTION_TEMPLATE = (
 
 
 # Empirically measured Claude Code truncation cap for InitializeResult.instructions.
-# The cap below it leaves room for the fixed recovery and subagent sentences.
+# The cap below it leaves room for the fixed subagent sentence.
 _CLAUDE_CODE_TRUNCATION_CAP = 2087
 _INSTRUCTIONS_LENGTH_CAP = 1500
 
@@ -344,42 +280,19 @@ def build_server_instructions(
     *,
     vendor_display_name: str,
     annotation_tool_name: str,
-    proactive_mode: str = "off",
-    intent_param_mode: str = "required",
 ) -> str:
-    """Build the server-instructions text for the MCP ``instructions`` field.
-
-    ``proactive_mode="off"`` (the default) renders only the pointer to the
-    annotation tool. ``intent_param_mode="off"`` drops the subagent sentence:
-    no tool then carries a ``user_goal`` param for a subagent to fill.
-    """
-    names = {
-        "vendor_display_name": vendor_display_name,
-        "annotation_tool_name": annotation_tool_name,
-    }
-    if proactive_mode == "on":
-        template = (
-            _INSTRUCTIONS_HEAD_PROACTIVE
-            + _INSTRUCTIONS_PROACTIVE_CLAUSE
-            + _INSTRUCTIONS_REACTIVE_CLAUSES
-        )
-        # The cap is the budget the two names share. The recovery sentence has
-        # no names in it, so it comes out of the headroom under the truncation cap.
-        budgeted = len(template.format(**names, recovery=""))
-        rendered = template.format(**names, recovery=_INSTRUCTIONS_RECOVERY_SENTENCE)
-    else:
-        rendered = _INSTRUCTIONS_REPORT_POINTER.format(**names)
-        budgeted = len(rendered)
-    if budgeted > _INSTRUCTIONS_LENGTH_CAP:
+    """Build the server-instructions text for the MCP ``instructions`` field."""
+    rendered = _INSTRUCTIONS_REPORT_POINTER.format(
+        vendor_display_name=vendor_display_name, annotation_tool_name=annotation_tool_name
+    )
+    if len(rendered) > _INSTRUCTIONS_LENGTH_CAP:
         raise ValueError(
-            f"Rendered server instructions are {budgeted} chars, which exceeds "
+            f"Rendered server instructions are {len(rendered)} chars, which exceeds "
             f"the {_INSTRUCTIONS_LENGTH_CAP}-char safety cap "
             f"(Claude Code truncates at ~{_CLAUDE_CODE_TRUNCATION_CAP}). "
             f"Shorten vendor_display_name or annotation_tool_name."
         )
-    if intent_param_mode != "off":
-        rendered += _INSTRUCTIONS_SUBAGENT_CLAUSE
-    return rendered
+    return rendered + _INSTRUCTIONS_SUBAGENT_CLAUSE
 
 
 _VENDOR_INSTRUCTIONS_ATTR = "_baton_vendor_instructions"
@@ -390,11 +303,10 @@ def _whole_sentence(template: str) -> re.Pattern[str]:
     return re.compile(".+?".join(map(re.escape, parts)))
 
 
-# Where our paragraph begins under proactive_mode "on", "off", and report_mode="off".
+# Where our paragraph begins under report_mode "on" and "off".
 # The pointer is matched whole: its opening, "Use `", is how a vendor's own
 # paragraph may start (``TestAVendorParagraphLikeTheReportPointer``).
 _OURS_STARTS = (
-    re.compile(re.escape(_INSTRUCTIONS_HEAD_PROACTIVE.split("{", 1)[0])),
     _whole_sentence(_INSTRUCTIONS_REPORT_POINTER),
     re.compile(re.escape(INTENT_INSTRUCTIONS)),
 )
@@ -438,25 +350,14 @@ def with_vendor_instructions(mcp: Any, ours: str) -> str:
     return combined
 
 
-def build_annotation_tool_description(
-    *, vendor_display_name: str, proactive_mode: str = "off"
-) -> str:
-    """Build the annotation tool's ``description``.
-
-    ``proactive_mode="off"`` (the default) makes it the report tool, holding
-    the report rules the instructions only point at. Its ``user_goal`` line
-    refers to the other tools' template, which they always carry here: config
-    refuses ``intent_param_mode="off"`` without ``proactive_mode="on"``.
-    """
-    if proactive_mode == "on":
-        return _PROACTIVE_ANNOTATION_TOOL_DESCRIPTION_TEMPLATE.format(
-            vendor_display_name=vendor_display_name, user_goal=_USER_GOAL_PARAM_BODY
-        )
+def build_annotation_tool_description(*, vendor_display_name: str) -> str:
+    """Build the annotation tool's ``description``: the report rules the
+    instructions only point at."""
     return _REPORT_TOOL_DESCRIPTION_TEMPLATE.format(vendor_display_name=vendor_display_name)
 
 
 def build_refusal_text(*, annotation_tool_name: str) -> str:
-    """What a reports-only tool answers when a call has no account (SPEC §5.1.1)."""
+    """What the annotation tool answers when a call has no account (SPEC §5.1.1)."""
     return (
         f"{annotation_tool_name} is reactive-only on this server. Call it only "
         "AFTER a tool call returns an unhelpful, empty, failed or contradictory "

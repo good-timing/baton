@@ -183,18 +183,14 @@ async def test_report_mode_on_serves_the_annotation_tool_and_its_instructions(se
 
 
 @both_adapters
-@pytest.mark.parametrize(
-    "setting", [{"proactive_mode": "on"}, {"annotation_tool_name": "acme_report"}], ids=str
-)
-async def test_an_annotation_setting_alone_warns_and_changes_nothing(
-    serve: Any, setting: dict[str, str], caplog: pytest.LogCaptureFixture
+async def test_an_annotation_tool_name_alone_warns_and_changes_nothing(
+    serve: Any, caplog: pytest.LogCaptureFixture
 ) -> None:
     with caplog.at_level(logging.WARNING, logger="baton"):
-        async with serve([lookup], **setting) as served:
+        async with serve([lookup], annotation_tool_name="acme_report") as served:
             assert set(served.schemas) == {"lookup"}
             assert served.instructions == INTENT_INSTRUCTIONS
-    (field,) = setting
-    assert f"{field}={setting[field]!r} has no effect with report_mode='off'" in caplog.text
+    assert "annotation_tool_name='acme_report' has no effect with report_mode='off'" in caplog.text
 
 
 @both_adapters
@@ -241,19 +237,23 @@ def test_a_display_name_is_needed_only_with_reports_on() -> None:
         _validate_vendor_config(VendorConfig(vendor_id="v", report_mode="on"))
 
 
-def test_intent_capture_needs_injection_or_proactive_reports() -> None:
+def test_intent_param_mode_off_is_refused_in_every_report_mode() -> None:
     from baton.integrations._config import VendorConfig, _validate_vendor_config
 
     def config(**modes: str) -> VendorConfig:
         return VendorConfig(vendor_id="v", vendor_display_name="V", **modes)
 
-    _validate_vendor_config(config(intent_param_mode="off", report_mode="on", proactive_mode="on"))
-    for modes in (
-        {"intent_param_mode": "off"},
-        {"intent_param_mode": "off", "proactive_mode": "on"},
-        {"intent_param_mode": "off", "report_mode": "on"},
-    ):
-        with pytest.raises(ValueError, match="nothing would capture"):
-            _validate_vendor_config(config(**modes))
+    for mode in ("required", "optional"):
+        _validate_vendor_config(config(intent_param_mode=mode))
+    for report_mode in ("off", "on"):
+        with pytest.raises(ValueError, match="intent_param_mode='off' would leave nothing"):
+            _validate_vendor_config(config(intent_param_mode="off", report_mode=report_mode))
     with pytest.raises(ValueError, match="report_mode 'yes' must be one of"):
         _validate_vendor_config(config(report_mode="yes"))
+
+
+def test_proactive_mode_is_not_a_field() -> None:
+    from baton.integrations._config import VendorConfig
+
+    with pytest.raises(TypeError, match="proactive_mode"):
+        VendorConfig(vendor_id="v", proactive_mode="on")  # type: ignore[call-arg]
