@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.9.0: proactive mode and intent_param_mode="off" are removed
 
 ### Removed
 
