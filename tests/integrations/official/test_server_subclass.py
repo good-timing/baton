@@ -1,23 +1,20 @@
-"""``install_baton`` on a vendor's subclass of the server class, over the wire.
+"""``baton.install_baton`` on a vendor's subclass of the server class, over the wire.
 
-Detection is by shape, so a subclass installs like the base class. A subclass
-that overrides ``call_tool`` with its own gate runs that gate BEFORE Baton's
-wrapped handler: the gate sees ``user_goal``, and a call it rejects never
-reaches the wrapper, so it emits no ``tool_call_*`` events.
+A subclass that overrides ``call_tool`` with its own gate runs that gate BEFORE
+Baton's wrapped handler: the gate sees ``user_goal``, and a call it rejects
+never reaches the wrapper, so it is not captured. Capturing rejected calls
+would change these tests on purpose.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Any
+from typing import Any, NamedTuple
 
-import pytest
-
+from baton import VendorConfig, install_baton
 from baton.integrations._llm_text import USER_GOAL_PARAM_NAME
-from baton.integrations.official import VendorConfig, install_baton
 from baton.integrations.official._compat import MCPServerClass
 from baton.sinks import FileSink
-from tests._event_helpers import without_surface_snapshots
+from tests._event_helpers import read_events, without_surface_snapshots
 from tests._mcp_session import connected_session
 
 GOAL = "1: echo the text; success is the same text back"
@@ -43,12 +40,15 @@ class GatedServer(MCPServerClass):  # type: ignore[misc,valid-type]
         return await super().call_tool(name, arguments, *args, **kwargs)
 
 
-@pytest.fixture
-def events_path(tmp_path: Any) -> str:
-    return str(tmp_path / "events.jsonl")
+class Run(NamedTuple):
+    properties: list[str]
+    is_error: bool
+    handler_saw: list[str]
+    tool_call_events: list[dict[str, Any]]
 
 
-def _install(mcp: Any, events_path: str) -> tuple[Any, list[str]]:
+async def _run(mcp: Any, tmp_path: Any, text: str) -> Run:
+    """Install, then list and call ``echo`` once over a client session."""
     handler_saw: list[str] = []
 
     @mcp.tool()
@@ -56,88 +56,74 @@ def _install(mcp: Any, events_path: str) -> tuple[Any, list[str]]:
         handler_saw.append(text)
         return text
 
+    events_path = tmp_path / "events.jsonl"
     handle = install_baton(
         mcp,
         VendorConfig(
             vendor_id="test-vendor",
             vendor_display_name="Test Vendor",
             consent_token="ct_test",
-            sink=FileSink(events_path),
+            sink=FileSink(str(events_path)),
         ),
     )
-    return handle, handler_saw
+    try:
+        async with connected_session(mcp) as session:
+            listed = (await session.list_tools()).tools
+            result = await session.call_tool("echo", {"text": text, USER_GOAL_PARAM_NAME: GOAL})
+        await handle.flush()
+    finally:
+        await handle.aclose()
 
-
-def _tool_call_events(path: str) -> list[dict[str, Any]]:
-    with open(path) as f:
-        events = [json.loads(line) for line in f if line.strip()]
-    return [
-        e for e in without_surface_snapshots(events) if e["event_type"].startswith("tool_call_")
-    ]
-
-
-def _is_error(result: Any) -> bool:
-    return bool(result.model_dump(by_alias=True)["isError"])
-
-
-async def _call(mcp: Any, text: str) -> tuple[list[str], bool]:
-    async with connected_session(mcp) as session:
-        listed = (await session.list_tools()).tools
-        schema = listed[0].model_dump(by_alias=True)["inputSchema"]
-        result = await session.call_tool("echo", {"text": text, USER_GOAL_PARAM_NAME: GOAL})
-    return list(schema["properties"]), _is_error(result)
+    return Run(
+        properties=list(
+            next(t for t in listed if t.name == "echo").model_dump(by_alias=True)["inputSchema"][
+                "properties"
+            ]
+        ),
+        is_error=bool(result.model_dump(by_alias=True)["isError"]),
+        handler_saw=handler_saw,
+        tool_call_events=[
+            e
+            for e in without_surface_snapshots(read_events(events_path))
+            if e["event_type"].startswith("tool_call_")
+        ],
+    )
 
 
 class TestPlainSubclass:
-    async def test_installs_injects_strips_and_captures(self, events_path: str) -> None:
-        mcp = VendorServer("vendor")
-        handle, handler_saw = _install(mcp, events_path)
-        try:
-            properties, is_error = await _call(mcp, "hi")
-            await handle.flush()
-        finally:
-            await handle.aclose()
+    async def test_installs_injects_strips_and_captures(self, tmp_path: Any) -> None:
+        run = await _run(VendorServer("vendor"), tmp_path, "hi")
 
-        assert USER_GOAL_PARAM_NAME in properties
-        assert not is_error
-        assert handler_saw == ["hi"]
-        start, end = _tool_call_events(events_path)
+        assert USER_GOAL_PARAM_NAME in run.properties
+        assert not run.is_error
+        assert run.handler_saw == ["hi"]
+        start, end = run.tool_call_events
         assert start["event_type"] == "tool_call_start"
         assert start["payload"]["tool_name"] == "echo"
         assert start["payload"]["params"] == {"text": "hi"}
         assert start["payload"]["call_intent"] == GOAL
         assert end["event_type"] == "tool_call_end"
+        assert end["call_id"] == start["call_id"]
 
 
 class TestSubclassOverridingCallTool:
-    async def test_the_gate_runs_before_the_strip(self, events_path: str) -> None:
+    async def test_the_gate_runs_before_the_strip(self, tmp_path: Any) -> None:
         mcp = GatedServer("vendor")
-        handle, handler_saw = _install(mcp, events_path)
-        try:
-            _, is_error = await _call(mcp, "hi")
-            await handle.flush()
-        finally:
-            await handle.aclose()
+        run = await _run(mcp, tmp_path, "hi")
 
-        assert not is_error
+        assert not run.is_error
         assert mcp.gate_saw == [{"text": "hi", USER_GOAL_PARAM_NAME: GOAL}]
-        assert handler_saw == ["hi"]
-        assert [e["event_type"] for e in _tool_call_events(events_path)] == [
+        assert run.handler_saw == ["hi"]
+        assert [e["event_type"] for e in run.tool_call_events] == [
             "tool_call_start",
             "tool_call_end",
         ]
 
-    async def test_a_call_the_gate_rejects_emits_no_tool_call_events(
-        self, events_path: str
-    ) -> None:
+    async def test_a_call_the_gate_rejects_is_not_captured(self, tmp_path: Any) -> None:
         mcp = GatedServer("vendor")
-        handle, handler_saw = _install(mcp, events_path)
-        try:
-            _, is_error = await _call(mcp, "deny")
-            await handle.flush()
-        finally:
-            await handle.aclose()
+        run = await _run(mcp, tmp_path, "deny")
 
-        assert is_error
-        assert handler_saw == []
-        assert _tool_call_events(events_path) == []
+        assert mcp.gate_saw == [{"text": "deny", USER_GOAL_PARAM_NAME: GOAL}]
+        assert run.is_error
+        assert run.handler_saw == []
+        assert run.tool_call_events == []

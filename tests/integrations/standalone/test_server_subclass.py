@@ -1,26 +1,26 @@
-"""``install_baton`` on a vendor's subclass of ``fastmcp.FastMCP``.
+"""``baton.install_baton`` on a vendor's subclass of ``fastmcp.FastMCP``.
 
-Detection is by shape, so a subclass installs like the base class. On fastmcp
-3 and later, a ``call_tool`` override runs BEFORE the middleware chain: the
-gate sees ``user_goal``, and a call it rejects emits no ``tool_call_*`` events.
-fastmcp 2 has no public ``call_tool``, so an override there never runs.
+On fastmcp 3 and later, a ``call_tool`` override runs twice: first BEFORE the
+middleware chain, where the gate sees ``user_goal``, then again from inside it
+with the stripped arguments. A call the gate rejects on the first run is not
+captured. fastmcp 2 has no public ``call_tool``, so the wire never reaches an
+override there. Capturing rejected calls would change these tests on purpose.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Any
+from typing import Any, NamedTuple
 
-import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 
+from baton import VendorConfig, install_baton
 from baton.integrations._llm_text import USER_GOAL_PARAM_NAME
-from baton.integrations.standalone import VendorConfig, install_baton
 from baton.sinks import FileSink
-from tests._event_helpers import without_surface_snapshots
+from tests._event_helpers import read_events, without_surface_snapshots
 
 GOAL = "1: echo the text; success is the same text back"
+HAS_PUBLIC_CALL_TOOL = hasattr(FastMCP, "call_tool")
 
 
 class VendorServer(FastMCP):  # type: ignore[misc]
@@ -37,24 +37,22 @@ class GatedServer(FastMCP):  # type: ignore[misc]
     async def call_tool(
         self, name: str, arguments: dict[str, Any] | None = None, *args: Any, **kwargs: Any
     ) -> Any:
-        self.gate_saw.append(dict(arguments or {}))
-        if (arguments or {}).get("text") == "deny":
+        seen = dict(arguments or {})
+        self.gate_saw.append(seen)
+        if seen.get("text") == "deny":
             raise ToolError("out of credits")
         return await super().call_tool(name, arguments, *args, **kwargs)
 
 
-needs_public_call_tool = pytest.mark.skipif(
-    not hasattr(FastMCP, "call_tool"),
-    reason="this fastmcp has no public call_tool, so an override is never called",
-)
+class Run(NamedTuple):
+    properties: list[str]
+    is_error: bool
+    handler_saw: list[str]
+    tool_call_events: list[dict[str, Any]]
 
 
-@pytest.fixture
-def events_path(tmp_path: Any) -> str:
-    return str(tmp_path / "events.jsonl")
-
-
-def _install(mcp: Any, events_path: str) -> tuple[Any, list[str]]:
+async def _run(mcp: Any, tmp_path: Any, text: str) -> Run:
+    """Install, then list and call ``echo`` once over a client session."""
     handler_saw: list[str] = []
 
     @mcp.tool
@@ -62,89 +60,86 @@ def _install(mcp: Any, events_path: str) -> tuple[Any, list[str]]:
         handler_saw.append(text)
         return text
 
+    events_path = tmp_path / "events.jsonl"
     handle = install_baton(
         mcp,
         VendorConfig(
             vendor_id="test-vendor",
             vendor_display_name="Test Vendor",
             consent_token="ct_test",
-            sink=FileSink(events_path),
+            sink=FileSink(str(events_path)),
         ),
     )
-    return handle, handler_saw
+    try:
+        async with Client(mcp) as client:
+            listed = await client.list_tools()
+            result = await client.call_tool(
+                "echo", {"text": text, USER_GOAL_PARAM_NAME: GOAL}, raise_on_error=False
+            )
+        await handle.flush()
+    finally:
+        await handle.aclose()
+
+    return Run(
+        properties=list(
+            next(t for t in listed if t.name == "echo").model_dump(by_alias=True)["inputSchema"][
+                "properties"
+            ]
+        ),
+        is_error=bool(result.is_error),
+        handler_saw=handler_saw,
+        tool_call_events=[
+            e
+            for e in without_surface_snapshots(read_events(events_path))
+            if e["event_type"].startswith("tool_call_")
+        ],
+    )
 
 
-def _tool_call_events(path: str) -> list[dict[str, Any]]:
-    with open(path) as f:
-        events = [json.loads(line) for line in f if line.strip()]
-    return [
-        e for e in without_surface_snapshots(events) if e["event_type"].startswith("tool_call_")
-    ]
-
-
-async def _call(mcp: Any, text: str) -> tuple[list[str], bool]:
-    async with Client(mcp) as client:
-        listed = await client.list_tools()
-        result = await client.call_tool(
-            "echo", {"text": text, USER_GOAL_PARAM_NAME: GOAL}, raise_on_error=False
-        )
-    schema = listed[0].model_dump(by_alias=True)["inputSchema"]
-    return list(schema["properties"]), bool(result.is_error)
+def _types(run: Run) -> list[str]:
+    return [e["event_type"] for e in run.tool_call_events]
 
 
 class TestPlainSubclass:
-    async def test_installs_injects_strips_and_captures(self, events_path: str) -> None:
-        mcp = VendorServer("vendor")
-        handle, handler_saw = _install(mcp, events_path)
-        try:
-            properties, is_error = await _call(mcp, "hi")
-            await handle.flush()
-        finally:
-            await handle.aclose()
+    async def test_installs_injects_strips_and_captures(self, tmp_path: Any) -> None:
+        run = await _run(VendorServer("vendor"), tmp_path, "hi")
 
-        assert USER_GOAL_PARAM_NAME in properties
-        assert not is_error
-        assert handler_saw == ["hi"]
-        start, end = _tool_call_events(events_path)
+        assert USER_GOAL_PARAM_NAME in run.properties
+        assert not run.is_error
+        assert run.handler_saw == ["hi"]
+        start, end = run.tool_call_events
         assert start["event_type"] == "tool_call_start"
         assert start["payload"]["tool_name"] == "echo"
         assert start["payload"]["params"] == {"text": "hi"}
         assert start["payload"]["call_intent"] == GOAL
         assert end["event_type"] == "tool_call_end"
+        assert end["call_id"] == start["call_id"]
 
 
-@needs_public_call_tool
 class TestSubclassOverridingCallTool:
-    async def test_the_gate_runs_before_the_strip(self, events_path: str) -> None:
+    async def test_the_gate_runs_before_the_strip(self, tmp_path: Any) -> None:
         mcp = GatedServer("vendor")
-        handle, handler_saw = _install(mcp, events_path)
-        try:
-            _, is_error = await _call(mcp, "hi")
-            await handle.flush()
-        finally:
-            await handle.aclose()
+        run = await _run(mcp, tmp_path, "hi")
 
-        assert not is_error
-        # fastmcp calls call_tool again from inside the chain, so the gate can
-        # run twice; only the first, outer call is ours to pin.
-        assert mcp.gate_saw[0] == {"text": "hi", USER_GOAL_PARAM_NAME: GOAL}
-        assert handler_saw == ["hi"]
-        assert [e["event_type"] for e in _tool_call_events(events_path)] == [
-            "tool_call_start",
-            "tool_call_end",
-        ]
+        assert not run.is_error
+        assert run.handler_saw == ["hi"]
+        assert _types(run) == ["tool_call_start", "tool_call_end"]
+        if HAS_PUBLIC_CALL_TOOL:
+            assert mcp.gate_saw == [{"text": "hi", USER_GOAL_PARAM_NAME: GOAL}, {"text": "hi"}]
+        else:
+            assert mcp.gate_saw == []
 
-    async def test_a_call_the_gate_rejects_emits_no_tool_call_events(
-        self, events_path: str
-    ) -> None:
+    async def test_a_call_the_gate_rejects_is_not_captured(self, tmp_path: Any) -> None:
         mcp = GatedServer("vendor")
-        handle, handler_saw = _install(mcp, events_path)
-        try:
-            _, is_error = await _call(mcp, "deny")
-            await handle.flush()
-        finally:
-            await handle.aclose()
+        run = await _run(mcp, tmp_path, "deny")
 
-        assert is_error
-        assert handler_saw == []
-        assert _tool_call_events(events_path) == []
+        if HAS_PUBLIC_CALL_TOOL:
+            assert mcp.gate_saw == [{"text": "deny", USER_GOAL_PARAM_NAME: GOAL}]
+            assert run.is_error
+            assert run.handler_saw == []
+            assert run.tool_call_events == []
+        else:
+            assert mcp.gate_saw == []
+            assert not run.is_error
+            assert run.handler_saw == ["deny"]
+            assert _types(run) == ["tool_call_start", "tool_call_end"]
