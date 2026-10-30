@@ -223,12 +223,13 @@ def vendor_exception(raised: BaseException, host_package: str) -> BaseException:
     return cause if raised_by_host else raised
 
 
-def marked_public(exc: BaseException, tool_error: type[BaseException]) -> bool:
+def marked_public(exc: BaseException, tool_error: type[BaseException] | None) -> bool:
     """Whether the vendor raised ``exc`` to give the agent its message.
+    ``tool_error=None``: nothing is marked public.
 
     A tool-error raised ``from`` another exception may describe that exception,
     so it does not count (SPEC §11.4.3(1))."""
-    return isinstance(exc, tool_error) and exc.__cause__ is None
+    return tool_error is not None and isinstance(exc, tool_error) and exc.__cause__ is None
 
 
 def raised_error_fields(
@@ -236,7 +237,7 @@ def raised_error_fields(
     mode: str,
     scrubber: Callable[[Any], Any],
     raised: BaseException,
-    tool_error: type[BaseException],
+    tool_error: type[BaseException] | None,
 ) -> ErrorResultFields:
     """The RAISE failure shape's ``error_body`` (SPEC §11.4.3(1)): withheld
     under ``"off"`` unless the vendor marked the message public."""

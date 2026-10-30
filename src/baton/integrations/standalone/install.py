@@ -237,13 +237,13 @@ def install_baton(
     # keeps the first one's, as the lifecycle capture and the official adapter
     # do: two would each take the other's injected ``user_goal`` for the tool's own.
     existing = getattr(mcp, "middleware", None)
-    middleware = (
-        next(
-            (m for m in existing if isinstance(m, BatonMiddleware)),
-            None,
-        )
-        if isinstance(existing, list)
-        else None
+    middleware = next(
+        (
+            m
+            for m in (existing if isinstance(existing, list) else ())
+            if isinstance(m, BatonMiddleware)
+        ),
+        None,
     )
     if middleware is None:
         middleware = BatonMiddleware(
@@ -300,7 +300,6 @@ def install_baton(
             annotation_tool_name=annotation_tool_name,
             result_capture_mode=config.result_capture_mode,
             dispositions=lambda name: resolve_dispositions(name, mcp),
-            knows_tool=lambda name: None,
         ),
     )
 

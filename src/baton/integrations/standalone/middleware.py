@@ -53,15 +53,14 @@ from baton.integrations._error_result import (
     vendor_exception,
 )
 from baton.integrations._llm_text import (
-    EXPECTED_RESULT_PARAM_NAME,
-    INTENT_SOURCE_PARAM,
-    OVERALL_TASK_PARAM_NAME,
     USER_GOAL_PARAM_NAME,
     drop_retired_params,
     inject_goal_params,
     instructions_suffix_served,
+    intent_source,
     pop_goal_params,
     required_param_names,
+    scrub_goals,
 )
 from baton.integrations._session import next_sequence
 from baton.integrations._surface import (
@@ -82,7 +81,7 @@ from baton.integrations.standalone._session import (
     observe_transport,
     resolve_call_session,
 )
-from baton.scrub import identity_scrub, scrub_or_none
+from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_emit
 
 logger = logging.getLogger(__name__)
@@ -345,9 +344,9 @@ class BatonMiddleware(Middleware):
         call_intent: str | None = None
         call_expected: str | None = None
         call_task: str | None = None
-        slot = claim_call()
-        if slot is not None and slot.goals is not None:
-            call_intent, call_expected, call_task = slot.goals
+        claimed = claim_call()
+        if claimed is not None:
+            call_intent, call_expected, call_task = claimed
         elif isinstance(msg.arguments, dict):
             fctx = context.fastmcp_context
             call_intent, call_expected, call_task = await self._extract_goal_params(
@@ -357,11 +356,9 @@ class BatonMiddleware(Middleware):
         # build thunk, so a vendor scrubber that raises here would break the
         # vendor's tool call (SPEC §11.2). An unscrubbed goal param degrades to
         # no captured intent, which is what `None` already means downstream.
-        scrubbed_intent = scrub_or_none(self._scrubber, call_intent, USER_GOAL_PARAM_NAME, logger)
-        scrubbed_expected = scrub_or_none(
-            self._scrubber, call_expected, EXPECTED_RESULT_PARAM_NAME, logger
+        scrubbed_intent, scrubbed_expected, scrubbed_task = scrub_goals(
+            self._scrubber, (call_intent, call_expected, call_task), logger
         )
-        scrubbed_task = scrub_or_none(self._scrubber, call_task, OVERALL_TASK_PARAM_NAME, logger)
 
         params = dict(msg.arguments or {})
         meta_dict = meta_to_dict(self._extract_request_meta(context))
@@ -449,13 +446,8 @@ class BatonMiddleware(Middleware):
                         call_intent=scrubbed_intent,
                         call_expected=scrubbed_expected,
                         call_workflow=scrubbed_task,
-                        intent_source=(
-                            INTENT_SOURCE_PARAM
-                            if any(
-                                v is not None
-                                for v in (scrubbed_intent, scrubbed_expected, scrubbed_task)
-                            )
-                            else None
+                        intent_source=intent_source(
+                            (scrubbed_intent, scrubbed_expected, scrubbed_task)
                         ),
                     ),
                 ),

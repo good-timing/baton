@@ -12,7 +12,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 from dataclasses import dataclass
 
-Goals = tuple[str | None, str | None, str | None]
+from baton.integrations._llm_text import Goals
 
 
 @dataclass
@@ -25,15 +25,16 @@ class CallSlot:
 current_slot: ContextVar[CallSlot | None] = ContextVar("baton_call_slot", default=None)
 
 
-def claim_call() -> CallSlot | None:
-    """Mark the open call as captured by the inner seam, and return its slot.
+def claim_call() -> Goals | None:
+    """Mark the open call as captured by the inner seam, and return the goals
+    the outer seam stripped, or ``None`` when the inner capture strips itself.
 
-    ``None`` when no outer seam opened one, or it is already claimed: a tool
-    that calls another tool from inside its handler must not take its caller's
-    goal. Not matched by name, because a server may route a call to a tool of
-    another name, and that is still this request."""
+    A slot already claimed is not this call's: a tool that calls another tool
+    from inside its handler must not take its caller's goal. Not matched by
+    name, because a server may route a call to a tool of another name, and
+    that is still this request."""
     slot = current_slot.get()
     if slot is None or slot.claimed:
         return None
     slot.claimed = True
-    return slot
+    return slot.goals

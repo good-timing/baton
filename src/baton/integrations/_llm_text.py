@@ -22,6 +22,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from baton.scrub import scrub_or_none
+
 logger = logging.getLogger(__name__)
 
 # Holds no report rule: each is written once, in the report tool's description.
@@ -113,6 +115,25 @@ def pop_goal_params(
         for name in (USER_GOAL_PARAM_NAME, *RETIRED_PARAM_NAMES)
     )
     return goal, expected, task
+
+
+Goals = tuple[str | None, str | None, str | None]
+"""``user_goal`` and the two retired names, in that order."""
+
+
+def scrub_goals(scrubber: Callable[[Any], Any], goals: Goals, log: logging.Logger) -> Goals:
+    """Each goal through the vendor's scrubber; one that raises becomes ``None``
+    rather than failing the call (SPEC §11.2)."""
+    return (
+        scrub_or_none(scrubber, goals[0], USER_GOAL_PARAM_NAME, log),
+        scrub_or_none(scrubber, goals[1], EXPECTED_RESULT_PARAM_NAME, log),
+        scrub_or_none(scrubber, goals[2], OVERALL_TASK_PARAM_NAME, log),
+    )
+
+
+def intent_source(goals: Goals) -> str | None:
+    """``tool_call_start.payload.intent_source`` for these goals."""
+    return INTENT_SOURCE_PARAM if any(g is not None for g in goals) else None
 
 
 def drop_retired_params(arguments: dict[str, Any]) -> None:

@@ -95,15 +95,14 @@ from baton.integrations._error_result import (
     vendor_exception,
 )
 from baton.integrations._llm_text import (
-    EXPECTED_RESULT_PARAM_NAME,
-    INTENT_SOURCE_PARAM,
-    OVERALL_TASK_PARAM_NAME,
     USER_GOAL_PARAM_NAME,
     drop_subagent_clause,
     inject_goal_params,
     instructions_suffix_served,
+    intent_source,
     pop_goal_params,
     required_param_names,
+    scrub_goals,
 )
 from baton.integrations._session import (
     ResolvedSession,
@@ -496,20 +495,18 @@ def _wrap_tool_run(
         call_intent: str | None = None
         call_expected: str | None = None
         call_task: str | None = None
-        slot = claim_call()
-        if slot is not None and slot.goals is not None:
-            call_intent, call_expected, call_task = slot.goals
+        claimed = claim_call()
+        if claimed is not None:
+            call_intent, call_expected, call_task = claimed
         elif isinstance(arguments, dict):
             call_intent, call_expected, call_task = pop_goal_params(
                 name, arguments, param_registry.get(name)
             )
         # scrub_or_none: OUTSIDE any `safe_emit` build thunk, so a raising
         # vendor scrubber here would break the vendor's tool call (SPEC §11.2).
-        scrubbed_intent = scrub_or_none(scrubber, call_intent, USER_GOAL_PARAM_NAME, logger)
-        scrubbed_expected = scrub_or_none(
-            scrubber, call_expected, EXPECTED_RESULT_PARAM_NAME, logger
+        scrubbed_intent, scrubbed_expected, scrubbed_task = scrub_goals(
+            scrubber, (call_intent, call_expected, call_task), logger
         )
-        scrubbed_task = scrub_or_none(scrubber, call_task, OVERALL_TASK_PARAM_NAME, logger)
 
         params = dict(arguments or {})
         meta_dict = _extract_meta_from_context(context)
@@ -869,7 +866,6 @@ def _make_emitters(
         call_id: str,
         transport_observed: str | None,
     ) -> None:
-        injected_any = any(v is not None for v in (call_intent, call_expected, call_workflow))
         # ⚠ Hoisted out of the build thunk: a lambda cannot `await`.
         # A build that then fails burns this number, which is already
         # possible whenever `sink.write` fails, so the gap is not new.
@@ -896,7 +892,7 @@ def _make_emitters(
                     call_intent=call_intent,
                     call_expected=call_expected,
                     call_workflow=call_workflow,
-                    intent_source=INTENT_SOURCE_PARAM if injected_any else None,
+                    intent_source=intent_source((call_intent, call_expected, call_workflow)),
                 ),
             ),
             logger,
