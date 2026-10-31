@@ -8,6 +8,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Changed
+
+- A closed `Client` or `AsyncClient` no longer raises `RuntimeError` when used. `trace()`, `annotate()` and `list_tools()` still work, their events are dropped, and the client logs one warning. `list_tools()` still returns the served list. Before, the raise reached the vendor's own code, which SPEC §11.2 forbids.
+- A second `close()` or `aclose()` called while the first is still running now waits for it to finish. Before, it returned at once, before the sink was closed, so a caller could exit with events still unsent. (SPEC §11.2.)
+
+---
+
 ## 0.9.1: organization, and a tool call refused before it runs is captured
 
 ### Added

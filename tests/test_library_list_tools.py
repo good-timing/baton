@@ -213,11 +213,12 @@ def test_a_disabled_client_serves_the_vendors_tools_and_sends_nothing(
     assert sink.events == []
 
 
-def test_list_tools_after_close_raises_the_closed_error() -> None:
-    client = _client(_CollectingSink())
+def test_list_tools_after_close_serves_the_list_and_sends_nothing() -> None:
+    sink = _CollectingSink()
+    client = _client(sink)
     client.close()
-    with pytest.raises(RuntimeError, match="closed"):
-        client.list_tools(TOOLS)
+    assert client.list_tools(TOOLS)
+    assert sink.events == []
 
 
 async def test_the_async_client_serves_and_snapshots_the_same_way() -> None:

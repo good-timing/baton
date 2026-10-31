@@ -26,6 +26,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 import warnings
 from collections.abc import Iterator
 from typing import Any
@@ -48,6 +49,7 @@ class _SlowCloseSink(Sink):
 
     def __init__(self) -> None:
         self.closes = 0
+        self.finished = False
 
     async def write(self, event: Any) -> None:
         pass
@@ -58,6 +60,7 @@ class _SlowCloseSink(Sink):
     async def aclose(self) -> None:
         self.closes += 1
         await asyncio.sleep(0.05)
+        self.finished = True
 
 
 @pytest.fixture
@@ -902,25 +905,17 @@ class TestSyncAnnotate:
 
 
 class TestSyncLifecycle:
-    def test_close_then_trace_raises(self, capture_server: HTTPServer) -> None:
+    def test_close_then_trace_and_annotate_send_nothing(self, capture_server: HTTPServer) -> None:
         client = Client(
             sink=HttpSink(url=capture_server.url_for(""), api_key="x"),
             vendor_id="v",
             consent_token="ct-test",
         )
         client.close()
-        with pytest.raises(RuntimeError, match="closed"):
-            client.trace(tool_name="t")
-
-    def test_close_then_annotate_raises(self, capture_server: HTTPServer) -> None:
-        client = Client(
-            sink=HttpSink(url=capture_server.url_for(""), api_key="x"),
-            vendor_id="v",
-            consent_token="ct-test",
-        )
-        client.close()
-        with pytest.raises(RuntimeError, match="closed"):
-            client.annotate(what_happened="it failed")
+        with client.trace(tool_name="t") as trace:
+            trace.observed("ok")
+        client.annotate(what_happened="it failed")
+        assert capture_server.log == []
 
     def test_close_from_two_threads_closes_the_sink_once(self) -> None:
         sink = _SlowCloseSink()
@@ -931,6 +926,35 @@ class TestSyncLifecycle:
         for thread in threads:
             thread.join()
         assert sink.closes == 1
+
+    def test_an_emit_racing_a_close_on_another_thread_is_dropped(self) -> None:
+        client = Client(sink=_SlowCloseSink(), vendor_id="v")
+        trace = client.trace(tool_name="t")
+        trace.__enter__()
+        client._bridge.stop()  # type: ignore[union-attr]  # close() won the race
+        trace.observed("ok")
+        assert not trace.__exit__(None, None, None)
+        client.flush()
+
+    def test_a_close_reentered_on_the_closing_thread_returns(self) -> None:
+        client = Client(sink=_SlowCloseSink(), vendor_id="v")
+        # As if this thread were inside close() when a signal handler called it.
+        with client._close_lock:
+            client._closed = True
+            client._closing_thread = threading.get_ident()
+        client.close()
+        assert not client._close_done.is_set()
+
+    def test_a_second_close_waits_for_the_first(self) -> None:
+        sink = _SlowCloseSink()
+        client = Client(sink=sink, vendor_id="v")
+        first = threading.Thread(target=client.close)
+        first.start()
+        while sink.closes == 0:
+            time.sleep(0.001)
+        client.close()
+        assert sink.finished
+        first.join()
 
     def test_close_idempotent(self, capture_server: HTTPServer) -> None:
         client = Client(
@@ -1079,7 +1103,27 @@ class TestAsyncHappyPath:
         await asyncio.gather(client.aclose(), client.aclose())
         assert sink.closes == 1
 
-    async def test_close_then_trace_raises(
+    async def test_only_the_first_aclose_raises_the_close_error(self) -> None:
+        class _FailingCloseSink(_SlowCloseSink):
+            async def aclose(self) -> None:
+                await super().aclose()
+                raise OSError("collector gone")
+
+        client = AsyncClient(sink=_FailingCloseSink(), vendor_id="v")
+        with pytest.raises(OSError):
+            await client.aclose()
+        await client.aclose()
+
+    async def test_a_second_aclose_waits_for_the_first(self) -> None:
+        sink = _SlowCloseSink()
+        client = AsyncClient(sink=sink, vendor_id="v")
+        first = asyncio.ensure_future(client.aclose())
+        await asyncio.sleep(0)
+        await client.aclose()
+        assert sink.finished
+        await first
+
+    async def test_close_then_trace_sends_nothing(
         self,
         capture_server: HTTPServer,
     ) -> None:
@@ -1089,8 +1133,9 @@ class TestAsyncHappyPath:
             consent_token="ct-test",
         )
         await client.aclose()
-        with pytest.raises(RuntimeError, match="closed"):
-            client.trace(tool_name="t")
+        async with client.trace(tool_name="t") as trace:
+            trace.observed("ok")
+        assert capture_server.log == []
 
 
 # =============================================================================

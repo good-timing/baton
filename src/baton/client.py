@@ -90,6 +90,7 @@ the split exists to end, and should be given a real value.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import threading
@@ -584,7 +585,12 @@ class _SyncBridge:
     def run(self, coro: Coroutine[Any, Any, T]) -> T:
         """Submit a coroutine to the bridge loop; block until result."""
         assert self._loop is not None, "bridge not initialized"
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        try:
+            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        except RuntimeError:
+            # The loop is closed: close() won a race with this call.
+            coro.close()
+            raise
         return future.result()
 
     def stop(self) -> None:
@@ -942,12 +948,24 @@ class _Sessions:
 
     _scrubber: Any
     _disabled: bool
+    _closed: bool
+    _closed_warned: bool = False
     _tenant_id: str
     _vendor_id: str
     _consent_token: str
 
     def _next_seq(self) -> int:
         return PROCESS_SEQUENCE.next()
+
+    def _dropping_after_close(self) -> bool:
+        """True once closed: the event is dropped, never raised into the
+        vendor's code (SPEC §11.2). Warns once."""
+        if not self._closed:
+            return False
+        if not self._closed_warned:
+            self._closed_warned = True
+            logger.warning("baton: %s is closed; further events are dropped.", type(self).__name__)
+        return True
 
     def _init_surfaces(self) -> None:
         self._surface_session_id = str(uuid7())
@@ -1107,6 +1125,8 @@ class Client(_Sessions):
 
         self._closed = False
         self._close_lock = threading.Lock()
+        self._close_done = threading.Event()
+        self._closing_thread: int | None = None
         self._init_surfaces()
 
     def trace(
@@ -1131,8 +1151,6 @@ class Client(_Sessions):
         retained for late-bound updates but emits a ``UserWarning`` because the
         start event has already shipped by the time the body runs.
         """
-        if self._closed:
-            raise RuntimeError("Client is closed")
         trace = Trace(
             client=self,
             tool_name=tool_name,
@@ -1194,8 +1212,6 @@ class Client(_Sessions):
         suggested_improvement: str | None,
         context: dict[str, Any] | None,
     ) -> None:
-        if self._closed:
-            raise RuntimeError("Client is closed")
         seq = self._next_seq()
         self._emit_sync(
             lambda: _annotation_event(
@@ -1234,12 +1250,10 @@ class Client(_Sessions):
         input is not changed. Never raises over the tool list: one it cannot
         read is returned as it came.
         """
-        if self._closed:
-            raise RuntimeError("Client is closed")
         if self._bridge is None:
             return tools
         served, event = self._serve(tools, server_info, capabilities, instructions)
-        if event is not None:
+        if event is not None and not self._dropping_after_close():
             try:
                 self._bridge.run(self._sink.write(event))
             except Exception:
@@ -1252,25 +1266,35 @@ class Client(_Sessions):
             # No bridge means the off switch is set and nothing was ever
             # queued. A vendor's ``finally: client.flush()`` must keep working.
             return
-        self._bridge.run(self._sink.flush())
+        with contextlib.suppress(RuntimeError):  # close() won a race with this call
+            self._bridge.run(self._sink.flush())
 
     def close(self) -> None:
         """Flush + close the sink + stop the bridge thread."""
-        # Marked closed before closing, under a lock, so two threads calling
-        # close() at once close the sink once.
+        # Marked closed under a lock, so two threads calling close() at once
+        # close the sink once; the second waits for the first (SPEC §11.2).
         with self._close_lock:
-            if self._closed:
-                return
+            closing = not self._closed
             self._closed = True
-        if self._bridge is None:
-            # Disabled: no bridge to run on, but a sink the caller handed us
-            # still has to be released.
-            _close_sink_without_a_loop(self._sink)
+            if closing:
+                self._closing_thread = threading.get_ident()
+        if not closing:
+            # A close re-entered on the closing thread (a signal handler) would
+            # wait on itself.
+            if self._closing_thread != threading.get_ident():
+                self._close_done.wait()
             return
         try:
-            self._bridge.run(self._sink.aclose())
+            if self._bridge is None:
+                # Disabled: no bridge to run on, but a sink the caller handed us
+                # still has to be released.
+                _close_sink_without_a_loop(self._sink)
+            else:
+                self._bridge.run(self._sink.aclose())
         finally:
-            self._bridge.stop()
+            if self._bridge is not None:
+                self._bridge.stop()
+            self._close_done.set()
 
     def __enter__(self) -> Self:
         return self
@@ -1316,7 +1340,7 @@ class Client(_Sessions):
         # switch ON — and an operator flipping ``BATON_DISABLED`` because the
         # scrubber is implicated in an incident still pays for it. The async
         # twin returns before its thunk for the same reason.
-        if self._disabled or self._bridge is None:
+        if self._disabled or self._bridge is None or self._dropping_after_close():
             return
         event = build_or_none(build, logger)
         if event is None:
@@ -1327,7 +1351,12 @@ class Client(_Sessions):
         # `with client.trace(...)` block, ahead of the vendor's real call.
         # SPEC §11.2 fail-open applies here exactly as it
         # does to the MCP adapters' tool-call wrapping.
-        self._bridge.run(safe_write(self._sink, event, logger))
+        try:
+            self._bridge.run(safe_write(self._sink, event, logger))
+        except RuntimeError:
+            # close() on another thread stopped the bridge after the check above.
+            if not self._dropping_after_close():
+                logger.warning("baton: the background event loop is not running; event dropped.")
 
 
 # =============================================================================
@@ -1674,6 +1703,7 @@ class AsyncClient(_Sessions):
 
         self._sink: Sink = resolved.sink
         self._closed = False
+        self._closing: asyncio.Future[None] | None = None
         self._init_surfaces()
 
     def trace(
@@ -1687,8 +1717,6 @@ class AsyncClient(_Sessions):
         consent_token: str | None = None,
     ) -> AsyncTrace:
         """Async equivalent of ``Client.trace``."""
-        if self._closed:
-            raise RuntimeError("AsyncClient is closed")
         trace = AsyncTrace(
             client=self,
             tool_name=tool_name,
@@ -1743,8 +1771,6 @@ class AsyncClient(_Sessions):
         suggested_improvement: str | None,
         context: dict[str, Any] | None,
     ) -> None:
-        if self._closed:
-            raise RuntimeError("AsyncClient is closed")
         seq = self._next_seq()
         await self._emit(
             lambda: _annotation_event(
@@ -1773,12 +1799,10 @@ class AsyncClient(_Sessions):
         instructions: str | None = None,
     ) -> list[Any]:
         """Async equivalent of ``Client.list_tools``."""
-        if self._closed:
-            raise RuntimeError("AsyncClient is closed")
         if self._disabled:
             return tools
         served, event = self._serve(tools, server_info, capabilities, instructions)
-        if event is not None:
+        if event is not None and not self._dropping_after_close():
             try:
                 await self._sink.write(event)
             except Exception:
@@ -1795,12 +1819,17 @@ class AsyncClient(_Sessions):
         await self._sink.flush()
 
     async def aclose(self) -> None:
-        # Marked closed before the await, so a second aclose() running at the
-        # same time returns instead of closing the sink again.
-        if self._closed:
+        # One close, shared: a second aclose() waits for the first (SPEC
+        # §11.2). Shielded so a cancelled waiter does not cancel the close the
+        # others wait on.
+        if self._closing is None:
+            self._closed = True
+            self._closing = asyncio.ensure_future(self._sink.aclose())
+            await asyncio.shield(self._closing)
             return
-        self._closed = True
-        await self._sink.aclose()
+        # The first caller got the close's error; the others only wait for it.
+        with contextlib.suppress(Exception):
+            await asyncio.shield(self._closing)
 
     async def __aenter__(self) -> Self:
         return self
@@ -1827,6 +1856,8 @@ class AsyncClient(_Sessions):
             # closed), that made every disabled async client emit for real.
             # Caught by the test that hands a disabled client a WORKING sink,
             # which is the only kind of test that could have caught it.
+            return
+        if self._dropping_after_close():
             return
         # safe_emit, not safe_write: it guards CONSTRUCTION as well as the
         # write. See ``Client._emit_sync`` for why construction needs a guard

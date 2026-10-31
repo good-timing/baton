@@ -235,14 +235,44 @@ def test_intent_params_carry_the_text_an_agent_reads() -> None:
     )
 
 
-def test_a_trace_report_after_close_raises_the_closed_error() -> None:
-    client = _client(_CollectingSink())
+def test_a_closed_client_drops_events_and_warns_once(caplog: pytest.LogCaptureFixture) -> None:
+    sink = _CollectingSink()
+    client = _client(sink)
     with client.trace(tool_name="fetch") as trace:
         trace.observed("ok")
     client.close()
+    sent = len(sink.events)
 
-    with pytest.raises(RuntimeError, match="Client is closed"):
+    with caplog.at_level(logging.WARNING, logger="baton.client"):
         trace.annotate(what_happened="late", tool_name="fetch")
+        _traced(client)
+        served = client.list_tools([{"name": "fetch", "inputSchema": {"type": "object"}}])
+
+    assert len(sink.events) == sent
+    assert [t["name"] for t in served] == ["fetch"]
+    assert [r.getMessage() for r in caplog.records] == [
+        "baton: Client is closed; further events are dropped."
+    ]
+
+
+def test_a_closed_async_client_drops_events_and_warns_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def run() -> int:
+        sink = _CollectingSink()
+        client = AsyncClient(vendor_id="v1", tenant_id="ten_abc", sink=sink)
+        await client.aclose()
+        with caplog.at_level(logging.WARNING, logger="baton.client"):
+            async with client.trace(tool_name="fetch") as trace:
+                trace.observed("ok")
+            await trace.annotate(what_happened="late", tool_name="fetch")
+            await client.list_tools([{"name": "fetch", "inputSchema": {"type": "object"}}])
+        return len(sink.events)
+
+    assert asyncio.run(run()) == 0
+    assert [r.getMessage() for r in caplog.records] == [
+        "baton: AsyncClient is closed; further events are dropped."
+    ]
 
 
 def test_blank_intent_is_no_intent() -> None:
