@@ -1745,7 +1745,7 @@ Defined error codes:
 
 - **Unreleased (spec only, 2026-10-30) — more rules for a third SDK, and stale text fixed.** No envelope field, event type or shape changes.
 
-  **(1) Scrubber digits, word boundaries and whitespace are fixed sets (§7).** Digits are `0`–`9`, boundaries are ASCII, and whitespace is space, tab, LF, CR, FF and `U+00A0`. `baton-sdk` 0.9.1 uses Unicode digits and boundaries, so it also scrubs, for example, a card number in Arabic-Indic digits. Both SDKs' `\s` matches more spaces than this set, and Go's matches fewer (no `U+00A0`). `baton-sdk` on `main` uses the set; `baton-ts` and `baton-proxy` do not yet.
+  **(1) Scrubber digits, word boundaries and whitespace are fixed sets (§7).** Digits are `0`–`9`, boundaries are ASCII, and whitespace is space, tab, LF, CR, FF and `U+00A0`. `baton-sdk` 0.9.1 and `baton-proxy` 0.7.1 use Unicode digits and boundaries, so they also scrub, for example, a card number in Arabic-Indic digits. Python's and JavaScript's `\s` match more spaces than this set, and Go's matches fewer (no `U+00A0`). `baton-sdk` and `baton-proxy` on `main` use the set; `baton-ts` does not yet.
 
   **(2) A blank principal or organization `id` is empty after removing Unicode `White_Space` (§11.4),** the set `display_name` already uses. Both SDKs also remove `U+001C`–`U+001F` today, and both narrow to this set in a later release.
 
