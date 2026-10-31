@@ -165,7 +165,7 @@ This is the canonical signal schema the collector worker produces by stitching e
 | `agent_runtime` | string | yes | e.g., `"claude-code"`, `"cursor"`, `"cowork"`, `"chatgpt-desktop"`, `"unknown"`. |
 | `mcp_transport` | enum: `stdio` \| `sse` \| `http` | yes | The transport the SDK is hosted on. |
 | `mcp_protocol_revision` | string \| null | no | MCP spec revision detected from `_meta` or transport handshake (e.g., `"2025-11-25"`, `"2026-07-28"`). Null if undetermined. |
-| `trace_context` | TraceContext \| null | no | W3C trace context extracted from request `_meta` if present. See §3.4. |
+| `trace_context` | TraceContext \| null | no | **Reserved.** No schema defines it and no producer sends it; a producer MUST NOT send it until one does. W3C trace context from request `_meta`. See §3.4. |
 | `vendor_app_version` | string \| null | no | Vendor's own app version if they want to attach it. |
 
 ### 3.3 Sample payload
@@ -665,7 +665,7 @@ A library producer SHOULD expose the injected params' names and descriptions (§
 
 **Agent reports** (`trace.annotate(...)` for a traced call, or `client.annotate(...)` inside the block) carry what the vendor's code relays from its caller, in the block's or the trace's session.
 
-**Out of scope on this path:** the tool list events, and the annotation tool. A vendor serving MCP itself that wants agent reports registers its own tool and calls `client.annotate(...)`. `trace_context` stays optional and vendor-supplied.
+**Out of scope on this path:** the tool list events, and the annotation tool. A vendor serving MCP itself that wants agent reports registers its own tool and calls `client.annotate(...)`. `trace_context` is reserved and not sent (§3.1).
 
 **`agent_runtime` is `"unknown"`.** The library cannot see the client any more than the middleware can name it, so it sends what the vendor passes as `client_observed` and leaves the name to the consumer (§11.4). `sdk_version` already names the producer.
 
@@ -720,6 +720,8 @@ These detection rules are deferred — agent-raised is the current path for them
 The SDK runs on the vendor's side; the vendor is the data controller for what it sends. The SDK accepts a vendor-supplied scrubber that MUST be applied to every payload before it leaves the SDK process.
 
 **Current interface:** `VendorConfig.scrubber: Callable[[Any], Any]` — a function applied to params, results, error bodies, and annotation strings. The default, since `baton-sdk` 0.2.8, is the built-in `Scrubber`: pattern rules for email, bearer tokens, `sk-*` and `AKIA*` keys, JWTs, Luhn-checked card numbers and North American phone numbers, plus redaction of every string under a field named `email`, `phone`, `ssn`, `api_key`, `token`, `secret`, `password` or `user_name`. A vendor opts out with an identity function. Pattern rules are not a guarantee: a name or a street address passes through, so a vendor handling sensitive data SHOULD supply its own scrubber. The SDK MUST NOT log unscrubbed payloads anywhere (stderr, stdout, files, exception messages).
+
+**Digits and word boundaries are ASCII.** A pattern rule's digit is `0`–`9` and its word boundary is between ASCII letters, digits and `_` and anything else. Every runtime can match that the same way (Python needs `re.ASCII`; JavaScript and Go's RE2 do it by default). So a card or phone number written in other digits, such as Arabic-Indic, is not matched.
 
 **Depth limit.** A scrubber that walks nested data stops at a depth limit (10 in both reference SDKs) so hostile input cannot exhaust the stack. It MUST NOT pass what lies past the limit through unscrubbed: it replaces each object or array at the limit with the marker `"[REDACTED:depth-limit]"` and scrubs a plain value there as it would at any depth, and the producer logs a warning the first time it does so, without the value. A consumer reads the marker as "withheld by the scrubber", never as the vendor's data.
 
@@ -820,7 +822,8 @@ A conforming SDK MUST:
 4. **POST events to Console ingest endpoint** (`POST /v0/events`) asynchronously with retry-and-backoff. Default timeout: 1s per request. Circuit-break after N consecutive failures.
 5. **Assign sequence numbers per session.** Increasing per `session_id` within one process; §5.6 covers a session that spans processes. Worker orders a session's events by `sequence_number`, then `event_id`, not by timestamps alone. **The number is not the event's identity; `event_id` is.** A library producer numbers by the clock (§5.6), so two events of one session can share a number. A consumer MUST NOT reject or fail an event for a repeated (`session_id`, `sequence_number`), and recognises a retried event by its `event_id`.
 6. **Withhold result-derived data on request, and say so on the wire.** When configured to withhold results (§11.4 `result_capture`), a conforming SDK MUST emit nothing **derived from the tool's result** — `result`, and an `error_body` unwrapped from the result — MUST set `result_capture` on every affected event, and MUST still classify and emit `error_type`, `tool_name` and `duration_ms`. The rule is keyed on PROVENANCE, not on a field name: `error_body` is fed from several sources and only the result-derived ones are withheld, a raised message among them unless the vendor marked it public (§11.4.3). A producer MUST NOT infer the withheld state from an absent value, and a consumer MUST NOT either. ⚠ **A producer that also emits ANY of the four resource/prompt `*_error` legs carries two further obligations, neither of them about wire output: its own vendor-facing docs MUST say that those legs' messages survive the mode, and it MUST emit a `UserWarning` naming them when the mode is configured (§11.4.4).**
-7. **MAY do cheap stateless classification.** E.g., set `signal_type=failure` on a tool-call-error event when the exception class matches a known failure pattern. State-dependent classification (retry_loop) MUST NOT happen in the SDK.
+7. **Shut down without breaking the vendor's program.** A second close waits for the first to finish. An event recorded after close is dropped, with one warning, and never raises. At process exit the producer tries to send what it holds, for at most 3 seconds. A runtime with no exit hook, such as Go, gives the vendor a close call to make instead.
+8. **MAY do cheap stateless classification.** E.g., set `signal_type=failure` on a tool-call-error event when the exception class matches a known failure pattern. State-dependent classification (retry_loop) MUST NOT happen in the SDK.
 
 A conforming SDK MUST NOT:
 - Maintain session state beyond the bounded local buffer
@@ -859,7 +862,7 @@ Every event has these fields:
   "sequence_number": 42,                     // increasing per session; by the clock on a per-call or library session (§3.4 rung 5, §5.6) — NOT a mode discriminator
   "captured_at": "2026-05-19T16:42:03Z",     // SDK timestamp at emission
   "consent_token": "...",                    // from VendorConfig; see §9
-  "sdk_version": "0.1.0",
+  "sdk_version": "0.1.0",                    // also names the producer; see §13
   "agent_runtime": "unknown",                // LEGACY: a producer that sends `client_observed` sends "unknown" here; see below
   "principal": {                             // optional; who the vendor resolved behind the call — absent as a WHOLE when nobody was; see below
     "id": "jane@example.com",                //   the value, exactly as the vendor's resolver returned it — UNTAGGED
@@ -877,7 +880,7 @@ Every event has these fields:
     "headers": {"user-agent": "claude-code/2.1.292 (sdk-cli)"}
   },
   "runtime_meta": {"claudecode/toolUseId": "...", "progressToken": 1},  // optional; verbatim _meta from MCP request (PII-scrubbed); see §11.4.1
-  "trace_context": {"traceparent": "...", "tracestate": null, "baggage": null},  // optional; from _meta if present
+  "trace_context": {"traceparent": "...", "tracestate": null, "baggage": null},  // RESERVED: not sent; see §3.1
   "payload": { ... }                         // event-type-specific fields
 }
 ```
@@ -918,7 +921,7 @@ Keep all of it apart from `agent_runtime`. `agent_runtime` is what the client *s
 | source (asserted) | whatever a vendor's own per-request resolver returns — including a ready-made resolver the producer ships that reads a verified token's claim. The producer does not verify the claim and has no means to. A resolver keying on a token **MUST NOT key on `client_id`**, which names the OAuth application and is identical for every user of one app. |
 | transport | The asserted source works on every transport. A resolver reading a bearer token is HTTP-only: MCP auth is ASGI middleware, so a stdio deployment has no token, and a stdio vendor's resolver names the user from whatever it authenticated out of band. |
 | precedence | none: there is one source. A producer MUST NOT fall back to any identity the vendor's resolver did not return — a resolver that returns nothing, raises, or returns something unusable yields no `principal`. |
-| derivation | **none: the producer sends `id` exactly as the resolver returned it.** A producer MUST NOT hash, canonicalise, scrub (§7) or otherwise rewrite it, and MUST NOT hold a key for doing so. It MAY bound its length (the reference producers truncate at 128 code points). An `id` that is blank, not well-formed Unicode (a lone surrogate) or contains U+0000 yields no `principal`. A vendor who must not send real identities derives a pseudonym **inside the resolver** and says so in `form`. |
+| derivation | **none: the producer sends `id` exactly as the resolver returned it.** A producer MUST NOT hash, canonicalise, scrub (§7) or otherwise rewrite it, and MUST NOT hold a key for doing so. It MAY bound its length (the reference producers truncate at 128 code points). An `id` that is blank (empty after removing Unicode `White_Space`, the same set as `display_name`'s), not well-formed Unicode (a lone surrogate) or contains U+0000 yields no `principal`. A vendor who must not send real identities derives a pseudonym **inside the resolver** and says so in `form`. |
 | form | **stated by the resolver, never inferred by the producer** — not from the value's shape and not from anything configured. A resolver that states nothing has stated `"raw"`. A producer MUST emit an unregistered value as `"raw"`, the classification every consumer falls back to (below). |
 | a changed derivation | A resolver that changes how it derives a pseudonym — a new key, a new function — gives every principal a new `id`. **A consumer sees that vendor's whole population replaced, with nothing on the wire saying why**, and MUST NOT read it as churn. The old and new values cannot be matched. |
 
@@ -1115,7 +1118,7 @@ The wire format is intentionally unified — both flavors share the same envelop
 
 #### 11.4.1 `runtime_meta` (optional) — for worker-side correlation
 
-On the MCP path, `session_id` is a process-lifetime identifier (the SDK's fallback UUID, generated at `install_baton(...)` time), NOT a conversation-turn identifier. A single MCP server process across multiple user prompts produces one `session_id`. To recover finer-grained turn and conversation boundaries, the worker MUST read `runtime_meta` when populated.
+On the MCP path, `session_id` is NOT a conversation-turn identifier. Over stdio it is the SDK's fallback id, so one server process across many user prompts produces one `session_id`. Over HTTP it comes from §3.4's ladder and can cover a single request (rung 5). To recover finer-grained turn and conversation boundaries, the worker MUST read `runtime_meta` when populated.
 
 On the MCP path the SDK populates `runtime_meta` with the raw `_meta` dict from the MCP request, with the vendor's PII scrubber applied. On the library path it holds the `_meta` the vendor passed to `client.session(meta=)`, scrubbed the same way, and the vendor's turn id (§5.6). Examples of keys, by the level each identifies. Codex and ChatGPT keys were observed on the wire; VS Code's are read from its source and have not been observed:
 
@@ -1695,6 +1698,7 @@ Defined error codes:
 ## 13. Compatibility & versioning
 
 - The wire format is **semver** via the SDK's `sdk_version` field. Breaking changes bump the major. Additive fields bump the minor.
+- **`sdk_version` also names the producer, by its prefix.** `baton-sdk` sends the bare version (`0.9.1`), `baton-ts` sends `ts-` and the version (`ts-0.6.1`), `baton-proxy` sends `baton-proxy/` and the version, and the Go SDK MUST send `go-` and the version. A new producer MUST pick a prefix no other producer uses. There is no separate field for the producer's name.
 - Until v1.0 is declared, all bumps are minor and breakage is allowed. We're pre-stable; consumers should pin to a known-good SDK range.
 
 ### Wire-format changes
@@ -1716,6 +1720,20 @@ Defined error codes:
   **(4) `refused` also means "the handler never ran, reason unknown" (§11.4.3).** A producer sends a narrower value only when it saw that failure happen. This is what `baton-sdk` 0.9.1 does. `baton-ts` 0.6.1 does it too, except that it sends `invalid_argument` when it could not check the arguments; under this rule that case is `refused`.
 
   **Consumer consequence:** `refused` does not prove that vendor code turned the call away. A consumer reads it as "stopped before the tool ran".
+
+- **Unreleased (spec only, 2026-10-30) — more rules for a third SDK, and stale text fixed.** No envelope field, event type or shape changes.
+
+  **(1) Scrubber digits and word boundaries are ASCII (§7).** JavaScript and Go match them that way by default. `baton-sdk` 0.9.1 uses Unicode ones, so it also scrubs, for example, a card number in Arabic-Indic digits; a later release narrows it.
+
+  **(2) A blank principal or organization `id` is empty after removing Unicode `White_Space` (§11.4),** the set `display_name` already uses. Both SDKs also remove `U+001C`–`U+001F` today.
+
+  **(3) Shutdown (§11.2 rule 7).** A second close waits for the first, an event after close is dropped with one warning, and the exit flush is capped at 3 seconds. `baton-sdk` 0.9.1 raises on use after close and returns from a second close before the first finishes. `baton-ts` 0.6.1 does not cap its exit flush.
+
+  **(4) `sdk_version` names the producer by its prefix (§13 head).** This was already true; it is now written down, with `go-` for the Go SDK.
+
+  **(5) Stale text.** `trace_context` is marked reserved: no schema defines it and no producer sends it. §11.4.1 no longer says an MCP `session_id` always lasts the whole process; over HTTP it can cover one request (§3.4 rung 5).
+
+  **Consumer consequence:** none.
 
 - **0.9.1 and ts 0.6.1 (SDK, 2026-10-30) — a call refused before the tool ran is captured (§11.4.3).** The MCP adapters add an outer seam on the low-level `tools/call` handler. It strips `user_goal` and the retired names before any vendor code sees them, including a server subclass's own `call_tool`. A call that fails before the tool's handler runs is sent as `tool_call_start` + `tool_call_error` with `failure_kind` `"refused"` (a new registered value), or `"unknown_tool"` on the official-SDK adapter when the tool is not registered and the server's `call_tool` is the library's own (a server that overrides `call_tool` may serve tools its registry does not hold, so the call is `"refused"` there). `refused`'s `error_body` and `result` are withheld under `result_capture: "off"`. Before this, such a call produced no event. No envelope field or event type changes, and `failure_kind` stays a free string in the schema. **Consumer consequence:** a refused call now appears, with `error_type` `"tool_error"` (or the exception class when the low-level server let it raise) and `failure_kind: "refused"`.
 
