@@ -1745,11 +1745,11 @@ Defined error codes:
 
 - **Unreleased (spec only, 2026-10-30) — more rules for a third SDK, and stale text fixed.** No envelope field, event type or shape changes.
 
-  **(1) Scrubber digits, word boundaries and whitespace are fixed sets (§7).** Digits are `0`–`9`, boundaries are ASCII, and whitespace is space, tab, LF, CR, FF and `U+00A0`. `baton-sdk` 0.9.1 uses Unicode digits and boundaries, so it also scrubs, for example, a card number in Arabic-Indic digits. Both SDKs' `\s` matches more spaces than this set, and Go's matches fewer (no `U+00A0`). A later release of each SDK moves to the set.
+  **(1) Scrubber digits, word boundaries and whitespace are fixed sets (§7).** Digits are `0`–`9`, boundaries are ASCII, and whitespace is space, tab, LF, CR, FF and `U+00A0`. `baton-sdk` 0.9.1 uses Unicode digits and boundaries, so it also scrubs, for example, a card number in Arabic-Indic digits. Both SDKs' `\s` matches more spaces than this set, and Go's matches fewer (no `U+00A0`). `baton-sdk` on `main` uses the set; `baton-ts` and `baton-proxy` do not yet.
 
   **(2) A blank principal or organization `id` is empty after removing Unicode `White_Space` (§11.4),** the set `display_name` already uses. Both SDKs also remove `U+001C`–`U+001F` today, and both narrow to this set in a later release.
 
-  **(3) Shutdown (§11.2 rule 7).** A second close waits for the first, an event after close is dropped with one warning, and the exit flush is capped at 3 seconds by default. `baton-sdk` 0.9.1 raises on use after close and returns from a second close before the first finishes. `baton-ts` 0.6.1 does not cap its exit flush. Both are fixed on `main` for the next release. Rule 7 also caps an explicit close or flush at the same limit, and one event's write wait at 1 second. `baton-sdk`'s fix for those is on `main` too. `baton-ts` 0.6.1's `HttpSink.aclose()` waits for a full drain with no limit.
+  **(3) Shutdown (§11.2 rule 7).** A second close waits for the first, an event after close is dropped with one warning, and the exit flush is capped at 3 seconds by default. `baton-sdk` 0.9.1 raises on use after close and returns from a second close before the first finishes. `baton-ts` 0.6.1 does not cap its exit flush. Both are fixed on `main` for the next release. Rule 7 also caps an explicit close or flush at the same limit, and one event's write wait at 1 second. `baton-sdk`'s fix for those is on `main` too. `baton-ts` 0.6.1's `HttpSink.aclose()` waits for a full drain with no limit; `baton-ts` `main` caps it.
 
   **(4) `sdk_version` names the producer by its prefix (§13 head).** This was already true; it is now written down, with `go-` for the Go SDK.
 
