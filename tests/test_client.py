@@ -1220,7 +1220,6 @@ class TestBridgeNeverHangs:
     ) -> None:
         monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.1)
         monkeypatch.setattr(sinks_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 0.3)
-        monkeypatch.setattr(client_module, "_DRAIN_SECONDS", 0.1)
         client = Client(sink=_RecordingSink(write_delay=30), vendor_id="v")
         sender = threading.Thread(target=_send_one, args=(client,))
         sender.start()
@@ -1251,7 +1250,6 @@ class TestBridgeNeverHangs:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(sinks_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 0.3)
-        monkeypatch.setattr(client_module, "_DRAIN_SECONDS", 0.1)
 
         class _BlockingCloseSink(_RecordingSink):
             async def aclose(self) -> None:

@@ -146,6 +146,7 @@ from baton.scrub import (  # noqa: F401  identity_scrub kept exported
 from baton.sinks import (
     HttpSink,
     Sink,
+    aclose_within,
     bounded_sink_call,
     build_or_none,
     safe_emit,
@@ -557,9 +558,9 @@ def _resolve_consent_token(explicit: str | None) -> str:
 # =============================================================================
 
 
-#: How long close() lets events already handed to the loop finish before the
-#: sink is closed.
-_DRAIN_SECONDS = 1.0
+#: What close() may take past the sink's budget: the close of a vendor's sink
+#: after a write that never finished used the budget, or a blocked loop thread.
+_CLOSE_MARGIN_SECONDS = 0.5
 #: The longest one event may hold the vendor's thread.
 _EMIT_WAIT_SECONDS = 1.0
 #: How long cancelled work gets to unwind when the bridge stops.
@@ -575,13 +576,13 @@ class _BridgeStopped(RuntimeError):
         super().__init__("baton: the background event loop has stopped")
 
 
-async def _drain_then_close(sink: Sink) -> None:
-    """Let the event writes already on the loop finish, then close the sink.
-    Closing first would turn those writes into drops."""
-    others = asyncio.all_tasks() - {asyncio.current_task()}
-    if others:
-        await asyncio.wait(others, timeout=_DRAIN_SECONDS)
-    await sink.aclose()
+async def _drain_then_close(sink: Sink, writes: set[asyncio.Task[Any]], deadline: float) -> None:
+    """Let the event writes under way finish, then close the sink with the time
+    left, all by ``deadline`` (``monotonic()``). Closing first would turn those
+    writes into drops."""
+    if writes:
+        await asyncio.wait(set(writes), timeout=max(0.0, deadline - monotonic()))
+    await aclose_within(sink, max(0.0, deadline - monotonic()))
 
 
 class _SyncBridge:
@@ -1206,6 +1207,8 @@ class Client(_Sessions):
         # The write the last emit stopped waiting for; while it runs, emits
         # queue without waiting.
         self._stalled: concurrent.futures.Future[Any] | None = None
+        # Read and changed on the bridge loop only.
+        self._writes: set[asyncio.Task[Any]] = set()
         self._closing_thread: int | None = None
         self._init_surfaces()
 
@@ -1368,6 +1371,7 @@ class Client(_Sessions):
                 self._close_done.wait(timeout=self._close_limit_seconds())
             return
         deadline = monotonic() + self._close_limit_seconds()
+        sink_deadline = deadline - _CLOSE_MARGIN_SECONDS
         try:
             if self._bridge is None:
                 # Disabled: no bridge to run on, but a sink the caller handed us
@@ -1375,7 +1379,7 @@ class Client(_Sessions):
                 _close_sink_without_a_loop(self._sink)
             else:
                 self._run_bounded(
-                    _drain_then_close(self._sink),
+                    _drain_then_close(self._sink, self._writes, sink_deadline),
                     deadline - monotonic(),
                     "closing the sink",
                 )
@@ -1387,9 +1391,16 @@ class Client(_Sessions):
             self._close_done.set()
 
     def _close_limit_seconds(self) -> float:
-        # Writes under way, then the sink's own budget, then a margin that only
-        # matters if the loop thread itself is blocked.
-        return _DRAIN_SECONDS + shutdown_budget_seconds(self._sink) + 0.5
+        return shutdown_budget_seconds(self._sink) + _CLOSE_MARGIN_SECONDS
+
+    async def _tracked(self, write: Coroutine[Any, Any, Any]) -> Any:
+        task = asyncio.current_task()
+        assert task is not None
+        self._writes.add(task)
+        try:
+            return await write
+        finally:
+            self._writes.discard(task)
 
     def _run_bounded(self, work: Coroutine[Any, Any, Any], timeout: float, what: str) -> None:
         """Run ``work`` on the bridge; never longer than ``timeout``, never raising."""
@@ -1476,8 +1487,9 @@ class Client(_Sessions):
         up. ``None`` when the bridge has stopped and the write did not run."""
         assert self._bridge is not None
         try:
-            future = self._bridge.submit(write)
+            future = self._bridge.submit(self._tracked(write))
         except _BridgeStopped:
+            write.close()
             return None
         if self._stalled is not None:
             if not self._stalled.done():

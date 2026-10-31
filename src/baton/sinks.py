@@ -27,16 +27,17 @@ import atexit
 import inspect
 import json
 import logging
+import math
 import sys
 import warnings
 import weakref
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from time import monotonic
 from types import TracebackType
-from typing import IO, TYPE_CHECKING, Any, Literal, Self
+from typing import IO, TYPE_CHECKING, Any, Literal, Self, cast
 
 from baton.events import Event
 
@@ -319,6 +320,16 @@ def shutdown_budget_seconds(sink: Sink) -> float:
     return SHUTDOWN_FLUSH_TIMEOUT_SECONDS
 
 
+def aclose_within(sink: Sink, seconds: float) -> Awaitable[None]:
+    """``sink.aclose()``, telling Baton's own close how much time is left. Any
+    other close, a subclass's override included, is called as it is."""
+    if type(sink).aclose is HttpSink.aclose:
+        return cast(HttpSink, sink)._aclose_within(seconds)
+    if type(sink).aclose is MultiSink.aclose:
+        return cast(MultiSink, sink)._aclose_within(seconds)
+    return sink.aclose()
+
+
 async def bounded_sink_call(sink: Sink, method: Literal["flush", "aclose"]) -> None:
     """Run a sink's ``flush()`` or ``aclose()`` for the vendor (SPEC §11.2 rule
     7): never raises, and returns within the sink's shutdown budget plus a
@@ -421,18 +432,22 @@ class HttpSink(Sink):
     async def flush(self) -> None:
         if self._closed:
             return
-        await self._drain_within_budget("flush()")
+        await self._drain_within_budget("flush()", self._shutdown_flush_timeout)
 
     async def aclose(self) -> None:
         """A second call waits for the first (SPEC §11.2 rule 7)."""
+        await self._aclose_within(self._shutdown_flush_timeout)
+
+    async def _aclose_within(self, seconds: float) -> None:
         # A close cancelled from outside (loop teardown) is started again.
         if self._closing is None or self._closing.cancelled():
-            self._closing = asyncio.ensure_future(self._close())
+            seconds = min(seconds, self._shutdown_flush_timeout)
+            self._closing = asyncio.ensure_future(self._close(seconds))
         await asyncio.shield(self._closing)
 
-    async def _close(self) -> None:
+    async def _close(self, seconds: float) -> None:
         log = logging.getLogger("baton")
-        await self._drain_within_budget("aclose()")
+        await self._drain_within_budget("aclose()", seconds)
         self._closed = True
         # Nothing Baton started may keep running after the vendor closed it.
         for task in (*self._open_drains, self._drain_task):
@@ -450,14 +465,19 @@ class HttpSink(Sink):
             except Exception:
                 log.warning("baton: closing the HTTP client failed", exc_info=True)
 
-    async def _drain_within_budget(self, what: Literal["flush()", "aclose()"]) -> None:
-        """SPEC §11.2 rule 7: returns within ``shutdown_flush_timeout_seconds``
-        and never raises. While an earlier wait's drain is still stuck it
-        returns at once. The drain is not cancelled here, so after ``flush()``
-        it goes on sending; ``aclose()`` stops it."""
+    async def _drain_within_budget(
+        self, what: Literal["flush()", "aclose()"], seconds: float
+    ) -> None:
+        """SPEC §11.2 rule 7: returns within ``seconds`` and never raises.
+        While an earlier wait's drain is still stuck, a flush returns at once
+        and a close gives it ``seconds``. The drain is not cancelled here, so
+        after ``flush()`` it goes on sending; ``aclose()`` stops it."""
         log = logging.getLogger("baton")
         if self._stalled_drain is not None:
-            if what == "flush()" and not self._skip_warned:
+            if what == "aclose()":
+                await asyncio.wait({self._stalled_drain}, timeout=seconds)
+                return
+            if not self._skip_warned:
                 self._skip_warned = True
                 log.warning(
                     "baton: flush() skipped: an earlier drain is still stuck; "
@@ -469,7 +489,7 @@ class HttpSink(Sink):
         self._open_drains.add(drain)
         drain.add_done_callback(self._open_drains.discard)
         drain.add_done_callback(lambda t: _log_late_failure(t, what))
-        done, _ = await asyncio.wait({drain}, timeout=self._shutdown_flush_timeout)
+        done, _ = await asyncio.wait({drain}, timeout=seconds)
         if done:
             return
         self._stalled_drain = drain
@@ -827,7 +847,10 @@ class MultiSink(Sink):
         await self._fan_out(lambda s: s.flush())
 
     async def aclose(self) -> None:
-        await self._fan_out(lambda s: s.aclose())
+        await self._aclose_within(math.inf)
+
+    async def _aclose_within(self, seconds: float) -> None:
+        await self._fan_out(lambda s: aclose_within(s, seconds))
 
     async def _fan_out(self, op: object) -> None:
         results = await asyncio.gather(

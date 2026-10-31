@@ -12,11 +12,19 @@ from typing import Any
 import httpx
 import pytest
 
+import baton.client as client_module
 import baton.sinks as sinks_module
 from baton import AsyncClient, Client
 from baton.events import Event
 from baton.integrations._handle import BatonHandle
-from baton.sinks import HttpSink, MultiSink, Sink, bounded_sink_call, shutdown_budget_seconds
+from baton.sinks import (
+    HttpSink,
+    MultiSink,
+    Sink,
+    aclose_within,
+    bounded_sink_call,
+    shutdown_budget_seconds,
+)
 from tests.test_sinks import _make_event
 
 
@@ -29,6 +37,22 @@ class _NeverAnswers(Sink):
 
     async def aclose(self) -> None:
         await asyncio.Event().wait()
+
+
+class _NothingAnswers(_NeverAnswers):
+    async def write(self, event: Event) -> None:
+        await asyncio.Event().wait()
+
+
+class _OnlyWriteHangs(Sink):
+    async def write(self, event: Event) -> None:
+        await asyncio.Event().wait()
+
+    async def flush(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
+        pass
 
 
 class _Raises(Sink):
@@ -105,16 +129,7 @@ async def test_an_async_door_never_raises(
 
 @pytest.fixture
 def stuck_sink() -> HttpSink:
-    async def never_answers(request: httpx.Request) -> httpx.Response:
-        await asyncio.Event().wait()
-        raise AssertionError("unreachable")
-
-    return HttpSink(
-        url="http://collector.example",
-        api_key="k",
-        shutdown_flush_timeout_seconds=0.1,
-        _http_client=httpx.AsyncClient(transport=httpx.MockTransport(never_answers)),
-    )
+    return _stuck_http_sink(budget=0.1)
 
 
 class TestHttpSinkOnACollectorThatNeverAnswers:
@@ -253,20 +268,14 @@ async def test_bounded_sink_call_waits_as_long_as_an_http_sinks_own_budget(
     assert time.monotonic() - started >= 0.6
 
 
+class _HttpSinkSubclass(HttpSink):
+    pass
+
+
 def test_the_sync_client_close_reports_what_a_stuck_http_sink_left_unsent(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    async def never_answers(request: httpx.Request) -> httpx.Response:
-        await asyncio.Event().wait()
-        raise AssertionError("unreachable")
-
-    sink = HttpSink(
-        url="http://collector.example",
-        api_key="k",
-        shutdown_flush_timeout_seconds=0.1,
-        _http_client=httpx.AsyncClient(transport=httpx.MockTransport(never_answers)),
-    )
-    client = Client(sink=sink, vendor_id="v")
+    client = Client(sink=_stuck_http_sink(budget=0.1), vendor_id="v")
     with client.trace(tool_name="t") as trace:
         trace.observed(result="ok")
     with caplog.at_level(logging.WARNING, logger="baton"):
@@ -344,3 +353,171 @@ def test_a_multisink_that_holds_itself_gets_the_default_budget() -> None:
     sink = MultiSink(inner)
     inner.append(sink)
     assert shutdown_budget_seconds(sink) == sinks_module.SHUTDOWN_FLUSH_TIMEOUT_SECONDS
+
+
+def _stuck_http_sink(budget: float, sink_type: type[HttpSink] = HttpSink) -> HttpSink:
+    async def never_answers(request: httpx.Request) -> httpx.Response:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    return sink_type(
+        url="http://collector.example",
+        api_key="k",
+        shutdown_flush_timeout_seconds=budget,
+        _http_client=httpx.AsyncClient(transport=httpx.MockTransport(never_answers)),
+    )
+
+
+@pytest.mark.parametrize("wrap", [False, True])
+async def test_aclose_within_hands_the_time_left_to_our_sinks(
+    wrap: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    http = _stuck_http_sink(budget=30)
+    http._enqueue_for_test(_make_event())
+    sink: Sink = MultiSink([http]) if wrap else http
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="baton"):
+        await aclose_within(sink, 0.1)
+    assert time.monotonic() - started < 1.0
+    assert any("closed with 1 event(s) unsent" in r.getMessage() for r in caplog.records)
+
+
+async def test_aclose_within_calls_a_subclass_aclose_without_the_time_left() -> None:
+    closed = []
+
+    class _OwnClose(HttpSink):
+        async def aclose(self) -> None:  # type: ignore[override]
+            closed.append(True)
+
+    await aclose_within(_OwnClose(url="http://collector.example", api_key="k"), 0.1)
+    assert closed == [True]
+
+
+def test_the_sync_client_close_waits_for_writes_within_the_budget_not_on_top(
+    short_budget: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.05)
+
+    client = Client(sink=_NothingAnswers(), vendor_id="v")
+    with client.trace(tool_name="t") as trace:
+        trace.observed(result="ok")
+    started = time.monotonic()
+    client.close()
+    assert time.monotonic() - started < short_budget + 0.5 + 0.3
+
+
+def test_the_sync_client_close_delivers_a_slow_write_and_closes_the_sink(
+    short_budget: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.05)
+
+    class _Slow(Sink):
+        def __init__(self) -> None:
+            self.written: list[Event] = []
+            self.closed = False
+
+        async def write(self, event: Event) -> None:
+            await asyncio.sleep(0.15)
+            self.written.append(event)
+
+        async def flush(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            await asyncio.sleep(0.15)
+            self.closed = True
+
+    sink = _Slow()
+    client = Client(sink=sink, vendor_id="v")
+    with client.trace(tool_name="t") as trace:
+        trace.observed(result="ok")
+    client.close()
+    assert sink.closed
+    assert len(sink.written) == 2
+
+
+def test_the_sync_client_close_does_not_wait_on_a_sink_background_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sinks_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 1.0)
+
+    class _Batching(Sink):
+        def __init__(self) -> None:
+            self.batch: list[Event] = []
+            self.sent: list[Event] = []
+            self.ticker: asyncio.Task[None] | None = None
+
+        async def _tick(self) -> None:
+            await asyncio.Event().wait()
+
+        async def write(self, event: Event) -> None:
+            self.ticker = self.ticker or asyncio.create_task(self._tick())
+            self.batch.append(event)
+
+        async def flush(self) -> None:
+            pass
+
+        async def aclose(self) -> None:
+            assert self.ticker is not None
+            self.ticker.cancel()
+            await asyncio.sleep(0.1)
+            self.sent, self.batch = self.batch, []
+
+    sink = _Batching()
+    client = Client(sink=sink, vendor_id="v")
+    with client.trace(tool_name="t") as trace:
+        trace.observed(result="ok")
+    started = time.monotonic()
+    client.close()
+    assert time.monotonic() - started < 0.6
+    assert len(sink.sent) == 2
+
+
+async def test_aclose_within_never_extends_a_sink_budget() -> None:
+    http = _stuck_http_sink(budget=0.1)
+    http._enqueue_for_test(_make_event())
+    started = time.monotonic()
+    await aclose_within(http, 30)
+    assert time.monotonic() - started < 1.0
+
+
+@pytest.mark.parametrize("http_type", [HttpSink, _HttpSinkSubclass])
+def test_a_stuck_write_leaves_our_http_sink_the_time_left_and_its_count(
+    http_type: type[HttpSink],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(sinks_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.05)
+    # Over the 0.5s margin, so a fresh budget on top of the wait would not fit.
+    http = _stuck_http_sink(budget=0.6, sink_type=http_type)
+    client = Client(sink=MultiSink([_OnlyWriteHangs(), http]), vendor_id="v")
+    with client.trace(tool_name="t") as trace:
+        trace.observed(result="ok")
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="baton"):
+        client.close()
+    assert time.monotonic() - started < 1.0
+    assert any("the sink closed with" in r.getMessage() for r in caplog.records)
+
+
+def test_close_after_a_flush_that_gave_up_gives_the_drain_the_time_left() -> None:
+    sent: list[httpx.Request] = []
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.2)
+        sent.append(request)
+        return httpx.Response(202)
+
+    sink = HttpSink(
+        url="http://collector.example",
+        api_key="k",
+        shutdown_flush_timeout_seconds=0.3,
+        _http_client=httpx.AsyncClient(transport=httpx.MockTransport(slow)),
+    )
+    client = Client(sink=sink, vendor_id="v")
+    with client.trace(tool_name="t") as trace:
+        trace.observed(result="ok")
+    client.flush()
+    client.close()
+    assert len(sent) == 2
