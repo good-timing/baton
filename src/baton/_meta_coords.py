@@ -32,7 +32,7 @@ COORD_KEYS: frozenset[str] = frozenset({"latitude", "longitude"})
 
 # "Parses as a decimal number" means plain decimal notation. ``float()`` alone
 # would also take ``nan``, ``inf``, ``1e2`` and ``3_7``; those are left alone.
-_DECIMAL = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)")
+_DECIMAL = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)", re.ASCII)
 
 
 def round_meta_coordinates(meta: Mapping[str, Any]) -> dict[str, Any]:

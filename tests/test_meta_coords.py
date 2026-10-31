@@ -121,3 +121,9 @@ def test_the_default_scrubber_does_not_round_coordinates() -> None:
     only, and the Scrubber also walks tool params and results."""
     raw = {"latitude": "37.79535123456789", "longitude": -122.39366123456789}
     assert Scrubber()(raw) == raw
+
+
+def test_a_coordinate_in_other_digits_is_left_alone() -> None:
+    # SPEC §7's digit set, as in baton-ts: only 0-9 is a decimal number here.
+    arabic_indic = "".join(chr(0x0660 + int(d)) if d.isdigit() else d for d in "37.79535")
+    assert round_meta_coordinates({"latitude": arabic_indic}) == {"latitude": arabic_indic}

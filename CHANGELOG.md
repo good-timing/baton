@@ -12,6 +12,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Changed
 
+- The scrubber's patterns use SPEC §7's fixed sets. A digit is `0`–`9`, a word boundary is ASCII, and whitespace is space, tab, LF, CR, FF and `U+00A0`. So `"éjane@example.com"` is now scrubbed, as in `baton-ts`, and a card or phone number in other digits, such as Arabic-Indic, is no longer matched. Any space outside the set, such as a thin space (`U+2009`), an em space or a vertical tab, no longer separates a phone number or a bearer token, so such a value is no longer redacted. Coordinates in `_meta` follow the same digit set.
 - A closed `Client` or `AsyncClient` no longer raises `RuntimeError` when used. `trace()`, `annotate()` and `list_tools()` still work, their events are dropped, and the client logs one warning. `list_tools()` still returns the served list. Before, the raise reached the vendor's own code, which SPEC §11.2 forbids.
 - A second `close()` or `aclose()` called while the first is still running now waits for it to finish. Before, it returned at once, before the sink was closed, so a caller could exit with events still unsent. (SPEC §11.2.)
 - `runtime_meta`, and the `meta` a `resolve_principal` hook reads, now hold only what the client sent in `_meta`. On `mcp` 1.x every request gained `"progressToken": null` when the client sent no progress token, because the SDK filled in every field its `Meta` model declares. A `null` the client really sent is kept.

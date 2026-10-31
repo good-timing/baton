@@ -120,6 +120,34 @@ def test_multiple_pii_in_one_string_counts_each() -> None:
 
 
 # =============================================================================
+# SPEC §7: digits, word boundaries and whitespace are fixed sets
+# =============================================================================
+
+
+def test_a_word_boundary_is_ascii() -> None:
+    assert Scrubber()("éjane@example.com") == "é[REDACTED:email]"
+
+
+def test_a_digit_is_0_to_9_only() -> None:
+    arabic_indic_card = "".join(chr(0x0660 + int(d)) for d in "4111111111111111")
+    assert Scrubber()(f"card {arabic_indic_card}") == f"card {arabic_indic_card}"
+
+
+@pytest.mark.parametrize("space", [" ", "\t", "\u00a0"])
+def test_whitespace_in_the_set_separates(space: str) -> None:
+    s = Scrubber()
+    assert s(f"call 555{space}123{space}4567") == "call [REDACTED:phone]"
+    assert s(f"Bearer{space}abcdefghijklmnop1234") == "[REDACTED:bearer]"
+
+
+@pytest.mark.parametrize("space", ["\u2003", "\u3000", "\x0b"])
+def test_whitespace_outside_the_set_does_not(space: str) -> None:
+    s = Scrubber()
+    assert s(f"call 555{space}123{space}4567") == f"call 555{space}123{space}4567"
+    assert s(f"Bearer{space}abcdefghijklmnop1234") == f"Bearer{space}abcdefghijklmnop1234"
+
+
+# =============================================================================
 # Field-name override
 # =============================================================================
 
