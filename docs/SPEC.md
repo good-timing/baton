@@ -1547,6 +1547,23 @@ A producer sends these when a client asks for the server's tools (`tools/list`).
 
 **Not the handshake.** A producer does not emit an event for `initialize`. Every client lists tools; not every client sends a handshake the server sees.
 
+#### 11.4.6 Comparing a producer against the vectors
+
+`baton-spec/vectors/` holds real `baton-sdk` events, made by `scripts/generate.py`. A producer checks itself by running the same scenario and comparing its events with them. Absent and null count as equal (§11.4). Every other member must match, except these, which differ for reasons that are not a wire difference:
+
+| member | why it may differ | what to check instead |
+|---|---|---|
+| `event_id`, `session_id`, `captured_at` | new on every run | — |
+| `call_id` | new on every run | a call's start and its end or error share one value |
+| `sdk_version` | names the producer (§13) | — |
+| `agent_runtime`, `client_observed`, `transport_observed` | depend on how the test drives the server (`generate.py` calls tools with no client), not on the producer | each against its own rules |
+| `payload.duration_ms` | timing | — |
+| `payload.result` on `tool_call_end` and `tool_call_error.returned` | each library hands the producer a different object for the same return | its shape |
+| `payload.error_type` on `tool_call_error` (raised) | an exception class name is per language | a non-empty string |
+| `surface_snapshot` `payload.surface_hash`, `server_info`, `capabilities`, `tools` | each library derives a tool's schema its own way | `seam_augmentations` must match |
+
+`error_type` on `tool_call_error.returned` is `"tool_error"` from every producer and is not exempt. `tool_call_start.identified.json` pins `call_intent`, `intent_source`, `principal` and `organization`: a vendor resolver returns a person with a company, and the call carries `user_goal`.
+
 ### 11.5 Annotation correlation rules (worker-side)
 
 #### 11.5.1 Turn-vs-session distinction
@@ -1709,6 +1726,8 @@ Defined error codes:
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
 
+- **Unreleased (SDK, 2026-10-30) — `runtime_meta` carries only the `_meta` keys the client sent (§11.4.1).** On mcp 1.x, `baton-sdk` 0.9.1 and earlier added `"progressToken": null` to every request that had none. A null the client really sent is still kept. No envelope field or event type changes. **Consumer consequence:** a null `progressToken` from those versions is not the client's.
+
 - **Unreleased (spec only, 2026-10-30) — four rules a third SDK needs, written before the Go SDK.** No envelope field, event type or shape changes.
 
   **(1) Where `user_goal` is removed (§5.1.2).** In the outer `tools/call` seam, before any vendor code or host input check sees it. `baton-sdk` 0.9.1 already does this. `baton-ts` 0.6.1 removes the retired names there but `user_goal` only in its handler wrap, which its host's check accepts. The Go SDK's typed tools reject any argument their schema does not declare, so there the rule is what keeps calls working.
@@ -1731,7 +1750,9 @@ Defined error codes:
 
   **(4) `sdk_version` names the producer by its prefix (§13 head).** This was already true; it is now written down, with `go-` for the Go SDK.
 
-  **(5) Stale text.** `trace_context` is marked reserved: no schema defines it and no producer sends it. §11.4.1 no longer says an MCP `session_id` always lasts the whole process; over HTTP it can cover one request (§3.4 rung 5).
+  **(5) How a producer compares itself with the vectors (§11.4.6),** and a new vector, `tool_call_start.identified.json`, that pins `call_intent`, `intent_source`, `principal` and `organization`. A producer whose conformance test lists the vector files must add it.
+
+  **(6) Stale text.** `trace_context` is marked reserved: no schema defines it and no producer sends it. §11.4.1 no longer says an MCP `session_id` always lasts the whole process; over HTTP it can cover one request (§3.4 rung 5).
 
   **Consumer consequence:** none.
 
