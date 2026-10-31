@@ -39,7 +39,9 @@ def meta_to_dict(meta: Any) -> dict[str, Any] | None:
 
     Accepts a mapping, an MCP ``RequestParams.Meta`` model, or ``None``. Uses
     ``by_alias=True`` so namespaced keys like ``claudecode/toolUseId`` survive
-    the dump (they are model extras whose JSON form is the alias).
+    the dump (they are model extras whose JSON form is the alias), and
+    ``exclude_unset=True`` so a field the model declares but the client did
+    not send (``progressToken``) is not added as ``None``.
     """
     if meta is None:
         return None
@@ -48,7 +50,7 @@ def meta_to_dict(meta: Any) -> dict[str, Any] | None:
     if isinstance(meta, Mapping):
         return dict(meta)
     if hasattr(meta, "model_dump"):
-        return meta.model_dump(by_alias=True)  # type: ignore[no-any-return]
+        return meta.model_dump(by_alias=True, exclude_unset=True)  # type: ignore[no-any-return]
     return None
 
 

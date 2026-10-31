@@ -14,6 +14,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 - A closed `Client` or `AsyncClient` no longer raises `RuntimeError` when used. `trace()`, `annotate()` and `list_tools()` still work, their events are dropped, and the client logs one warning. `list_tools()` still returns the served list. Before, the raise reached the vendor's own code, which SPEC §11.2 forbids.
 - A second `close()` or `aclose()` called while the first is still running now waits for it to finish. Before, it returned at once, before the sink was closed, so a caller could exit with events still unsent. (SPEC §11.2.)
+- `runtime_meta`, and the `meta` a `resolve_principal` hook reads, now hold only what the client sent in `_meta`. On `mcp` 1.x every request gained `"progressToken": null` when the client sent no progress token, because the SDK filled in every field its `Meta` model declares. A `null` the client really sent is kept.
 
 ---
 

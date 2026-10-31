@@ -26,7 +26,7 @@ class _FakeMetaModel:
         self._by_alias = by_alias_payload
         self._plain = plain_payload
 
-    def model_dump(self, by_alias: bool = False) -> dict[str, Any]:
+    def model_dump(self, by_alias: bool = False, **_: Any) -> dict[str, Any]:
         return self._by_alias if by_alias else self._plain
 
 
@@ -47,6 +47,22 @@ class TestMetaToDict:
 
     def test_an_object_that_is_neither_is_none(self) -> None:
         assert meta_to_dict(object()) is None
+
+    @pytest.mark.parametrize(
+        "sent",
+        [
+            {"claudecode/toolUseId": "tu_1"},
+            {"claudecode/toolUseId": "tu_1", "progressToken": None},
+            {"progressToken": 7},
+        ],
+    )
+    def test_the_real_meta_model_returns_only_what_the_client_sent(
+        self, sent: dict[str, Any]
+    ) -> None:
+        meta_model = getattr(pytest.importorskip("mcp.types").RequestParams, "Meta", None)
+        if meta_model is None:
+            pytest.skip("mcp 2.x has no RequestParams.Meta; _meta arrives as a dict")
+        assert meta_to_dict(meta_model.model_validate(sent)) == sent
 
 
 class _Info:
