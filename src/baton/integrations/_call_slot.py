@@ -9,8 +9,10 @@ pair of events.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
+from typing import Any
 
 from baton.integrations._llm_text import Goals
 
@@ -20,14 +22,17 @@ class CallSlot:
     goals: Goals | None
     """``user_goal`` and the retired names, when the outer seam stripped them."""
     claimed: bool = False
+    finish: Callable[[Any], Awaitable[None]] | None = None
+    """The inner capture's terminal event, called with the server's error
+    result when the server rejected what the handler returned, else ``None``."""
 
 
 current_slot: ContextVar[CallSlot | None] = ContextVar("baton_call_slot", default=None)
 
 
-def claim_call() -> Goals | None:
-    """Mark the open call as captured by the inner seam, and return the goals
-    the outer seam stripped, or ``None`` when the inner capture strips itself.
+def claim_call() -> CallSlot | None:
+    """Mark the open call as captured by the inner seam and return its slot,
+    or ``None`` when there is no open call for this capture to claim.
 
     A slot already claimed is not this call's: a tool that calls another tool
     from inside its handler must not take its caller's goal. Not matched by
@@ -37,4 +42,4 @@ def claim_call() -> Goals | None:
     if slot is None or slot.claimed:
         return None
     slot.claimed = True
-    return slot.goals
+    return slot

@@ -495,9 +495,9 @@ def _wrap_tool_run(
         call_intent: str | None = None
         call_expected: str | None = None
         call_task: str | None = None
-        claimed = claim_call()
-        if claimed is not None:
-            call_intent, call_expected, call_task = claimed
+        slot = claim_call()
+        if slot is not None and slot.goals is not None:
+            call_intent, call_expected, call_task = slot.goals
         elif isinstance(arguments, dict):
             call_intent, call_expected, call_task = pop_goal_params(
                 name, arguments, param_registry.get(name)

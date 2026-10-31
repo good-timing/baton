@@ -302,6 +302,7 @@ def install_lifecycle_capture(
         slot = CallSlot(goals=goals)
         token = current_slot.set(slot)
         started_at = monotonic()
+        rejected = None
         try:
             try:
                 result = await serve(params)
@@ -319,7 +320,9 @@ def install_lifecycle_capture(
                     )
                 raise
             root = getattr(result, "root", result)
-            if not slot.claimed and is_error_result(root):
+            if slot.finish is not None:
+                rejected = root if is_error_result(root) else None
+            elif not slot.claimed and is_error_result(root):
                 await refused(
                     call_seam,
                     read_request_context,
@@ -333,6 +336,12 @@ def install_lifecycle_capture(
             return result
         finally:
             current_slot.reset(token)
+            finish, slot.finish = slot.finish, None
+            if finish is not None:
+                try:
+                    await finish(rejected)
+                except Exception:
+                    logger.exception("baton: a tool call's end event was not sent")
 
     async def refused(
         call_seam: CallSeam,

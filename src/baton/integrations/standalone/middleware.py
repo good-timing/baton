@@ -344,9 +344,9 @@ class BatonMiddleware(Middleware):
         call_intent: str | None = None
         call_expected: str | None = None
         call_task: str | None = None
-        claimed = claim_call()
-        if claimed is not None:
-            call_intent, call_expected, call_task = claimed
+        slot = claim_call()
+        if slot is not None and slot.goals is not None:
+            call_intent, call_expected, call_task = slot.goals
         elif isinstance(msg.arguments, dict):
             fctx = context.fastmcp_context
             call_intent, call_expected, call_task = await self._extract_goal_params(
@@ -523,6 +523,42 @@ class BatonMiddleware(Middleware):
 
         duration_ms = int((monotonic() - called_at) * 1000)
 
+        # The projection runs inside the thunk so a raising vendor scrubber
+        # stays inside `safe_emit`'s guard; the event is dropped, not sent with
+        # `error_body=""`, which §11.4.3 reads as "withheld".
+        def build_err(
+            seq_err: int, returned: Any, failure_kind: str | None = None
+        ) -> ToolCallErrorEvent:
+            err = returned_error_fields(
+                mode=self._result_capture_mode,
+                scrubber=self._scrubber,
+                result=returned,
+            )
+            return ToolCallErrorEvent(
+                tenant_id=self._tenant_id,
+                vendor_id=self._vendor_id,
+                consent_token=self._consent_token,
+                session_id=call_session.id,
+                sequence_number=seq_err,
+                captured_at=datetime.now(UTC),
+                client_observed=client,
+                principal=caller.principal,
+                organization=caller.organization,
+                transport_observed=call_transport,
+                session_id_origin=call_session.origin,
+                call_id=call_id,
+                runtime_meta=scrubbed_meta,
+                payload=ToolCallErrorPayload(
+                    tool_name=tool_name,
+                    error_type=TOOL_ERROR_TYPE,
+                    duration_ms=duration_ms,
+                    error_body=err.error_body,
+                    result=err.result,
+                    result_capture=err.result_capture,
+                    failure_kind=failure_kind,
+                ),
+            )
+
         # SPEC §11.4.3: a returned result carrying MCP's error flag is a
         # FAILURE. MCP files it as a 200, so it arrives here and not through
         # the ``except`` above — this adapter sits INSIDE fastmcp's own
@@ -536,56 +572,12 @@ class BatonMiddleware(Middleware):
         # pinned positively by ``test_floor_has_no_flag_to_read``.
         if is_error_result(result):
             seq_err = await next_sequence(self._counter, call_session)
-
-            # SPEC §11.4.3(2): both result-derived members, decided together.
-            # ⚠ The projection runs INSIDE the thunk. It owns the scrubber call
-            # (`_error_result.py`), and as a statement out here a raising vendor
-            # scrubber escaped `safe_emit` and broke the vendor's tool call —
-            # the guard only covers what the thunk it is handed evaluates. A
-            # `def` rather than a lambda because the projection is read three
-            # times. Dropping rather than degrading: `error_body` is a required
-            # `str` and `""` is the withheld/no-message ambiguity §11.4.3 warns
-            # about, so no value here honestly says "we could not scrub this".
-            def build_err() -> ToolCallErrorEvent:
-                err = returned_error_fields(
-                    mode=self._result_capture_mode,
-                    scrubber=self._scrubber,
-                    result=result,
-                )
-                return ToolCallErrorEvent(
-                    tenant_id=self._tenant_id,
-                    vendor_id=self._vendor_id,
-                    consent_token=self._consent_token,
-                    session_id=call_session.id,
-                    sequence_number=seq_err,
-                    captured_at=datetime.now(UTC),
-                    client_observed=client,
-                    principal=caller.principal,
-                    organization=caller.organization,
-                    transport_observed=call_transport,
-                    session_id_origin=call_session.origin,
-                    call_id=call_id,
-                    runtime_meta=scrubbed_meta,
-                    payload=ToolCallErrorPayload(
-                        tool_name=tool_name,
-                        error_type=TOOL_ERROR_TYPE,
-                        duration_ms=duration_ms,
-                        error_body=err.error_body,
-                        result=err.result,
-                        result_capture=err.result_capture,
-                    ),
-                )
-
-            await safe_emit(self._sink, build_err, logger)
+            await safe_emit(self._sink, lambda: build_err(seq_err, result), logger)
             return result
 
-        seq_end = await next_sequence(self._counter, call_session)
-
-        # ⚠ The projection runs INSIDE the thunk, same rule as the error leg
-        # above: it owns the scrubber call (`_result_capture.py`), and out here
-        # a raising vendor scrubber escaped `safe_emit` and broke the vendor's
-        # tool call.
-        def build_end() -> ToolCallEndEvent:
+        # The projection runs inside the thunk so a raising vendor scrubber
+        # stays inside `safe_emit`'s guard.
+        def build_end(seq_end: int) -> ToolCallEndEvent:
             end = end_result_fields(
                 mode=self._result_capture_mode,
                 scrubber=self._scrubber,
@@ -614,7 +606,21 @@ class BatonMiddleware(Middleware):
                 ),
             )
 
-        await safe_emit(self._sink, build_end, logger)
+        async def finish(rejected: Any) -> None:
+            seq = await next_sequence(self._counter, call_session)
+            if rejected is None:
+                await safe_emit(self._sink, lambda: build_end(seq), logger)
+            else:
+                await safe_emit(
+                    self._sink, lambda: build_err(seq, rejected, "output_schema_mismatch"), logger
+                )
+
+        # On mcp 1.x the low-level server checks the output schema after this
+        # chain returns, so the outer seam sends the end once it has seen that.
+        if slot is not None:
+            slot.finish = finish
+        else:
+            await finish(None)
         return result
 
     # =========================================================================

@@ -163,8 +163,8 @@ class ToolCallErrorPayload(BaseModel):
     ``unknown_tool``             the handler never ran: no such tool
     ``tool_disabled``            the handler never ran: the tool is off
     ``invalid_argument``         the handler never ran: arguments rejected
-    ``output_schema_mismatch``   the handler RETURNED and our conversion of
-                                 its output rejected it
+    ``output_schema_mismatch``   the handler RETURNED and the server's check
+                                 of its output rejected it
     ``refused``                  the handler never ran: code above it, such
                                  as the server's own ``call_tool``, refused
     ===========================  ==========================================
@@ -179,10 +179,8 @@ class ToolCallErrorPayload(BaseModel):
     ``model_dump(mode="json")`` with no ``exclude_none`` puts
     ``"failure_kind": null`` on the wire. Read the VALUE.
 
-    ⚠ **This payload only.** The output-schema case files ``tool_call_end``
-    today, and that false success is what naming this corrects — so after the
-    fix nothing carries a ``failure_kind`` on a success payload. Unlike
-    ``result_capture``, which rides both.
+    ⚠ **This payload only.** No success payload carries a ``failure_kind``.
+    Unlike ``result_capture``, which rides both.
 
     ⚠ **The first three are NOT result-derived** — the handler never ran, so
     nothing it returned exists. Their ``error_body`` STAYS under
@@ -200,7 +198,8 @@ class ToolCallErrorPayload(BaseModel):
 
     The MCP adapters emit ``refused``, and the official adapter
     ``unknown_tool``, from the outer ``tools/call`` seam
-    (``integrations/_lifecycle.py``).
+    (``integrations/_lifecycle.py``). The standalone adapter's
+    ``output_schema_mismatch`` is decided there too, from the server's answer.
     """
 
 
