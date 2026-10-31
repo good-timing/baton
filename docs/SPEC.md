@@ -165,7 +165,7 @@ This is the canonical signal schema the collector worker produces by stitching e
 | `agent_runtime` | string | yes | e.g., `"claude-code"`, `"cursor"`, `"cowork"`, `"chatgpt-desktop"`, `"unknown"`. |
 | `mcp_transport` | enum: `stdio` \| `sse` \| `http` | yes | The transport the SDK is hosted on. |
 | `mcp_protocol_revision` | string \| null | no | MCP spec revision detected from `_meta` or transport handshake (e.g., `"2025-11-25"`, `"2026-07-28"`). Null if undetermined. |
-| `trace_context` | TraceContext \| null | no | **Reserved.** No schema defines it and no producer sends it; a producer MUST NOT send it until one does. W3C trace context from request `_meta`. See §3.4. |
+| `trace_context` | TraceContext \| null | no | **Reserved.** No SDK sends a trace context and no event schema defines one, so a worker has nothing to fill it from. W3C trace context from request `_meta`. |
 | `vendor_app_version` | string \| null | no | Vendor's own app version if they want to attach it. |
 
 ### 3.3 Sample payload
@@ -407,7 +407,7 @@ Under `report_mode="on"` the SDK MUST set the FastMCP server's `instructions` to
 - If the vendor has NOT set `instructions` before installing the SDK: SDK sets a default template (see §5.4).
 - If the vendor HAS set `instructions`: SDK appends its template *below* the vendor's existing text (vendor's instructions stay primary; SDK's are additive). The vendor's text is kept byte for byte as the start of the result, followed by one blank line and the template. Empty or whitespace-only vendor text counts as not set.
 
-**Where `user_goal` is removed.** A producer MUST remove `user_goal`, and the retired names, from a call's arguments in its outer `tools/call` seam, before any vendor code or any input check by the host sees them. A host that checks arguments against the tool's schema would otherwise reject the call, and `"required"` would become enforced. Under `"required"` the name is listed as required in what `tools/list` returns, and a call that omits it is still served. A producer whose host gives it no outer seam MUST make sure the host's input check accepts the name.
+**Where `user_goal` is removed.** For a tool whose schema it changed, a producer MUST remove `user_goal`, and any retired name it reserves for that tool, from a call's arguments in its outer `tools/call` seam, before any vendor code or any input check by the host sees them. A tool the producer does not know may declare those names itself, so the producer leaves them for its handler wrap. A host that checks arguments against the tool's schema would otherwise reject the call, and `"required"` would become enforced. Under `"required"` the name is listed as required in what `tools/list` returns, and a call that omits it is still served. A producer whose host gives it no outer seam MUST make sure the host's input check accepts the name.
 
 The instructions text MUST be templated from `VendorConfig.vendor_display_name`. It MUST NOT contain the string "Baton" or reference the SDK by name. The default template is in §5.4.
 
@@ -451,9 +451,9 @@ For `session_id` and `runtime_metadata` fields, the SDK SHOULD read from the MCP
 
 | `_meta` key | Maps to signal payload field |
 |---|---|
-| `_meta.traceparent` | `runtime_metadata.trace_context.traceparent`. Carried as data only, **never a `session_id` source**: §3.4 rung 1 was retired 2026-09-09, because a trace spans one turn, not one conversation |
-| `_meta.tracestate` | `runtime_metadata.trace_context.tracestate` |
-| `_meta.baggage` | `runtime_metadata.trace_context.baggage` |
+| `_meta.traceparent` | stays in `runtime_meta` with the rest of `_meta`; `trace_context` is reserved and not sent (§3.1). Carried as data only, **never a `session_id` source**: §3.4 rung 1 was retired 2026-09-09, because a trace spans one turn, not one conversation |
+| `_meta.tracestate` | stays in `runtime_meta` with the rest of `_meta` |
+| `_meta.baggage` | stays in `runtime_meta` with the rest of `_meta` |
 
 **Fallback:** MCP clients populate their own keys, not ours, so the SDK MUST synthesize sensible defaults:
 - `session_id`: a UUID generated per MCP session.
@@ -721,7 +721,7 @@ The SDK runs on the vendor's side; the vendor is the data controller for what it
 
 **Current interface:** `VendorConfig.scrubber: Callable[[Any], Any]` — a function applied to params, results, error bodies, and annotation strings. The default, since `baton-sdk` 0.2.8, is the built-in `Scrubber`: pattern rules for email, bearer tokens, `sk-*` and `AKIA*` keys, JWTs, Luhn-checked card numbers and North American phone numbers, plus redaction of every string under a field named `email`, `phone`, `ssn`, `api_key`, `token`, `secret`, `password` or `user_name`. A vendor opts out with an identity function. Pattern rules are not a guarantee: a name or a street address passes through, so a vendor handling sensitive data SHOULD supply its own scrubber. The SDK MUST NOT log unscrubbed payloads anywhere (stderr, stdout, files, exception messages).
 
-**Digits and word boundaries are ASCII.** A pattern rule's digit is `0`–`9` and its word boundary is between ASCII letters, digits and `_` and anything else. Every runtime can match that the same way (Python needs `re.ASCII`; JavaScript and Go's RE2 do it by default). So a card or phone number written in other digits, such as Arabic-Indic, is not matched.
+**Digits, word boundaries and whitespace are ASCII.** A pattern rule's digit is `0`–`9`, its word boundary is between ASCII letters, digits and `_` and anything else, and its whitespace is space, tab, LF, CR and FF. Every runtime can match that the same way, but only if each says so: Python needs `re.ASCII` and an explicit whitespace class (its `\s` adds VT), JavaScript needs an explicit class for whitespace (its `\s` adds NBSP and other Unicode spaces), and Go's RE2 matches this by default. So a card or phone number written in other digits, such as Arabic-Indic, or split by a non-breaking space, is not matched.
 
 **Depth limit.** A scrubber that walks nested data stops at a depth limit (10 in both reference SDKs) so hostile input cannot exhaust the stack. It MUST NOT pass what lies past the limit through unscrubbed: it replaces each object or array at the limit with the marker `"[REDACTED:depth-limit]"` and scrubs a plain value there as it would at any depth, and the producer logs a warning the first time it does so, without the value. A consumer reads the marker as "withheld by the scrubber", never as the vendor's data.
 
@@ -822,7 +822,7 @@ A conforming SDK MUST:
 4. **POST events to Console ingest endpoint** (`POST /v0/events`) asynchronously with retry-and-backoff. Default timeout: 1s per request. Circuit-break after N consecutive failures.
 5. **Assign sequence numbers per session.** Increasing per `session_id` within one process; §5.6 covers a session that spans processes. Worker orders a session's events by `sequence_number`, then `event_id`, not by timestamps alone. **The number is not the event's identity; `event_id` is.** A library producer numbers by the clock (§5.6), so two events of one session can share a number. A consumer MUST NOT reject or fail an event for a repeated (`session_id`, `sequence_number`), and recognises a retried event by its `event_id`.
 6. **Withhold result-derived data on request, and say so on the wire.** When configured to withhold results (§11.4 `result_capture`), a conforming SDK MUST emit nothing **derived from the tool's result** — `result`, and an `error_body` unwrapped from the result — MUST set `result_capture` on every affected event, and MUST still classify and emit `error_type`, `tool_name` and `duration_ms`. The rule is keyed on PROVENANCE, not on a field name: `error_body` is fed from several sources and only the result-derived ones are withheld, a raised message among them unless the vendor marked it public (§11.4.3). A producer MUST NOT infer the withheld state from an absent value, and a consumer MUST NOT either. ⚠ **A producer that also emits ANY of the four resource/prompt `*_error` legs carries two further obligations, neither of them about wire output: its own vendor-facing docs MUST say that those legs' messages survive the mode, and it MUST emit a `UserWarning` naming them when the mode is configured (§11.4.4).**
-7. **Shut down without breaking the vendor's program.** A second close waits for the first to finish. An event recorded after close is dropped, with one warning, and never raises. At process exit the producer tries to send what it holds, for at most 3 seconds. A runtime with no exit hook, such as Go, gives the vendor a close call to make instead.
+7. **Shut down without breaking the vendor's program.** A second close waits for the first to finish, except a close re-entered from inside the first (such as a signal handler on the closing thread), which returns at once rather than wait on itself. An event recorded after close is dropped, with one warning, and never raises. At process exit the producer tries to send what it holds, for 3 seconds by default; the vendor may change the limit. A runtime with no exit hook, such as Go, gives the vendor a close call to make instead.
 8. **MAY do cheap stateless classification.** E.g., set `signal_type=failure` on a tool-call-error event when the exception class matches a known failure pattern. State-dependent classification (retry_loop) MUST NOT happen in the SDK.
 
 A conforming SDK MUST NOT:
@@ -880,7 +880,6 @@ Every event has these fields:
     "headers": {"user-agent": "claude-code/2.1.292 (sdk-cli)"}
   },
   "runtime_meta": {"claudecode/toolUseId": "...", "progressToken": 1},  // optional; verbatim _meta from MCP request (PII-scrubbed); see §11.4.1
-  "trace_context": {"traceparent": "...", "tracestate": null, "baggage": null},  // RESERVED: not sent; see §3.1
   "payload": { ... }                         // event-type-specific fields
 }
 ```
@@ -909,7 +908,7 @@ Every event has these fields:
 
 **Why an object, when every other field this envelope authors is flat.** Because `id` alone is not safe to read. Whether a value is a pseudonym or a real name is not a fact *about* the value that a consumer may go and look up later — it is part of what the value MEANS, and a consumer holding the id without it cannot tell personal data from a hash. Nesting makes that structural: there is no arrangement of this envelope in which an `id` arrives without its `form`, so the rule does not depend on a producer remembering to emit two fields or a consumer remembering to read both. The flat spelling was drafted first and rejected for exactly that reason — it expressed the same three facts while leaving the binding as prose, and prose is what the scheme-prefix encoding already was.
 
-**It has one live provenance: the vendor's resolver.** A producer resolves `principal` ONLY by calling a per-request resolver the vendor configured, and emits nothing when none is configured or it has no answer. That resolver may read a bearer token the vendor's own verifier validated — a producer MAY ship ready-made resolvers that read the token's `sub` or `email` claim — but the producer cannot see what a resolver did, so every principal it emits is **asserted**: the vendor states who the user is and nothing in the protocol checks the claim. **The resolver can reach the host's whole verified-token record, as the host hands it over** (`authInfo` in the TypeScript SDK, `get_access_token()` in Python, `auth.TokenInfo` in Go). A producer MAY also pass a part of it, such as Python's `claims`, but MUST NOT pass only that part, because which field names the person is the vendor's decision. ⚠ **Until the release recorded in §13 a producer ALSO read the verified token's `sub` on its own when no resolver answered, and stamped that `"attested"`.** That rung is removed: which claim names the person — or whether the token names a person at all, rather than a gateway's service account — is the vendor's decision, and a default the vendor never chose was making it. **Which provenance a consumer got is still `principal.source`**, and **a consumer MUST NOT present an asserted principal as a verified one.**
+**It has one live provenance: the vendor's resolver.** A producer resolves `principal` ONLY by calling a per-request resolver the vendor configured, and emits nothing when none is configured or it has no answer. That resolver may read a bearer token the vendor's own verifier validated — a producer MAY ship ready-made resolvers that read the token's `sub` or `email` claim — but the producer cannot see what a resolver did, so every principal it emits is **asserted**: the vendor states who the user is and nothing in the protocol checks the claim. **The resolver can reach the host's whole verified-token record, as the host hands it over:** passed in (`authInfo` in the TypeScript SDK, `auth.TokenInfo` in Go), or through the host's own accessor, called from inside the resolver (`get_access_token()` in Python). A producer MAY also pass a part of it, such as Python's `claims`. It MUST NOT leave the resolver only that part, because which field names the person is the vendor's decision. ⚠ **Until the release recorded in §13 a producer ALSO read the verified token's `sub` on its own when no resolver answered, and stamped that `"attested"`.** That rung is removed: which claim names the person — or whether the token names a person at all, rather than a gateway's service account — is the vendor's decision, and a default the vendor never chose was making it. **Which provenance a consumer got is still `principal.source`**, and **a consumer MUST NOT present an asserted principal as a verified one.**
 
 **Provenance and privacy are two facts and they ride two members.** Before they existed both were encoded in the value's scheme tag — the letter said where the principal came from, the presence of a tag said it was hashed — so `"raw"` mode, which emits no tag, dropped the provenance along with the pseudonymity, and no consumer could recover it. They are now `source` and `form`, independent and separately readable in every derivation mode. ⚠ **A third fact — which HMAC key produced the digest — rode the value for one more release and is now carried NOWHERE.** From 0.8.11 the tag is gone and nothing replaces it: `id` holds the value and nothing else. Why that is acceptable is the key-rotation row below.
 
@@ -1118,7 +1117,7 @@ The wire format is intentionally unified — both flavors share the same envelop
 
 #### 11.4.1 `runtime_meta` (optional) — for worker-side correlation
 
-On the MCP path, `session_id` is NOT a conversation-turn identifier. Over stdio it is the SDK's fallback id, so one server process across many user prompts produces one `session_id`. Over HTTP it comes from §3.4's ladder and can cover a single request (rung 5). To recover finer-grained turn and conversation boundaries, the worker MUST read `runtime_meta` when populated.
+On the MCP path, `session_id` is NOT a conversation-turn identifier. Over stdio, unless the runtime sends its own session key (§3.4 rung 3), it is the SDK's fallback id, so one server process across many user prompts produces one `session_id`. Over HTTP it comes from §3.4's ladder and can cover a single request (rung 5). To recover finer-grained turn and conversation boundaries, the worker MUST read `runtime_meta` when populated.
 
 On the MCP path the SDK populates `runtime_meta` with the raw `_meta` dict from the MCP request, with the vendor's PII scrubber applied. On the library path it holds the `_meta` the vendor passed to `client.session(meta=)`, scrubbed the same way, and the vendor's turn id (§5.6). Examples of keys, by the level each identifies. Codex and ChatGPT keys were observed on the wire; VS Code's are read from its source and have not been observed:
 
@@ -1558,11 +1557,11 @@ A producer sends these when a client asks for the server's tools (`tools/list`).
 | `sdk_version` | names the producer (§13) | — |
 | `agent_runtime`, `client_observed`, `transport_observed` | depend on how the test drives the server (`generate.py` calls tools with no client), not on the producer | each against its own rules |
 | `payload.duration_ms` | timing | — |
-| `payload.result` on `tool_call_end` and `tool_call_error.returned` | each library hands the producer a different object for the same return | its shape |
-| `payload.error_type` on `tool_call_error` (raised) | an exception class name is per language | a non-empty string |
+| `payload.result` in the `tool_call_end` and `tool_call_error.returned` vectors | each library hands the producer a different object for the same return | its shape |
+| `payload.error_type` in the `tool_call_error` vector (raised) | an exception class name is per language | a non-empty string |
 | `surface_snapshot` `payload.surface_hash`, `server_info`, `capabilities`, `tools` | each library derives a tool's schema its own way | `seam_augmentations` must match |
 
-`error_type` on `tool_call_error.returned` is `"tool_error"` from every producer and is not exempt. `tool_call_start.identified.json` pins `call_intent`, `intent_source`, `principal` and `organization`: a vendor resolver returns a person with a company, and the call carries `user_goal`.
+`error_type` in the `tool_call_error.returned` vector is `"tool_error"` from every producer and is not exempt. `tool_call_start.identified.json` pins `call_intent`, `intent_source`, `principal` and `organization`: a vendor resolver returns a person with a company, and the call carries `user_goal`.
 
 ### 11.5 Annotation correlation rules (worker-side)
 
@@ -1730,7 +1729,7 @@ Defined error codes:
 
 - **Unreleased (spec only, 2026-10-30) — four rules a third SDK needs, written before the Go SDK.** No envelope field, event type or shape changes.
 
-  **(1) Where `user_goal` is removed (§5.1.2).** In the outer `tools/call` seam, before any vendor code or host input check sees it. `baton-sdk` 0.9.1 already does this. `baton-ts` 0.6.1 removes the retired names there but `user_goal` only in its handler wrap, which its host's check accepts. The Go SDK's typed tools reject any argument their schema does not declare, so there the rule is what keeps calls working.
+  **(1) Where `user_goal` is removed (§5.1.2).** In the outer `tools/call` seam, before any vendor code or host input check sees it, for every tool whose schema the producer changed. `baton-sdk` 0.9.1 already does this; for a tool its registry does not hold, it leaves the names to its handler wrap. `baton-ts` 0.6.1 removes the retired names there but `user_goal` only in its handler wrap, which its host's check accepts. The Go SDK's typed tools reject any argument their schema does not declare, so there the rule is what keeps calls working.
 
   **(2) A producer's own "public error" type (§11.4.3 clause 1).** A producer whose MCP library has no tool-error class may give the vendor its own type to raise. Under `result_capture: "off"` that message is kept. Without such a type, every raised message is still withheld.
 
@@ -1742,11 +1741,11 @@ Defined error codes:
 
 - **Unreleased (spec only, 2026-10-30) — more rules for a third SDK, and stale text fixed.** No envelope field, event type or shape changes.
 
-  **(1) Scrubber digits and word boundaries are ASCII (§7).** JavaScript and Go match them that way by default. `baton-sdk` 0.9.1 uses Unicode ones, so it also scrubs, for example, a card number in Arabic-Indic digits; a later release narrows it.
+  **(1) Scrubber digits, word boundaries and whitespace are ASCII (§7).** Go matches them that way by default. `baton-sdk` 0.9.1 uses Unicode digits and boundaries, so it also scrubs, for example, a card number in Arabic-Indic digits, and both SDKs' `\s` also matches other spaces, such as NBSP in JavaScript. A later release narrows both.
 
   **(2) A blank principal or organization `id` is empty after removing Unicode `White_Space` (§11.4),** the set `display_name` already uses. Both SDKs also remove `U+001C`–`U+001F` today, and both narrow to this set in a later release.
 
-  **(3) Shutdown (§11.2 rule 7).** A second close waits for the first, an event after close is dropped with one warning, and the exit flush is capped at 3 seconds. `baton-sdk` 0.9.1 raises on use after close and returns from a second close before the first finishes. `baton-ts` 0.6.1 does not cap its exit flush.
+  **(3) Shutdown (§11.2 rule 7).** A second close waits for the first, an event after close is dropped with one warning, and the exit flush is capped at 3 seconds by default. `baton-sdk` 0.9.1 raises on use after close and returns from a second close before the first finishes. `baton-ts` 0.6.1 does not cap its exit flush. Both are fixed on `main` for the next release.
 
   **(4) `sdk_version` names the producer by its prefix (§13 head).** This was already true; it is now written down, with `go-` for the Go SDK.
 
