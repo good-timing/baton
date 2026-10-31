@@ -964,23 +964,33 @@ class TestAnUnencodableEventDoesNotBlockTheQueue:
         assert sink._circuit._opened_at is not None
         await sink.aclose()
 
-    async def test_a_malformed_sink_url_is_not_blamed_on_the_event(self) -> None:
+    async def test_a_malformed_sink_url_is_not_blamed_on_the_event(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         sink = HttpSink(url="http://127.0.0.1:9/\x00", api_key="k")
         sink._enqueue_for_test(_make_event())
 
-        with pytest.raises(httpx.InvalidURL):
+        with caplog.at_level(logging.WARNING, logger="baton"):
             await sink.flush()
+        [record] = caplog.records
+        assert record.exc_info is not None
+        assert isinstance(record.exc_info[1], httpx.InvalidURL)
 
         assert len(sink._buffer) == 1
         sink._closed = True
         await sink._http_client.aclose()
 
-    async def test_an_unencodable_api_key_is_not_blamed_on_the_event(self) -> None:
+    async def test_an_unencodable_api_key_is_not_blamed_on_the_event(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         sink = HttpSink(url="http://127.0.0.1:9", api_key="ké")
         sink._enqueue_for_test(_make_event())
 
-        with pytest.raises(UnicodeEncodeError):
+        with caplog.at_level(logging.WARNING, logger="baton"):
             await sink.flush()
+        [record] = caplog.records
+        assert record.exc_info is not None
+        assert isinstance(record.exc_info[1], UnicodeEncodeError)
 
         assert len(sink._buffer) == 1
         sink._closed = True

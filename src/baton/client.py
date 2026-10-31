@@ -144,12 +144,13 @@ from baton.scrub import (  # noqa: F401  identity_scrub kept exported
     scrub_or_none,
 )
 from baton.sinks import (
-    SHUTDOWN_FLUSH_TIMEOUT_SECONDS,
     HttpSink,
     Sink,
+    bounded_sink_call,
     build_or_none,
     safe_emit,
     safe_write,
+    shutdown_budget_seconds,
 )
 
 T = TypeVar("T")
@@ -434,7 +435,7 @@ def _close_sink_without_a_loop(sink: Sink) -> None:
     thread = threading.Thread(target=_run, name="baton-disabled-close", daemon=True)
     thread.start()
     # Bounded: a sink that hangs on close must not hang the vendor's shutdown.
-    thread.join(timeout=5.0)
+    thread.join(timeout=shutdown_budget_seconds(sink) + 0.5)
     if failure or thread.is_alive():
         logger.debug(
             "baton: closing a disabled client's sink did not complete",
@@ -574,12 +575,12 @@ class _BridgeStopped(RuntimeError):
         super().__init__("baton: the background event loop has stopped")
 
 
-async def _drain_then_close(sink: Sink, deadline: float) -> None:
+async def _drain_then_close(sink: Sink) -> None:
     """Let the event writes already on the loop finish, then close the sink.
     Closing first would turn those writes into drops."""
     others = asyncio.all_tasks() - {asyncio.current_task()}
     if others:
-        await asyncio.wait(others, timeout=max(0.0, min(_DRAIN_SECONDS, deadline - monotonic())))
+        await asyncio.wait(others, timeout=_DRAIN_SECONDS)
     await sink.aclose()
 
 
@@ -1338,12 +1339,18 @@ class Client(_Sessions):
         return served
 
     def flush(self) -> None:
-        """Block until pending events drain."""
+        """Wait for pending events to drain, up to the sink's shutdown budget;
+        while an earlier flush's drain is still stuck, returns at once."""
         if self._closed or self._bridge is None:
             # No bridge means the off switch is set and nothing was ever
             # queued. A vendor's ``finally: client.flush()`` must keep working.
             return
-        self._run_bounded(self._sink.flush(), SHUTDOWN_FLUSH_TIMEOUT_SECONDS, "flush()")
+        # The outer limit only matters if the loop thread itself is blocked.
+        self._run_bounded(
+            bounded_sink_call(self._sink, "flush"),
+            shutdown_budget_seconds(self._sink) + 1.0,
+            "flush()",
+        )
 
     def close(self) -> None:
         """Flush + close the sink + stop the bridge thread."""
@@ -1358,9 +1365,9 @@ class Client(_Sessions):
             # A close re-entered on the closing thread (a signal handler) would
             # wait on itself.
             if self._closing_thread != threading.get_ident():
-                self._close_done.wait(timeout=SHUTDOWN_FLUSH_TIMEOUT_SECONDS + 1.0)
+                self._close_done.wait(timeout=self._close_limit_seconds())
             return
-        deadline = monotonic() + SHUTDOWN_FLUSH_TIMEOUT_SECONDS
+        deadline = monotonic() + self._close_limit_seconds()
         try:
             if self._bridge is None:
                 # Disabled: no bridge to run on, but a sink the caller handed us
@@ -1368,7 +1375,7 @@ class Client(_Sessions):
                 _close_sink_without_a_loop(self._sink)
             else:
                 self._run_bounded(
-                    _drain_then_close(self._sink, deadline),
+                    _drain_then_close(self._sink),
                     deadline - monotonic(),
                     "closing the sink",
                 )
@@ -1378,6 +1385,11 @@ class Client(_Sessions):
                 # would otherwise hold close() for the join's full timeout.
                 self._bridge.stop(join_timeout=max(_CANCEL_WAIT_SECONDS, deadline - monotonic()))
             self._close_done.set()
+
+    def _close_limit_seconds(self) -> float:
+        # Writes under way, then the sink's own budget, then a margin that only
+        # matters if the loop thread itself is blocked.
+        return _DRAIN_SECONDS + shutdown_budget_seconds(self._sink) + 0.5
 
     def _run_bounded(self, work: Coroutine[Any, Any, Any], timeout: float, what: str) -> None:
         """Run ``work`` on the bridge; never longer than ``timeout``, never raising."""
@@ -1944,20 +1956,17 @@ class AsyncClient(_Sessions):
     async def flush(self) -> None:
         if self._closed:
             return
-        await self._sink.flush()
+        await bounded_sink_call(self._sink, "flush")
 
     async def aclose(self) -> None:
         # One close, shared: a second aclose() waits for the first (SPEC
         # §11.2). Shielded so a cancelled waiter does not cancel the close the
         # others wait on.
-        if self._closing is None:
+        # A close cancelled from outside (loop teardown) is started again.
+        if self._closing is None or self._closing.cancelled():
             self._closed = True
-            self._closing = asyncio.ensure_future(self._sink.aclose())
-            await asyncio.shield(self._closing)
-            return
-        # The first caller got the close's error; the others only wait for it.
-        with contextlib.suppress(Exception):
-            await asyncio.shield(self._closing)
+            self._closing = asyncio.ensure_future(bounded_sink_call(self._sink, "aclose"))
+        await asyncio.shield(self._closing)
 
     async def __aenter__(self) -> Self:
         return self

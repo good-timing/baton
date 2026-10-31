@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import inspect
 import json
 import logging
 import sys
@@ -35,7 +36,7 @@ from collections.abc import Callable
 from pathlib import Path
 from time import monotonic
 from types import TracebackType
-from typing import IO, TYPE_CHECKING, Any, Self
+from typing import IO, TYPE_CHECKING, Any, Literal, Self
 
 from baton.events import Event
 
@@ -265,9 +266,86 @@ class _CircuitBreaker:
             self._opened_at = monotonic()
 
 
-#: SPEC §11.2 rule 7: the most a flush at shutdown, or an explicit close or
-#: flush, may hold the vendor's thread.
+#: SPEC §11.2 rule 7's default budget for a flush at shutdown, or an explicit
+#: close or flush; an ``HttpSink`` may set its own.
 SHUTDOWN_FLUSH_TIMEOUT_SECONDS = 3.0
+
+#: Added to the outer limit, so an ``HttpSink``'s own warning, which counts
+#: what was left, is the one shown.
+_SINK_CALL_GRACE_SECONDS = 0.25
+
+#: Calls left running at their limit, held so they are not garbage collected
+#: mid-flight.
+_left_running: set[asyncio.Future[Any]] = set()
+
+
+#: The largest budget: ``baton-ts``'s, whose timers overflow above 2^31 - 1 ms.
+_MAX_BUDGET_SECONDS = (2**31 - 1) / 1000
+
+
+def _is_budget(value: object) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return 0 <= float(value) <= _MAX_BUDGET_SECONDS
+    except OverflowError:
+        return False
+
+
+def _shutdown_budget_option(given: object) -> float:
+    if _is_budget(given):
+        return float(given)  # type: ignore[arg-type]
+    logging.getLogger("baton").warning(
+        "baton: shutdown_flush_timeout_seconds must be from 0 to %d seconds; using %.1f.",
+        _MAX_BUDGET_SECONDS,
+        SHUTDOWN_FLUSH_TIMEOUT_SECONDS,
+    )
+    return SHUTDOWN_FLUSH_TIMEOUT_SECONDS
+
+
+def shutdown_budget_seconds(sink: Sink) -> float:
+    """How long a flush or close may take for ``sink``: an ``HttpSink``'s own
+    budget, the longest of a ``MultiSink``'s, else the default."""
+    try:
+        if isinstance(sink, HttpSink):
+            return sink._shutdown_flush_timeout
+        if isinstance(sink, MultiSink):
+            return max(
+                (shutdown_budget_seconds(inner) for inner in sink._sinks),
+                default=SHUTDOWN_FLUSH_TIMEOUT_SECONDS,
+            )
+    except Exception:
+        pass  # a subclass missing these fields, or a MultiSink that holds itself
+    return SHUTDOWN_FLUSH_TIMEOUT_SECONDS
+
+
+async def bounded_sink_call(sink: Sink, method: Literal["flush", "aclose"]) -> None:
+    """Run a sink's ``flush()`` or ``aclose()`` for the vendor (SPEC §11.2 rule
+    7): never raises, and returns within the sink's shutdown budget plus a
+    quarter second. Work still running then is left to finish, not cancelled."""
+    log = logging.getLogger("baton")
+    what = f"{method}()"
+    timeout = shutdown_budget_seconds(sink) + _SINK_CALL_GRACE_SECONDS
+    try:
+        result = getattr(sink, method)()
+        if not inspect.isawaitable(result):
+            return
+        task = asyncio.ensure_future(result)
+    except Exception:
+        log.warning("baton: %s failed", what, exc_info=True)
+        return
+    _left_running.add(task)
+    task.add_done_callback(_left_running.discard)
+    task.add_done_callback(lambda t: _log_late_failure(t, what))
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+        log.warning("baton: %s took over %.2fs and was left unfinished.", what, timeout)
+
+
+def _log_late_failure(task: asyncio.Future[Any], what: str) -> None:
+    """Read the task's error, so asyncio does not log it as never retrieved."""
+    if not task.cancelled() and task.exception() is not None:
+        logging.getLogger("baton").warning("baton: %s failed", what, exc_info=task.exception())
 
 
 class HttpSink(Sink):
@@ -306,7 +384,7 @@ class HttpSink(Sink):
         self._backoff_base = backoff_base_seconds
         self._backoff_max = backoff_max_seconds
         self._circuit = _CircuitBreaker(circuit_breaker_threshold, circuit_breaker_reset_seconds)
-        self._shutdown_flush_timeout = shutdown_flush_timeout_seconds
+        self._shutdown_flush_timeout = _shutdown_budget_option(shutdown_flush_timeout_seconds)
         self._owns_client = _http_client is None
         if _http_client is None:
             httpx = _require_httpx()
@@ -314,6 +392,11 @@ class HttpSink(Sink):
         self._http_client = _http_client
         self._flush_lock = asyncio.Lock()
         self._drain_task: asyncio.Task[None] | None = None
+        # The drain a flush() or aclose() gave up waiting on, until it ends.
+        self._stalled_drain: asyncio.Future[None] | None = None
+        self._skip_warned = False
+        self._open_drains: set[asyncio.Future[None]] = set()
+        self._closing: asyncio.Future[None] | None = None
         self._closed = False
         self._atexit_registered = False
         self._atexit_callback: Callable[[], None] | None = None
@@ -338,22 +421,85 @@ class HttpSink(Sink):
     async def flush(self) -> None:
         if self._closed:
             return
-        if self._drain_task is not None and not self._drain_task.done():
-            await self._drain_task
-        async with self._flush_lock:
-            await self._drain_locked()
+        await self._drain_within_budget("flush()")
 
     async def aclose(self) -> None:
-        if self._closed:
-            return
-        await self.flush()
+        """A second call waits for the first (SPEC §11.2 rule 7)."""
+        # A close cancelled from outside (loop teardown) is started again.
+        if self._closing is None or self._closing.cancelled():
+            self._closing = asyncio.ensure_future(self._close())
+        await asyncio.shield(self._closing)
+
+    async def _close(self) -> None:
+        log = logging.getLogger("baton")
+        await self._drain_within_budget("aclose()")
         self._closed = True
+        # Nothing Baton started may keep running after the vendor closed it.
+        for task in (*self._open_drains, self._drain_task):
+            if task is not None and not task.done():
+                task.cancel()
+        if self._buffer:
+            log.warning("baton: the sink closed with %d event(s) unsent.", len(self._buffer))
         if self._atexit_callback is not None:
             atexit.unregister(self._atexit_callback)
             self._atexit_registered = False
             self._atexit_callback = None
         if self._owns_client:
-            await self._http_client.aclose()
+            try:
+                await self._http_client.aclose()
+            except Exception:
+                log.warning("baton: closing the HTTP client failed", exc_info=True)
+
+    async def _drain_within_budget(self, what: Literal["flush()", "aclose()"]) -> None:
+        """SPEC §11.2 rule 7: returns within ``shutdown_flush_timeout_seconds``
+        and never raises. While an earlier wait's drain is still stuck it
+        returns at once. The drain is not cancelled here, so after ``flush()``
+        it goes on sending; ``aclose()`` stops it."""
+        log = logging.getLogger("baton")
+        if self._stalled_drain is not None:
+            if what == "flush()" and not self._skip_warned:
+                self._skip_warned = True
+                log.warning(
+                    "baton: flush() skipped: an earlier drain is still stuck; "
+                    "%d event(s) wait to be sent.",
+                    len(self._buffer),
+                )
+            return
+        drain = asyncio.ensure_future(self._drain_now())
+        self._open_drains.add(drain)
+        drain.add_done_callback(self._open_drains.discard)
+        drain.add_done_callback(lambda t: _log_late_failure(t, what))
+        done, _ = await asyncio.wait({drain}, timeout=self._shutdown_flush_timeout)
+        if done:
+            return
+        self._stalled_drain = drain
+
+        def _clear(_: asyncio.Future[None]) -> None:
+            if self._stalled_drain is drain:
+                self._stalled_drain = None
+                self._skip_warned = False
+
+        drain.add_done_callback(_clear)
+        if what == "flush()":
+            log.warning(
+                "baton: flush() took over %.1fs; it goes on in the background.",
+                self._shutdown_flush_timeout,
+            )
+
+    async def _flush_at_exit(self) -> None:
+        # At exit a stuck drain gets the budget too, rather than the skip a
+        # later flush() takes.
+        stalled = self._stalled_drain
+        if stalled is not None:
+            await asyncio.wait({stalled}, timeout=self._shutdown_flush_timeout)
+        else:
+            await self.flush()
+
+    async def _drain_now(self) -> None:
+        if self._drain_task is not None and not self._drain_task.done():
+            await self._drain_task
+        async with self._flush_lock:
+            await self._drain_locked()
 
     # =========================================================================
     # Internal — enqueue + drain
@@ -539,8 +685,8 @@ class HttpSink(Sink):
         loop = self._drain_task.get_loop() if self._drain_task is not None else None
         if loop is not None and loop.is_running():
             try:
-                future = asyncio.run_coroutine_threadsafe(self.flush(), loop)
-                future.result(timeout=self._shutdown_flush_timeout)
+                future = asyncio.run_coroutine_threadsafe(self._flush_at_exit(), loop)
+                future.result(timeout=self._shutdown_flush_timeout + _SINK_CALL_GRACE_SECONDS)
             except TimeoutError:
                 log.warning(
                     "baton: process exiting; cross-thread shutdown flush did not "

@@ -37,6 +37,7 @@ from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Request, Response
 
 import baton.client as client_module
+import baton.sinks as sinks_module
 from baton import AsyncClient, Client
 from baton.client import _SyncBridge
 from baton.events import DEFAULT_CONSENT_TOKEN
@@ -1106,16 +1107,17 @@ class TestAsyncHappyPath:
         await asyncio.gather(client.aclose(), client.aclose())
         assert sink.closes == 1
 
-    async def test_only_the_first_aclose_raises_the_close_error(self) -> None:
+    async def test_no_aclose_raises_the_close_error(self, caplog: pytest.LogCaptureFixture) -> None:
         class _FailingCloseSink(_SlowCloseSink):
             async def aclose(self) -> None:
                 await super().aclose()
                 raise OSError("collector gone")
 
         client = AsyncClient(sink=_FailingCloseSink(), vendor_id="v")
-        with pytest.raises(OSError):
+        with caplog.at_level(logging.WARNING, logger="baton"):
             await client.aclose()
-        await client.aclose()
+            await client.aclose()
+        assert [r.getMessage() for r in caplog.records] == ["baton: aclose() failed"]
 
     async def test_a_second_aclose_waits_for_the_first(self) -> None:
         sink = _SlowCloseSink()
@@ -1217,7 +1219,7 @@ class TestBridgeNeverHangs:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.1)
-        monkeypatch.setattr(client_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 0.3)
+        monkeypatch.setattr(sinks_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 0.3)
         monkeypatch.setattr(client_module, "_DRAIN_SECONDS", 0.1)
         client = Client(sink=_RecordingSink(write_delay=30), vendor_id="v")
         sender = threading.Thread(target=_send_one, args=(client,))
@@ -1248,7 +1250,8 @@ class TestBridgeNeverHangs:
     def test_close_on_a_sink_that_blocks_the_loop_thread_keeps_its_budget(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(client_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 0.3)
+        monkeypatch.setattr(sinks_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 0.3)
+        monkeypatch.setattr(client_module, "_DRAIN_SECONDS", 0.1)
 
         class _BlockingCloseSink(_RecordingSink):
             async def aclose(self) -> None:
@@ -1300,7 +1303,7 @@ class TestBridgeNeverHangs:
     def test_flush_on_a_stuck_sink_returns_within_its_budget(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(client_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 0.2)
+        monkeypatch.setattr(sinks_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 0.2)
         client = Client(sink=_RecordingSink(write_delay=30), vendor_id="v")
         started = time.monotonic()
         client.flush()

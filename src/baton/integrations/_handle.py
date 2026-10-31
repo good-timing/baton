@@ -6,7 +6,7 @@ identical). Both adapters now import from here.
 
 from __future__ import annotations
 
-from baton.sinks import Sink
+from baton.sinks import Sink, bounded_sink_call
 
 
 class BatonHandle:
@@ -35,12 +35,14 @@ class BatonHandle:
         self.session_id = session_id
 
     async def flush(self) -> None:
-        """Flush any pending events held by the sink."""
-        await self.sink.flush()
+        """Flush any pending events held by the sink. Returns within the sink's
+        shutdown budget plus a quarter second, and never raises (SPEC §11.2 rule 7)."""
+        await bounded_sink_call(self.sink, "flush")
 
     async def aclose(self) -> None:
-        """Flush and release sink resources. Subsequent writes raise."""
-        await self.sink.aclose()
+        """Flush and release sink resources. Returns within the sink's shutdown
+        budget plus a quarter second, and never raises (SPEC §11.2 rule 7)."""
+        await bounded_sink_call(self.sink, "aclose")
 
 
 def disabled_handle(switch: str, surface: str, supplied_sink: Sink | None = None) -> BatonHandle:

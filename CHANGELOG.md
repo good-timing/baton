@@ -19,7 +19,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Fixed
 
-- The sync `Client` never holds a vendor thread for good (SPEC §11.2). `close()` and `flush()` return within 3 seconds and never raise a sink's error; `close()` first lets event writes already under way finish, then closes the sink. A sink that takes over 1 second on one event costs that one wait: later events are queued without waiting until it answers, and are still delivered. A thread sending while another closes the client, and a `close()` called from a signal handler during `close()`, no longer hang.
+- The sync `Client` never holds a vendor thread for good (SPEC §11.2). `close()` and `flush()` return within the sink's shutdown budget (3 seconds by default) and never raise a sink's error; `close()` may take up to 1 second more for writes under way; `close()` first lets event writes already under way finish, then closes the sink. A sink that takes over 1 second on one event costs that one wait: later events are queued without waiting until it answers, and are still delivered. A thread sending while another closes the client, and a `close()` called from a signal handler during `close()`, no longer hang.
+- `AsyncClient.flush()` / `aclose()` and the adapters' `BatonHandle.flush()` / `aclose()` now have the same limit (SPEC §11.2 rule 7): the sink's shutdown budget plus a quarter second. Before, a sink that never answered held them for good, and a sink's error reached the vendor's code; now it is logged. `HttpSink`'s budget is `shutdown_flush_timeout_seconds` (3 seconds by default; a value that is not a number from 0 to about 24 days (2^31 - 1 ms, as in `baton-ts`) is replaced by 3, with a warning), and a `MultiSink` gets its longest sink's. While a collector is stuck, a later `flush()` returns at once, and `aclose()` logs how many events were left unsent.
 
 ---
 
