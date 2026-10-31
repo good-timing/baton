@@ -16,6 +16,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 - A second `close()` or `aclose()` called while the first is still running now waits for it to finish. Before, it returned at once, before the sink was closed, so a caller could exit with events still unsent. (SPEC §11.2.)
 - `runtime_meta`, and the `meta` a `resolve_principal` hook reads, now hold only what the client sent in `_meta`. On `mcp` 1.x every request gained `"progressToken": null` when the client sent no progress token, because the SDK filled in every field its `Meta` model declares. A `null` the client really sent is kept.
 
+### Fixed
+
+- The sync `Client` never holds a vendor thread for good (SPEC §11.2). `close()` and `flush()` return within 3 seconds and never raise a sink's error; `close()` first lets event writes already under way finish, then closes the sink. A sink that takes over 1 second on one event costs that one wait: later events are queued without waiting until it answers, and are still delivered. A thread sending while another closes the client, and a `close()` called from a signal handler during `close()`, no longer hang.
+
 ---
 
 ## 0.9.1: organization, and a tool call refused before it runs is captured

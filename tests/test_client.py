@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import threading
 import time
@@ -35,7 +36,9 @@ import pytest
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Request, Response
 
+import baton.client as client_module
 from baton import AsyncClient, Client
+from baton.client import _SyncBridge
 from baton.events import DEFAULT_CONSENT_TOKEN
 from baton.sinks import HttpSink, Sink
 
@@ -1148,3 +1151,171 @@ def test_no_env_var_leakage() -> None:
     for var in ["BATON_API_KEY", "BATON_INGEST_URL", "BATON_VENDOR_ID", "BATON_CONSENT_TOKEN"]:
         # Either unset, or this test fails loudly so we know test isolation broke
         assert os.environ.get(var) is None, f"BATON_* env var leaked: {var}"
+
+
+# =============================================================================
+# The sync bridge never holds a vendor thread for good (SPEC §11.2)
+# =============================================================================
+
+
+class _RecordingSink(Sink):
+    """Records writes; each write and close can be made slow or failing."""
+
+    def __init__(self, write_delay: float = 0.0, close_error: Exception | None = None) -> None:
+        self.events: list[Any] = []
+        self.write_delay = write_delay
+        self.close_error = close_error
+
+    async def write(self, event: Any) -> None:
+        await asyncio.sleep(self.write_delay)
+        self.events.append(event)
+
+    async def flush(self) -> None:
+        await asyncio.sleep(self.write_delay)
+
+    async def aclose(self) -> None:
+        if self.close_error is not None:
+            raise self.close_error
+
+
+def _send_one(client: Client) -> None:
+    with client.trace(tool_name="t") as trace:
+        trace.observed("ok")
+
+
+class TestBridgeNeverHangs:
+    @pytest.mark.filterwarnings("ignore:coroutine .* was never awaited:RuntimeWarning")
+    def test_work_on_a_loop_that_stopped_without_closing_returns_promptly(self) -> None:
+        bridge = _SyncBridge.__new__(_SyncBridge)
+        bridge._loop = asyncio.new_event_loop()  # accepts work, never runs it
+        bridge._thread = threading.Thread(target=lambda: None)
+        bridge._thread.start()
+        bridge._thread.join()
+
+        async def send() -> str:
+            return "sent"
+
+        started = time.monotonic()
+        with pytest.raises(RuntimeError):
+            bridge.run(send())
+        assert time.monotonic() - started < 1.0
+        bridge._loop.close()
+
+    def test_a_write_in_flight_when_close_starts_is_delivered(self) -> None:
+        sink = _RecordingSink(write_delay=0.3)
+        client = Client(sink=sink, vendor_id="v")
+        sender = threading.Thread(target=_send_one, args=(client,))
+        sender.start()
+        time.sleep(0.05)
+        client.close()
+        sender.join(timeout=3.0)
+        assert not sender.is_alive()
+        # The start was mid-write when close began; the end came after close.
+        assert [e.event_type for e in sink.events] == ["tool_call_start"]
+
+    def test_a_write_that_never_finishes_holds_neither_close_nor_its_sender(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.1)
+        monkeypatch.setattr(client_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 0.3)
+        monkeypatch.setattr(client_module, "_DRAIN_SECONDS", 0.1)
+        client = Client(sink=_RecordingSink(write_delay=30), vendor_id="v")
+        sender = threading.Thread(target=_send_one, args=(client,))
+        sender.start()
+        time.sleep(0.05)
+        started = time.monotonic()
+        client.close()
+        sender.join(timeout=3.0)
+        assert time.monotonic() - started < 2.0
+        assert not sender.is_alive()
+
+    def test_a_slow_sink_costs_one_wait_and_still_gets_every_event(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.1)
+        sink = _RecordingSink(write_delay=0.3)
+        client = Client(sink=sink, vendor_id="v")
+        started = time.monotonic()
+        with caplog.at_level(logging.WARNING, logger="baton.client"):
+            for _ in range(3):
+                _send_one(client)
+        # One 0.1 s wait, not one per event (six events).
+        assert time.monotonic() - started < 0.4
+        assert sum("queued" in r.getMessage() for r in caplog.records) == 1
+        client.close()
+        assert len(sink.events) == 6
+
+    def test_close_on_a_sink_that_blocks_the_loop_thread_keeps_its_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(client_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 0.3)
+
+        class _BlockingCloseSink(_RecordingSink):
+            async def aclose(self) -> None:
+                time.sleep(2)  # blocks the loop thread itself
+
+        client = Client(sink=_BlockingCloseSink(), vendor_id="v")
+        started = time.monotonic()
+        client.close()
+        assert time.monotonic() - started < 1.5
+
+    def test_snapshots_do_not_wait_while_the_sink_is_stalled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.1)
+        client = Client(sink=_RecordingSink(write_delay=0.2), vendor_id="v")
+        _send_one(client)  # one 0.1 s wait; the sink is now stalled
+        started = time.monotonic()
+        client.list_tools([{"name": "fetch", "inputSchema": {"type": "object"}}])
+        assert time.monotonic() - started < 0.1
+        client.close()
+
+    def test_a_snapshot_write_that_fails_late_is_sent_again(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.05)
+
+        class _FailsOnceLateSink(_RecordingSink):
+            async def write(self, event: Any) -> None:
+                if not self.events:
+                    self.events.append(None)
+                    await asyncio.sleep(0.15)
+                    raise OSError("collector gone")
+                self.events.append(event)
+
+        sink = _FailsOnceLateSink()
+        client = Client(sink=sink, vendor_id="v")
+        tools = [{"name": "fetch", "inputSchema": {"type": "object"}}]
+        client.list_tools(tools)  # the caller stops waiting before the write fails
+        time.sleep(0.3)
+        client.list_tools(tools)
+        client.close()
+        assert [e.event_type for e in sink.events if e is not None] == ["surface_snapshot"]
+
+    def test_close_and_flush_never_raise_a_sink_error(self) -> None:
+        client = Client(sink=_RecordingSink(close_error=OSError("collector gone")), vendor_id="v")
+        client.flush()
+        client.close()
+
+    def test_flush_on_a_stuck_sink_returns_within_its_budget(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(client_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 0.2)
+        client = Client(sink=_RecordingSink(write_delay=30), vendor_id="v")
+        started = time.monotonic()
+        client.flush()
+        assert time.monotonic() - started < 1.0
+        client._bridge.stop()  # type: ignore[union-attr]
+
+    def test_close_called_while_this_thread_holds_the_close_lock_returns(self) -> None:
+        client = Client(sink=_SlowCloseSink(), vendor_id="v")
+
+        def signal_lands_inside_close() -> None:
+            with client._close_lock:
+                client._closing_thread = threading.get_ident()
+                client.close()
+
+        handler = threading.Thread(target=signal_lands_inside_close, daemon=True)
+        handler.start()
+        handler.join(timeout=2.0)
+        assert not handler.is_alive()

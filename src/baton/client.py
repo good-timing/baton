@@ -90,6 +90,7 @@ the split exists to end, and should be given a real value.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import logging
 import os
@@ -142,7 +143,14 @@ from baton.scrub import (  # noqa: F401  identity_scrub kept exported
     identity_scrub,
     scrub_or_none,
 )
-from baton.sinks import HttpSink, Sink, build_or_none, safe_emit, safe_write
+from baton.sinks import (
+    SHUTDOWN_FLUSH_TIMEOUT_SECONDS,
+    HttpSink,
+    Sink,
+    build_or_none,
+    safe_emit,
+    safe_write,
+)
 
 T = TypeVar("T")
 
@@ -548,19 +556,50 @@ def _resolve_consent_token(explicit: str | None) -> str:
 # =============================================================================
 
 
+#: How long close() lets events already handed to the loop finish before the
+#: sink is closed.
+_DRAIN_SECONDS = 1.0
+#: The longest one event may hold the vendor's thread.
+_EMIT_WAIT_SECONDS = 1.0
+#: How long cancelled work gets to unwind when the bridge stops.
+_CANCEL_WAIT_SECONDS = 0.5
+#: How often a waiting caller checks that the bridge is still running.
+_BRIDGE_POLL_SECONDS = 0.05
+
+
+class _BridgeStopped(RuntimeError):
+    """The bridge's loop is gone; the work submitted to it did not run."""
+
+    def __init__(self) -> None:
+        super().__init__("baton: the background event loop has stopped")
+
+
+async def _drain_then_close(sink: Sink, deadline: float) -> None:
+    """Let the event writes already on the loop finish, then close the sink.
+    Closing first would turn those writes into drops."""
+    others = asyncio.all_tasks() - {asyncio.current_task()}
+    if others:
+        await asyncio.wait(others, timeout=max(0.0, min(_DRAIN_SECONDS, deadline - monotonic())))
+    await sink.aclose()
+
+
 class _SyncBridge:
     """Background daemon thread running a persistent asyncio event loop.
 
     Sync ``Client`` methods submit coroutines via ``run_coroutine_threadsafe``
-    and block on the resulting ``Future``. Lets sync user code drive the async
-    ``EventEmitter`` (which owns the buffer, retry loop, circuit breaker) without
-    creating a new event loop per emit (each ``asyncio.run`` would invalidate
-    the emitter's loop-bound state).
+    and wait for the resulting ``Future``. Lets sync user code drive the async
+    sink without creating a new event loop per emit.
+
+    No wait on this bridge is endless (SPEC §11.2): a caller is released when
+    the loop has stopped, or when its timeout passes. A timeout releases the
+    CALLER only; the work goes on, so a slow write is still delivered.
     """
 
     def __init__(self) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ready = threading.Event()
+        self._stop_lock = threading.Lock()
+        self._stopping = False
         self._thread = threading.Thread(
             target=self._run_loop, daemon=True, name="baton-sync-bridge"
         )
@@ -577,28 +616,63 @@ class _SyncBridge:
         try:
             self._loop.run_forever()
         finally:
-            # Clean up any pending tasks before closing the loop.
-            for task in asyncio.all_tasks(self._loop):
-                task.cancel()
+            self._cancel_pending(self._loop)
             self._loop.close()
 
-    def run(self, coro: Coroutine[Any, Any, T]) -> T:
-        """Submit a coroutine to the bridge loop; block until result."""
+    @staticmethod
+    def _cancel_pending(loop: asyncio.AbstractEventLoop) -> None:
+        """Cancel what is left and give it a moment to unwind, so its waiters
+        are answered; a task that ignores cancellation is abandoned."""
+        pending = asyncio.all_tasks(loop)
+        if not pending:
+            return
+        for task in pending:
+            task.cancel()
+        loop.run_until_complete(asyncio.wait(pending, timeout=_CANCEL_WAIT_SECONDS))
+        logger.warning(
+            "baton: %d event write(s) still running at shutdown were dropped.", len(pending)
+        )
+
+    def run(self, coro: Coroutine[Any, Any, T], timeout: float | None = None) -> T:
+        """Submit a coroutine to the bridge loop and wait for its result.
+
+        Raises ``_BridgeStopped`` when the loop is gone, and ``TimeoutError``
+        after ``timeout`` seconds, leaving the work running."""
+        return self.wait(self.submit(coro), timeout)
+
+    def submit(self, coro: Coroutine[Any, Any, T]) -> concurrent.futures.Future[T]:
         assert self._loop is not None, "bridge not initialized"
         try:
-            future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+            return asyncio.run_coroutine_threadsafe(coro, self._loop)
         except RuntimeError:
             # The loop is closed: close() won a race with this call.
             coro.close()
-            raise
-        return future.result()
+            raise _BridgeStopped() from None
 
-    def stop(self) -> None:
-        """Stop the loop + join the thread. Safe to call multiple times."""
-        if self._loop is None or not self._loop.is_running():
-            return
-        self._loop.call_soon_threadsafe(self._loop.stop)
-        self._thread.join(timeout=5.0)
+    def wait(self, future: concurrent.futures.Future[T], timeout: float | None) -> T:
+        deadline = None if timeout is None else monotonic() + timeout
+        while True:
+            try:
+                return future.result(timeout=_BRIDGE_POLL_SECONDS)
+            except concurrent.futures.CancelledError:
+                raise _BridgeStopped() from None
+            except concurrent.futures.TimeoutError:
+                if future.done():
+                    continue
+                if not self._thread.is_alive():
+                    raise _BridgeStopped() from None
+                if deadline is not None and monotonic() >= deadline:
+                    raise TimeoutError("baton: the sink did not answer in time") from None
+
+    def stop(self, join_timeout: float = 5.0) -> None:
+        """Stop the loop + join the thread. Safe to call more than once."""
+        with self._stop_lock:
+            if self._stopping or self._loop is None:
+                return
+            self._stopping = True
+        with contextlib.suppress(RuntimeError):  # already closed
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=join_timeout)
 
 
 # =============================================================================
@@ -1005,7 +1079,7 @@ class _Sessions:
             self._sent_surfaces.unmark(digest)
 
     def _snapshot_write_failed(self, event: SurfaceSnapshotEvent) -> None:
-        logger.exception("baton: surface snapshot write failed; will retry")
+        logger.warning("baton: surface snapshot write failed; will retry", exc_info=True)
         self._unmark_surface(event.payload.surface_hash)
 
     def _snapshot_event(self, surface: dict[str, Any], digest: str) -> SurfaceSnapshotEvent:
@@ -1124,8 +1198,13 @@ class Client(_Sessions):
         self._sink: Sink = resolved.sink
 
         self._closed = False
-        self._close_lock = threading.Lock()
+        # Re-entrant: a signal handler that calls close() runs on the thread
+        # that may already hold this lock inside close().
+        self._close_lock = threading.RLock()
         self._close_done = threading.Event()
+        # The write the last emit stopped waiting for; while it runs, emits
+        # queue without waiting.
+        self._stalled: concurrent.futures.Future[Any] | None = None
         self._closing_thread: int | None = None
         self._init_surfaces()
 
@@ -1254,9 +1333,7 @@ class Client(_Sessions):
             return tools
         served, event = self._serve(tools, server_info, capabilities, instructions)
         if event is not None and not self._dropping_after_close():
-            try:
-                self._bridge.run(self._sink.write(event))
-            except Exception:
+            if self._deliver(self._write_snapshot(event)) is None:
                 self._snapshot_write_failed(event)
         return served
 
@@ -1266,35 +1343,53 @@ class Client(_Sessions):
             # No bridge means the off switch is set and nothing was ever
             # queued. A vendor's ``finally: client.flush()`` must keep working.
             return
-        with contextlib.suppress(RuntimeError):  # close() won a race with this call
-            self._bridge.run(self._sink.flush())
+        self._run_bounded(self._sink.flush(), SHUTDOWN_FLUSH_TIMEOUT_SECONDS, "flush()")
 
     def close(self) -> None:
         """Flush + close the sink + stop the bridge thread."""
         # Marked closed under a lock, so two threads calling close() at once
         # close the sink once; the second waits for the first (SPEC §11.2).
         with self._close_lock:
-            closing = not self._closed
-            self._closed = True
+            closing = self._closing_thread is None
             if closing:
                 self._closing_thread = threading.get_ident()
+            self._closed = True
         if not closing:
             # A close re-entered on the closing thread (a signal handler) would
             # wait on itself.
             if self._closing_thread != threading.get_ident():
-                self._close_done.wait()
+                self._close_done.wait(timeout=SHUTDOWN_FLUSH_TIMEOUT_SECONDS + 1.0)
             return
+        deadline = monotonic() + SHUTDOWN_FLUSH_TIMEOUT_SECONDS
         try:
             if self._bridge is None:
                 # Disabled: no bridge to run on, but a sink the caller handed us
                 # still has to be released.
                 _close_sink_without_a_loop(self._sink)
             else:
-                self._bridge.run(self._sink.aclose())
+                self._run_bounded(
+                    _drain_then_close(self._sink, deadline),
+                    deadline - monotonic(),
+                    "closing the sink",
+                )
         finally:
             if self._bridge is not None:
-                self._bridge.stop()
+                # Within the same budget: a sink blocking the loop thread
+                # would otherwise hold close() for the join's full timeout.
+                self._bridge.stop(join_timeout=max(_CANCEL_WAIT_SECONDS, deadline - monotonic()))
             self._close_done.set()
+
+    def _run_bounded(self, work: Coroutine[Any, Any, Any], timeout: float, what: str) -> None:
+        """Run ``work`` on the bridge; never longer than ``timeout``, never raising."""
+        assert self._bridge is not None
+        try:
+            self._bridge.run(work, timeout=timeout)
+        except TimeoutError:
+            logger.warning("baton: %s took over %.1fs and was left unfinished.", what, timeout)
+        except _BridgeStopped:
+            pass  # the bridge thread has died; there is nothing to wait for
+        except Exception:
+            logger.warning("baton: %s failed", what, exc_info=True)
 
     def __enter__(self) -> Self:
         return self
@@ -1323,7 +1418,7 @@ class Client(_Sessions):
 
         ⚠ **Not ``sinks.safe_emit``, and the difference is not stylistic.**
         That helper is ``async``; this door bridges to a worker thread
-        through ``self._bridge.run(...)``. Handing the thunk to it would run
+        through ``self._deliver(...)``. Handing the thunk to it would run
         the VENDOR'S SCRUBBER on the bridge thread instead of the caller's,
         and read ``exc``/``tb`` across that boundary. The guard is the same
         shape, kept synchronous so the scrubber stays where the vendor put
@@ -1351,12 +1446,45 @@ class Client(_Sessions):
         # `with client.trace(...)` block, ahead of the vendor's real call.
         # SPEC §11.2 fail-open applies here exactly as it
         # does to the MCP adapters' tool-call wrapping.
-        try:
-            self._bridge.run(safe_write(self._sink, event, logger))
-        except RuntimeError:
+        if self._deliver(safe_write(self._sink, event, logger)) is None:
             # close() on another thread stopped the bridge after the check above.
             if not self._dropping_after_close():
                 logger.warning("baton: the background event loop is not running; event dropped.")
+
+    async def _write_snapshot(self, event: SurfaceSnapshotEvent) -> None:
+        # Caught here, on the loop, so a write that fails after the caller
+        # stopped waiting still marks the surface for a resend.
+        try:
+            await self._sink.write(event)
+        except Exception:
+            self._snapshot_write_failed(event)
+
+    def _deliver(self, write: Coroutine[Any, Any, Any]) -> concurrent.futures.Future[Any] | None:
+        """Hand a write to the bridge and wait for it only while the sink keeps
+        up. ``None`` when the bridge has stopped and the write did not run."""
+        assert self._bridge is not None
+        try:
+            future = self._bridge.submit(write)
+        except _BridgeStopped:
+            return None
+        if self._stalled is not None:
+            if not self._stalled.done():
+                return future  # queued behind the slow write; not waited on
+            self._stalled = None
+        try:
+            self._bridge.wait(future, _EMIT_WAIT_SECONDS)
+        except TimeoutError:
+            # A sink of the vendor's own that never answers grows the loop's
+            # queue from here on; the shipped sinks only append to a buffer.
+            self._stalled = future
+            logger.warning(
+                "baton: the sink took over %.1fs on one event; events are queued "
+                "without waiting until it answers.",
+                _EMIT_WAIT_SECONDS,
+            )
+        except _BridgeStopped:
+            return None
+        return future
 
 
 # =============================================================================

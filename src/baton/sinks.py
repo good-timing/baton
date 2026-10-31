@@ -265,6 +265,11 @@ class _CircuitBreaker:
             self._opened_at = monotonic()
 
 
+#: SPEC §11.2 rule 7: the most a flush at shutdown, or an explicit close or
+#: flush, may hold the vendor's thread.
+SHUTDOWN_FLUSH_TIMEOUT_SECONDS = 3.0
+
+
 class HttpSink(Sink):
     """POST events to an HTTP endpoint. Bounded buffer + retry + circuit breaker.
 
@@ -290,7 +295,7 @@ class HttpSink(Sink):
         backoff_max_seconds: float = 5.0,
         circuit_breaker_threshold: int = 5,
         circuit_breaker_reset_seconds: float = 30.0,
-        shutdown_flush_timeout_seconds: float = 3.0,
+        shutdown_flush_timeout_seconds: float = SHUTDOWN_FLUSH_TIMEOUT_SECONDS,
         _http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._url = url.rstrip("/")
