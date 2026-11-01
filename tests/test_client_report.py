@@ -120,7 +120,7 @@ async def test_a_collector_that_refuses_reports_gets_no_more(
     await _send(sink, 4)
     assert len(collector.reports) == 1
     assert PROCESS_DROPS.total() == {"refused": 2}
-    assert sum("REFUSED" in r.getMessage() for r in caplog.records) == 2
+    assert sum("REFUSED" in r.getMessage() for r in caplog.records) == 1
     await sink.aclose()
 
 

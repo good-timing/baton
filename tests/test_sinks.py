@@ -859,6 +859,125 @@ class TestARejectedEventSaysSo:
         sink._closed = True
 
 
+class TestRepeatedRefusalsAreCounted:
+    @staticmethod
+    def _sink(httpserver: HTTPServer, answers: list[tuple[int, str]]) -> HttpSink:
+        def handler(request: Any) -> Response:
+            status, body = answers.pop(0)
+            return Response(body, status=status)
+
+        httpserver.expect_request("/v0/events", method="POST").respond_with_handler(handler)
+        return HttpSink(url=httpserver.url_for(""), api_key="k")
+
+    @staticmethod
+    async def _send(sink: HttpSink, n: int) -> None:
+        for i in range(n):
+            sink._enqueue_for_test(_make_event(i))
+        await sink.flush()
+
+    @staticmethod
+    def _refusal_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+        return [r.getMessage() for r in caplog.records if "REFUSED" in r.getMessage()]
+
+    async def test_a_repeated_status_warns_once_then_says_how_many_it_skipped(
+        self,
+        httpserver: HTTPServer,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        sink = self._sink(httpserver, [(422, "bad")] * 4)
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            await self._send(sink, 3)
+            assert len(self._refusal_warnings(caplog)) == 1
+            assert PROCESS_DROPS.total() == {"refused": 3}
+
+            monkeypatch.setattr(HttpSink, "_REFUSAL_LOG_SECONDS", 0.0)
+            await self._send(sink, 1)
+
+        warnings = self._refusal_warnings(caplog)
+        assert len(warnings) == 2
+        assert warnings[1].endswith(" 2 more refused since the last such warning.")
+        assert not warnings[0].endswith("warning.")
+        sink._closed = True
+
+    async def test_a_new_status_warns_at_once(
+        self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sink = self._sink(httpserver, [(422, "bad"), (401, "no key")])
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            await self._send(sink, 2)
+        warnings = self._refusal_warnings(caplog)
+        assert len(warnings) == 2
+        assert "(HTTP 422)" in warnings[0] and "(HTTP 401)" in warnings[1]
+        sink._closed = True
+
+    async def test_close_names_the_refusals_not_yet_warned(
+        self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sink = self._sink(httpserver, [(422, "bad"), (422, "bad"), (401, "no"), (401, "no")])
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            await self._send(sink, 4)
+            await sink.aclose()
+        assert (
+            "baton: the sink closed; 2 more event(s) refused since the last such warning."
+            in caplog.messages
+        )
+
+    async def test_an_exit_without_close_names_them_too(
+        self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sink = self._sink(httpserver, [(422, "bad"), (422, "bad")])
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            await self._send(sink, 2)
+            sink._atexit_flush()
+        assert (
+            "baton: process exiting; 1 more event(s) refused since the last such warning."
+            in caplog.messages
+        )
+        sink._closed = True
+
+    def test_the_exit_count_includes_refusals_during_the_exit_flush(
+        self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sink = self._sink(httpserver, [(422, "bad")] * 3)
+        for i in range(3):
+            sink._enqueue_for_test(_make_event(i))
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            sink._atexit_flush()
+            assert len(self._refusal_warnings(caplog)) == 1
+            assert (
+                "baton: process exiting; 2 more event(s) refused since the last such warning."
+                in caplog.messages
+            )
+            asyncio.run(sink.aclose())
+        assert not any("the sink closed;" in m for m in caplog.messages), (
+            "a count already logged at exit is not logged again at close"
+        )
+
+    async def test_a_quiet_close_says_nothing_about_refusals(
+        self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        sink = self._sink(httpserver, [(422, "bad")])
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            await self._send(sink, 1)
+            await sink.aclose()
+        assert not any("the sink closed;" in m for m in caplog.messages)
+
+    async def test_the_collectors_text_is_escaped_after_the_cap(
+        self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        cap = HttpSink._REFUSAL_BODY_MAX_LEN
+        body = "\\\x1b[2J\u2028" + "x" * (cap - 7) + "\nCUT"
+        sink = self._sink(httpserver, [(422, body)])
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            await self._send(sink, 1)
+        [warning] = self._refusal_warnings(caplog)
+        assert "\\u{5c}\\u{1b}[2J\\u{2028}" in warning
+        assert "x\\u{a} —" in warning, "the cap counts the raw text, so the newline is kept"
+        assert "CUT" not in warning
+        sink._closed = True
+
+
 # =============================================================================
 # An event that cannot be encoded
 # =============================================================================

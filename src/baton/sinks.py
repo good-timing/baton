@@ -29,6 +29,8 @@ import json
 import logging
 import math
 import sys
+import threading
+import unicodedata
 import warnings
 import weakref
 from abc import ABC, abstractmethod
@@ -363,6 +365,19 @@ def _log_late_failure(task: asyncio.Future[Any], what: str) -> None:
         logging.getLogger("baton").warning("baton: %s failed", what, exc_info=task.exception())
 
 
+_LOG_ESCAPED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp"})
+
+
+def _escape_for_log(text: str) -> str:
+    """So text from outside cannot break or recolour a log line, or pass for an escape."""
+    return "".join(
+        f"\\u{{{ord(c):x}}}"
+        if c == "\\" or unicodedata.category(c) in _LOG_ESCAPED_CATEGORIES
+        else c
+        for c in text
+    )
+
+
 class HttpSink(Sink):
     """POST events to an HTTP endpoint. Bounded buffer + retry + circuit breaker.
 
@@ -395,6 +410,10 @@ class HttpSink(Sink):
         self._api_key = api_key
         self._buffer: deque[Event] = deque(maxlen=buffer_size)
         self._overflow_warned = False
+        self._refusals: dict[int, tuple[float, int]] = {}
+        # The atexit flush reads this on the main thread while a sync Client's
+        # loop thread may still be writing it.
+        self._refusals_lock = threading.Lock()
         self._max_retries = max_retries
         self._backoff_base = backoff_base_seconds
         self._backoff_max = backoff_max_seconds
@@ -467,6 +486,7 @@ class HttpSink(Sink):
         if self._buffer:
             PROCESS_DROPS.add("unsent_at_close", len(self._buffer))
             log.warning("baton: the sink closed with %d event(s) unsent.", len(self._buffer))
+        self._log_unwarned_refusals("the sink closed")
         if self._atexit_callback is not None:
             atexit.unregister(self._atexit_callback)
             self._atexit_registered = False
@@ -593,10 +613,11 @@ class HttpSink(Sink):
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"}
 
-    #: Cap on the collector's refusal text copied into the vendor's log. A
-    #: remote server's message landing in someone else's log file gets a
-    #: bound, the same posture ``client_observed`` values take.
+    #: Cap, in code points of the raw text before escaping, on the collector's
+    #: refusal text copied into the vendor's log: it is a remote server's text.
     _REFUSAL_BODY_MAX_LEN = 500
+    #: Per status, so a collector refusing every event is not one warning per event.
+    _REFUSAL_LOG_SECONDS = 60.0
 
     @staticmethod
     def _classify_status(status: int) -> str:
@@ -607,47 +628,43 @@ class HttpSink(Sink):
         return "transient_failure"
 
     def _log_refusal(self, response: Any) -> None:
-        """Say out loud that the collector refused an event, and why.
-
-        ⚠ **This existed nowhere, and the silence was the defect.** A refused
-        event was popped off the buffer and the drain recorded a circuit
-        SUCCESS — so from inside the vendor's process, a collector rejecting
-        EVERY envelope looked exactly like one accepting every envelope. A
-        producer emitting a shape the collector refuses would lose one hundred
-        percent of its capture with nothing in the log to say so, and the
-        first symptom is an empty console days later.
-
-        That silence is also what made a strict collector unsafe to have, and
-        it is the wrong end to fix: a collector that refuses a malformed
-        envelope is stating a contract, and a contract nobody can hear is a
-        trap rather than a contract.
-
-        **The BODY is logged, not just the status.** A bare 422 sends a reader
-        to the transport layer; the collector's own message ("envelope carries
-        both `principal` and `principal_id`") sends them to the line that
-        caused it. Capped, because it is a remote server's text landing in a
-        vendor's log file.
-
-        ⚠ **The circuit breaker is deliberately NOT told about this.** It
-        exists so the SDK stops piling retries on a DEAD endpoint, and a 4xx
-        proves the endpoint is alive and answering. Counting it as a failure
-        would open the circuit after a run of refused events and stop the GOOD
-        ones going out too — turning one producer bug into total capture loss,
-        which is the outcome this whole guard exists to make visible.
+        """A refused event is otherwise dropped silently, which looks the same
+        from the vendor's process as an accepted one. The body is logged
+        because it names the field at fault. The circuit breaker is not told:
+        a 4xx proves the endpoint is alive, and opening the circuit would stop
+        the good events too.
         """
+        PROCESS_DROPS.add("refused")
+        status = response.status_code
+        now = monotonic()
+        with self._refusals_lock:
+            logged_at, unlogged = self._refusals.get(status, (-math.inf, 0))
+            if now - logged_at < self._REFUSAL_LOG_SECONDS:
+                self._refusals[status] = (logged_at, unlogged + 1)
+                return
+            self._refusals[status] = (now, 0)
         try:
-            detail = response.text[: self._REFUSAL_BODY_MAX_LEN]
+            detail = _escape_for_log(response.text[: self._REFUSAL_BODY_MAX_LEN])
         except Exception:  # pragma: no cover — a body that cannot be decoded
             detail = "<unreadable>"
-        # Same local lookup the shutdown path uses — this module keeps no
-        # module-level logger.
-        PROCESS_DROPS.add("refused")
         logging.getLogger("baton").warning(
             "baton: collector REFUSED an event and it has been dropped "
-            "(HTTP %s): %s — the event is gone; nothing retries a 4xx.",
-            response.status_code,
+            "(HTTP %s): %s — the event is gone; nothing retries a 4xx.%s",
+            status,
             detail,
+            f" {unlogged} more refused since the last such warning." if unlogged else "",
         )
+
+    def _log_unwarned_refusals(self, when: str) -> None:
+        with self._refusals_lock:
+            unlogged = sum(n for _, n in self._refusals.values())
+            self._refusals = {status: (at, 0) for status, (at, _) in self._refusals.items()}
+        if unlogged:
+            logging.getLogger("baton").warning(
+                "baton: %s; %d more event(s) refused since the last such warning.",
+                when,
+                unlogged,
+            )
 
     def _build_request_or_none(self, client: Any, event: Event, **kwargs: Any) -> Any:
         """None when the event cannot be made into a request; it is logged."""
@@ -721,7 +738,15 @@ class HttpSink(Sink):
         their own signal handler.
         """
         self._reports_stopped = True
-        if self._closed or not self._buffer:
+        if self._closed:
+            return
+        try:
+            self._flush_buffered_at_exit()
+        finally:
+            self._log_unwarned_refusals("process exiting")
+
+    def _flush_buffered_at_exit(self) -> None:
+        if not self._buffer:
             return
         log = logging.getLogger("baton")
 

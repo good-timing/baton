@@ -17,6 +17,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Changed
 
+- `HttpSink` warns about a refused event at most once a minute for each HTTP status, so a collector that refuses every event no longer writes one warning per event. The next warning for that status says how many were refused since the last one, a new status warns at once, and `aclose()`, or the exit flush when the vendor never closes the sink, logs the count still unwarned. Every refused event is still counted as `refused`. The collector's text in the warning now has backslashes and control, format and line-separator characters written as `\u{hex}`, so it cannot break or recolour the vendor's log, as in `baton-ts`.
 - The shutdown warning about work still running says how many tasks were cancelled. It used to call them event writes, which overcounted; the events among them are now counted as `unsent_at_close`.
 
 - The scrubber's patterns use SPEC §7's fixed sets. A digit is `0`–`9`, a word boundary is ASCII, and whitespace is space, tab, LF, CR, FF and `U+00A0`. So `"éjane@example.com"` is now scrubbed, as in `baton-ts`, and a card or phone number in other digits, such as Arabic-Indic, is no longer matched. Any space outside the set, such as a thin space (`U+2009`), an em space or a vertical tab, no longer separates a phone number or a bearer token, so such a value is no longer redacted. Coordinates in `_meta` follow the same digit set.
