@@ -13,7 +13,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ### Added
 
 - The SDK counts every event it does not deliver, by reason: `buffer_full`, `refused`, `encode_failed`, `write_failed`, `after_close` and `unsent_at_close`. The counts are internal for now. After a loss, the first event `HttpSink` delivers logs one warning naming what was lost, at most once a minute, such as "delivering again; 3 event(s) lost before this: buffer_full 1, refused 2.". A run that loses nothing logs nothing new.
-- `baton.events` has `ClientReportEvent`, the `client_report` event type (SPEC §11.4.7). The SDK does not send it yet.
+- `HttpSink` sends a `client_report` event (SPEC §11.4.7) with this process's lost-event counts by reason. It is sent only after a delivery, only when the counts changed, at most once a minute, and never at close. A healthy run sends none. A lost report is not counted, and a collector that answers it with 400 or 422 gets no more reports from that sink. The report is sent beside the event queue, so it never delays an event or a close. A forked child gets its own report id and starts its counts at zero. `baton.events` has `ClientReportEvent`.
 
 ### Changed
 

@@ -34,13 +34,14 @@ import weakref
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
 from types import TracebackType
 from typing import IO, TYPE_CHECKING, Any, Literal, Self, cast
 
-from baton._state import PROCESS_DROPS
-from baton.events import Event
+from baton._state import PROCESS_DROPS, PROCESS_SEQUENCE
+from baton.events import ClientReportEvent, ClientReportPayload, Event
 
 if TYPE_CHECKING:
     import httpx
@@ -414,6 +415,10 @@ class HttpSink(Sink):
         self._closed = False
         self._atexit_registered = False
         self._atexit_callback: Callable[[], None] | None = None
+        self._reported: dict[str, int] = {}
+        self._last_report_at = -math.inf
+        self._reports_stopped = False
+        self._report_task: asyncio.Task[None] | None = None
 
     @property
     def url(self) -> str:
@@ -450,6 +455,9 @@ class HttpSink(Sink):
 
     async def _close(self, seconds: float) -> None:
         log = logging.getLogger("baton")
+        self._reports_stopped = True
+        if self._report_task is not None:
+            self._report_task.cancel()
         await self._drain_within_budget("aclose()", seconds)
         self._closed = True
         # Nothing Baton started may keep running after the vendor closed it.
@@ -712,6 +720,7 @@ class HttpSink(Sink):
         vendor needing that guarantee must call ``aclose()``/``close()`` from
         their own signal handler.
         """
+        self._reports_stopped = True
         if self._closed or not self._buffer:
             return
         log = logging.getLogger("baton")
@@ -801,6 +810,7 @@ class HttpSink(Sink):
                 self._dequeue(event)
                 self._circuit.record_success()
                 PROCESS_DROPS.log_recovery()
+                self._maybe_report(event)
             elif outcome == "permanent_failure":
                 self._dequeue(event)
                 self._circuit.record_success()
@@ -810,6 +820,48 @@ class HttpSink(Sink):
             else:
                 self._circuit.record_failure()
                 return
+
+    _REPORT_INTERVAL_SECONDS = 60.0
+
+    def _maybe_report(self, delivered: Event) -> None:
+        """Start a report of this process's loss totals (SPEC §11.4.7) beside
+        the drain and outside the buffer, so it never delays an event and is
+        never counted as one."""
+        now = monotonic()
+        if (
+            self._reports_stopped
+            or (self._report_task is not None and not self._report_task.done())
+            or now - self._last_report_at < self._REPORT_INTERVAL_SECONDS
+        ):
+            return
+        totals: dict[str, int] = {reason: n for reason, n in PROCESS_DROPS.total().items()}
+        if totals == self._reported:
+            return
+        self._last_report_at = now
+        self._report_task = asyncio.ensure_future(self._send_report(delivered, totals))
+
+    async def _send_report(self, delivered: Event, totals: dict[str, int]) -> None:
+        try:
+            report = ClientReportEvent(
+                tenant_id=delivered.tenant_id,
+                vendor_id=delivered.vendor_id,
+                consent_token=delivered.consent_token,
+                session_id=str(PROCESS_DROPS.instance_id),
+                sequence_number=PROCESS_SEQUENCE.next(),
+                captured_at=datetime.now(UTC),
+                payload=ClientReportPayload(instance_id=PROCESS_DROPS.instance_id, dropped=totals),
+            )
+            response = await self._http_client.post(
+                self._events_url(),
+                json=report.model_dump(mode="json"),
+                headers=self._auth_headers(),
+            )
+        except Exception:
+            return
+        if response.status_code in (400, 422):
+            self._reports_stopped = True
+        elif 200 <= response.status_code < 300:
+            self._reported = totals
 
     async def _send_with_retry(self, event: Event) -> str:
         import httpx  # importable — constructing this sink already imported it

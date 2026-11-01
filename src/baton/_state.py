@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import time
 from collections import Counter
 from typing import Literal
+
+from baton._uuid import uuid7
 
 
 class SessionCounter:
@@ -80,6 +83,8 @@ class DropCounts:
     drops happen on the vendor's threads and the bridge's."""
 
     def __init__(self) -> None:
+        self.instance_id = uuid7()
+        """Names this process in its loss reports (SPEC §11.4.7)."""
         self._total: Counter[DropReason] = Counter()
         self._since_delivery: Counter[DropReason] = Counter()
         self._last_recovery_log = -_RECOVERY_LOG_SECONDS
@@ -115,6 +120,7 @@ class DropCounts:
         )
 
     def _reset(self) -> None:
+        self.instance_id = uuid7()
         with self._lock:
             self._total.clear()
             self._since_delivery.clear()
@@ -122,3 +128,14 @@ class DropCounts:
 
 
 PROCESS_DROPS = DropCounts()
+
+
+def _after_fork_in_child() -> None:
+    # A forked child is a new process: its own id and counts. The parent's
+    # lock may have been held by another thread at fork, so it is replaced.
+    PROCESS_DROPS._lock = threading.Lock()
+    PROCESS_DROPS._reset()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork_in_child)
