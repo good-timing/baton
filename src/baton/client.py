@@ -121,7 +121,7 @@ from baton._result_capture import (
     validate_mode,
     withholding,
 )
-from baton._state import PROCESS_SEQUENCE
+from baton._state import PROCESS_DROPS, PROCESS_SEQUENCE
 from baton._uuid import uuid7
 from baton.events import (
     DEFAULT_CONSENT_TOKEN,
@@ -631,9 +631,7 @@ class _SyncBridge:
         for task in pending:
             task.cancel()
         loop.run_until_complete(asyncio.wait(pending, timeout=_CANCEL_WAIT_SECONDS))
-        logger.warning(
-            "baton: %d event write(s) still running at shutdown were dropped.", len(pending)
-        )
+        logger.warning("baton: %d task(s) still running at shutdown were cancelled.", len(pending))
 
     def run(self, coro: Coroutine[Any, Any, T], timeout: float | None = None) -> T:
         """Submit a coroutine to the bridge loop and wait for its result.
@@ -1038,6 +1036,7 @@ class _Sessions:
         vendor's code (SPEC §11.2). Warns once."""
         if not self._closed:
             return False
+        PROCESS_DROPS.add("after_close")
         if not self._closed_warned:
             self._closed_warned = True
             logger.warning("baton: %s is closed; further events are dropped.", type(self).__name__)
@@ -1399,6 +1398,9 @@ class Client(_Sessions):
         self._writes.add(task)
         try:
             return await write
+        except asyncio.CancelledError:
+            PROCESS_DROPS.add("unsent_at_close")
+            raise
         finally:
             self._writes.discard(task)
 
@@ -1472,6 +1474,7 @@ class Client(_Sessions):
         if self._deliver(safe_write(self._sink, event, logger)) is None:
             # close() on another thread stopped the bridge after the check above.
             if not self._dropping_after_close():
+                PROCESS_DROPS.add("write_failed")
                 logger.warning("baton: the background event loop is not running; event dropped.")
 
     async def _write_snapshot(self, event: SurfaceSnapshotEvent) -> None:

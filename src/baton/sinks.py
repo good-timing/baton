@@ -39,6 +39,7 @@ from time import monotonic
 from types import TracebackType
 from typing import IO, TYPE_CHECKING, Any, Literal, Self, cast
 
+from baton._state import PROCESS_DROPS
 from baton.events import Event
 
 if TYPE_CHECKING:
@@ -80,6 +81,7 @@ async def safe_write(sink: Sink, event: Event, logger: logging.Logger) -> None:
     try:
         await sink.write(event)
     except Exception:
+        PROCESS_DROPS.add("write_failed")
         logger.exception("baton: sink.write failed; event dropped, tool call continues")
 
 
@@ -122,6 +124,7 @@ def build_or_none(build: Callable[[], Event], logger: logging.Logger) -> Event |
     try:
         return build()
     except Exception:
+        PROCESS_DROPS.add("encode_failed")
         logger.exception("baton: event construction failed; event dropped, tool call continues")
         return None
 
@@ -454,6 +457,7 @@ class HttpSink(Sink):
             if task is not None and not task.done():
                 task.cancel()
         if self._buffer:
+            PROCESS_DROPS.add("unsent_at_close", len(self._buffer))
             log.warning("baton: the sink closed with %d event(s) unsent.", len(self._buffer))
         if self._atexit_callback is not None:
             atexit.unregister(self._atexit_callback)
@@ -536,7 +540,15 @@ class HttpSink(Sink):
                     stacklevel=3,
                 )
                 self._overflow_warned = True
+            # After the warning: one promoted to an error drops this event
+            # instead, and safe_write counts that.
+            PROCESS_DROPS.add("buffer_full")
         self._buffer.append(event)
+
+    def _dequeue(self, event: Event) -> None:
+        # A full buffer may already have pushed ``event`` out while it was sent.
+        if self._buffer and self._buffer[0] is event:
+            self._buffer.popleft()
 
     # Test hook — see test_sinks.py for the overflow-semantics tests.
     def _enqueue_for_test(self, event: Event) -> None:
@@ -621,6 +633,7 @@ class HttpSink(Sink):
             detail = "<unreadable>"
         # Same local lookup the shutdown path uses — this module keeps no
         # module-level logger.
+        PROCESS_DROPS.add("refused")
         logging.getLogger("baton").warning(
             "baton: collector REFUSED an event and it has been dropped "
             "(HTTP %s): %s — the event is gone; nothing retries a 4xx.",
@@ -647,6 +660,7 @@ class HttpSink(Sink):
                 **kwargs,
             )
         except Exception as exc:
+            PROCESS_DROPS.add("encode_failed")
             logging.getLogger("baton").warning(
                 "baton: a %s event could not be encoded and has been dropped (%s) "
                 "— the event is gone; the events after it are still sent.",
@@ -719,6 +733,7 @@ class HttpSink(Sink):
             return
 
         if not self._circuit.can_request():
+            PROCESS_DROPS.add("unsent_at_close", len(self._buffer))
             log.warning(
                 "baton: process exiting with %d buffered event(s); "
                 "circuit breaker open, skipping shutdown flush",
@@ -758,6 +773,7 @@ class HttpSink(Sink):
                     else:
                         break  # transient (429/5xx)
             remaining_count = len(self._buffer)
+            PROCESS_DROPS.add("unsent_at_close", remaining_count)
             if remaining_count or dropped:
                 log.warning(
                     "baton: process exiting without sink.aclose(); "
@@ -768,6 +784,7 @@ class HttpSink(Sink):
                     remaining_count,
                 )
         except Exception:
+            PROCESS_DROPS.add("unsent_at_close", len(self._buffer))
             log.exception("baton: best-effort shutdown flush failed")
 
     async def _background_drain(self) -> None:
@@ -781,14 +798,15 @@ class HttpSink(Sink):
             event = self._buffer[0]
             outcome = await self._send_with_retry(event)
             if outcome == "success":
-                self._buffer.popleft()
+                self._dequeue(event)
                 self._circuit.record_success()
+                PROCESS_DROPS.log_recovery()
             elif outcome == "permanent_failure":
-                self._buffer.popleft()
+                self._dequeue(event)
                 self._circuit.record_success()
             elif outcome == "unencodable":
                 # Nothing was sent, so the circuit learns nothing about the endpoint.
-                self._buffer.popleft()
+                self._dequeue(event)
             else:
                 self._circuit.record_failure()
                 return

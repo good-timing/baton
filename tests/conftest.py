@@ -40,6 +40,15 @@ from collections.abc import Iterator
 import pytest
 from pytest_httpserver import HTTPServer
 
+from baton._state import PROCESS_DROPS
+
+
+@pytest.fixture(autouse=True)
+def _fresh_drop_counts() -> Iterator[None]:
+    """``PROCESS_DROPS`` is one per process, so each test starts from zero."""
+    PROCESS_DROPS._reset()
+    yield
+
 
 @pytest.fixture(autouse=True)
 def _no_ambient_baton_environment(monkeypatch: pytest.MonkeyPatch) -> None:

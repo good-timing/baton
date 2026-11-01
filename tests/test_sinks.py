@@ -21,6 +21,7 @@ import pytest
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Response
 
+from baton._state import PROCESS_DROPS
 from baton.events import ToolCallStartEvent, ToolCallStartPayload
 from baton.sinks import HttpSink
 
@@ -899,6 +900,7 @@ class TestAnUnencodableEventDoesNotBlockTheQueue:
 
         assert posted == [2]
         assert len(sink._buffer) == 0
+        assert PROCESS_DROPS.total() == {"encode_failed": 1}
         dropped = [r for r in caplog.records if "has been dropped" in r.getMessage()]
         assert len(dropped) == 1
         assert "tool_call_start" in dropped[0].getMessage()
@@ -916,6 +918,7 @@ class TestAnUnencodableEventDoesNotBlockTheQueue:
 
         assert posted == [2]
         assert len(sink._buffer) == 0
+        assert PROCESS_DROPS.total() == {"encode_failed": 1}
         sink._closed = True
 
     async def test_a_lone_surrogate_does_not_stop_the_drain(
