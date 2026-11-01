@@ -1772,7 +1772,7 @@ Defined error codes:
 
 - **Unreleased (spec only, 2026-11-01) — how the scrubber lowercases a key (§7).** Plain lowercasing, as Python's `str.lower()`, not case folding. This writes down what `baton-sdk` and `baton-ts` already do; `baton-spec`'s `scrub/cases.json` pins it. A Go producer using `strings.ToLower` differs on `U+0130`. No envelope field, event type or shape changes.
 
-- **Unreleased (spec only, 2026-11-01) — NEW event type `client_report` (§11.4.7), and the rule it reports on (§11.2 rule 8).** Additive. `baton-sdk`, `baton-ts` and the Go SDK already count by these reasons, except that `baton-ts` does not yet count events left unsent when the process exits without close. `baton-sdk` sends the event from its next release; `baton-ts` and Go do not send it yet.
+- **Unreleased (spec only, 2026-11-01) — NEW event type `client_report` (§11.4.7), and the rule it reports on (§11.2 rule 8).** Additive. `baton-sdk`, `baton-ts` and the Go SDK already count by these reasons, except that `baton-ts` does not yet count events left unsent when the process exits without close. `baton-sdk`, `baton-ts` and the Go SDK send the event from their next releases.
 
   **Consumer consequence:** a collector whose event type list is closed refuses `client_report` until it adds the type. A sink stops sending reports after the first 400 or 422, so nothing else is lost. A collector that stores unknown types keeps each report as an event whose `session_id` is not a session. The Console reads a report by taking the highest value per reason per `instance_id`.
 
