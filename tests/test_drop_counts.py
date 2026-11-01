@@ -31,6 +31,18 @@ def _http_sink(answer: Callable[[httpx.Request], Any], **kwargs: Any) -> HttpSin
     )
 
 
+def _answers(statuses: list[int]) -> Callable[[httpx.Request], httpx.Response]:
+    """Answers each event with the next status; a ``client_report`` gets 202."""
+    events = iter(statuses)
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content)["event_type"] == "client_report":
+            return httpx.Response(202)
+        return httpx.Response(next(events))
+
+    return answer
+
+
 async def _never_answers(request: httpx.Request) -> httpx.Response:
     await asyncio.Event().wait()
     raise AssertionError("unreachable")
@@ -127,8 +139,7 @@ async def test_a_dropped_event_is_counted_once_under_its_reason(name: str) -> No
 async def test_the_first_delivery_after_a_loss_says_what_was_lost(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    answers = iter([400, 202, 202])
-    sink = _http_sink(lambda request: httpx.Response(next(answers)))
+    sink = _http_sink(_answers([400, 202, 202]))
     with caplog.at_level(logging.WARNING, logger="baton"):
         for _ in range(3):
             await sink.write(_make_event())
@@ -203,8 +214,7 @@ def test_the_exit_flush_counts_what_is_left_when_it_fails(monkeypatch: pytest.Mo
 async def test_steady_loss_beside_delivery_says_so_once_a_minute(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    answers = iter([400, 202, 400, 202])
-    sink = _http_sink(lambda request: httpx.Response(next(answers)))
+    sink = _http_sink(_answers([400, 202, 400, 202]))
     with caplog.at_level(logging.WARNING, logger="baton"):
         for _ in range(4):
             await sink.write(_make_event())
