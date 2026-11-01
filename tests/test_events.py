@@ -19,6 +19,8 @@ from pydantic import TypeAdapter, ValidationError
 from baton.events import (
     AnnotationEvent,
     AnnotationPayload,
+    ClientReportEvent,
+    ClientReportPayload,
     Event,
     PrincipalWire,
     SurfaceSnapshotEvent,
@@ -165,6 +167,30 @@ class TestAnnotationEvent:
         assert event.payload.signal_type == "dead_end"
         assert event.payload.context is not None
         assert event.payload.context["likely_cause"] == "content_filter"
+
+
+# =============================================================================
+# client_report
+# =============================================================================
+
+
+_INSTANCE = "0193f2c1-7b6e-7c11-9a0e-3f5c2d4b8a10"
+
+
+class TestClientReportEvent:
+    def test_it_parses_from_the_wire(self) -> None:
+        data = {
+            **_envelope(),
+            "event_type": "client_report",
+            "payload": {"instance_id": _INSTANCE, "dropped": {"refused": 3, "later_reason": 1}},
+        }
+        parsed = TypeAdapter(Event).validate_python(data)
+        assert isinstance(parsed, ClientReportEvent)
+        assert parsed.payload.dropped == {"refused": 3, "later_reason": 1}
+
+    def test_a_negative_count_is_refused(self) -> None:
+        with pytest.raises(ValidationError):
+            ClientReportPayload(instance_id=_INSTANCE, dropped={"refused": -1})
 
 
 # =============================================================================

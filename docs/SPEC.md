@@ -827,7 +827,19 @@ A conforming SDK MUST:
    - Close first lets event writes already under way finish, then closes the sink.
    - A call that waits on one event's write waits at most 1 second. Then the caller goes on, and the write keeps going and is still delivered. While it is outstanding, later events are queued without waiting.
    - Work still running when the producer stops is cancelled, and counted in one warning. A runtime with no exit hook, such as Go, gives the vendor a close call to make instead.
-8. **MAY do cheap stateless classification.** E.g., set `signal_type=failure` on a tool-call-error event when the exception class matches a known failure pattern. State-dependent classification (retry_loop) MUST NOT happen in the SDK.
+8. **Count every event it does not deliver, by reason.** Every event the producer records is either delivered or counted under exactly one of these reasons:
+
+   | reason | the event was lost because |
+   |---|---|
+   | `buffer_full` | the bounded buffer pushed it out (rule 3) |
+   | `refused` | the collector answered with a 4xx other than 429 |
+   | `encode_failed` | the producer could not build, scrub or serialise it before a sink took it |
+   | `write_failed` | a sink took it and failed to write it, or the producer's own loop had stopped |
+   | `after_close` | it was recorded after close (rule 7) |
+   | `unsent_at_close` | close or process exit ran out of time while it was still queued or being sent |
+
+   The counts are for the whole process and only grow. An event that is retried and then lost counts once, under the reason that ended it. An event the producer cannot tell was delivered, such as one being sent when close ran out of time, MAY be counted and also delivered; it MUST NOT be neither. An event sent to several sinks MAY be counted once for each sink that lost it. These names are wire values (§11.4.7). A new reason is a SPEC change, and a consumer accepts a name it does not know. Outside this rule: process kill and freeze, and an exit without close where the runtime gives the producer no exit hook (rule 7), since nothing runs to count.
+9. **MAY do cheap stateless classification.** E.g., set `signal_type=failure` on a tool-call-error event when the exception class matches a known failure pattern. State-dependent classification (retry_loop) MUST NOT happen in the SDK.
 
 A conforming SDK MUST NOT:
 - Maintain session state beyond the bounded local buffer
@@ -1061,7 +1073,7 @@ Four rules, each of them a mistake this project has already made or nearly made:
 
 **Every value is client-supplied text.** A producer passes each one through `VendorConfig(scrubber=...)`, as it does `_meta`, and truncates it: `info.name` and `info.version` at 128 characters, as §3.4 does the declared name, and each header value at 256.
 
-**Which events carry it.** Every event with a live request behind it (`tool_call_*`, `annotation`, `tool_list_*`, `resource_list_*`). Never `surface_snapshot`, which describes the vendor's server and not a caller.
+**Which events carry it.** Every event with a live request behind it (`tool_call_*`, `annotation`, `tool_list_*`, `resource_list_*`). Never `surface_snapshot`, which describes the vendor's server and not a caller, and never `client_report` (§11.4.7).
 
 **What it is for.** It replaces `agent_runtime` as the way a client is named. That field is one string a producer resolved, so it could not say whether a name was declared or guessed, carried no version, and ended at `unknown` on a server that never sees the handshake. This object gives a consumer the inputs, so the label is computed where it can be corrected without an SDK release. A producer that emits it stops resolving `agent_runtime` (§3.4).
 
@@ -1086,8 +1098,9 @@ Event types and their payload shapes:
 | `tool_call_error` | `{tool_name, error_type, error_body, duration_ms, result?, result_capture?, failure_kind?}` (`result` PII-scrubbed; present only for the returned-flag shape — §11.4.3; `result_capture` present only when results are withheld — see below; `failure_kind` present only when the PRODUCER manufactured the failure above the vendor's handler — §11.4.3) | SDK middleware **on exception, or on a returned result whose MCP error flag is set** |
 | `annotation` | `{intent?, expected_outcome?, what_happened?, tool_name?, workflow?, suggested_improvement?, context?, signal_type?}` (all nullable; agent populates what it has) | SDK annotation tool handler / library `client.annotate(...)` / `trace.annotate(...)` |
 | `surface_snapshot` | `{surface_hash, server_info?, capabilities?, instructions?, tools, seam_augmentations}` — top-level fields mirror baton-proxy's `enqueue_surface_snapshot`; `seam_augmentations.intent_param` shape differs (§11.4.2) | SDK middleware/wrap layer, once per observed `surface_hash` per install, among the last 256 it sent; the library's `list_tools`, once per hash per client among the last 256 it sent (§5.6); see §11.4.2 |
+| `client_report` | `{instance_id, dropped}` — this process's lost-event counts by reason; see §11.4.7 | SDK HTTP sink after a delivery |
 
-⚠ **These five are the TOOL-call and annotation types, and they are not the whole enum.** Fifteen more are specified below: the twelve resource and prompt lifecycle types in **§11.4.4**, and the three tool list types in **§11.4.5**. `EventType` has twenty values; a consumer reading this table as exhaustive will reject conforming traffic, which §11.4.4 forbids outright.
+⚠ **These six are not the whole enum.** Fifteen more are specified below: the twelve resource and prompt lifecycle types in **§11.4.4**, and the three tool list types in **§11.4.5**. `EventType` has twenty-one values; a consumer reading this table as exhaustive will reject conforming traffic, which §11.4.4 forbids outright.
 
 **`result_capture` — the producer declares that result-derived data was WITHHELD (OPTIONAL, on `tool_call_end` and `tool_call_error`).** A vendor may configure a producer to capture no tool-response data at all. When it does, the event says so, in its own member, rather than leaving a consumer to infer it from what is missing.
 
@@ -1567,6 +1580,34 @@ A producer sends these when a client asks for the server's tools (`tools/list`).
 
 `error_type` in the `tool_call_error.returned` vector is `"tool_error"` from every producer and is not exempt. `tool_call_start.identified.json` pins `call_intent`, `intent_source`, `principal` and `organization`: a vendor resolver returns a person with a company, and the call carries `user_goal`.
 
+#### 11.4.7 `client_report` — how many events this process lost
+
+A producer that sends over HTTP reports the counts from §11.2 rule 8, so the Console can show how many events an install lost and why.
+
+```json
+{
+  "instance_id": "0193f2c1-7b6e-7c11-9a0e-3f5c2d4b8a10",
+  "dropped": {"refused": 3, "buffer_full": 1}
+}
+```
+
+**`instance_id`** is a UUID the producer mints once per process. Every report from that process carries the same value, whichever client or sink sends it.
+
+**`dropped`** maps a §11.2 rule 8 reason to the number of events lost for it since the process started. A reason with no loss is left out. The numbers are running totals, never "since the last report", so a lost report loses no information.
+
+**When it is sent.** Each HTTP sink decides for itself. It sends a report only after it delivers an event, and only if the totals differ from the last report it delivered. At most one per sink per minute. A healthy process never sends one. A producer does not send one at close: the collector is often the reason for the loss, so a report then would mostly be lost too. Loss in the last minute before exit may therefore go unreported.
+
+**A report is never itself counted.** A producer MUST NOT add a lost `client_report` to its counts. This holds wherever the report is lost: in the buffer, refused, unencodable or unsent at close. Until a report with the current totals is delivered, the next delivery may send it again. If the collector answers a report with 400 or 422, the sink sends no more reports, and does not log the refusal as a lost event: a collector that predates this type refuses it that way.
+
+**Envelope.** `tenant_id`, `vendor_id` and `consent_token` are those of the events the sink sends. `session_id` is the `instance_id`, and is not a session: a consumer MUST NOT count it as one or join other events to it. `sequence_number` increases across the process's reports, such as by the clock (§5.6). `captured_at` is when the report was built. No `call_id`, `principal`, `organization`, `client_observed`, `transport_observed` or `runtime_meta`, as on `surface_snapshot` (§11.4.2).
+
+**Consumer rules.**
+- For each (`tenant_id`, `vendor_id`, `instance_id`), keep the highest value seen for each reason. Totals only grow, so reports may arrive in any order or more than once.
+- Sum across `instance_id`s for the install's total.
+- Tolerate a reason name it does not know.
+- The counts are for the process, not the sink. A process that sends to two tenants reports the same totals to each.
+- A consumer that stores unknown event types as ordinary events (§11.4.4) MUST NOT count a `client_report` as a session.
+
 ### 11.5 Annotation correlation rules (worker-side)
 
 #### 11.5.1 Turn-vs-session distinction
@@ -1728,6 +1769,10 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **Unreleased (spec only, 2026-11-01) — NEW event type `client_report` (§11.4.7), and the rule it reports on (§11.2 rule 8).** Additive. `baton-sdk`, `baton-ts` and the Go SDK already count by these reasons, except that `baton-ts` does not yet count events left unsent when the process exits without close. None sends the event yet.
+
+  **Consumer consequence:** a collector whose event type list is closed refuses `client_report` until it adds the type. A sink stops sending reports after the first 400 or 422, so nothing else is lost. A collector that stores unknown types keeps each report as an event whose `session_id` is not a session. The Console reads a report by taking the highest value per reason per `instance_id`.
 
 - **Unreleased (SDK, 2026-10-31) — standalone `fastmcp`: a call the server fails after the handler returned is `tool_call_error` (§11.4.3).** On 2.x/3.x this includes a result the server rejects against the output schema. The `mcp` 1.x low-level server checks `structuredContent` against `outputSchema` after `fastmcp`'s middleware chain returns, and sends the client an error. `baton-sdk` 0.9.1 and earlier recorded `tool_call_end` for those calls. They now arrive as `tool_call_error` with `error_type: "tool_error"` and `failure_kind: "output_schema_mismatch"`, paired by `call_id` with the same `tool_call_start`. An error result made by a vendor middleware outside Baton's arrives the same way. On `fastmcp` 4.x (`mcp` 2.x), which has no output check, such a middleware's error result arrives as `tool_call_error` with no `failure_kind`, and its raise, which escapes the server, arrives as `tool_call_error` with the exception's class as `error_type` and no `failure_kind`. Both were `tool_call_end`. No envelope field or event type changes. The official adapter is unchanged. **Consumer consequence:** an error rate on those producers rises by the calls the client already saw fail.
 

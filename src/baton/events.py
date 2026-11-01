@@ -31,6 +31,7 @@ EventType = Literal[
     "tool_call_error",
     "annotation",
     "surface_snapshot",
+    "client_report",
     # The RESOURCE and PROMPT lifecycles (SPEC §11.4.4). Twelve types, and
     # their schema of record is HERE because this module is what
     # ``baton-spec/scripts/generate.py`` exports the schema from — not because
@@ -263,6 +264,15 @@ class SurfaceSnapshotPayload(BaseModel):
     instructions: str | None = None
     tools: list[dict[str, Any]] = Field(default_factory=list)
     seam_augmentations: dict[str, Any] = Field(default_factory=dict)
+
+
+class ClientReportPayload(BaseModel):
+    """This process's lost-event counts by reason, as running totals (SPEC §11.4.7)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    instance_id: UUID
+    dropped: dict[str, Annotated[int, Field(ge=0)]]
 
 
 # =============================================================================
@@ -777,6 +787,11 @@ class SurfaceSnapshotEvent(_EventEnvelope):
     payload: SurfaceSnapshotPayload
 
 
+class ClientReportEvent(_EventEnvelope):
+    event_type: Literal["client_report"] = "client_report"
+    payload: ClientReportPayload
+
+
 # The lifecycle events carry the same envelope as the five above, so one
 # collector endpoint accepts every type and one worker orders them on
 # ``(session_id, sequence_number)``. No producer sends ``call_id`` on these
@@ -868,6 +883,7 @@ Event = Annotated[
     | ToolCallErrorEvent
     | AnnotationEvent
     | SurfaceSnapshotEvent
+    | ClientReportEvent
     | ResourceListStartEvent
     | ResourceListEndEvent
     | ResourceListErrorEvent
@@ -890,6 +906,8 @@ Event = Annotated[
 __all__ = [
     "AnnotationEvent",
     "AnnotationPayload",
+    "ClientReportEvent",
+    "ClientReportPayload",
     "Event",
     "EventType",
     "OrganizationWire",

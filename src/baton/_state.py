@@ -62,8 +62,8 @@ class SequenceClock:
 PROCESS_SEQUENCE = SequenceClock()
 
 
-#: Why an event was not delivered. These names go on the wire in a later
-#: release, so they change only with SPEC.
+#: Why an event was not delivered. Wire values (SPEC §11.2 rule 8), so they
+#: change only with SPEC.
 DropReason = Literal[
     "buffer_full", "refused", "encode_failed", "write_failed", "after_close", "unsent_at_close"
 ]
