@@ -836,9 +836,9 @@ A conforming SDK MUST:
    | `encode_failed` | the producer could not build, scrub or serialise it before a sink took it |
    | `write_failed` | a sink took it and failed to write it, or the producer's own loop had stopped |
    | `after_close` | it was recorded after close (rule 7) |
-   | `unsent_at_close` | close or process exit ran out of time while it was still queued or being sent |
+   | `unsent_at_close` | close ran out of time while it was still queued or being sent |
 
-   The counts are for the whole process and only grow. An event that is retried and then lost counts once, under the reason that ended it. An event the producer cannot tell was delivered, such as one being sent when close ran out of time, MAY be counted and also delivered; it MUST NOT be neither. An event sent to several sinks MAY be counted once for each sink that lost it. These names are wire values (§11.4.7). A new reason is a SPEC change, and a consumer accepts a name it does not know. Outside this rule: process kill and freeze, and an exit without close where the runtime gives the producer no exit hook (rule 7), since nothing runs to count.
+   The counts are for the whole process and only grow. An event that is retried and then lost counts once, under the reason that ended it. An event the producer cannot tell was delivered, such as one being sent when close ran out of time, MAY be counted and also delivered; it MUST NOT be neither. An event sent to several sinks MAY be counted once for each sink that lost it. These names are wire values (§11.4.7). A new reason is a SPEC change, and a consumer accepts a name it does not know. Outside this rule: process kill and freeze, and an exit without close. With no exit hook nothing runs to count; with one, no `client_report` can follow a count taken then, so the producer warns about the events it leaves unsent instead of counting them (rule 7).
 9. **MAY do cheap stateless classification.** E.g., set `signal_type=failure` on a tool-call-error event when the exception class matches a known failure pattern. State-dependent classification (retry_loop) MUST NOT happen in the SDK.
 
 A conforming SDK MUST NOT:
@@ -1772,7 +1772,7 @@ Defined error codes:
 
 - **Unreleased (spec only, 2026-11-01) — how the scrubber lowercases a key (§7).** Plain lowercasing, as Python's `str.lower()`, not case folding. This writes down what `baton-sdk` and `baton-ts` already do; `baton-spec`'s `scrub/cases.json` pins it. A Go producer using `strings.ToLower` differs on `U+0130`. No envelope field, event type or shape changes.
 
-- **Unreleased (spec only, 2026-11-01) — NEW event type `client_report` (§11.4.7), and the rule it reports on (§11.2 rule 8).** Additive. `baton-sdk`, `baton-ts` and the Go SDK already count by these reasons, except that `baton-ts` does not yet count events left unsent when the process exits without close. `baton-sdk`, `baton-ts` and the Go SDK send the event from their next releases.
+- **Unreleased (spec only, 2026-11-01) — NEW event type `client_report` (§11.4.7), and the rule it reports on (§11.2 rule 8).** Additive. `baton-sdk`, `baton-ts` and the Go SDK already count by these reasons. An event left unsent when the process exits without close is warned about, not counted. `baton-sdk`, `baton-ts` and the Go SDK send the event from their next releases.
 
   **Consumer consequence:** a collector whose event type list is closed refuses `client_report` until it adds the type. A sink stops sending reports after the first 400 or 422, so nothing else is lost. A collector that stores unknown types keeps each report as an event whose `session_id` is not a session. The Console reads a report by taking the highest value per reason per `instance_id`.
 

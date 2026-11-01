@@ -95,14 +95,6 @@ async def _unsent_at_close() -> None:
     await sink.aclose()
 
 
-async def _unsent_at_exit() -> None:
-    sink = _http_sink(_never_answers, circuit_breaker_threshold=1)
-    sink._enqueue_for_test(_make_event())
-    sink._circuit.record_failure()
-    sink._atexit_flush()
-    sink._closed = True
-
-
 async def _write_cancelled_at_close() -> None:
     class _WriteHangs(_WriteRaises):
         async def write(self, event: Event) -> None:
@@ -120,7 +112,6 @@ _SCENARIOS: dict[str, tuple[DropReason, Callable[[], Coroutine[Any, Any, None]]]
     "write_failed": ("write_failed", _write_failed),
     "after_close": ("after_close", _after_close),
     "unsent_at_close": ("unsent_at_close", _unsent_at_close),
-    "unsent_at_exit": ("unsent_at_close", _unsent_at_exit),
     "write_cancelled_at_close": ("unsent_at_close", _write_cancelled_at_close),
 }
 
@@ -167,24 +158,61 @@ def test_an_event_after_the_bridge_stopped_is_counted() -> None:
     client.close()
 
 
-def test_the_exit_flush_counts_what_the_collector_did_not_take(httpserver: HTTPServer) -> None:
+def test_the_exit_flush_warns_about_what_the_collector_did_not_take_and_counts_nothing(
+    httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    """SPEC §11.2 rule 8: nothing can send or log a count taken at exit."""
     httpserver.expect_request("/v0/events").respond_with_data(status=503)
     sink = HttpSink(url=httpserver.url_for(""), api_key="k")
     sink._enqueue_for_test(_make_event())
-    sink._atexit_flush()
-    assert PROCESS_DROPS.total() == {"unsent_at_close": 1}
+    with caplog.at_level(logging.WARNING, logger="baton"):
+        sink._atexit_flush()
+    assert PROCESS_DROPS.total() == {}
+    assert any("1 still buffered and lost" in m for m in caplog.messages)
     sink._closed = True
 
 
-def test_an_exit_flush_then_close_counts_each_lost_event_once() -> None:
+def test_the_exit_flush_warns_and_counts_nothing_when_the_circuit_is_open(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sink = _http_sink(_never_answers, circuit_breaker_threshold=1)
+    sink._enqueue_for_test(_make_event())
+    sink._circuit.record_failure()
+    with caplog.at_level(logging.WARNING, logger="baton"):
+        sink._atexit_flush()
+    assert PROCESS_DROPS.total() == {}
+    assert any("process exiting with 1 buffered event(s)" in m for m in caplog.messages)
+    sink._closed = True
+
+
+def test_an_exit_flush_counts_nothing_and_the_close_after_it_counts_once() -> None:
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
     sink = _http_sink(_never_answers, shutdown_flush_timeout_seconds=0.05)
     asyncio.run_coroutine_threadsafe(sink.write(_make_event()), loop).result(timeout=1)
     sink._atexit_flush()
+    assert PROCESS_DROPS.total() == {}
     asyncio.run_coroutine_threadsafe(sink.aclose(), loop).result(timeout=1)
     assert PROCESS_DROPS.total() == {"unsent_at_close": 1}
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout=1)
+
+
+def test_an_exit_flush_on_a_running_loop_warns_about_what_it_left(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    sink = _http_sink(_never_answers, circuit_breaker_threshold=1)
+    sink._circuit.record_failure()
+    asyncio.run_coroutine_threadsafe(sink.write(_make_event()), loop).result(timeout=1)
+    with caplog.at_level(logging.WARNING, logger="baton"):
+        sink._atexit_flush()
+    assert any("1 event(s) still buffered and lost" in m for m in caplog.messages)
+    assert PROCESS_DROPS.total() == {}
+    sink._closed = True
     loop.call_soon_threadsafe(loop.stop)
     thread.join(timeout=1)
 
@@ -199,15 +227,21 @@ def test_an_overflow_warning_raised_as_an_error_counts_the_event_once() -> None:
     sink._closed = True
 
 
-def test_the_exit_flush_counts_what_is_left_when_it_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_failed_exit_flush_warns_and_counts_nothing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     def broken(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("no network at exit")
 
     monkeypatch.setattr(httpx, "Client", broken)
     sink = _http_sink(_never_answers)
     sink._enqueue_for_test(_make_event())
-    sink._atexit_flush()
-    assert PROCESS_DROPS.total() == {"unsent_at_close": 1}
+    with caplog.at_level(logging.WARNING, logger="baton"):
+        sink._atexit_flush()
+    assert PROCESS_DROPS.total() == {}
+    assert any(
+        "best-effort shutdown flush failed; 1 event(s) still buffered" in m for m in caplog.messages
+    )
     sink._closed = True
 
 

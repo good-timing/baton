@@ -758,16 +758,23 @@ class HttpSink(Sink):
             except TimeoutError:
                 log.warning(
                     "baton: process exiting; cross-thread shutdown flush did not "
-                    "complete within %.1fs (background thread may still be "
-                    "draining when the process actually exits)",
+                    "complete within %.1fs with %d event(s) unsent (background thread "
+                    "may still be draining when the process actually exits)",
                     self._shutdown_flush_timeout,
+                    len(self._buffer),
                 )
+                return
             except Exception:
                 log.exception("baton: cross-thread shutdown flush failed")
+            if self._buffer:
+                log.warning(
+                    "baton: process exiting without sink.aclose(); %d event(s) still "
+                    "buffered and lost",
+                    len(self._buffer),
+                )
             return
 
         if not self._circuit.can_request():
-            PROCESS_DROPS.add("unsent_at_close", len(self._buffer))
             log.warning(
                 "baton: process exiting with %d buffered event(s); "
                 "circuit breaker open, skipping shutdown flush",
@@ -807,7 +814,6 @@ class HttpSink(Sink):
                     else:
                         break  # transient (429/5xx)
             remaining_count = len(self._buffer)
-            PROCESS_DROPS.add("unsent_at_close", remaining_count)
             if remaining_count or dropped:
                 log.warning(
                     "baton: process exiting without sink.aclose(); "
@@ -818,8 +824,10 @@ class HttpSink(Sink):
                     remaining_count,
                 )
         except Exception:
-            PROCESS_DROPS.add("unsent_at_close", len(self._buffer))
-            log.exception("baton: best-effort shutdown flush failed")
+            log.exception(
+                "baton: best-effort shutdown flush failed; %d event(s) still buffered and lost",
+                len(self._buffer),
+            )
 
     async def _background_drain(self) -> None:
         async with self._flush_lock:
