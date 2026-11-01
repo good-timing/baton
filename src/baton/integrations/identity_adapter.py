@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from baton._white_space import is_blank
 from baton.events import OrganizationWire, PrincipalWire
 from baton.identity import PRINCIPAL_FORM_RAW, PRINCIPAL_FORMS, Organization, Principal
 from baton.integrations._hooks import run_vendor_hook
@@ -50,15 +51,6 @@ PRINCIPAL_ID_MAX_LEN = 128
 #: same bytes for one resolver output.
 DISPLAY_NAME_MAX_LEN = 128
 
-# Unicode ``White_Space``, exactly (SPEC §11.4's blank rule). Not
-# ``str.strip()``: that also removes U+001C to U+001F, which ECMAScript's
-# ``trim()`` keeps, so the two SDKs would disagree on what is blank.
-_WHITE_SPACE = frozenset(
-    "\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005"
-    "\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
-)
-
-
 # A lone surrogate cannot be UTF-8 encoded and U+0000 is refused by Postgres
 # text; either would cost a collector the whole EVENT, not the label.
 _UNSENDABLE = re.compile("[\x00\ud800-\udfff]")
@@ -74,7 +66,7 @@ def wire_display_name(value: object) -> str | None:
     """
     if not isinstance(value, str) or len(value) > DISPLAY_NAME_MAX_LEN:
         return None
-    if all(ch in _WHITE_SPACE for ch in value):
+    if is_blank(value):
         return None
     if _UNSENDABLE.search(value):
         return None
@@ -208,7 +200,7 @@ def _wire_identity(
     would map every user onto one redaction constant and merge them into a
     single actor.
     """
-    if not isinstance(value_id, str) or not value_id.strip():
+    if not isinstance(value_id, str) or is_blank(value_id):
         # A blank id names nobody, and every such caller would merge into one.
         logger.warning("baton: an empty or non-string %s — ignoring it.", field)
         return None

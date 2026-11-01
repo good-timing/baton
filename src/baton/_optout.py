@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 import os
 
+from baton._white_space import strip_white_space
 from baton.events import Event
 from baton.sinks import Sink
 
@@ -61,7 +62,7 @@ def capture_disabled() -> str | None:
     say what did it without every entry point repeating the string.
     """
     value = os.environ.get(_SWITCH)
-    if value is not None and value.strip().lower() not in _OFF_VALUES:
+    if value is not None and strip_white_space(value).lower() not in _OFF_VALUES:
         return _SWITCH
     return None
 

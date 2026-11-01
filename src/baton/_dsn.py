@@ -62,6 +62,8 @@ from dataclasses import dataclass, field
 from typing import NoReturn
 from urllib.parse import SplitResult, urlsplit
 
+from baton._white_space import strip_white_space
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["VENDOR_ID_PATTERN", "Dsn", "parse_dsn", "redact", "resolve_dsn"]
@@ -430,10 +432,9 @@ def parse_dsn(raw: str) -> Dsn:
     that arrives wrong must fail where the vendor is looking, not at the first
     tool call in production.
     """
-    if not isinstance(raw, str) or not raw.strip():
+    raw = strip_white_space(raw) if isinstance(raw, str) else ""
+    if not raw:
         _fail("dsn must be a non-empty string")
-
-    raw = raw.strip()
 
     if raw.startswith((_PUBLISHABLE_PREFIX, _SECRET_PREFIX)):
         # No redact() — a bare key has no structure to show, and echoing it is
@@ -566,13 +567,13 @@ def parse_dsn(raw: str) -> Dsn:
                 f"https://baton_pk_...@host/ten_.../<server>"
             )
 
-    if not _WORKSPACE_PATTERN.match(workspace):
+    if not _WORKSPACE_PATTERN.fullmatch(workspace):
         _fail(
             f"dsn {safe} has {workspace!r} where the workspace belongs — "
             f"expected ten_ followed by 8 or 32 hex characters. If the two "
             f"path segments are the right way round, this is not a Baton DSN."
         )
-    if not VENDOR_ID_PATTERN.match(server):
+    if not VENDOR_ID_PATTERN.fullmatch(server):
         _fail(
             f"dsn {safe} has {server!r} where the server belongs — it must "
             f"match {VENDOR_ID_PATTERN.pattern!r}, because this value becomes "

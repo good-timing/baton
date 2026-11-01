@@ -213,6 +213,26 @@ def test_a_whitespace_only_subject_is_a_miss(blank_sub: str) -> None:
     assert _sub(_Token(claims={"sub": blank_sub})) is None
 
 
+SEPARATORS = pytest.mark.parametrize("sep", ["\x1c", "\x1f"])
+
+
+@SEPARATORS
+def test_a_separator_is_not_a_blank_subject(sep: str) -> None:
+    """SPEC §11.4's blank is Unicode ``White_Space``, which these are not."""
+    assert _sub(_Token(claims={"sub": sep})) == Principal(principal_id=sep)
+
+
+@SEPARATORS
+def test_a_separator_is_not_a_blank_email(sep: str) -> None:
+    assert _email(_Token(claims={"email": sep})) == Principal(principal_id=sep)
+
+
+@SEPARATORS
+def test_a_separator_is_not_a_blank_principal_id(sep: str) -> None:
+    got = _resolve(None, hook=lambda _ctx: Principal(principal_id=sep))
+    assert got is not None and got.id
+
+
 def test_an_empty_or_non_string_subject_is_a_miss() -> None:
     assert _sub(_Token(claims={"sub": ""})) is None
     assert _sub(_Token(claims={"sub": 12345})) is None

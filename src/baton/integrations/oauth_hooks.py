@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from baton._white_space import is_blank
 from baton.identity import Principal
 from baton.integrations._hooks import runs_inline
 
@@ -56,7 +57,7 @@ def principal_from_oauth_sub(context: SessionResolutionContext) -> Principal | N
     if claims is None:
         return None
     sub = claims.get("sub")
-    if not isinstance(sub, str) or not sub.strip():
+    if not isinstance(sub, str) or is_blank(sub):
         return None
     return Principal(principal_id=sub)
 
@@ -82,7 +83,7 @@ def principal_from_oauth_email(context: SessionResolutionContext) -> Principal |
     if claims is None:
         return None
     email = claims.get("email")
-    if not isinstance(email, str) or not email.strip():
+    if not isinstance(email, str) or is_blank(email):
         return None
     local, at, _domain = email.rpartition("@")
     return Principal(principal_id=email, display_name=local if at and local else None)

@@ -16,6 +16,7 @@ from typing import Any, Literal, NamedTuple
 
 from baton._state import PROCESS_SEQUENCE, SessionCounter
 from baton._uuid import uuid7
+from baton._white_space import strip_white_space
 
 #: Rung 4's carrier on both adapters. Present on old-spec streamable HTTP;
 #: removed from the wire entirely by MCP 2026-07-28+ (SEP-2567), and never
@@ -77,6 +78,6 @@ def session_id_from_headers(headers: Any) -> str | None:
 def clean_session_id(value: object) -> str | None:
     """A session or turn id as sent, stripped; ``None`` when it is not a
     non-blank string. See ``session_id_from_headers`` for why both rules hold."""
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str):
         return None
-    return value.strip()
+    return strip_white_space(value) or None

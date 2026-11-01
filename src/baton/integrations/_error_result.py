@@ -31,6 +31,7 @@ from collections.abc import Callable
 from typing import Any, NamedTuple
 
 from baton._result_capture import WITHHELD, withholding
+from baton._white_space import strip_white_space
 
 #: ``error_type`` for a returned error, as opposed to a raised exception whose
 #: class name is used. Matches ``baton-extmcp`` — sensor parity is the point of
@@ -116,8 +117,8 @@ def error_text(result: Any) -> str:
         if isinstance(content, list):
             for part in content:
                 text = getattr(part, "text", None)
-                if isinstance(text, str) and text.strip():
-                    parts.append(text.strip())
+                if isinstance(text, str) and (stripped := strip_white_space(text)):
+                    parts.append(stripped)
     except Exception:  # pragma: no cover - defensive; see is_error_result
         return ""
     return "\n".join(parts)

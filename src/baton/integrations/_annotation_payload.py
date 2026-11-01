@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, TypeGuard
 
+from baton._white_space import is_blank
 from baton.events import AnnotationPayload
 
 __all__ = ["build_annotation_payload"]
@@ -50,7 +51,7 @@ def build_annotation_payload(
 
 def is_report(what_happened: str | None) -> TypeGuard[str]:
     """SPEC §11.4: an annotation is a report when its account is filled."""
-    return bool(what_happened and what_happened.strip())
+    return what_happened is not None and not is_blank(what_happened)
 
 
 def with_tool_name_required(schema: dict[str, Any]) -> dict[str, Any]:

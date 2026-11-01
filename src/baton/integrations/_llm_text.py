@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from baton._white_space import is_blank
 from baton.scrub import scrub_or_none
 
 logger = logging.getLogger(__name__)
@@ -144,7 +145,7 @@ def drop_retired_params(arguments: dict[str, Any]) -> None:
 
 def _pop_text(arguments: dict[str, Any], name: str) -> str | None:
     value = arguments.pop(name, None)
-    return value if isinstance(value, str) and value.strip() else None
+    return value if isinstance(value, str) and not is_blank(value) else None
 
 
 # ``tool_call_start.payload.intent_source``: where the call's intent came from.
@@ -337,7 +338,7 @@ def _ends_in_ours(current: Any, vendor: Any) -> bool:
     """Whether ``current`` is the vendor's text followed by a paragraph of ours."""
     if not isinstance(current, str):
         return False
-    prefix = f"{vendor}\n\n" if isinstance(vendor, str) and vendor.strip() else ""
+    prefix = f"{vendor}\n\n" if isinstance(vendor, str) and not is_blank(vendor) else ""
     return current.startswith(prefix) and any(
         start.match(current, len(prefix)) for start in _OURS_STARTS
     )
@@ -356,7 +357,7 @@ def with_vendor_instructions(mcp: Any, ours: str) -> str:
     if not _ends_in_ours(current, vendor):
         vendor = current
         setattr(mcp, _VENDOR_INSTRUCTIONS_ATTR, vendor)
-    if not isinstance(vendor, str) or not vendor.strip():
+    if not isinstance(vendor, str) or is_blank(vendor):
         return ours
     combined = f"{vendor}\n\n{ours}"
     if len(combined) > _CLAUDE_CODE_TRUNCATION_CAP:

@@ -123,6 +123,7 @@ from baton._result_capture import (
 )
 from baton._state import PROCESS_DROPS, PROCESS_SEQUENCE
 from baton._uuid import uuid7
+from baton._white_space import is_blank
 from baton.events import (
     DEFAULT_CONSENT_TOKEN,
     AnnotationEvent,
@@ -223,7 +224,9 @@ def _start_payload(
     intent = _call_text(scrubber, trace._intent, "intent")
     expected = _call_text(scrubber, trace._expected_outcome, "expected_outcome")
     workflow = _call_text(scrubber, trace._workflow, "workflow")
-    stated = any(value and value.strip() for value in (intent, expected, workflow))
+    stated = any(
+        value is not None and not is_blank(value) for value in (intent, expected, workflow)
+    )
     return ToolCallStartPayload(
         tool_name=trace._tool_name,
         params=trace._params,
@@ -263,7 +266,7 @@ def _annotation_event(
             intent=_scrubbed_text(scrubber, intent),
             expected_outcome=_scrubbed_text(scrubber, expected_outcome),
             what_happened=_scrubbed_text(scrubber, what_happened)
-            if what_happened and what_happened.strip()
+            if what_happened is not None and not is_blank(what_happened)
             else None,
             tool_name=_scrubbed_text(scrubber, tool_name) if tool_name else tool_name,
             workflow=_scrubbed_text(scrubber, workflow),

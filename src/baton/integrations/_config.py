@@ -623,7 +623,7 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             "VendorConfig needs a vendor_id — either directly, or via a dsn "
             "whose last path segment names the server (see /account)."
         )
-    if not _VENDOR_ID_PATTERN.match(config.vendor_id):
+    if not _VENDOR_ID_PATTERN.fullmatch(config.vendor_id):
         raise ValueError(
             f"vendor_id {config.vendor_id!r} must match "
             f"{_VENDOR_ID_PATTERN.pattern!r} — used as the default annotation "

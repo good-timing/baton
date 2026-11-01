@@ -191,7 +191,7 @@ def _tool_name_candidate(raw: str) -> str | None:
     # inside it, so this cannot currently fail. Checked anyway, because the
     # alternative to a check here is a raise at a vendor's import — and a
     # returned-but-unvalidated name is exactly what would get there.
-    if not TOOL_NAME_PATTERN.match(candidate):
+    if not TOOL_NAME_PATTERN.fullmatch(candidate):
         return None
     return candidate
 
@@ -230,7 +230,7 @@ def derive_annotation_tool_name(vendor_id: str, override: str | None = None) -> 
     one — never with a guess.
     """
     name = override or f"{vendor_id}{_SUFFIX}"
-    if not TOOL_NAME_PATTERN.match(name):
+    if not TOOL_NAME_PATTERN.fullmatch(name):
         raise ValueError(
             f"Annotation tool name {name!r} violates the cross-runtime "
             f"pattern {TOOL_NAME_PATTERN.pattern!r} (Claude Desktop and others "

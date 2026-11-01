@@ -181,7 +181,7 @@ def test_every_derived_name_is_already_valid() -> None:
         derived = annotation_tool_name_from_server(FastMCP(raw), **_ROOMY)
         if derived is not None:
             produced += 1
-            assert TOOL_NAME_PATTERN.match(derived), (raw, derived)
+            assert TOOL_NAME_PATTERN.fullmatch(derived), (raw, derived)
     # Anchored: without this the whole sweep passes if the resolver starts
     # returning ``None`` for everything, which is the one way it could go
     # wrong and still look green.
