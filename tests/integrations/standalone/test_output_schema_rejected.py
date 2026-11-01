@@ -101,24 +101,15 @@ async def test_the_kind_survives_withholding_and_the_message_does_not(tmp_path: 
     assert "oops" not in json.dumps(terminal)
 
 
-@pytest.mark.skipif(not SERVER_CHECKS_OUTPUT, reason="mcp 2.x lets the raise escape")
-async def test_an_outer_middlewares_error_is_named_the_same(tmp_path: Path) -> None:
-    """The outer seam sees only that the server answered with an error after
-    the handler returned, so it cannot tell this from a schema rejection."""
-    from fastmcp.server.middleware import Middleware
-
-    class FailsAfterTheTool(Middleware):
-        async def on_call_tool(self, context: Any, call_next: Any) -> Any:
-            await call_next(context)
-            raise ValueError("quota exceeded")
-
+async def _drive_outer_middleware(
+    events_path: Path, middleware: Any, *, client_raises: bool
+) -> dict[str, Any]:
     mcp = FastMCP("outer")
 
     @mcp.tool
     def matches(x: str) -> dict[str, int]:
         return {"a": 1}
 
-    events_path = tmp_path / "events.jsonl"
     install_baton(
         mcp,
         VendorConfig(
@@ -128,10 +119,52 @@ async def test_an_outer_middlewares_error_is_named_the_same(tmp_path: Path) -> N
             sink=FileSink(str(events_path)),
         ),
     )
-    mcp.middleware.insert(0, FailsAfterTheTool())
+    mcp.middleware.insert(0, middleware)
     async with Client(mcp) as client:
-        await client.call_tool_mcp("matches", {"x": "1"})
-
+        if client_raises:
+            with pytest.raises(Exception):  # noqa: B017 - the class differs by fastmcp major
+                await client.call_tool_mcp("matches", {"x": "1"})
+        else:
+            result = await client.call_tool_mcp("matches", {"x": "1"})
+            assert getattr(result, "is_error", None) or getattr(result, "isError", None)
     _, terminal = _pair(without_surface_snapshots(read_events(events_path)), "matches")
+    return terminal
+
+
+async def test_an_outer_middlewares_raise_after_the_tool_is_a_failure(tmp_path: Path) -> None:
+    """On mcp 1.x the server turns the raise into an error result, which the
+    outer seam cannot tell from a schema rejection. On mcp 2.x the raise
+    escapes the server, and is recorded as a raise."""
+    from fastmcp.server.middleware import Middleware
+
+    class FailsAfterTheTool(Middleware):
+        async def on_call_tool(self, context: Any, call_next: Any) -> Any:
+            await call_next(context)
+            raise ValueError("quota exceeded")
+
+    terminal = await _drive_outer_middleware(
+        tmp_path / "events.jsonl", FailsAfterTheTool(), client_raises=not SERVER_CHECKS_OUTPUT
+    )
     assert terminal["event_type"] == "tool_call_error"
-    assert terminal["payload"]["failure_kind"] == "output_schema_mismatch"
+    if SERVER_CHECKS_OUTPUT:
+        assert terminal["payload"]["failure_kind"] == "output_schema_mismatch"
+    else:
+        assert terminal["payload"]["failure_kind"] is None
+        assert terminal["payload"]["error_type"] == "ValueError"
+
+
+@pytest.mark.skipif(SERVER_CHECKS_OUTPUT, reason="covered by the raise test on mcp 1.x")
+async def test_an_error_result_where_no_schema_check_runs_is_not_named(tmp_path: Path) -> None:
+    from fastmcp.server.middleware import Middleware
+
+    class ReturnsAnErrorAfterTheTool(Middleware):
+        async def on_call_tool(self, context: Any, call_next: Any) -> Any:
+            await call_next(context)
+            text = mcp_types.TextContent(type="text", text="quota exceeded")
+            return ToolResult(content=[text], is_error=True)  # type: ignore[call-arg]
+
+    terminal = await _drive_outer_middleware(
+        tmp_path / "events.jsonl", ReturnsAnErrorAfterTheTool(), client_raises=False
+    )
+    assert terminal["event_type"] == "tool_call_error"
+    assert terminal["payload"]["failure_kind"] is None

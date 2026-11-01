@@ -23,8 +23,9 @@ class CallSlot:
     """``user_goal`` and the retired names, when the outer seam stripped them."""
     claimed: bool = False
     finish: Callable[[Any], Awaitable[None]] | None = None
-    """The inner capture's terminal event, called with the server's error
-    result when the server rejected what the handler returned, else ``None``."""
+    """The inner capture's terminal event, called with what the server sent
+    instead of the handler's success (an error result, or the exception that
+    escaped it), else ``None``."""
 
 
 current_slot: ContextVar[CallSlot | None] = ContextVar("baton_call_slot", default=None)

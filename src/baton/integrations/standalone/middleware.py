@@ -20,6 +20,7 @@ import copy
 import logging
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from importlib.metadata import PackageNotFoundError, version
 from time import monotonic
 from typing import Any
 
@@ -85,6 +86,19 @@ from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_emit
 
 logger = logging.getLogger(__name__)
+
+
+def _server_checks_output() -> bool:
+    """Whether the low-level server checks a tool's output against its schema
+    after the middleware chain returns: mcp 1.x does, mcp 2.x does not.
+    Unknown means no, so a failure is never named for a check that may not run."""
+    try:
+        return int(version("mcp").split(".")[0]) < 2
+    except (PackageNotFoundError, ValueError, IndexError):  # pragma: no cover
+        return False
+
+
+_SERVER_CHECKS_OUTPUT = _server_checks_output()
 
 
 class BatonMiddleware(Middleware):
@@ -454,53 +468,48 @@ class BatonMiddleware(Middleware):
                 logger,
             )
 
+        def build_raised(
+            seq_err: int, raised: BaseException, duration_ms: int
+        ) -> ToolCallErrorEvent:
+            fields = raised_error_fields(
+                mode=self._result_capture_mode,
+                scrubber=self._scrubber,
+                raised=raised,
+                tool_error=ToolError,
+            )
+            return ToolCallErrorEvent(
+                tenant_id=self._tenant_id,
+                vendor_id=self._vendor_id,
+                consent_token=self._consent_token,
+                session_id=call_session.id,
+                sequence_number=seq_err,
+                captured_at=datetime.now(UTC),
+                client_observed=client,
+                principal=caller.principal,
+                organization=caller.organization,
+                transport_observed=call_transport,
+                session_id_origin=call_session.origin,
+                call_id=call_id,
+                runtime_meta=scrubbed_meta,
+                payload=ToolCallErrorPayload(
+                    tool_name=tool_name,
+                    error_type=type(vendor_exception(raised, "fastmcp")).__name__,
+                    error_body=fields.error_body,
+                    duration_ms=duration_ms,
+                    result_capture=fields.result_capture,
+                ),
+            )
+
         called_at = monotonic()
         try:
             result = await call_next(context)
         except BaseException as exc:
-            # ⚠ Bound to a local before the build thunk below closes over it.
-            # Python DELETES the `except ... as exc` name at the end of the
-            # block, so a lambda capturing `exc` reads a name that is gone the
-            # moment the thunk outlives the handler — and a thunk is exactly
-            # what `safe_emit` takes. Harmless today because `safe_emit` calls
-            # it synchronously inside this block; this makes it not depend on
-            # that.
+            # Bound to a local: Python deletes the `as exc` name when the block
+            # ends, and the thunk below closes over it.
             raised = exc
-            vendor_exc = vendor_exception(raised, "fastmcp")
-            duration_ms = int((monotonic() - called_at) * 1000)
+            raised_ms = int((monotonic() - called_at) * 1000)
             seq_err = await next_sequence(self._counter, call_session)
-
-            def build_error() -> ToolCallErrorEvent:
-                fields = raised_error_fields(
-                    mode=self._result_capture_mode,
-                    scrubber=self._scrubber,
-                    raised=raised,
-                    tool_error=ToolError,
-                )
-                return ToolCallErrorEvent(
-                    tenant_id=self._tenant_id,
-                    vendor_id=self._vendor_id,
-                    consent_token=self._consent_token,
-                    session_id=call_session.id,
-                    sequence_number=seq_err,
-                    captured_at=datetime.now(UTC),
-                    client_observed=client,
-                    principal=caller.principal,
-                    organization=caller.organization,
-                    transport_observed=call_transport,
-                    session_id_origin=call_session.origin,
-                    call_id=call_id,
-                    runtime_meta=scrubbed_meta,
-                    payload=ToolCallErrorPayload(
-                        tool_name=tool_name,
-                        error_type=type(vendor_exc).__name__,
-                        error_body=fields.error_body,
-                        duration_ms=duration_ms,
-                        result_capture=fields.result_capture,
-                    ),
-                )
-
-            await safe_emit(self._sink, build_error, logger)
+            await safe_emit(self._sink, lambda: build_raised(seq_err, raised, raised_ms), logger)
             raise
 
         # MRTR: an ``InputRequiredResult`` means the call PAUSED to ask the
@@ -606,17 +615,19 @@ class BatonMiddleware(Middleware):
                 ),
             )
 
-        async def finish(rejected: Any) -> None:
+        async def finish(failure: Any) -> None:
             seq = await next_sequence(self._counter, call_session)
-            if rejected is None:
+            if failure is None:
                 await safe_emit(self._sink, lambda: build_end(seq), logger)
+            elif isinstance(failure, BaseException):
+                await safe_emit(self._sink, lambda: build_raised(seq, failure, duration_ms), logger)
             else:
-                await safe_emit(
-                    self._sink, lambda: build_err(seq, rejected, "output_schema_mismatch"), logger
-                )
+                kind = "output_schema_mismatch" if _SERVER_CHECKS_OUTPUT else None
+                await safe_emit(self._sink, lambda: build_err(seq, failure, kind), logger)
 
-        # On mcp 1.x the low-level server checks the output schema after this
-        # chain returns, so the outer seam sends the end once it has seen that.
+        # The call can still fail after this chain returns (mcp 1.x checks the
+        # output schema; an outer middleware can fail), so the outer seam sends
+        # the end once it has the server's answer.
         if slot is not None:
             slot.finish = finish
         else:
