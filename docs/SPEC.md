@@ -52,7 +52,8 @@ End User ──► Calling Agent ──MCP──► Vendor MCP Server [Baton SDK
 ### 2.1 Transport
 - All Baton wire traffic MUST be HTTPS.
 - Primary endpoint (relative to the collector base URL):
-  - `POST /v0/events` — SDK → collector (event-stream ingest; see §11.4 for the envelope)
+  - `POST /v0/events/batch` — SDK → collector, several events in one request (§2.5)
+  - `POST /v0/events` — SDK → collector, one event per request (event-stream ingest; see §11.4 for the envelope). A producer uses it only when the collector has no batch endpoint (§2.5)
 - Deferred endpoints — collector return channel, no specified caller:
   - `GET  /v0/signals/{signal_id}` — lazy re-query
   - `GET  /v0/signals?session_id=...` — session-scoped lookup
@@ -75,6 +76,15 @@ The collector MUST reject any request without a valid bearer. The collector MUST
 ### 2.4 Idempotency
 - Event POSTs MUST carry a client-generated `event_id` (UUIDv7 recommended for sortability). The collector MUST treat repeated POSTs with the same `event_id` as the same event (no duplicate ingestion).
 - Response updates on the deferred return-channel endpoints above are collector-authoritative; no client idempotency key needed.
+
+### 2.5 Batches
+`POST /v0/events/batch` carries `{"events": [envelope, ...]}`.
+
+- **Caps.** A batch holds at most **100** events and its body is at most **1 MiB** (1,048,576 bytes). A collector MUST accept a batch within both caps. A producer MUST NOT send a larger one, so it cuts batches by size as well as by count.
+- **One tenant.** Every event in a batch has the same `tenant_id` and `vendor_id`. A collector answers `400` `payload_malformed` to a batch that mixes them.
+- **Answer.** `200` with `{"results": [...]}`, one result per event, in the order sent: `{"event_id": ..., "status": "accepted" | "duplicate" | "refused", "error": {"code": ..., "message": ...}}`. `error` is present only on `refused`, with a §12 code. `duplicate` is an `event_id` the collector already holds (§2.4). A refused event does not affect the others in its batch.
+- **Errors for the whole batch.** `401` and `403` refuse every event in it. `400` refuses every event, and is the answer to a body that is not an object with an `events` array, to an empty batch, to more than 100 events, and to mixed tenants. `413` `payload_too_large` means the body is over the cap. `429` means too many requests: the producer keeps the events and waits `Retry-After` seconds. A `5xx` keeps them for a later try. Resending a batch is safe, because `event_id` makes each event idempotent.
+- **A collector with no batch endpoint.** A producer that gets `404` or `405` from `/v0/events/batch` sends to `/v0/events`, one event per request, for the rest of the process, and sends the batch it was holding that way. It counts nothing as lost for the `404` or `405`.
 
 ---
 
@@ -703,7 +713,7 @@ The annotation event ships with the static `consent_token` from `VendorConfig` (
 
 Every event the SDK emits — including those tied to signal-worthy conditions — ships with the static `consent_token` configured at SDK init (§9). The SDK does not currently emit per-signal consent prompts before transmission; per-signal end-user prompts are deferred (see §14 open questions).
 
-Events go to `/v0/events`; the collector worker assembles SignalPayloads, runs policy (§11.6), and dispatches actions. The "no auto-send without consent" guarantee today is structural — the SDK won't initialize without a `consent_token`, and every event carries it — rather than per-signal interactive.
+Events go to the collector (§2.1); the collector worker assembles SignalPayloads, runs policy (§11.6), and dispatches actions. The "no auto-send without consent" guarantee today is structural — the SDK won't initialize without a `consent_token`, and every event carries it — rather than per-signal interactive.
 
 ### 6.4 Auto-detection (future)
 
@@ -777,6 +787,7 @@ Vendors who need richer consent semantics today MUST implement them outside the 
 
 The Console MUST:
 - Accept event POSTs at `/v0/events`, validate bearer + consent_token, return `201 Created` (or `200 OK` with existing record on idempotent retry by `event_id`).
+- Accept batches at `/v0/events/batch` as §2.5 says.
 - Serve return-channel queries if the deferred endpoints in §2.1 are built.
 - Reject malformed payloads with `400 Bad Request` + `{ "error": { "code": ..., "message": ... } }`.
 - Reject bad auth with `401 Unauthorized`.
@@ -796,7 +807,7 @@ Signal volume and ticket volume are not the same shape. A vendor at scale produc
 ```mermaid
 flowchart TD
     A[Calling agent + tool call] --> B[SDK: capture layer<br/>middleware emits events<br/>annotation tool emits events<br/>PII scrub at source<br/>bounded local buffer + retry]
-    B -->|HTTPS POST<br/>/v0/events| C[Console ingest<br/>events table]
+    B -->|HTTPS POST<br/>/v0/events/batch| C[Console ingest<br/>events table]
     C --> D[Console worker: interpretation layer<br/>reconstruct sessions from events<br/>correlate annotations with tool calls<br/>detect retry_loop / dead_end / etc.<br/>build SignalPayload<br/>run policy → decide actions]
     D --> E1[Action: escalate<br/>tracked work item]
     D --> E2[Action: notify<br/>visibility only]
@@ -819,7 +830,7 @@ A conforming SDK MUST:
 1. **Emit events at the capture boundary.** On the MCP middleware path: `tool_call_start` + `tool_call_end` (or `tool_call_error`) per real tool call; `annotation` per annotation-tool invocation. On the library API path: the same event types, emitted at `client.trace.__enter__` / `__exit__` boundaries and from `client.annotate(...)` / `trace.annotate(...)` calls. Schema in §11.4 is identical across both paths.
 2. **PII-scrub at event-emit time.** Raw PII MUST NOT cross the network to the Console. Scrubbing rules per §7 cover captured data — params, results, error bodies, annotation text. **Members the vendor's own code supplies are the vendor's choice as data controller (§7)**: `principal` (§11.4), whose `"raw"` `id` and `display_name` are personal data by design and say so on the wire.
 3. **Buffer events locally with bounded size.** Default bound: 1000 events. On overflow: drop oldest, emit `UserWarning(events_dropped)`. The buffer is in-process per SDK instance; it MUST NOT block the vendor's hot path on remote service availability.
-4. **POST events to Console ingest endpoint** (`POST /v0/events`) asynchronously with retry-and-backoff. Default timeout: 1s per request. Circuit-break after N consecutive failures.
+4. **POST events to the collector in batches** (`POST /v0/events/batch`, §2.5) asynchronously with retry-and-backoff, one request at a time. A batch goes when 100 events are waiting, when the next event would take the body over 1 MiB, or 5 seconds after the oldest waiting event was recorded, whichever comes first. A flush or close sends at once. On `413` the producer splits the batch in two and sends each half; a single event that gets `413` is `refused` (rule 8). Default timeout: 1s per request. Circuit-break after N consecutive failures. An event can therefore reach the collector up to 5 seconds after it was recorded, and a process that stops without close can lose those 5 seconds of events (rule 8 puts that outside the count).
 5. **Assign sequence numbers per session.** Increasing per `session_id` within one process; §5.6 covers a session that spans processes. Worker orders a session's events by `sequence_number`, then `event_id`, not by timestamps alone. **The number is not the event's identity; `event_id` is.** A library producer numbers by the clock (§5.6), so two events of one session can share a number. A consumer MUST NOT reject or fail an event for a repeated (`session_id`, `sequence_number`), and recognises a retried event by its `event_id`.
 6. **Withhold result-derived data on request, and say so on the wire.** When configured to withhold results (§11.4 `result_capture`), a conforming SDK MUST emit nothing **derived from the tool's result** — `result`, and an `error_body` unwrapped from the result — MUST set `result_capture` on every affected event, and MUST still classify and emit `error_type`, `tool_name` and `duration_ms`. The rule is keyed on PROVENANCE, not on a field name: `error_body` is fed from several sources and only the result-derived ones are withheld, a raised message among them unless the vendor marked it public (§11.4.3). A producer MUST NOT infer the withheld state from an absent value, and a consumer MUST NOT either. ⚠ **A producer that also emits ANY of the four resource/prompt `*_error` legs carries two further obligations, neither of them about wire output: its own vendor-facing docs MUST say that those legs' messages survive the mode, and it MUST emit a `UserWarning` naming them when the mode is configured (§11.4.4).**
 7. **Shut down without breaking the vendor's program.** A second close waits for the first to finish, except a close re-entered from inside the first (such as a signal handler on the closing thread), which returns at once rather than wait on itself. An event recorded after close is dropped, with one warning, and never raises. At process exit the producer tries to send what it holds, for 3 seconds by default; the vendor may change the limit. The order of priority is: never get in the vendor's way, then lose as few events as possible. So:
@@ -832,7 +843,7 @@ A conforming SDK MUST:
    | reason | the event was lost because |
    |---|---|
    | `buffer_full` | the bounded buffer pushed it out (rule 3) |
-   | `refused` | the collector answered with a 4xx other than 429 |
+   | `refused` | the collector answered with a 4xx other than 429, or refused the event in a batch's results (§2.5); never for a batch's `404`/`405`, and never for a `413` the producer can still split |
    | `encode_failed` | the producer could not build, scrub or serialise it before a sink took it |
    | `write_failed` | a sink took it and failed to write it, or the producer's own loop had stopped |
    | `after_close` | it was recorded after close (rule 7) |
@@ -1751,6 +1762,7 @@ Defined error codes:
 - `auth_invalid` — bearer missing or rejected (401)
 - `consent_token_invalid` — consent token unknown or expired (401)
 - `payload_malformed` — JSON schema violation (400)
+- `payload_too_large` — the body is over the cap (413)
 - `vendor_unknown` — `vendor_id` not registered (403)
 - `signal_not_found` — return-channel query for unknown signal (404)
 - `server_error` — anything else (500)
@@ -1770,6 +1782,10 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **Unreleased (2026-11-02) — events are sent in batches (§2.5, §11.2 rule 4).** NEW endpoint `POST /v0/events/batch`: up to 100 events and 1 MiB per request, with a result per event. NEW error code `payload_too_large` (413). A producer sends a batch when 100 events are waiting, when the 1 MiB cap would be passed, or 5 seconds after the oldest waiting event, and keeps one request in flight. Before this, every producer sent one event per request, one request at a time, which capped delivery at one event per round trip and spent one request of the collector's rate limit on each event. `POST /v0/events` is unchanged. No envelope field or event type changes.
+
+  **Consumer consequence:** a collector without the batch endpoint keeps working: the producer falls back to `/v0/events` on `404` or `405`. Events arrive in groups, up to 5 seconds after they were recorded, and a process that stops without close can lose up to 5 seconds of events.
 
 - **go 0.1.4 (2026-11-02) — the Go SDK sends prompt, resource and tool-list events (§11.4.4, §11.4.5).** No envelope field or event type changes. `prompt_list`, `prompt_get`, `resource_list`, `resource_read` and `tool_list`, each a start and an end or error, in the shapes those subsections record: `uri` appears inside `resource_read_start.params` too, `params` is `{}` when a request has none, there is no `call_id`, and `error_type` is the Go error's type. The resolver runs once per request and its answer rides both events. A prompt get or resource read that pauses for the client's input (go-sdk v1.7+) is one start and one end, as a tool call is. A listing the SDK runs for itself sends none. On stateless HTTP each listing is a session of its own. **Consumer consequence:** a Go server's sessions can now hold only `tool_list_*` events, which §11.4.5 reads as "connected and did not use".
 
