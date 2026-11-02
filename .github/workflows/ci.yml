@@ -211,7 +211,7 @@ jobs:
         # asks for `[mcp,test]`, so fastmcp is not in this leg's tree at all and
         # has no pin to conflict with. This leg only runs the mcp-adapter tests,
         # which import neither fastmcp nor httpx.
-        mcp-version: ["1.21.1", "1.25.0", "1.27.2", "2.0.0"]
+        mcp-version: ["1.21.1", "1.25.0", "1.27.2", "2.0.0", "2.3.0"]
     steps:
       - uses: actions/checkout@v5
 
@@ -324,14 +324,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # One leg per supported major. The 2.x leg pins 2.14 because that is the
+        # One leg per supported major, plus the newest 4.x. The 2.x leg pins 2.14 because that is the
         # whole of the supported 2.x band: 2.10/2.11 cannot `import fastmcp` at
         # all under current pydantic (upstream: "cannot specify both default and
         # default_factory") and 2.12/2.13 have unrelated pre-existing gaps in
         # this suite. The `[fastmcp]` extra declared >=2.10 until D4 was settled;
         # it now declares >=2.14, so this pin IS the floor rather than a silent
         # departure from it.
-        fastmcp-version: ["2.14.7", "3.4.2", "4.0.2"]
+        fastmcp-version: ["2.14.7", "3.4.2", "4.0.2", "4.1.5"]
     steps:
       - uses: actions/checkout@v5
 
