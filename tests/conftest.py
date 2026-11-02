@@ -37,7 +37,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import weakref
 from collections.abc import Iterator
 from typing import Any
 
@@ -45,7 +44,7 @@ import pytest
 from pytest_httpserver import HTTPServer
 
 from baton._state import PROCESS_DROPS
-from baton.sinks import _BatchSender
+from baton.sinks import _LIVE_SENDERS
 from tests._fake_collector import COLLECTOR_DIR
 from tests._http_fakes import RELEASE
 
@@ -65,22 +64,12 @@ def _release_held_requests() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _stop_every_sender(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def _stop_every_sender() -> Iterator[None]:
     """A test that ends its sink with ``_closed = True`` leaves the sending
     thread alive, and it would send into the next test's server and log."""
-    made: list[weakref.ref[_BatchSender]] = []
-    build = _BatchSender.__init__
-
-    def recording(self: _BatchSender, *args: Any, **kwargs: Any) -> None:
-        build(self, *args, **kwargs)
-        made.append(weakref.ref(self))
-
-    monkeypatch.setattr(_BatchSender, "__init__", recording)
     yield
-    for ref in made:
-        sender = ref()
-        if sender is not None:
-            sender.stop()
+    for sender in list(_LIVE_SENDERS):
+        sender.stop()
 
 
 @pytest.fixture(autouse=True)

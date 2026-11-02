@@ -140,7 +140,7 @@ class TestTheInstallDoorInstallsNothing:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The switch has to be read BEFORE the config is built, or a DSN
-        constructs an ``HttpSink`` — and its httpx client — for capture that is
+        constructs an ``HttpSink`` — and its connection pool — for capture that is
         never going to happen."""
         from fastmcp import FastMCP
 

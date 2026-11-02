@@ -510,8 +510,8 @@ class TestNothingTheDsnBUILDSPrintsTheBearer:
         """The realistic accidental-print path for a sink: it fails, something
         catches it, and the traceback goes to a log aggregator.
 
-        Captured at DEBUG over EVERY logger, not just ours — ``httpx`` and
-        ``httpcore`` trace each attempt, and a third-party library printing the
+        Captured at DEBUG over EVERY logger, not just ours — the HTTP library
+        logs each attempt, and a third-party library printing the
         request is as much of a leak as our own line would be. The host is
         asserted present first: it proves the sink actually dialled the DSN's
         origin, without which "the key is not in the log" is a statement about

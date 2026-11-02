@@ -44,10 +44,10 @@ dependencies = [
     "urllib3>=1.26",
     "certifi",
     # ``anyio`` runs vendor hooks off the event loop (``integrations/_hooks``).
-    # CORE rather than an extra, decided 2026-09-11, and NOT free by the rule
-    # above for every install (``urllib3`` is the other): a LIBRARY-API user
-    # (``Client`` / ``Trace``, no MCP server) installs it for a code path they
-    # cannot reach. Taken deliberately — anyio is small and pure Python, and
+    # CORE rather than an extra, and NOT free by the rule above for every
+    # install (``urllib3`` is the other): a LIBRARY-API user (``Client`` /
+    # ``Trace``, no MCP server) installs it for a code path they cannot
+    # reach. Taken deliberately — anyio is small and pure Python, and
     # the alternative was importing it inside the function, because
     # ``baton/__init__.py`` loads ``VendorConfig`` on every ``import baton``
     # and a module-scope import there broke ``import baton`` outright on a

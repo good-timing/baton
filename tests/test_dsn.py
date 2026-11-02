@@ -599,8 +599,8 @@ class TestTheAuthorityMustBeAHost:
         What that produces is not a leaked message but a leaked object.
         ``origin`` becomes ``https://baton_pk_...``, which rides on the config,
         prints through the ``repr`` this lane had just made safe, and is handed
-        to ``httpx`` as a hostname — putting the bearer in ``httpcore``'s
-        connection trace at DEBUG on every delivery attempt.
+        to ``urllib3`` as a hostname — putting the bearer in its connection
+        log at DEBUG on every delivery attempt.
         """
         for raw in (
             f"https://x@{KEY}/{WORKSPACE}/srv",
@@ -617,7 +617,7 @@ class TestTheAuthorityMustBeAHost:
 
     def test_a_backslash_in_the_host_is_refused(self) -> None:
         """``urlsplit`` does not fold ``\\`` the way WHATWG does — the whole
-        string stays the authority and ``httpx`` keeps it whole as the host."""
+        string stays the authority and ``urllib3`` cuts the host at the ``\\``."""
         with pytest.raises(ValueError, match="something other than a host"):
             parse_dsn(f"https://{KEY}@ingest.example.com\\evil.com/{WORKSPACE}/srv")
 
@@ -660,8 +660,8 @@ class TestATabOrLineBreakIsDeletedRatherThanRefused:
     """⚠ **The strip is the defect, not the defence.** ``urlsplit`` removes
     ``\\t``, ``\\r`` and ``\\n`` from the URL before splitting it
     (``_UNSAFE_URL_BYTES_TO_REMOVE``), so every check in this module runs on a
-    string the vendor did not write — and ``httpx`` strips identically, so
-    nothing downstream notices either.
+    string the vendor did not write — and the origin handed to ``urllib3``
+    has already lost them, so nothing downstream notices either.
 
     Refused in ``parse_dsn`` against the RAW value, which is the last place
     that can still see the character. A closed set rather than a sample: every

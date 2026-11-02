@@ -26,6 +26,7 @@ from tests._http_fakes import (
     fake_sink,
     make_event,
     never_answers,
+    until,
 )
 
 
@@ -85,7 +86,7 @@ async def test_a_new_loss_is_reported_once_the_interval_passed(no_interval: None
     await sink.aclose()
 
 
-@pytest.mark.parametrize("status", [500, 401])
+@pytest.mark.parametrize("status", [500, 401, 400, 422])
 async def test_a_failed_report_is_not_counted_and_is_sent_again(
     no_interval: None, status: int
 ) -> None:
@@ -97,12 +98,35 @@ async def test_a_failed_report_is_not_counted_and_is_sent_again(
     await sink.aclose()
 
 
+async def test_a_kept_batch_keeps_its_report() -> None:
+    statuses = iter([400, 202])
+    report_statuses = iter([503, 202])
+    reports: list[dict[str, Any]] = []
+
+    def answer(path: str, body: Any) -> int:
+        [event] = events_in(path, body)
+        if event["event_type"] != "client_report":
+            return next(statuses)
+        reports.append(event)
+        return next(report_statuses)
+
+    sink = fake_sink(answer, backoff_base_seconds=0.01, flush_interval_seconds=0.01)
+    await _send(sink, 2)
+    await until(lambda: len(reports) == 2)
+    assert reports[0]["event_id"] == reports[1]["event_id"]
+    await sink.aclose()
+
+
 @pytest.mark.parametrize("status", [400, 422])
-async def test_a_collector_that_refuses_reports_gets_no_more(
+async def test_a_collector_that_refuses_a_report_sent_alone_gets_no_more(
     no_interval: None, status: int, caplog: pytest.LogCaptureFixture
 ) -> None:
     collector = ReportCollector([400, 202, 400, 202], report_status=status)
-    sink = fake_sink(collector)
+
+    def no_batch_endpoint(path: str, body: Any) -> int | Answer:
+        return 404 if path.endswith("/batch") else collector(path, body)
+
+    sink = fake_sink(no_batch_endpoint)
     await _send(sink, 4)
     assert len(collector.reports) == 1
     assert PROCESS_DROPS.total() == {"refused": 2}
@@ -156,7 +180,12 @@ async def test_a_report_that_hangs_holds_close_to_its_budget_and_is_not_counted(
     assert PROCESS_DROPS.total() == {"refused": 1, "unsent_at_close": 2}
 
 
-async def test_a_report_refused_in_the_batch_results_stops_reports(no_interval: None) -> None:
+@pytest.mark.parametrize(
+    ("code", "reports_sent"), [("payload_malformed", 1), ("quota_exhausted", 3)]
+)
+async def test_only_payload_malformed_in_the_batch_results_stops_reports(
+    no_interval: None, code: str, reports_sent: int
+) -> None:
     sent_reports = 0
     statuses = iter(["refused", "accepted", "refused", "accepted", "accepted"])
 
@@ -169,12 +198,45 @@ async def test_a_report_refused_in_the_batch_results_stops_reports(no_interval: 
                 status = "refused"
             else:
                 status = next(statuses)
-            results.append({"event_id": event["event_id"], "status": status})
+            results.append(
+                {"event_id": event["event_id"], "status": status, "error": {"code": code}}
+            )
         return Answer(200, json.dumps({"results": results}).encode())
 
     sink = fake_sink(answer)
     await _send(sink, 5)
-    assert sent_reports == 1
+    assert sent_reports == reports_sent
+    assert PROCESS_DROPS.total() == {"refused": 2}
+    await sink.aclose()
+
+
+async def test_a_batch_refused_whole_with_the_report_in_it_does_not_stop_reports(
+    no_interval: None,
+) -> None:
+    in_delivery = threading.Event()
+    gate = threading.Event()
+    statuses = iter([400, 202, 400, 202, 202])
+    batches: list[list[str]] = []
+
+    def answer(path: str, body: Any) -> Answer:
+        batches.append([e["event_type"] for e in events_in(path, body)])
+        status = next(statuses)
+        if len(batches) == 2:
+            in_delivery.set()
+            gate.wait()
+        return Answer(status, b"payload_malformed: bad batch" if status == 400 else b"")
+
+    sink = fake_sink(answer)
+    await _send(sink, 1)
+    await sink.write(make_event())
+    flushing = asyncio.ensure_future(sink.flush())
+    await asyncio.to_thread(in_delivery.wait, 3)
+    await sink.write(make_event())
+    gate.set()
+    await flushing
+    await _send(sink, 1)
+    assert batches[2] == ["tool_call_start", "client_report"]
+    assert batches[-1] == ["client_report"]
     assert PROCESS_DROPS.total() == {"refused": 2}
     await sink.aclose()
 

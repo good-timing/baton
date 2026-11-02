@@ -10,8 +10,8 @@ Four sinks ship in core:
   for local development and the zero-dependency examples.
 - ``FileSink`` — JSONL append to a path.
 - ``HttpSink`` — POST batches to any HTTP endpoint with bearer auth, from its
-  own thread; bounded buffer, retry, circuit breaker. This is the contract a Console or any compatible
-  collector consumes.
+  own thread; bounded buffer, retry, circuit breaker. This is the contract a
+  Console or any compatible collector consumes.
 - ``MultiSink`` — fan out to a list of sinks.
 
 The Sink protocol is intentionally small (``write`` + ``flush`` + ``aclose``).
@@ -1014,7 +1014,7 @@ class _BatchSender:
                 return False
             status, data = answer
             refusal = None if 200 <= status < 300 else _text_of(data)
-            self._settle([(event, refusal)], status)
+            self._settle([(event, refusal)], status, alone=True)
         return True
 
     def _post(self, path: str, body: bytes, deadline: float | None) -> tuple[int, bytes] | None:
@@ -1075,11 +1075,12 @@ class _BatchSender:
             self.retry_at = monotonic() + max(self.flush_interval, self.backoff_base)
             self._finish_flushes_locked()
 
-    def _settle(self, outcomes: list[tuple[Event, str | None]], status: int) -> None:
+    def _settle(
+        self, outcomes: list[tuple[Event, str | None]], status: int, *, alone: bool = False
+    ) -> None:
         """Takes answered events out of ``in_flight``. An outcome's text is
-        None for a delivered event, else what the collector said refusing it."""
-        # SPEC §11.4.7: a report refused per event, or answered 400 or 422.
-        report_refusal_stops = 200 <= status < 300 or status in (400, 422)
+        None for a delivered event, else what the collector said refusing it.
+        ``alone`` is for one event sent in a request of its own."""
         refused: list[str] = []
         delivered: Event | None = None
         with self.cond:
@@ -1089,7 +1090,7 @@ class _BatchSender:
                 if self.report is not None and self.report[0] is event:
                     if refusal is None:
                         self.reported = self.report[2]
-                    elif report_refusal_stops:
+                    elif _refusal_means_no_reports(refusal, status, alone):
                         self.reports_stopped = True
                     self.report = None
                     continue
@@ -1170,6 +1171,13 @@ class _BatchSender:
                 when,
                 unlogged,
             )
+
+
+def _refusal_means_no_reports(refusal: str, status: int, alone: bool) -> bool:
+    """SPEC §11.4.7: what a collector that predates ``client_report`` answers it."""
+    if alone:
+        return status in (400, 422)
+    return 200 <= status < 300 and refusal.startswith("payload_malformed:")
 
 
 def _per_event_results(
