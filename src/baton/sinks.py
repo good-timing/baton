@@ -673,6 +673,7 @@ class _BatchSender:
         self.report = None
         self.report_at = -math.inf
         self.reported = {}
+        self.refusals = {}
 
     def pending(self) -> int:
         return len(self.waiting) + len(self.in_flight)
@@ -842,7 +843,7 @@ class _BatchSender:
             self._failed()
             sent = False
         if not sent:
-            self._put_back_in_flight()
+            self._put_back_in_flight(batch)
         return sent
 
     def _seconds_until_due_locked(self, now: float) -> float | None:
@@ -962,12 +963,16 @@ class _BatchSender:
                 batch.append((report, body))
         return batch
 
-    def _put_back_in_flight(self) -> None:
-        """A kept batch goes back to the front; then the bound applies again."""
+    def _put_back_in_flight(self, batch: _Batch) -> None:
+        """A kept batch goes back to the front; then the bound applies again.
+        A report taken with no events is not kept (SPEC §11.4.7): the next
+        delivery builds a fresh one, so failing reports never hold up events."""
         with self.cond:
             if self.stopping:
                 self.in_flight.clear()
                 return
+            if len(batch) == 1 and self.report is not None and batch[0][0] is self.report[0]:
+                self.report = None
             for pending in reversed(self.in_flight):
                 assert pending.body is not None
                 self.waiting.appendleft(pending)
@@ -1122,7 +1127,7 @@ class _BatchSender:
             or now - self.report_at < self.REPORT_INTERVAL_SECONDS
         ):
             return
-        totals: dict[str, int] = {reason: n for reason, n in PROCESS_DROPS.total().items()}
+        totals = PROCESS_DROPS.total()
         if totals == self.reported:
             return
         try:
@@ -1377,7 +1382,6 @@ class HttpSink(Sink):
 
     def _atexit_flush(self) -> None:
         """Best-effort send when the process exits without ``aclose()``."""
-        self._sender.stop_reports()
         if self._closed:
             return
         self._sender.flush_at_exit(self._shutdown_flush_timeout)

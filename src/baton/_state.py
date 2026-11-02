@@ -97,9 +97,9 @@ class DropCounts:
             self._total[reason] += n
             self._since_delivery[reason] += n
 
-    def total(self) -> dict[DropReason, int]:
+    def total(self) -> dict[str, int]:
         with self._lock:
-            return dict(self._total)
+            return {reason: n for reason, n in self._total.items()}
 
     def log_recovery(self) -> None:
         """Called on each delivery: names what was lost before it, the other

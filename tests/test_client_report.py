@@ -6,13 +6,12 @@ import asyncio
 import json
 import logging
 import os
-import select
-import signal
 import threading
 from collections.abc import Callable
 from typing import Any
 
 import pytest
+import urllib3
 
 import baton._state as state_module
 import baton._uuid as uuid_module
@@ -31,6 +30,7 @@ from baton.sinks import (
 from tests._http_fakes import (
     Answer,
     ReportCollector,
+    child_answers,
     events_in,
     fake_sink,
     make_event,
@@ -107,22 +107,71 @@ async def test_a_failed_report_is_not_counted_and_is_sent_again(
     await sink.aclose()
 
 
-async def test_a_kept_batch_keeps_its_report() -> None:
+@pytest.mark.parametrize("first", [503, 413])
+async def test_a_kept_batch_keeps_its_report(first: int) -> None:
+    """Even when a 413 split leaves the report alone in the request that fails."""
+    in_delivery, gate = threading.Event(), threading.Event()
     statuses = iter([400, 202])
-    report_statuses = iter([503, 202])
-    reports: list[dict[str, Any]] = []
+    report_answers = [first, 503, 202] if first == 413 else [first, 202]
+    answers = iter(report_answers)
+    reports: list[str] = []
 
     def answer(path: str, body: Any) -> int:
-        [event] = events_in(path, body)
-        if event["event_type"] != "client_report":
-            return next(statuses)
-        reports.append(event)
-        return next(report_statuses)
+        events = events_in(path, body)
+        if events[-1]["event_type"] != "client_report":
+            if not reports:
+                status = next(statuses)
+                if status == 202:
+                    in_delivery.set()
+                    gate.wait()
+                return status
+            return 202
+        reports.append(events[-1]["event_id"])
+        return next(answers)
 
     sink = fake_sink(answer, backoff_base_seconds=0.01, flush_interval_seconds=0.01)
+    await _send(sink, 1)
+    await sink.write(make_event())
+    flushing = asyncio.ensure_future(sink.flush())
+    assert await asyncio.to_thread(in_delivery.wait, 3)
+    await sink.write(make_event())
+    gate.set()
+    await flushing
+    await until(lambda: len(reports) == len(report_answers))
+    assert len(set(reports)) == 1
+    await sink.aclose()
+
+
+@pytest.mark.parametrize("report_status", [503, None], ids=["5xx", "no-answer"])
+async def test_lone_reports_that_fail_do_not_hold_up_the_events(
+    no_interval: None, report_status: int | None
+) -> None:
+    threshold = 5
+    answered = 0
+
+    def answer(path: str, body: Any) -> int:
+        nonlocal answered
+        if path.endswith("/batch"):
+            return 404
+        if body["event_type"] == "client_report":
+            if report_status is None:
+                raise urllib3.exceptions.ProtocolError("down")
+            return report_status
+        answered += 1
+        return 400 if answered == 1 else 202
+
+    sink = fake_sink(
+        answer,
+        circuit_breaker_threshold=threshold,
+        backoff_base_seconds=0.01,
+        flush_interval_seconds=0.01,
+    )
     await _send(sink, 2)
-    await until(lambda: len(reports) == 2)
-    assert reports[0]["event_id"] == reports[1]["event_id"]
+    # Time for a kept report to be retried past the threshold.
+    await asyncio.sleep(0.2)
+    await _send(sink, 2 * threshold - 2)
+    assert answered == 2 * threshold
+    assert sink._circuit.can_request()
     await sink.aclose()
 
 
@@ -358,15 +407,10 @@ def test_no_report_after_the_exit_flush(no_interval: None) -> None:
 def test_a_forked_child_reports_under_its_own_id_and_counts() -> None:
     PROCESS_DROPS.add("refused")
     parent_id = PROCESS_DROPS.instance_id
-    read, write = os.pipe()
-    pid = os.fork()
-    if pid == 0:
-        ok = PROCESS_DROPS.instance_id != parent_id and PROCESS_DROPS.total() == {}
-        os.write(write, b"1" if ok else b"0")
-        os._exit(0)
-    os.close(write)
-    os.waitpid(pid, 0)
-    assert os.read(read, 1) == b"1"
+    answer = child_answers(
+        lambda: PROCESS_DROPS.instance_id != parent_id and PROCESS_DROPS.total() == {}
+    )
+    assert answer == b"1"
     assert PROCESS_DROPS.instance_id == parent_id
 
 
@@ -381,29 +425,11 @@ async def test_a_forked_child_reports_its_own_loss_even_when_it_matches_the_pare
     await sink.aclose()
 
 
-def _child_answers(check: Callable[[], bool], seconds: float = 5.0) -> bytes:
-    """What a forked child running ``check`` writes back; empty when it hangs,
-    in the fork hooks or in ``check``."""
-    read, write = os.pipe()
-    pid = os.fork()
-    if pid == 0:
-        os.write(write, b"1" if check() else b"0")
-        os._exit(0)
-    os.close(write)
-    ready, _, _ = select.select([read], [], [], seconds)
-    if not ready:
-        os.kill(pid, signal.SIGKILL)
-    os.waitpid(pid, 0)
-    answer = os.read(read, 1) if ready else b""
-    os.close(read)
-    return answer
-
-
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
 @pytest.mark.filterwarnings("ignore:This process .* is multi-threaded")
 def test_a_forked_child_never_waits_on_the_parents_sequence_lock() -> None:
     with PROCESS_SEQUENCE._lock:
-        answer = _child_answers(lambda: PROCESS_SEQUENCE.next() > 0)
+        answer = child_answers(lambda: PROCESS_SEQUENCE.next() > 0)
     assert answer == b"1"
 
 
@@ -415,5 +441,5 @@ def test_a_forked_child_never_waits_on_the_parents_uuid_lock(
     """The fallback is what Python < 3.14 runs, ``_state``'s fork hook included."""
     monkeypatch.setattr(state_module, "uuid7", uuid_module._uuid7_fallback)
     with uuid_module._lock:
-        answer = _child_answers(lambda: uuid_module._uuid7_fallback().version == 7)
+        answer = child_answers(lambda: uuid_module._uuid7_fallback().version == 7)
     assert answer == b"1"

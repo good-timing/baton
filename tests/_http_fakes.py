@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import select
+import signal
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -140,3 +143,21 @@ def pool_of(sink: HttpSink) -> FakePool:
     pool = sink._sender.pool
     assert isinstance(pool, FakePool)
     return pool
+
+
+def child_answers(check: Callable[[], bool], seconds: float = 5.0) -> bytes:
+    """What a forked child running ``check`` writes back; empty when it hangs,
+    in the fork hooks or in ``check``, so a hung child cannot hold the suite."""
+    read, write = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.write(write, b"1" if check() else b"0")
+        os._exit(0)
+    os.close(write)
+    ready, _, _ = select.select([read], [], [], seconds)
+    if not ready:
+        os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    answer = os.read(read, 1) if ready else b""
+    os.close(read)
+    return answer

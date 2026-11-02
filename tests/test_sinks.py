@@ -27,6 +27,7 @@ from baton.events import ToolCallStartEvent
 from baton.sinks import BATCH_MAX_BYTES, HttpSink, _BatchSender
 from tests._http_fakes import (
     Answer,
+    child_answers,
     fake_sink,
     hold_first,
     make_event,
@@ -1473,20 +1474,16 @@ def test_a_forked_child_starts_with_new_locks_no_pool_and_none_of_the_parents_ev
     sender = sink._sender
     sender.enqueue(make_event())
     parent = (sender.pool, sender.cond)
-    read, write = os.pipe()
-    pid = os.fork()
-    if pid == 0:
-        reset = sender.pool is None and sender.cond is not parent[1] and not sender.waiting
-        os.write(write, b"1" if reset else b"0")
-        os._exit(0)
-    os.close(write)
-    os.waitpid(pid, 0)
-    assert os.read(read, 1) == b"1"
+    answer = child_answers(
+        lambda: sender.pool is None and sender.cond is not parent[1] and not sender.waiting
+    )
+    assert answer == b"1"
     assert (sender.pool, sender.cond) == parent
     assert sender.pending() == 1
     sink._closed = True
 
 
+@pytest.mark.parametrize("hook_ran", [True, False], ids=["fork hook", "no fork hook"])
 @pytest.mark.parametrize(
     "call",
     [
@@ -1495,28 +1492,37 @@ def test_a_forked_child_starts_with_new_locks_no_pool_and_none_of_the_parents_ev
         lambda s: s.stop(),
         lambda s: s.flush_at_exit(0.05),
         lambda s: s.enqueue(make_event()),
+        lambda s: s.retire(),
     ],
-    ids=["request_flush", "stop_reports", "stop", "flush_at_exit", "enqueue"],
+    ids=["request_flush", "stop_reports", "stop", "flush_at_exit", "enqueue", "retire"],
 )
-def test_a_forked_child_never_waits_on_the_parents_lock(call: Any) -> None:
+def test_a_forked_child_never_waits_on_the_parents_lock(
+    call: Any, hook_ran: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """In a child, the parent's lock may be held by a thread the child does
-    not have: simulated by holding it here and running the fork hook."""
+    not have: simulated by holding it here. Without the fork hook, the first
+    use must reset the sender."""
     sink = fake_sink(lambda path, body: 200)
     sink._sender.enqueue(make_event())
     parents_lock = sink._sender.cond
     parents_lock.acquire()
     try:
-        sinks_module._reset_senders_in_child()
+        if hook_ran:
+            sinks_module._reset_senders_in_child()
+        else:
+            monkeypatch.setattr(sinks_module, "_pid", -1)
         worker = threading.Thread(target=call, args=(sink._sender,), daemon=True)
         worker.start()
         worker.join(timeout=2)
         assert not worker.is_alive()
     finally:
         parents_lock.release()
+    assert sink._sender.cond is not parents_lock
+    assert sinks_module._pid == os.getpid()
     sink._closed = True
 
 
-def test_a_forked_child_leaves_every_event_and_the_report_to_the_parent() -> None:
+def test_a_forked_child_leaves_events_the_report_and_unlogged_refusals_to_the_parent() -> None:
     sink = fake_sink(lambda path, body: 200)
     sender = sink._sender
     sender.enqueue(make_event(sequence_number=1))
@@ -1527,7 +1533,9 @@ def test_a_forked_child_leaves_every_event_and_the_report_to_the_parent() -> Non
     sender.enqueue(make_event(sequence_number=3))
     sender._encode_head()
     sender.report = (make_event(), b"{}", {})  # type: ignore[assignment]
+    sender.refusals = {"400": (0.0, 3)}
     sinks_module._reset_senders_in_child()
+    assert sender.refusals == {}
     assert (sender.pending(), sender.encoded, sender.encoded_bytes, sender.report) == (
         0,
         0,
@@ -1632,38 +1640,6 @@ async def test_a_forked_child_does_not_wait_on_the_parents_stalled_flush(
         assert PROCESS_DROPS.total() == {}
     finally:
         gate.set()
-
-
-@pytest.mark.parametrize(
-    "call",
-    [
-        lambda s: s.request_flush(),
-        lambda s: s.stop_reports(),
-        lambda s: s.stop(),
-        lambda s: s.flush_at_exit(0.05),
-        lambda s: s.enqueue(make_event()),
-        lambda s: s.retire(),
-    ],
-    ids=["request_flush", "stop_reports", "stop", "flush_at_exit", "enqueue", "retire"],
-)
-def test_a_child_whose_fork_hook_did_not_run_resets_on_first_use(
-    call: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    sink = fake_sink(lambda path, body: 200)
-    sink._sender.enqueue(make_event())
-    parents_lock = sink._sender.cond
-    parents_lock.acquire()
-    monkeypatch.setattr(sinks_module, "_pid", -1)
-    try:
-        worker = threading.Thread(target=call, args=(sink._sender,), daemon=True)
-        worker.start()
-        worker.join(timeout=2)
-        assert not worker.is_alive()
-    finally:
-        parents_lock.release()
-    assert sink._sender.cond is not parents_lock
-    assert sinks_module._pid == os.getpid()
-    sink._closed = True
 
 
 @pytest.mark.parametrize(
