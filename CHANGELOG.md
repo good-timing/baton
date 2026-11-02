@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.9.2: lost events are counted and reported, and blank means White_Space
 
 ### Added
 
