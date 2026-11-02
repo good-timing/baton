@@ -365,11 +365,10 @@ def _reject_a_non_host(authority: str, parts: SplitResult, safe: str) -> None:
     ⚠ **A BACKSLASH parses, and events then go nowhere.** Measured in Python
     rather than ported: ``urlsplit`` does NOT fold ``\`` into a path the way
     WHATWG does, so ``ingest.example.com\evil`` survives whole as the
-    authority, ``httpx`` keeps it whole as the HOST, and the first tool call
-    raises ``ConnectError: nodename nor servname provided``. That raise is
-    caught by ``safe_write``'s fail-open boundary and logged, so what the
-    vendor sees is an install that succeeded and a collector that never
-    receives anything — the exact outcome "loud at install" exists to prevent.
+    authority, and ``urllib3`` then cuts the host at the ``\`` and posts to a
+    path nobody typed. Every event is refused, which is logged, not raised, so
+    what the vendor sees is an install that succeeded and a collector that
+    never receives anything — the exact outcome "loud at install" exists to prevent.
 
     ⚠ **The TypeScript twin's check does not port.** There the fix asserts the
     parsed authority's ``pathname === "/"``, because WHATWG had smuggled a path
@@ -392,9 +391,9 @@ def _reject_a_non_host(authority: str, parts: SplitResult, safe: str) -> None:
     # it out of the no-``@`` branch that has the sentence for this. Nothing
     # downstream objects: the segments validate, ``origin`` becomes
     # ``https://baton_pk_...`` and rides on the config, prints through a
-    # ``repr`` this lane had just made safe, and is handed to ``httpx`` as a
-    # HOSTNAME — which puts the bearer in ``httpcore``'s connection trace at
-    # DEBUG on every attempt.
+    # ``repr`` this lane had just made safe, and is handed to ``urllib3`` as a
+    # HOSTNAME — which puts the bearer in its connection log at DEBUG on every
+    # attempt.
     #
     # So the slot refusal that guards the workspace and the server guards this
     # one too. It is the same paste error one field to the left: the userinfo
@@ -455,7 +454,7 @@ def parse_dsn(raw: str) -> Dsn:
     #         → vendor_id "srvx" — the server the key is BOUND to, silently
     #           rewritten into one nobody minted
     #
-    # ``httpx`` strips identically, so nothing downstream notices either: the
+    # The sink is handed the cleaned-up value, so nothing downstream notices: the
     # install succeeds and the events go to a host the vendor never typed, or
     # under a server name they never chose. Refused here because this is the
     # last place that can still SEE the character. It is a closed set, not a

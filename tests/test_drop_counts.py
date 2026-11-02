@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 import warnings
@@ -12,8 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast, get_args
 
-import httpx
 import pytest
+import urllib3
 from pytest_httpserver import HTTPServer
 
 from baton import AsyncClient, Client
@@ -26,37 +25,32 @@ from baton.sinks import (
     Sink,
     SinkClosedError,
     StdoutSink,
+    _BatchSender,
     build_or_none,
     safe_write,
 )
+from tests._http_fakes import Answerer, events_in, fake_sink, never_answers, pool_of
 from tests.test_sinks import _make_event
 
 
-def _http_sink(answer: Callable[[httpx.Request], Any], **kwargs: Any) -> HttpSink:
-    return HttpSink(
-        url="http://collector.example",
-        api_key="k",
-        max_retries=0,
-        _http_client=httpx.AsyncClient(transport=httpx.MockTransport(answer)),
-        **kwargs,
-    )
+def _http_sink(answer: Answerer, **kwargs: Any) -> HttpSink:
+    return fake_sink(answer, max_retries=0, **kwargs)
 
 
-def _answers(statuses: list[int]) -> Callable[[httpx.Request], httpx.Response]:
-    """Answers each event with the next status; a ``client_report`` gets 202."""
+def _answers(statuses: list[int]) -> Answerer:
+    """Answers each request holding an event with the next status; a request
+    holding only a ``client_report`` gets 202."""
     events = iter(statuses)
 
-    def answer(request: httpx.Request) -> httpx.Response:
-        if json.loads(request.content)["event_type"] == "client_report":
-            return httpx.Response(202)
-        return httpx.Response(next(events))
+    def answer(path: str, body: Any) -> int:
+        if all(e["event_type"] == "client_report" for e in events_in(path, body)):
+            return 202
+        return next(events)
 
     return answer
 
 
-async def _never_answers(request: httpx.Request) -> httpx.Response:
-    await asyncio.Event().wait()
-    raise AssertionError("unreachable")
+_never_answers = never_answers
 
 
 class _WriteRaises(Sink):
@@ -78,7 +72,7 @@ async def _buffer_full() -> None:
 
 
 async def _refused() -> None:
-    sink = _http_sink(lambda request: httpx.Response(400))
+    sink = _http_sink(lambda path, body: 400)
     await sink.write(_make_event())
     await sink.flush()
 
@@ -175,7 +169,7 @@ async def test_a_write_after_the_sink_closed_is_counted_after_close_with_one_war
     make: str, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     sinks: dict[str, Callable[[], Sink]] = {
-        "http": lambda: _http_sink(lambda request: httpx.Response(202)),
+        "http": lambda: _http_sink(lambda path, body: 202),
         "file": lambda: FileSink(tmp_path / "events.jsonl"),
         "stdout": StdoutSink,
         "multi": lambda: MultiSink([FileSink(tmp_path / "m.jsonl"), StdoutSink()]),
@@ -248,7 +242,7 @@ async def test_the_first_delivery_after_a_loss_says_what_was_lost(
 
 
 async def test_a_healthy_run_counts_and_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
-    sink = _http_sink(lambda request: httpx.Response(202))
+    sink = _http_sink(lambda path, body: 202)
     with caplog.at_level(logging.WARNING, logger="baton"):
         for _ in range(3):
             await sink.write(_make_event())
@@ -270,13 +264,13 @@ def test_the_exit_flush_warns_about_what_the_collector_did_not_take_and_counts_n
     httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
 ) -> None:
     """SPEC §11.2 rule 8: nothing can send or log a count taken at exit."""
-    httpserver.expect_request("/v0/events").respond_with_data(status=503)
-    sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+    httpserver.expect_request("/v0/events/batch").respond_with_data(status=503)
+    sink = HttpSink(url=httpserver.url_for(""), api_key="k", backoff_base_seconds=0.001)
     sink._enqueue_for_test(_make_event())
     with caplog.at_level(logging.WARNING, logger="baton"):
         sink._atexit_flush()
     assert PROCESS_DROPS.total() == {}
-    assert any("1 still buffered and lost" in m for m in caplog.messages)
+    assert any("1 event(s) still buffered and lost" in m for m in caplog.messages)
     sink._closed = True
 
 
@@ -318,7 +312,7 @@ def test_an_exit_flush_on_a_running_loop_warns_about_what_it_left(
     asyncio.run_coroutine_threadsafe(sink.write(_make_event()), loop).result(timeout=1)
     with caplog.at_level(logging.WARNING, logger="baton"):
         sink._atexit_flush()
-    assert any("1 event(s) still buffered and lost" in m for m in caplog.messages)
+    assert any("process exiting with 1 buffered event(s)" in m for m in caplog.messages)
     assert PROCESS_DROPS.total() == {}
     sink._closed = True
     loop.call_soon_threadsafe(loop.stop)
@@ -341,7 +335,7 @@ def test_a_failed_exit_flush_warns_and_counts_nothing(
     def broken(*args: Any, **kwargs: Any) -> None:
         raise RuntimeError("no network at exit")
 
-    monkeypatch.setattr(httpx, "Client", broken)
+    monkeypatch.setattr(_BatchSender, "send_inline", broken)
     sink = _http_sink(_never_answers)
     sink._enqueue_for_test(_make_event())
     with caplog.at_level(logging.WARNING, logger="baton"):
@@ -365,15 +359,13 @@ async def test_steady_loss_beside_delivery_says_so_once_a_minute(
 
 
 async def test_an_event_pushed_out_while_being_sent_does_not_cost_the_next_one() -> None:
-    posted: list[int] = []
-    gate = asyncio.Event()
+    gate = threading.Event()
 
-    async def answer(request: httpx.Request) -> httpx.Response:
-        posted.append(json.loads(request.content)["sequence_number"])
-        await gate.wait()
-        return httpx.Response(202)
+    def answer(path: str, body: Any) -> int:
+        gate.wait()
+        return 202
 
-    sink = _http_sink(answer, buffer_size=2)
+    sink = _http_sink(answer, buffer_size=2, flush_interval_seconds=0)
     for n in (1, 2, 3):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -381,5 +373,19 @@ async def test_an_event_pushed_out_while_being_sent_does_not_cost_the_next_one()
         await asyncio.sleep(0.01)  # event 1 is being sent when 3 pushes it out
     gate.set()
     await sink.aclose()
-    assert posted == [1, 2, 3]
+    events = [e for e in pool_of(sink).events() if e["event_type"] != "client_report"]
+    assert [e["sequence_number"] for e in events] == [1, 2, 3]
     assert PROCESS_DROPS.total() == {"buffer_full": 1}
+
+
+def test_a_network_failure_keeps_the_events_and_counts_nothing() -> None:
+    def down(path: str, body: Any) -> int:
+        raise urllib3.exceptions.ProtocolError("connection reset")
+
+    sink = _http_sink(down, shutdown_flush_timeout_seconds=0.2)
+    sink._enqueue_for_test(_make_event())
+    asyncio.run(sink.flush())
+    assert len(sink._buffer) == 1
+    assert PROCESS_DROPS.total() == {}
+    asyncio.run(sink.aclose())
+    assert PROCESS_DROPS.total() == {"unsent_at_close": 1}

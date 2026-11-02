@@ -70,6 +70,7 @@ def http_sink(port: int, settings: dict[str, Any] | None = None) -> HttpSink:
         request_timeout_seconds=settings["request_timeout_ms"] / 1000,
         shutdown_flush_timeout_seconds=settings["shutdown_budget_ms"] / 1000,
         backoff_base_seconds=settings["backoff_base_ms"] / 1000,
+        flush_interval_seconds=settings.get("flush_interval_ms", 5000) / 1000,
     )
 
 

@@ -10,17 +10,19 @@ import threading
 from collections.abc import Iterator
 from typing import Any
 
-import httpx
 import pytest
+import urllib3
 
 from baton._state import PROCESS_DROPS
-from baton.sinks import HttpSink
+from baton.sinks import HttpSink, _BatchSender
+from tests._http_fakes import Answer, events_in, never_answers
 from tests.test_drop_counts import _http_sink as _sink
 from tests.test_sinks import _make_event
 
 
 class _Collector:
-    """Answers events by a list of statuses, and reports with ``report_status``."""
+    """Answers a request holding events by a list of statuses, and one holding
+    only a report with ``report_status``."""
 
     def __init__(self, event_statuses: list[int], report_status: int | None = 202) -> None:
         """``report_status=None`` makes a report fail to connect."""
@@ -29,29 +31,28 @@ class _Collector:
         self.reports: list[dict[str, Any]] = []
         self.delivered = 0
 
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        if body["event_type"] == "client_report":
-            self.reports.append(body)
+    def __call__(self, path: str, body: Any) -> int | Answer:
+        events = events_in(path, body)
+        self.reports += [e for e in events if e["event_type"] == "client_report"]
+        tool_events = [e for e in events if e["event_type"] != "client_report"]
+        if not tool_events:
             if self.report_status is None:
-                raise httpx.ConnectError("down")
-            return httpx.Response(self.report_status)
+                raise urllib3.exceptions.ProtocolError("down")
+            return self.report_status
         status = next(self._event_statuses)
-        self.delivered += status == 202
-        return httpx.Response(status)
+        self.delivered += len(tool_events) if status == 202 else 0
+        return status
 
 
 async def _send(sink: HttpSink, n: int) -> None:
     for _ in range(n):
         await sink.write(_make_event())
         await sink.flush()
-        if sink._report_task is not None:
-            await sink._report_task
 
 
 @pytest.fixture
 def no_interval(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(HttpSink, "_REPORT_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(_BatchSender, "REPORT_INTERVAL_SECONDS", 0.0)
 
 
 async def test_a_delivery_after_a_loss_sends_the_totals() -> None:
@@ -141,36 +142,56 @@ async def test_no_report_starts_once_close_began(no_interval: None) -> None:
     sink = _sink(collector)
     await _send(sink, 1)
     await sink.aclose()
-    sink._maybe_report(_make_event())
-    assert sink._report_task is None
+    sink._sender._maybe_report_locked(_make_event())
+    assert sink._sender.report is None
 
 
-async def test_one_report_at_a_time_and_close_cancels_it(no_interval: None) -> None:
-    hang = asyncio.Event()
+async def test_a_report_that_hangs_holds_close_to_its_budget_and_is_not_counted(
+    no_interval: None,
+) -> None:
     statuses = iter([400, 202, 400, 202])
     reports = 0
 
-    async def answer(request: httpx.Request) -> httpx.Response:
+    def answer(path: str, body: Any) -> int:
         nonlocal reports
-        if json.loads(request.content)["event_type"] == "client_report":
+        if all(e["event_type"] == "client_report" for e in events_in(path, body)):
             reports += 1
-            await hang.wait()
-        return httpx.Response(next(statuses))
+            return never_answers(path, body)
+        return next(statuses)
 
-    sink = _sink(answer, shutdown_flush_timeout_seconds=5.0)
+    sink = _sink(answer, shutdown_flush_timeout_seconds=0.2)
     for _ in range(4):
         await sink.write(_make_event())
         await sink.flush()
-        await asyncio.sleep(0)
-    assert reports == 1
-    assert sink._report_task is not None and not sink._report_task.done()
+    assert reports == 1, "one request at a time, so the hung report holds the rest"
     loop = asyncio.get_running_loop()
     started = loop.time()
     await sink.aclose()
     assert loop.time() - started < 1.0
-    await asyncio.sleep(0)
-    assert sink._report_task.cancelled()
+    assert PROCESS_DROPS.total() == {"refused": 1, "unsent_at_close": 2}
+
+
+async def test_a_report_refused_in_the_batch_results_stops_reports(no_interval: None) -> None:
+    sent_reports = 0
+    statuses = iter(["refused", "accepted", "refused", "accepted", "accepted"])
+
+    def answer(path: str, body: Any) -> Answer:
+        nonlocal sent_reports
+        results = []
+        for event in events_in(path, body):
+            if event["event_type"] == "client_report":
+                sent_reports += 1
+                status = "refused"
+            else:
+                status = next(statuses)
+            results.append({"event_id": event["event_id"], "status": status})
+        return Answer(200, json.dumps({"results": results}).encode())
+
+    sink = _sink(answer)
+    await _send(sink, 5)
+    assert sent_reports == 1
     assert PROCESS_DROPS.total() == {"refused": 2}
+    await sink.aclose()
 
 
 def test_no_report_after_the_exit_flush(no_interval: None) -> None:

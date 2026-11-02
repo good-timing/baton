@@ -599,13 +599,6 @@ def resolve_config(config: VendorConfig) -> VendorConfig:
         vendor_display_name=config.vendor_display_name or dsn.vendor_id,
     )
 
-    # ⚠ **Validated BEFORE the sink is built, and the order is the point.**
-    # ``HttpSink.__init__`` eagerly constructs an ``httpx.AsyncClient``, so a
-    # config that fails validation for an unrelated reason — an emptied
-    # consent_token, a bad intent_param_mode — used to leave that client
-    # unreachable and never closed, printing an unclosed-transport warning on
-    # top of the real error. The callers validate again; it is pure, and a
-    # second call costs nothing next to a resource that outlives its error.
     _validate_vendor_config(identity)
 
     return replace(

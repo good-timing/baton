@@ -5,7 +5,7 @@
 #   scripts/bench.sh [OUT_DIR]
 #
 # The last release is the newest tag before HEAD; BENCH_AGAINST=X.Y.Z picks
-# another. Both sides get the same locked dependencies.
+# another. Both sides get the same locked versions of the dependencies they share.
 set -euo pipefail
 
 out="${1:-$(dirname "$0")/../bench-results}"
@@ -23,7 +23,9 @@ for side in published checkout; do
   uv venv --quiet "$work/$side"
   uv pip install --quiet --python "$work/$side" -r "$work/requirements.txt"
 done
-uv pip install --quiet --python "$work/published" --no-deps "baton-sdk==$against"
+# Resolved within the lock, so a dependency the release has and the checkout
+# dropped (0.9.3's httpx) is installed for it alone.
+uv pip install --quiet --python "$work/published" -c "$work/requirements.txt" "baton-sdk==$against"
 uv pip install --quiet --python "$work/checkout" --no-deps .
 
 for n in $(seq "$repeats"); do

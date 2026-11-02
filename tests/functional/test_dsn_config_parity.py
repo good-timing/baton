@@ -43,11 +43,11 @@ def collector(httpserver: HTTPServer) -> tuple[HTTPServer, list[dict[str, Any]],
     bearers: list[str] = []
 
     def _handler(req: Request) -> Response:
-        events.append(json.loads(req.data.decode("utf-8")))
+        events.extend(json.loads(req.data.decode("utf-8"))["events"])
         bearers.append(req.headers.get("Authorization", ""))
         return Response("", status=204)
 
-    httpserver.expect_request("/v0/events", method="POST").respond_with_handler(_handler)
+    httpserver.expect_request("/v0/events/batch", method="POST").respond_with_handler(_handler)
     return httpserver, events, bearers
 
 
@@ -179,7 +179,7 @@ async def test_the_sink_posts_to_the_dsns_origin_with_its_key(
     second thing the customer wires up.
 
     The path the request arrived on is asserted by the collector's own route —
-    ``/v0/events`` and nothing else is registered, so a parser that folded the
+    ``/v0/events/batch`` and nothing else is registered, so a parser that folded the
     workspace and server segments into the origin would 500 here rather than
     quietly pass.
     """

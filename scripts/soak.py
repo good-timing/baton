@@ -40,7 +40,6 @@ from baton.sinks import HttpSink  # noqa: E402
 from tests.perf.harness import FakeCollector, mcp_session, median, percentile  # noqa: E402
 
 logging.getLogger("baton").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("mcp").setLevel(logging.WARNING)
 
 

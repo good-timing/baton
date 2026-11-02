@@ -57,5 +57,5 @@ install_baton(
 )
 ```
 
-`baton-sdk` depends on `pydantic`, `anyio` and `httpx`, and uses the `fastmcp`
+`baton-sdk` depends on `pydantic`, `anyio`, `urllib3` and `certifi`, and uses the `fastmcp`
 your server already has.

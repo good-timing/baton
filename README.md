@@ -12,7 +12,7 @@ MCP standardizes how agents discover and call your tools. It does not capture *w
 pip install baton-sdk
 ```
 
-One line for both integration paths. It installs `pydantic`, `anyio` and `httpx`, and wraps the `mcp` or `fastmcp` your server already has.
+One line for both integration paths. It installs `pydantic`, `anyio`, `urllib3` and `certifi`, and wraps the `mcp` or `fastmcp` your server already has.
 
 ## Quickstart
 

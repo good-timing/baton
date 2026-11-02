@@ -5,16 +5,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
-import httpx
 import pytest
 
 import baton.client as client_module
 import baton.sinks as sinks_module
 from baton import AsyncClient, Client
+from baton._state import PROCESS_DROPS
 from baton.events import Event
 from baton.integrations._handle import BatonHandle
 from baton.sinks import (
@@ -25,6 +26,7 @@ from baton.sinks import (
     bounded_sink_call,
     shutdown_budget_seconds,
 )
+from tests._http_fakes import RELEASE, fake_sink, never_answers, pool_of
 from tests.test_sinks import _make_event
 
 
@@ -147,8 +149,7 @@ class TestHttpSinkOnACollectorThatNeverAnswers:
             await sink.flush()
             assert time.monotonic() - second < 0.05
             await sink.aclose()
-        await asyncio.sleep(0)
-        assert sink._drain_task is not None and sink._drain_task.done()
+        assert sink._sender.stopping
         messages = [r.getMessage() for r in caplog.records]
         assert sum("goes on in the background" in m for m in messages) == 1
         assert [m for m in messages if "flush() skipped" in m] == [
@@ -169,63 +170,55 @@ class TestHttpSinkOnACollectorThatNeverAnswers:
         assert sum("closed with" in r.getMessage() for r in caplog.records) == 1
 
     async def test_flush_waits_again_once_the_stalled_drain_has_finished(self) -> None:
-        release = asyncio.Event()
-        posted: list[httpx.Request] = []
+        release = threading.Event()
+        answered = 0
 
-        async def handler(request: httpx.Request) -> httpx.Response:
-            posted.append(request)
-            if len(posted) == 1:
-                await release.wait()
-            return httpx.Response(202)
+        def answer(path: str, body: Any) -> int:
+            nonlocal answered
+            answered += 1
+            if answered == 1:
+                release.wait()
+            return 200
 
-        sink = HttpSink(
-            url="http://collector.example",
-            api_key="k",
-            shutdown_flush_timeout_seconds=0.05,
-            _http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-        )
+        sink = fake_sink(answer, shutdown_flush_timeout_seconds=0.05)
         await sink.write(_make_event())
         await sink.flush()
         release.set()
-        for _ in range(100):
-            if sink._stalled_drain is None:
-                break
-            await asyncio.sleep(0.01)
+        await _until_unstalled(sink)
         await sink.write(_make_event(sequence_number=2))
         await sink.flush()
         assert len(sink._buffer) == 0
         await sink.aclose()
 
 
+async def _until_unstalled(sink: HttpSink) -> None:
+    for _ in range(100):
+        if sink._stalled is None or sink._stalled.done():
+            return
+        await asyncio.sleep(0.01)
+
+
 async def test_each_stall_warns_once_when_a_flush_is_skipped(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    first_answer = asyncio.Event()
-    posted: list[httpx.Request] = []
+    first_answer = threading.Event()
+    answered = 0
 
-    async def handler(request: httpx.Request) -> httpx.Response:
-        posted.append(request)
-        if len(posted) == 1:
-            await first_answer.wait()
-            return httpx.Response(202)
-        await asyncio.Event().wait()
-        raise AssertionError("unreachable")
+    def answer(path: str, body: Any) -> int:
+        nonlocal answered
+        answered += 1
+        if answered == 1:
+            first_answer.wait()
+            return 200
+        return never_answers(path, body)
 
-    sink = HttpSink(
-        url="http://collector.example",
-        api_key="k",
-        shutdown_flush_timeout_seconds=0.05,
-        _http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-    )
+    sink = fake_sink(answer, shutdown_flush_timeout_seconds=0.05)
     with caplog.at_level(logging.WARNING, logger="baton"):
         await sink.write(_make_event())
         await sink.flush()
         await sink.flush()
         first_answer.set()
-        for _ in range(100):
-            if sink._stalled_drain is None:
-                break
-            await asyncio.sleep(0.01)
+        await _until_unstalled(sink)
         await sink.write(_make_event(sequence_number=2))
         await sink.flush()
         await sink.flush()
@@ -285,15 +278,16 @@ def test_the_sync_client_close_reports_what_a_stuck_http_sink_left_unsent(
     )
 
 
-async def test_aclose_stops_every_drain_left_running(stuck_sink: HttpSink) -> None:
-    # Buffered without write(), so the first flush's own drain holds the request.
-    stuck_sink._enqueue_for_test(_make_event())
-    await asyncio.gather(stuck_sink.flush(), stuck_sink.flush())
-    drains = set(stuck_sink._open_drains)
-    assert len(drains) == 2
+async def test_aclose_stops_the_sending_thread(stuck_sink: HttpSink) -> None:
+    await stuck_sink.write(_make_event())
+    await stuck_sink.flush()
+    thread = stuck_sink._sender.thread
+    assert thread is not None and thread.is_alive()
     await stuck_sink.aclose()
-    await asyncio.sleep(0)
-    assert all(d.done() for d in drains)
+    RELEASE.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert len(pool_of(stuck_sink).requests) == 1, "no retry starts after close"
 
 
 async def test_a_close_cancelled_from_outside_is_finished_by_the_next_aclose(
@@ -343,7 +337,7 @@ async def test_the_exit_flush_gives_a_stuck_drain_its_budget(stuck_sink: HttpSin
     await stuck_sink.write(_make_event())
     await stuck_sink.flush()
     started = time.monotonic()
-    await stuck_sink._flush_at_exit()
+    stuck_sink._atexit_flush()
     assert time.monotonic() - started >= 0.09
     await stuck_sink.aclose()
 
@@ -356,15 +350,11 @@ def test_a_multisink_that_holds_itself_gets_the_default_budget() -> None:
 
 
 def _stuck_http_sink(budget: float, sink_type: type[HttpSink] = HttpSink) -> HttpSink:
-    async def never_answers(request: httpx.Request) -> httpx.Response:
-        await asyncio.Event().wait()
-        raise AssertionError("unreachable")
-
     return sink_type(
         url="http://collector.example",
         api_key="k",
         shutdown_flush_timeout_seconds=budget,
-        _http_client=httpx.AsyncClient(transport=httpx.MockTransport(never_answers)),
+        _http_client=fake_sink(never_answers)._http_client,
     )
 
 
@@ -502,22 +492,15 @@ def test_a_stuck_write_leaves_our_http_sink_the_time_left_and_its_count(
 
 
 def test_close_after_a_flush_that_gave_up_gives_the_drain_the_time_left() -> None:
-    sent: list[httpx.Request] = []
+    def slow(path: str, body: Any) -> int:
+        time.sleep(0.4)
+        return 200
 
-    async def slow(request: httpx.Request) -> httpx.Response:
-        await asyncio.sleep(0.2)
-        sent.append(request)
-        return httpx.Response(202)
-
-    sink = HttpSink(
-        url="http://collector.example",
-        api_key="k",
-        shutdown_flush_timeout_seconds=0.3,
-        _http_client=httpx.AsyncClient(transport=httpx.MockTransport(slow)),
-    )
+    sink = fake_sink(slow, shutdown_flush_timeout_seconds=0.3)
     client = Client(sink=sink, vendor_id="v")
     with client.trace(tool_name="t") as trace:
         trace.observed(result="ok")
     client.flush()
     client.close()
-    assert len(sent) == 2
+    assert len(pool_of(sink).events()) == 2
+    assert PROCESS_DROPS.total() == {}

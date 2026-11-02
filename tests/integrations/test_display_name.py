@@ -54,7 +54,7 @@ ONE_PAST = THIRTY.ljust(1352, "s")
 def dsn(httpserver: HTTPServer) -> str:
     """A DSN whose collector answers, so anything written while the surface is
     listed is accepted rather than retried with backoff."""
-    httpserver.expect_request("/v0/events", method="POST").respond_with_response(
+    httpserver.expect_request("/v0/events/batch", method="POST").respond_with_response(
         Response(status=202)
     )
     origin = httpserver.url_for("").rstrip("/")

@@ -9,8 +9,8 @@ Four sinks ship in core:
 - ``StdoutSink`` — JSONL to a file-like (default stderr). Zero config; useful
   for local development and the zero-dependency examples.
 - ``FileSink`` — JSONL append to a path.
-- ``HttpSink`` — POST to any HTTP endpoint with bearer auth; bounded buffer,
-  retry, circuit breaker. This is the contract a Console or any compatible
+- ``HttpSink`` — POST batches to any HTTP endpoint with bearer auth, from its
+  own thread; bounded buffer, retry, circuit breaker. This is the contract a Console or any compatible
   collector consumes.
 - ``MultiSink`` — fan out to a list of sinks.
 
@@ -24,13 +24,18 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import concurrent.futures
 import inspect
+import itertools
 import json
 import logging
 import math
+import os
 import sys
 import threading
 import unicodedata
+import urllib.parse
+import urllib.request
 import warnings
 import weakref
 from abc import ABC, abstractmethod
@@ -46,25 +51,20 @@ from baton._state import PROCESS_DROPS, PROCESS_SEQUENCE
 from baton.events import ClientReportEvent, ClientReportPayload, Event
 
 if TYPE_CHECKING:
-    import httpx
+    import urllib3
 
 
-def _require_httpx() -> Any:
-    """Import httpx or raise a pointed install hint.
-
-    httpx is a core dependency, imported here rather than at module scope so
-    ``import baton`` does not load it when no ``HttpSink`` is built. httpx (not
-    urllib) because the SDK emits from inside the event loop, where a blocking
-    client would stall it.
-    """
+def _require_urllib3() -> Any:
+    """Imported on first use, so ``import baton`` does not load it when no
+    ``HttpSink`` is built."""
     try:
-        import httpx
+        import urllib3
     except ImportError as e:  # pragma: no cover - a broken install
         raise ImportError(
-            "HttpSink needs httpx, which baton-sdk depends on, and this "
+            "HttpSink needs urllib3, which baton-sdk depends on, and this "
             "environment does not have it. Reinstall with: pip install baton-sdk"
         ) from e
-    return httpx
+    return urllib3
 
 
 class SinkClosedError(RuntimeError):
@@ -306,6 +306,11 @@ class _CircuitBreaker:
         self._failures = 0
         self._opened_at = None
 
+    def seconds_until_retry(self) -> float:
+        if self._opened_at is None:
+            return 0.0
+        return max(0.0, self._opened_at + self._reset_seconds - monotonic())
+
     def record_failure(self) -> None:
         self._failures += 1
         if self._failures >= self._threshold:
@@ -417,17 +422,654 @@ def _escape_for_log(text: str) -> str:
     )
 
 
+#: SPEC §2.5's caps on one batch.
+BATCH_MAX_EVENTS = 100
+BATCH_MAX_BYTES = 1_048_576
+#: SPEC §11.2 rule 4: how long the oldest waiting event waits for a batch to fill.
+FLUSH_INTERVAL_SECONDS = 5.0
+
+_BATCH_OPEN = b'{"events":['
+_BATCH_CLOSE = b"]}"
+_BATCH_PATH = "/v0/events/batch"
+_SINGLE_PATH = "/v0/events"
+#: A longer ``Retry-After`` is cut to this, so one header cannot stop delivery
+#: while the buffer fills and drops.
+_RETRY_AFTER_MAX_SECONDS = 60.0
+
+
+def _encode(event: Event) -> bytes:
+    return json.dumps(
+        event.model_dump(mode="json"), separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode("utf-8")
+
+
+def _batch_body(part: list[tuple[Event, bytes]]) -> bytes:
+    return _BATCH_OPEN + b",".join(body for _, body in part) + _BATCH_CLOSE
+
+
+def _retry_after_seconds(headers: Any) -> float | None:
+    """Seconds from a ``Retry-After`` header, or None when it is absent or an
+    HTTP date, which then gets the ordinary backoff."""
+    try:
+        seconds = float(headers.get("Retry-After"))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    return min(seconds, _RETRY_AFTER_MAX_SECONDS)
+
+
+def _text_of(data: bytes) -> str:
+    return data.decode("utf-8", errors="replace")
+
+
+def _set_once(future: asyncio.Future[None]) -> None:
+    if not future.done():
+        future.set_result(None)
+
+
+async def _wait_for_thread(done: concurrent.futures.Future[None], seconds: float) -> bool:
+    """Waits up to ``seconds`` for the sending thread to resolve ``done``,
+    without blocking the event loop. True when it did."""
+    if done.done():
+        return True
+    loop = asyncio.get_running_loop()
+    woke: asyncio.Future[None] = loop.create_future()
+
+    def wake(_: concurrent.futures.Future[None]) -> None:
+        try:
+            loop.call_soon_threadsafe(_set_once, woke)
+        except RuntimeError:
+            pass  # the loop closed before the thread finished
+
+    done.add_done_callback(wake)
+    await asyncio.wait({woke}, timeout=seconds)
+    return woke.done()
+
+
+def _proxy_for(url: str) -> str | None:
+    parts = urllib.parse.urlsplit(url)
+    proxy = urllib.request.getproxies().get(parts.scheme)
+    if not proxy or urllib.request.proxy_bypass(parts.hostname or ""):
+        return None
+    return proxy
+
+
+def _pool_for(url: str) -> Any:
+    urllib3 = _require_urllib3()
+    import certifi
+
+    options: dict[str, Any] = {
+        "maxsize": 1,
+        "retries": False,
+        "cert_reqs": "CERT_REQUIRED",
+        "ca_certs": certifi.where(),
+    }
+    proxy = _proxy_for(url)
+    if proxy is not None:
+        return urllib3.ProxyManager(proxy, **options)
+    return urllib3.PoolManager(**options)
+
+
+class _BatchSender:
+    """The part of ``HttpSink`` its sending thread runs. It holds no reference
+    to the sink, so a sink nobody closes can still be garbage collected."""
+
+    REFUSAL_BODY_MAX_LEN = 500
+    """Cap, in code points of the raw text before escaping, on the collector's
+    refusal text copied into the vendor's log: it is a remote server's text."""
+    REFUSAL_LOG_SECONDS = 60.0
+    """Per status, so a collector refusing every event is not one warning per event."""
+    REPORT_INTERVAL_SECONDS = 60.0
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        pool: Any,
+        buffer_size: int,
+        request_timeout: float,
+        max_retries: int,
+        backoff_base: float,
+        backoff_max: float,
+        circuit: _CircuitBreaker,
+        flush_interval: float,
+    ) -> None:
+        self.base_url = base_url
+        self.headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        self.pool = pool
+        self.request_timeout = request_timeout
+        self.max_retries = max_retries
+        self.backoff_base = backoff_base
+        self.backoff_max = backoff_max
+        self.circuit = circuit
+        self.flush_interval = max(0.0, flush_interval)
+        self.buffer: deque[Event] = deque(maxlen=buffer_size)
+        self.recorded_at: deque[float] = deque(maxlen=buffer_size)
+        # By id(): an event is alive while it is in the buffer, and leaves this
+        # dict when it leaves the buffer, so an id is never reused here.
+        self.encoded: dict[int, bytes] = {}
+        self.overflow_warned = False
+        self.one_per_request = False
+        self.stopping = False
+        self.retiring = False
+        self.retry_at = -math.inf
+        self.not_before = -math.inf
+        self.flushes: list[concurrent.futures.Future[None]] = []
+        self.report: tuple[ClientReportEvent, bytes, dict[str, int]] | None = None
+        self.report_at = -math.inf
+        self.reported: dict[str, int] = {}
+        self.reports_stopped = False
+        self.refusals: dict[str, tuple[float, int]] = {}
+        self.thread: threading.Thread | None = None
+        self.exit_hook: Callable[[], None] | None = None
+        self._new_locks()
+
+    def _new_locks(self) -> None:
+        self.pid = os.getpid()
+        self.cond = threading.Condition()
+        self.stopped = threading.Event()
+        self.refusals_lock = threading.Lock()
+
+    def _after_fork(self) -> None:
+        # The parent's thread is gone, and it may have held these locks.
+        self._new_locks()
+        self.thread = None
+        self.flushes = []
+
+    # ---- called from the vendor's side ---------------------------------
+
+    def enqueue(self, event: Event) -> None:
+        if self.pid != os.getpid():
+            self._after_fork()
+        with self.cond:
+            assert self.buffer.maxlen is not None
+            if len(self.buffer) >= self.buffer.maxlen:
+                if not self.overflow_warned:
+                    warnings.warn(
+                        f"Baton HTTP sink buffer full ({self.buffer.maxlen}); "
+                        "oldest events dropped. Further overflows will be silent.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+                    self.overflow_warned = True
+                # After the warning: one promoted to an error drops this event
+                # instead, and safe_write counts that.
+                PROCESS_DROPS.add("buffer_full")
+                self.encoded.pop(id(self.buffer.popleft()), None)
+                self.recorded_at.popleft()
+            self.buffer.append(event)
+            self.recorded_at.append(monotonic())
+            self.cond.notify()
+
+    def thread_alive(self) -> bool:
+        return self.pid == os.getpid() and self.thread is not None and self.thread.is_alive()
+
+    def ensure_running(self) -> None:
+        if self.pid != os.getpid():
+            self._after_fork()
+        if self.thread is not None and self.thread.is_alive():
+            return
+        with self.cond:
+            if self.stopping or (self.thread is not None and self.thread.is_alive()):
+                return
+            self.thread = threading.Thread(target=self._run, name="baton-http-sink", daemon=True)
+            self.thread.start()
+
+    def request_flush(self) -> concurrent.futures.Future[None]:
+        done: concurrent.futures.Future[None] = concurrent.futures.Future()
+        with self.cond:
+            if self.stopping or (not self.buffer and self.report is None):
+                done.set_result(None)
+            else:
+                self.flushes.append(done)
+                self.cond.notify()
+        return done
+
+    def stop_reports(self) -> None:
+        with self.cond:
+            self.reports_stopped = True
+            self.report = None
+
+    def stop(self) -> int:
+        """Stops the thread after its current request; answers how many
+        events it leaves unsent."""
+        with self.cond:
+            self.stopping = True
+            left = len(self.buffer)
+            self.buffer.clear()
+            self.recorded_at.clear()
+            self.encoded.clear()
+            self.report = None
+            self._finish_flushes_locked()
+            self.cond.notify_all()
+        self.stopped.set()
+        return left
+
+    def retire(self) -> None:
+        """The sink was garbage collected: send what is left, then end the thread."""
+        with self.cond:
+            self.retiring = True
+            self.cond.notify_all()
+
+    # ---- the sending thread --------------------------------------------
+
+    def _run(self) -> None:
+        while True:
+            self._encode_waiting()
+            with self.cond:
+                if self.stopping:
+                    return
+                now = monotonic()
+                if self.retiring and not self.buffer and self.report is None:
+                    if self.exit_hook is not None:
+                        atexit.unregister(self.exit_hook)
+                    return
+                wait = self._seconds_until_due_locked(now)
+                if wait is None or wait > 0:
+                    self.cond.wait(wait)
+                    continue
+                batch = self._take_batch_locked()
+            if batch:
+                self._send_guarded(batch, deadline=None)
+
+    def flush_at_exit(self, budget: float) -> None:
+        """The sending thread is a daemon, and daemon threads still run while
+        atexit hooks do, so it is asked to send and given the budget. With no
+        thread alive (never started, or lost to a fork) the caller sends.
+        Events left then are warned about, not counted (SPEC §11.2 rule 8).
+        SIGKILL, or SIGTERM with no handler, skips atexit entirely."""
+        self.stop_reports()
+        try:
+            self._flush_buffered_at_exit(budget)
+        finally:
+            self.log_unwarned_refusals("process exiting")
+
+    def _flush_buffered_at_exit(self, budget: float) -> None:
+        if not self.buffer:
+            return
+        log = logging.getLogger("baton")
+        if not self.circuit.can_request():
+            log.warning(
+                "baton: process exiting with %d buffered event(s); "
+                "circuit breaker open, skipping shutdown flush",
+                len(self.buffer),
+            )
+            return
+        try:
+            if self.thread_alive():
+                self.request_flush().result(timeout=budget)
+            else:
+                self.send_inline(monotonic() + budget)
+        except TimeoutError:
+            pass
+        except Exception:
+            log.exception(
+                "baton: best-effort shutdown flush failed; %d event(s) still buffered and lost",
+                len(self.buffer),
+            )
+            return
+        if self.buffer:
+            log.warning(
+                "baton: process exiting without sink.aclose(); %d event(s) still buffered and lost",
+                len(self.buffer),
+            )
+
+    def send_inline(self, deadline: float) -> None:
+        """Sends on the calling thread until ``deadline``, for an exit with no
+        sending thread alive."""
+        while monotonic() < deadline:
+            self._encode_waiting()
+            with self.cond:
+                if self.stopping or not self.circuit.can_request() or self.not_before > monotonic():
+                    return
+                batch = self._take_batch_locked()
+            if not batch or not self._send_guarded(batch, deadline):
+                return
+
+    def _send_guarded(self, batch: list[tuple[Event, bytes]], deadline: float | None) -> bool:
+        try:
+            return self._send(batch, deadline)
+        except Exception:
+            # Not the event's fault (a bad URL or key, say), so it is kept.
+            logging.getLogger("baton").warning("baton: sending events failed", exc_info=True)
+            self._failed()
+            return False
+
+    def _seconds_until_due_locked(self, now: float) -> float | None:
+        """0 to send now, else how long to wait; None waits for a write."""
+        if not self.buffer and self.report is None:
+            self._finish_flushes_locked()
+            return None
+        if not self.circuit.can_request():
+            self._finish_flushes_locked()
+            return self.circuit.seconds_until_retry()
+        if self.not_before > now:
+            self._finish_flushes_locked()
+            return self.not_before - now
+        if self.flushes or self.retiring:
+            return 0.0
+        if self.retry_at > now:
+            return self.retry_at - now
+        if len(self.buffer) >= BATCH_MAX_EVENTS or self._over_byte_cap_locked():
+            return 0.0
+        oldest = self.recorded_at[0] if self.recorded_at else math.inf
+        if self.report is not None:
+            oldest = min(oldest, self.report_at)
+        return max(0.0, oldest + self.flush_interval - now)
+
+    def _over_byte_cap_locked(self) -> bool:
+        size = len(_BATCH_OPEN) + len(_BATCH_CLOSE) - 1
+        for event in itertools.islice(self.buffer, BATCH_MAX_EVENTS):
+            body = self.encoded.get(id(event))
+            if body is None:
+                return False
+            size += len(body) + 1
+            if size > BATCH_MAX_BYTES:
+                return True
+        return False
+
+    def _finish_flushes_locked(self) -> None:
+        for done in self.flushes:
+            if not done.done():
+                done.set_result(None)
+        self.flushes = []
+
+    def _encode_waiting(self) -> None:
+        with self.cond:
+            todo = [
+                e
+                for e in itertools.islice(self.buffer, BATCH_MAX_EVENTS)
+                if id(e) not in self.encoded
+            ]
+        if not todo:
+            return
+        bodies: list[tuple[Event, bytes | None]] = []
+        failed: list[tuple[Event, Exception]] = []
+        for event in todo:
+            try:
+                bodies.append((event, _encode(event)))
+            except Exception as exc:
+                bodies.append((event, None))
+                failed.append((event, exc))
+        dropped: list[tuple[Event, Exception]] = []
+        with self.cond:
+            for event, body in bodies:
+                index = next((i for i, e in enumerate(self.buffer) if e is event), None)
+                if index is None:
+                    continue
+                if body is not None:
+                    self.encoded[id(event)] = body
+                    continue
+                del self.buffer[index]
+                del self.recorded_at[index]
+                PROCESS_DROPS.add("encode_failed")
+                dropped.extend((e, x) for e, x in failed if e is event)
+        for event, error in dropped:
+            # Only the exception TYPE: its message can quote the event's own text.
+            logging.getLogger("baton").warning(
+                "baton: a %s event could not be encoded and has been dropped (%s) "
+                "— the event is gone; the events after it are still sent.",
+                event.event_type,
+                type(error).__name__,
+            )
+
+    def _take_batch_locked(self) -> list[tuple[Event, bytes]]:
+        """The next batch from the front of the buffer, within SPEC §2.5's caps
+        and with one ``tenant_id`` and ``vendor_id``, which §2.5 requires."""
+        batch: list[tuple[Event, bytes]] = []
+        size = len(_BATCH_OPEN) + len(_BATCH_CLOSE) - 1
+        owner: tuple[str, str] | None = None
+
+        def fits(event: Event, body: bytes) -> bool:
+            if not batch:
+                return True
+            return (event.tenant_id, event.vendor_id) == owner and (
+                size + len(body) + 1 <= BATCH_MAX_BYTES
+            )
+
+        for event in itertools.islice(self.buffer, BATCH_MAX_EVENTS):
+            body = self.encoded.get(id(event))
+            if body is None or not fits(event, body):
+                break
+            owner = (event.tenant_id, event.vendor_id)
+            size += len(body) + 1
+            batch.append((event, body))
+        if self.report is not None and len(batch) < BATCH_MAX_EVENTS:
+            report, body, _ = self.report
+            if fits(report, body):
+                batch.append((report, body))
+        return batch
+
+    def _send(self, batch: list[tuple[Event, bytes]], deadline: float | None) -> bool:
+        """True when every event in ``batch`` was delivered or lost; False when
+        some are kept for a later try."""
+        parts = [batch]
+        while parts:
+            part = parts.pop(0)
+            if self.one_per_request:
+                if not self._send_one_per_request(part, deadline):
+                    return False
+                continue
+            answer = self._post(_BATCH_PATH, _batch_body(part), deadline)
+            if answer is None:
+                return False
+            status, data = answer
+            if status in (404, 405):
+                self.one_per_request = True
+                logging.getLogger("baton").info(
+                    "baton: the collector has no batch endpoint; sending one event per request."
+                )
+                parts.insert(0, part)
+            elif status == 413 and len(part) > 1:
+                half = len(part) // 2
+                parts[0:0] = [part[:half], part[half:]]
+            elif 200 <= status < 300:
+                self._settle(_per_event_results(part, data), "200", report_refusal_stops=True)
+            else:
+                text = _text_of(data)
+                self._settle(
+                    [(e, text) for e, _ in part],
+                    str(status),
+                    report_refusal_stops=status in (400, 422),
+                )
+        return True
+
+    def _send_one_per_request(
+        self, part: list[tuple[Event, bytes]], deadline: float | None
+    ) -> bool:
+        for event, body in part:
+            answer = self._post(_SINGLE_PATH, body, deadline)
+            if answer is None:
+                return False
+            status, data = answer
+            refusal = None if 200 <= status < 300 else _text_of(data)
+            self._settle([(event, refusal)], str(status), report_refusal_stops=status in (400, 422))
+        return True
+
+    def _post(self, path: str, body: bytes, deadline: float | None) -> tuple[int, bytes] | None:
+        """The collector's final answer, or None when the events are kept: a
+        5xx, 429 or network failure after the retries, or a ``Retry-After``."""
+        urllib3 = _require_urllib3()
+        for attempt in range(self.max_retries + 1):
+            timeout = self.request_timeout
+            if deadline is not None:
+                timeout = min(timeout, deadline - monotonic())
+                if timeout <= 0:
+                    return None
+            try:
+                response = self.pool.urlopen(
+                    "POST",
+                    self.base_url + path,
+                    body=body,
+                    headers=self.headers,
+                    timeout=urllib3.Timeout(total=timeout),
+                    retries=False,
+                    redirect=False,
+                )
+            except urllib3.exceptions.HTTPError:
+                pass
+            else:
+                status = response.status
+                if status == 429:
+                    wait = _retry_after_seconds(response.headers)
+                    if wait is not None:
+                        # The endpoint answered, so the circuit is not told.
+                        with self.cond:
+                            self.not_before = monotonic() + wait
+                            self._finish_flushes_locked()
+                        return None
+                elif 200 <= status < 300 or 400 <= status < 500:
+                    # A 4xx proves the endpoint is alive: opening the circuit
+                    # would stop the good events too.
+                    self.circuit.record_success()
+                    return status, response.data
+            if attempt < self.max_retries:
+                backoff = min(self.backoff_base * (2**attempt), self.backoff_max)
+                if deadline is not None:
+                    backoff = min(backoff, max(0.0, deadline - monotonic()))
+                if self.stopped.wait(backoff):
+                    return None
+        self._failed()
+        return None
+
+    def _failed(self) -> None:
+        self.circuit.record_failure()
+        with self.cond:
+            self.retry_at = monotonic() + self.flush_interval
+            self._finish_flushes_locked()
+
+    def _settle(
+        self, outcomes: list[tuple[Event, str | None]], label: str, *, report_refusal_stops: bool
+    ) -> None:
+        """Takes answered events out of the buffer. An outcome's text is None
+        for a delivered event, else what the collector said refusing it."""
+        refused: list[str] = []
+        delivered: Event | None = None
+        with self.cond:
+            if self.stopping:
+                return
+            for event, refusal in outcomes:
+                if self.report is not None and self.report[0] is event:
+                    if refusal is None:
+                        self.reported = self.report[2]
+                    elif report_refusal_stops:
+                        self.reports_stopped = True
+                    self.report = None
+                    continue
+                # A full buffer may already have pushed it out, and counted it.
+                if not self.buffer or self.buffer[0] is not event:
+                    continue
+                self.buffer.popleft()
+                self.recorded_at.popleft()
+                self.encoded.pop(id(event), None)
+                if refusal is None:
+                    delivered = event
+                else:
+                    refused.append(refusal)
+            if refused:
+                PROCESS_DROPS.add("refused", len(refused))
+            if delivered is not None:
+                self._maybe_report_locked(delivered)
+        if refused:
+            self._log_refusal(label, refused[0], len(refused))
+        if delivered is not None:
+            PROCESS_DROPS.log_recovery()
+
+    def _maybe_report_locked(self, delivered: Event) -> None:
+        """Queues a report of this process's loss totals (SPEC §11.4.7) for the
+        next batch. It is kept outside the buffer, so it never pushes out an
+        event and is never counted as one."""
+        now = monotonic()
+        if (
+            self.reports_stopped
+            or self.report is not None
+            or now - self.report_at < self.REPORT_INTERVAL_SECONDS
+        ):
+            return
+        totals: dict[str, int] = {reason: n for reason, n in PROCESS_DROPS.total().items()}
+        if totals == self.reported:
+            return
+        try:
+            report = ClientReportEvent(
+                tenant_id=delivered.tenant_id,
+                vendor_id=delivered.vendor_id,
+                consent_token=delivered.consent_token,
+                session_id=str(PROCESS_DROPS.instance_id),
+                sequence_number=PROCESS_SEQUENCE.next(),
+                captured_at=datetime.now(UTC),
+                payload=ClientReportPayload(instance_id=PROCESS_DROPS.instance_id, dropped=totals),
+            )
+            body = _encode(report)
+        except Exception:
+            return
+        self.report_at = now
+        self.report = (report, body, totals)
+
+    def _log_refusal(self, label: str, detail: str, count: int) -> None:
+        """A refused event is otherwise dropped silently, which looks the same
+        from the vendor's process as an accepted one. The collector's text is
+        logged because it names the field at fault."""
+        now = monotonic()
+        with self.refusals_lock:
+            logged_at, unlogged = self.refusals.get(label, (-math.inf, 0))
+            if now - logged_at < self.REFUSAL_LOG_SECONDS:
+                self.refusals[label] = (logged_at, unlogged + count)
+                return
+            self.refusals[label] = (now, 0)
+        logging.getLogger("baton").warning(
+            "baton: collector REFUSED %s (HTTP %s): %s — the event is gone; "
+            "nothing retries a refusal.%s",
+            "an event and it has been dropped"
+            if count == 1
+            else f"{count} events and they have been dropped",
+            label,
+            _escape_for_log(detail[: self.REFUSAL_BODY_MAX_LEN]),
+            f" {unlogged} more refused since the last such warning." if unlogged else "",
+        )
+
+    def log_unwarned_refusals(self, when: str) -> None:
+        with self.refusals_lock:
+            unlogged = sum(n for _, n in self.refusals.values())
+            self.refusals = {label: (at, 0) for label, (at, _) in self.refusals.items()}
+        if unlogged:
+            logging.getLogger("baton").warning(
+                "baton: %s; %d more event(s) refused since the last such warning.",
+                when,
+                unlogged,
+            )
+
+
+def _per_event_results(
+    part: list[tuple[Event, bytes]], data: bytes
+) -> list[tuple[Event, str | None]]:
+    """SPEC §2.5's results, matched by ``event_id``. An event the answer does
+    not name was taken: the collector answered 2xx."""
+    refusals: dict[str, str] = {}
+    try:
+        for result in json.loads(data)["results"]:
+            if result.get("status") == "refused":
+                error = result.get("error") or {}
+                refusals[str(result["event_id"])] = (
+                    f"{error.get('code', 'refused')}: {error.get('message', '')}"
+                )
+    except Exception:
+        pass
+    return [(event, refusals.get(str(event.event_id))) for event, _ in part]
+
+
 class HttpSink(Sink):
-    """POST events to an HTTP endpoint. Bounded buffer + retry + circuit breaker.
+    """POSTs events to a collector in batches (SPEC §2.5): ``POST
+    {url}/v0/events/batch`` with ``Authorization: Bearer {api_key}`` and a body
+    ``{"events": [...]}``.
 
-    This is the contract a Console or any compatible collector consumes:
-    ``POST {url}/v0/events`` with ``Authorization: Bearer {api_key}`` and a
-    JSON body matching the SPEC §11.4 envelope.
-
-    Failures are bounded — buffer overflow drops oldest events (with one
-    ``UserWarning``); network failures retry with backoff; circuit breaker
-    opens after consecutive failures so the SDK doesn't pile retries on a
-    known-bad endpoint.
+    ``write()`` only queues the event. A daemon thread owned by the sink sends:
+    when 100 events wait, when the next would take the body over 1 MiB, or
+    ``flush_interval_seconds`` after the oldest waiting event was written. One
+    request at a time. The queue is bounded and drops the oldest event when
+    full, with one ``UserWarning``; failed sends retry with backoff, and a
+    circuit breaker stops sending to an endpoint that keeps failing.
     """
 
     def __init__(
@@ -443,40 +1085,36 @@ class HttpSink(Sink):
         circuit_breaker_threshold: int = 5,
         circuit_breaker_reset_seconds: float = 30.0,
         shutdown_flush_timeout_seconds: float = SHUTDOWN_FLUSH_TIMEOUT_SECONDS,
-        _http_client: httpx.AsyncClient | None = None,
+        flush_interval_seconds: float = FLUSH_INTERVAL_SECONDS,
+        _http_client: urllib3.PoolManager | None = None,
     ) -> None:
         self._url = url.rstrip("/")
         self._api_key = api_key
-        self._buffer: deque[Event] = deque(maxlen=buffer_size)
-        self._overflow_warned = False
-        self._refusals: dict[int, tuple[float, int]] = {}
-        # The atexit flush reads this on the main thread while a sync Client's
-        # loop thread may still be writing it.
-        self._refusals_lock = threading.Lock()
-        self._max_retries = max_retries
-        self._backoff_base = backoff_base_seconds
-        self._backoff_max = backoff_max_seconds
         self._circuit = _CircuitBreaker(circuit_breaker_threshold, circuit_breaker_reset_seconds)
         self._shutdown_flush_timeout = _shutdown_budget_option(shutdown_flush_timeout_seconds)
         self._owns_client = _http_client is None
-        if _http_client is None:
-            httpx = _require_httpx()
-            _http_client = httpx.AsyncClient(timeout=httpx.Timeout(request_timeout_seconds))
-        self._http_client = _http_client
-        self._flush_lock = asyncio.Lock()
-        self._drain_task: asyncio.Task[None] | None = None
-        # The drain a flush() or aclose() gave up waiting on, until it ends.
-        self._stalled_drain: asyncio.Future[None] | None = None
+        self._http_client = _pool_for(self._url) if _http_client is None else _http_client
+        self._sender = _BatchSender(
+            base_url=self._url,
+            api_key=api_key,
+            pool=self._http_client,
+            buffer_size=buffer_size,
+            request_timeout=request_timeout_seconds,
+            max_retries=max_retries,
+            backoff_base=backoff_base_seconds,
+            backoff_max=backoff_max_seconds,
+            circuit=self._circuit,
+            flush_interval=flush_interval_seconds,
+        )
+        finalizer = weakref.finalize(self, self._sender.retire)
+        finalizer.atexit = False  # type: ignore[misc]
+        # The flush or close wait that ran out of budget, until the thread ends it.
+        self._stalled: concurrent.futures.Future[None] | None = None
         self._skip_warned = False
-        self._open_drains: set[asyncio.Future[None]] = set()
         self._closing: asyncio.Future[None] | None = None
         self._closed = False
         self._atexit_registered = False
         self._atexit_callback: Callable[[], None] | None = None
-        self._reported: dict[str, int] = {}
-        self._last_report_at = -math.inf
-        self._reports_stopped = False
-        self._report_task: asyncio.Task[None] | None = None
 
     @property
     def url(self) -> str:
@@ -488,17 +1126,21 @@ class HttpSink(Sink):
         """Bearer token used to authenticate with the Console."""
         return self._api_key
 
+    @property
+    def _buffer(self) -> deque[Event]:
+        return self._sender.buffer
+
     async def write(self, event: Event) -> None:
         if self._closed:
             raise SinkClosedError("HttpSink is closed")
-        self._enqueue(event)
-        self._ensure_drain_running()
+        self._sender.enqueue(event)
+        self._sender.ensure_running()
         self._ensure_atexit_registered()
 
     async def flush(self) -> None:
         if self._closed:
             return
-        await self._drain_within_budget("flush()", self._shutdown_flush_timeout)
+        await self._wait_for_sender("flush()", self._shutdown_flush_timeout)
 
     async def aclose(self) -> None:
         """A second call waits for the first (SPEC §11.2 rule 7)."""
@@ -513,40 +1155,34 @@ class HttpSink(Sink):
 
     async def _close(self, seconds: float) -> None:
         log = logging.getLogger("baton")
-        self._reports_stopped = True
-        if self._report_task is not None:
-            self._report_task.cancel()
-        await self._drain_within_budget("aclose()", seconds)
+        self._sender.stop_reports()
+        await self._wait_for_sender("aclose()", seconds)
         self._closed = True
-        # Nothing Baton started may keep running after the vendor closed it.
-        for task in (*self._open_drains, self._drain_task):
-            if task is not None and not task.done():
-                task.cancel()
-        if self._buffer:
-            PROCESS_DROPS.add("unsent_at_close", len(self._buffer))
-            log.warning("baton: the sink closed with %d event(s) unsent.", len(self._buffer))
-        self._log_unwarned_refusals("the sink closed")
+        unsent = self._sender.stop()
+        if unsent:
+            PROCESS_DROPS.add("unsent_at_close", unsent)
+            log.warning("baton: the sink closed with %d event(s) unsent.", unsent)
+        self._sender.log_unwarned_refusals("the sink closed")
         if self._atexit_callback is not None:
             atexit.unregister(self._atexit_callback)
             self._atexit_registered = False
             self._atexit_callback = None
         if self._owns_client:
             try:
-                await self._http_client.aclose()
+                self._http_client.clear()
             except Exception:
-                log.warning("baton: closing the HTTP client failed", exc_info=True)
+                log.warning("baton: closing the HTTP connections failed", exc_info=True)
 
-    async def _drain_within_budget(
-        self, what: Literal["flush()", "aclose()"], seconds: float
-    ) -> None:
+    async def _wait_for_sender(self, what: Literal["flush()", "aclose()"], seconds: float) -> None:
         """SPEC §11.2 rule 7: returns within ``seconds`` and never raises.
-        While an earlier wait's drain is still stuck, a flush returns at once
-        and a close gives it ``seconds``. The drain is not cancelled here, so
-        after ``flush()`` it goes on sending; ``aclose()`` stops it."""
+        While an earlier wait is still stuck, a flush returns at once and a
+        close gives it ``seconds``. The thread goes on sending after a flush
+        gives up; ``aclose()`` stops it."""
         log = logging.getLogger("baton")
-        if self._stalled_drain is not None:
+        stalled = self._stalled
+        if stalled is not None and not stalled.done():
             if what == "aclose()":
-                await asyncio.wait({self._stalled_drain}, timeout=seconds)
+                await _wait_for_thread(stalled, seconds)
                 return
             if not self._skip_warned:
                 self._skip_warned = True
@@ -556,410 +1192,50 @@ class HttpSink(Sink):
                     len(self._buffer),
                 )
             return
-        drain = asyncio.ensure_future(self._drain_now())
-        self._open_drains.add(drain)
-        drain.add_done_callback(self._open_drains.discard)
-        drain.add_done_callback(lambda t: _log_late_failure(t, what))
-        done, _ = await asyncio.wait({drain}, timeout=seconds)
-        if done:
+        if self._buffer:
+            self._sender.ensure_running()
+        done = self._sender.request_flush()
+        if await _wait_for_thread(done, seconds):
             return
-        self._stalled_drain = drain
-
-        def _clear(_: asyncio.Future[None]) -> None:
-            if self._stalled_drain is drain:
-                self._stalled_drain = None
-                self._skip_warned = False
-
-        drain.add_done_callback(_clear)
+        self._stalled = done
+        self._skip_warned = False
         if what == "flush()":
             log.warning(
                 "baton: flush() took over %.1fs; it goes on in the background.",
                 self._shutdown_flush_timeout,
             )
 
-    async def _flush_at_exit(self) -> None:
-        # At exit a stuck drain gets the budget too, rather than the skip a
-        # later flush() takes.
-        stalled = self._stalled_drain
-        if stalled is not None:
-            await asyncio.wait({stalled}, timeout=self._shutdown_flush_timeout)
-        else:
-            await self.flush()
-
-    async def _drain_now(self) -> None:
-        if self._drain_task is not None and not self._drain_task.done():
-            await self._drain_task
-        async with self._flush_lock:
-            await self._drain_locked()
-
-    # =========================================================================
-    # Internal — enqueue + drain
-    # =========================================================================
-
-    def _enqueue(self, event: Event) -> None:
-        assert self._buffer.maxlen is not None
-        if len(self._buffer) >= self._buffer.maxlen:
-            if not self._overflow_warned:
-                warnings.warn(
-                    f"Baton HTTP sink buffer full ({self._buffer.maxlen}); "
-                    "oldest events dropped. Further overflows will be silent.",
-                    UserWarning,
-                    stacklevel=3,
-                )
-                self._overflow_warned = True
-            # After the warning: one promoted to an error drops this event
-            # instead, and safe_write counts that.
-            PROCESS_DROPS.add("buffer_full")
-        self._buffer.append(event)
-
-    def _dequeue(self, event: Event) -> None:
-        # A full buffer may already have pushed ``event`` out while it was sent.
-        if self._buffer and self._buffer[0] is event:
-            self._buffer.popleft()
-
-    # Test hook — see test_sinks.py for the overflow-semantics tests.
     def _enqueue_for_test(self, event: Event) -> None:
-        self._enqueue(event)
-
-    def _ensure_drain_running(self) -> None:
-        if self._drain_task is None or self._drain_task.done():
-            self._drain_task = asyncio.create_task(self._background_drain())
+        """Queues without starting the sending thread."""
+        self._sender.enqueue(event)
 
     def _ensure_atexit_registered(self) -> None:
-        # Registered on first write (not at import) so a constructed-but-unused
-        # sink holds no interpreter-lifetime reference. Weakref-wrapped so a
-        # caller that writes and never calls aclose() can still be garbage
-        # collected normally once nothing else references the sink — the
-        # hook becomes a no-op rather than pinning the sink (and its buffer/
-        # connection pool) alive for the process's whole lifetime just by
-        # having been written to once. Unregistered in aclose(): an explicit
-        # clean shutdown means there's nothing left for the hook to do.
+        # Registered on first write, and through a weakref so an unclosed sink
+        # can still be garbage collected; its sender then gets the exit flush.
+        # Unregistered by aclose().
         if not self._atexit_registered:
             weak_self = weakref.ref(self)
+            sender = self._sender
+            budget = self._shutdown_flush_timeout
 
             def _flush_if_alive() -> None:
                 sink = weak_self()
                 if sink is not None:
                     sink._atexit_flush()
+                else:
+                    sender.flush_at_exit(budget)
 
             atexit.register(_flush_if_alive)
+            sender.exit_hook = _flush_if_alive
             self._atexit_callback = _flush_if_alive
             self._atexit_registered = True
 
-    def _events_url(self) -> str:
-        return f"{self._url}/v0/events"
-
-    def _auth_headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._api_key}"}
-
-    #: Cap, in code points of the raw text before escaping, on the collector's
-    #: refusal text copied into the vendor's log: it is a remote server's text.
-    _REFUSAL_BODY_MAX_LEN = 500
-    #: Per status, so a collector refusing every event is not one warning per event.
-    _REFUSAL_LOG_SECONDS = 60.0
-
-    @staticmethod
-    def _classify_status(status: int) -> str:
-        if 200 <= status < 300:
-            return "success"
-        if 400 <= status < 500 and status != 429:
-            return "permanent_failure"
-        return "transient_failure"
-
-    def _log_refusal(self, response: Any) -> None:
-        """A refused event is otherwise dropped silently, which looks the same
-        from the vendor's process as an accepted one. The body is logged
-        because it names the field at fault. The circuit breaker is not told:
-        a 4xx proves the endpoint is alive, and opening the circuit would stop
-        the good events too.
-        """
-        PROCESS_DROPS.add("refused")
-        status = response.status_code
-        now = monotonic()
-        with self._refusals_lock:
-            logged_at, unlogged = self._refusals.get(status, (-math.inf, 0))
-            if now - logged_at < self._REFUSAL_LOG_SECONDS:
-                self._refusals[status] = (logged_at, unlogged + 1)
-                return
-            self._refusals[status] = (now, 0)
-        try:
-            detail = _escape_for_log(response.text[: self._REFUSAL_BODY_MAX_LEN])
-        except Exception:  # pragma: no cover — a body that cannot be decoded
-            detail = "<unreadable>"
-        logging.getLogger("baton").warning(
-            "baton: collector REFUSED an event and it has been dropped "
-            "(HTTP %s): %s — the event is gone; nothing retries a 4xx.%s",
-            status,
-            detail,
-            f" {unlogged} more refused since the last such warning." if unlogged else "",
-        )
-
-    def _log_unwarned_refusals(self, when: str) -> None:
-        with self._refusals_lock:
-            unlogged = sum(n for _, n in self._refusals.values())
-            self._refusals = {status: (at, 0) for status, (at, _) in self._refusals.items()}
-        if unlogged:
-            logging.getLogger("baton").warning(
-                "baton: %s; %d more event(s) refused since the last such warning.",
-                when,
-                unlogged,
-            )
-
-    def _build_request_or_none(self, client: Any, event: Event, **kwargs: Any) -> Any:
-        """None when the event cannot be made into a request; it is logged."""
-        # Encoding fails the same way on every attempt, so the caller drops the
-        # event instead of retrying. Only the exception TYPE is logged: its
-        # message can quote the event's own text.
-        import httpx
-
-        # Outside the try: a malformed URL or key is the sink's fault, not the event's.
-        url = httpx.URL(self._events_url())
-        headers = httpx.Headers(self._auth_headers())
-        try:
-            return client.build_request(
-                "POST",
-                url,
-                json=event.model_dump(mode="json"),
-                headers=headers,
-                **kwargs,
-            )
-        except Exception as exc:
-            PROCESS_DROPS.add("encode_failed")
-            logging.getLogger("baton").warning(
-                "baton: a %s event could not be encoded and has been dropped (%s) "
-                "— the event is gone; the events after it are still sent.",
-                event.event_type,
-                type(exc).__name__,
-            )
-            return None
-
     def _atexit_flush(self) -> None:
-        """Best-effort flush when the process exits without an explicit
-        ``aclose()`` — a forgotten shutdown call, or an unhandled exception
-        unwinding past ``asyncio.run()``.
-
-        Two distinct cases, disambiguated by whether the event loop that owns
-        ``_drain_task`` is still alive:
-
-        - **Dead loop** — the common case: ``asyncio.run()`` cancels
-          ``_background_drain`` and closes its loop before returning
-          (verified: a clean ``CancelledError``, not a crash — asyncio tasks
-          don't hit the ``threading``-only interpreter-abort risk a raw
-          background thread would). The original ``AsyncClient``/lock/task
-          are all unusable now, but cancellation only drops an event from
-          ``self._buffer`` on success or permanent failure, so anything
-          in-flight or not yet attempted survives — drained here with a
-          fresh sync client, one attempt per event (no retry; the process is
-          exiting), the remaining budget recomputed before every request so
-          total wall time can't exceed ``shutdown_flush_timeout_seconds``
-          regardless of how many events are buffered.
-        - **Live loop** — the sync ``Client``'s background-thread bridge
-          (``_SyncBridge``) runs its own loop via ``run_forever()`` on a
-          separate thread until ``Client.close()`` stops it; if the vendor
-          never calls ``close()``, that loop is still alive and potentially
-          mid-drain when this fires on the main thread. Touching
-          ``self._buffer``/``self._http_client`` directly here would race
-          with it (an ``asyncio.Lock`` only serializes coroutines on one
-          loop, not calls from a second thread) — instead, hand the real
-          ``flush()`` to that loop via ``run_coroutine_threadsafe`` (the
-          thread-safe way to submit work to a loop running elsewhere) and
-          block on the result under the same bounded deadline. `Client`
-          itself has no shutdown hook of its own today — this is the only
-          safety net for a never-closed sync `Client`, and if the bridge
-          thread is killed before its flush task finishes when the
-          interpreter actually tears down, that's a pre-existing gap in
-          `_SyncBridge`, not something this fix introduces or can close.
-
-        Real residual gap, not fixable in-process either way: SIGKILL, or
-        SIGTERM with no vendor-installed handler, terminate before Python's
-        normal shutdown sequence — and therefore atexit — ever runs. A
-        vendor needing that guarantee must call ``aclose()``/``close()`` from
-        their own signal handler.
-        """
-        self._reports_stopped = True
+        """Best-effort send when the process exits without ``aclose()``."""
+        self._sender.stop_reports()
         if self._closed:
             return
-        try:
-            self._flush_buffered_at_exit()
-        finally:
-            self._log_unwarned_refusals("process exiting")
-
-    def _flush_buffered_at_exit(self) -> None:
-        if not self._buffer:
-            return
-        log = logging.getLogger("baton")
-
-        loop = self._drain_task.get_loop() if self._drain_task is not None else None
-        if loop is not None and loop.is_running():
-            try:
-                future = asyncio.run_coroutine_threadsafe(self._flush_at_exit(), loop)
-                future.result(timeout=self._shutdown_flush_timeout + _SINK_CALL_GRACE_SECONDS)
-            except TimeoutError:
-                log.warning(
-                    "baton: process exiting; cross-thread shutdown flush did not "
-                    "complete within %.1fs with %d event(s) unsent (background thread "
-                    "may still be draining when the process actually exits)",
-                    self._shutdown_flush_timeout,
-                    len(self._buffer),
-                )
-                return
-            except Exception:
-                log.exception("baton: cross-thread shutdown flush failed")
-            if self._buffer:
-                log.warning(
-                    "baton: process exiting without sink.aclose(); %d event(s) still "
-                    "buffered and lost",
-                    len(self._buffer),
-                )
-            return
-
-        if not self._circuit.can_request():
-            log.warning(
-                "baton: process exiting with %d buffered event(s); "
-                "circuit breaker open, skipping shutdown flush",
-                len(self._buffer),
-            )
-            return
-        try:
-            import httpx
-
-            deadline = monotonic() + self._shutdown_flush_timeout
-            sent = 0
-            dropped = 0
-            with httpx.Client() as client:
-                while self._buffer:
-                    remaining = deadline - monotonic()
-                    if remaining <= 0:
-                        break
-                    request = self._build_request_or_none(
-                        client, self._buffer[0], timeout=remaining
-                    )
-                    if request is None:
-                        self._buffer.popleft()
-                        dropped += 1
-                        continue
-                    try:
-                        response = client.send(request)
-                    except httpx.HTTPError:
-                        break  # transient — process is exiting, don't burn the deadline retrying
-                    outcome = self._classify_status(response.status_code)
-                    if outcome == "success":
-                        self._buffer.popleft()
-                        sent += 1
-                    elif outcome == "permanent_failure":
-                        self._log_refusal(response)
-                        self._buffer.popleft()  # unrecoverable, give up
-                        dropped += 1
-                    else:
-                        break  # transient (429/5xx)
-            remaining_count = len(self._buffer)
-            if remaining_count or dropped:
-                log.warning(
-                    "baton: process exiting without sink.aclose(); "
-                    "%d event(s) flushed, %d dropped (refused or unencodable), "
-                    "%d still buffered and lost",
-                    sent,
-                    dropped,
-                    remaining_count,
-                )
-        except Exception:
-            log.exception(
-                "baton: best-effort shutdown flush failed; %d event(s) still buffered and lost",
-                len(self._buffer),
-            )
-
-    async def _background_drain(self) -> None:
-        async with self._flush_lock:
-            await self._drain_locked()
-
-    async def _drain_locked(self) -> None:
-        while self._buffer:
-            if not self._circuit.can_request():
-                return
-            event = self._buffer[0]
-            outcome = await self._send_with_retry(event)
-            if outcome == "success":
-                self._dequeue(event)
-                self._circuit.record_success()
-                PROCESS_DROPS.log_recovery()
-                self._maybe_report(event)
-            elif outcome == "permanent_failure":
-                self._dequeue(event)
-                self._circuit.record_success()
-            elif outcome == "unencodable":
-                # Nothing was sent, so the circuit learns nothing about the endpoint.
-                self._dequeue(event)
-            else:
-                self._circuit.record_failure()
-                return
-
-    _REPORT_INTERVAL_SECONDS = 60.0
-
-    def _maybe_report(self, delivered: Event) -> None:
-        """Start a report of this process's loss totals (SPEC §11.4.7) beside
-        the drain and outside the buffer, so it never delays an event and is
-        never counted as one."""
-        now = monotonic()
-        if (
-            self._reports_stopped
-            or (self._report_task is not None and not self._report_task.done())
-            or now - self._last_report_at < self._REPORT_INTERVAL_SECONDS
-        ):
-            return
-        totals: dict[str, int] = {reason: n for reason, n in PROCESS_DROPS.total().items()}
-        if totals == self._reported:
-            return
-        self._last_report_at = now
-        self._report_task = asyncio.ensure_future(self._send_report(delivered, totals))
-
-    async def _send_report(self, delivered: Event, totals: dict[str, int]) -> None:
-        try:
-            report = ClientReportEvent(
-                tenant_id=delivered.tenant_id,
-                vendor_id=delivered.vendor_id,
-                consent_token=delivered.consent_token,
-                session_id=str(PROCESS_DROPS.instance_id),
-                sequence_number=PROCESS_SEQUENCE.next(),
-                captured_at=datetime.now(UTC),
-                payload=ClientReportPayload(instance_id=PROCESS_DROPS.instance_id, dropped=totals),
-            )
-            response = await self._http_client.post(
-                self._events_url(),
-                json=report.model_dump(mode="json"),
-                headers=self._auth_headers(),
-            )
-        except Exception:
-            return
-        if response.status_code in (400, 422):
-            self._reports_stopped = True
-        elif 200 <= response.status_code < 300:
-            self._reported = totals
-
-    async def _send_with_retry(self, event: Event) -> str:
-        import httpx  # importable — constructing this sink already imported it
-
-        request = self._build_request_or_none(self._http_client, event)
-        if request is None:
-            return "unencodable"
-
-        for attempt in range(self._max_retries + 1):
-            try:
-                response = await self._http_client.send(request)
-                outcome = self._classify_status(response.status_code)
-                if outcome == "permanent_failure":
-                    # Logged HERE, which is the only scope holding the
-                    # response — the drain loop above sees a bare string.
-                    self._log_refusal(response)
-                if outcome != "transient_failure":
-                    return outcome
-            except httpx.HTTPError:
-                pass
-
-            if attempt < self._max_retries:
-                backoff = min(self._backoff_base * (2**attempt), self._backoff_max)
-                await asyncio.sleep(backoff)
-
-        return "transient_failure"
+        self._sender.flush_at_exit(self._shutdown_flush_timeout)
 
 
 # =============================================================================

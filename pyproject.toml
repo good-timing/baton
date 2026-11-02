@@ -35,16 +35,17 @@ dependencies = [
     # ``baton._uuid`` — stdlib ``uuid.uuid7`` on 3.14+, a monotonic RFC-9562
     # fallback below — so we take no ``uuid6`` dependency.
     "pydantic>=2.0",
-    # ``httpx`` is ``HttpSink``'s async client, and a DSN always builds an
-    # ``HttpSink``. CORE since 0.8.8. It was an ``[http]`` extra on the rule
-    # above, and the rule stopped holding: ``mcp`` 2.x and ``fastmcp`` 4.x depend
-    # on ``httpx2``, not ``httpx``, so a fresh ``pip install "baton-sdk[mcp]"``
-    # could not run the DSN quickstart (measured 2026-09-15). A blocking client
-    # (urllib) is not an alternative: the SDK emits from inside the event loop.
-    "httpx>=0.25",
+    # ``urllib3`` is ``HttpSink``'s HTTP client, and a DSN always builds an
+    # ``HttpSink``. It is blocking, which is safe because the sink sends from
+    # its own thread, never from the vendor's event loop. Chosen over httpx
+    # because it logs each request at DEBUG, not INFO, so nothing lands in the
+    # vendor's log per request. ``certifi`` keeps the CA store the sink trusted
+    # under httpx; urllib3 alone would use the system store.
+    "urllib3>=1.26",
+    "certifi",
     # ``anyio`` runs vendor hooks off the event loop (``integrations/_hooks``).
     # CORE rather than an extra, decided 2026-09-11, and NOT free by the rule
-    # above for every install (``httpx`` is the other): a LIBRARY-API user
+    # above for every install (``urllib3`` is the other): a LIBRARY-API user
     # (``Client`` / ``Trace``, no MCP server) installs it for a code path they
     # cannot reach. Taken deliberately — anyio is small and pure Python, and
     # the alternative was importing it inside the function, because
@@ -122,9 +123,9 @@ fastmcp = [
     "fastmcp>=2.14,<5",
 ]
 # Kept so an existing ``baton-sdk[http]`` install line still resolves without a
-# warning. httpx is a core dependency (see ``dependencies``).
+# warning. urllib3 is a core dependency (see ``dependencies``).
 http = [
-    "httpx>=0.25",
+    "urllib3>=1.26",
 ]
 all = [
     "baton-sdk[mcp]",

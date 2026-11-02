@@ -75,13 +75,13 @@ def captured_events() -> list[dict[str, Any]]:
 
 @pytest.fixture
 def capture_server(httpserver: HTTPServer, captured_events: list[dict[str, Any]]) -> HTTPServer:
-    """HTTPServer that captures POST /v0/events bodies into ``captured_events``."""
+    """HTTPServer that captures the events POSTed to /v0/events/batch into ``captured_events``."""
 
     def _handler(req: Request) -> Response:
-        captured_events.append(json.loads(req.data.decode("utf-8")))
+        captured_events.extend(json.loads(req.data.decode("utf-8"))["events"])
         return Response("", status=204)
 
-    httpserver.expect_request("/v0/events", method="POST").respond_with_handler(_handler)
+    httpserver.expect_request("/v0/events/batch", method="POST").respond_with_handler(_handler)
     return httpserver
 
 

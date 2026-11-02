@@ -39,10 +39,10 @@ async def sink(
     captured: list[dict[str, Any]],
 ) -> Sink:
     def handler(request: Any) -> Response:
-        captured.append(request.get_json())
+        captured.extend(request.get_json()["events"])
         return Response("", status=201)
 
-    httpserver.expect_request("/v0/events", method="POST").respond_with_handler(handler)
+    httpserver.expect_request("/v0/events/batch", method="POST").respond_with_handler(handler)
     s = HttpSink(url=httpserver.url_for(""), api_key="k")
     yield s
     await s.aclose()

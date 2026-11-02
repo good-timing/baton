@@ -111,7 +111,7 @@ def install_baton(
     # cannot sit after a check that raises: a switch that can still abort a
     # vendor's boot is worse than no switch. It also has to precede
     # ``build_config``, which would otherwise construct an ``HttpSink`` (and
-    # its httpx client) from a dsn for a capture that is not going to happen.
+    # its connection pool) from a dsn for a capture that is not going to happen.
     switch = capture_disabled()
     if switch is not None:
         return disabled_handle(

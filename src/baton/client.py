@@ -494,9 +494,6 @@ def _resolve_client_config(
     )
     if dsn_string is not None:
         parsed = parse_dsn(dsn_string)
-        # Consent resolved BEFORE the sink is constructed: an explicitly
-        # emptied token raises, and ``HttpSink.__init__`` eagerly builds an
-        # ``httpx.AsyncClient`` that nothing would then be able to close.
         consent = _resolve_consent_token(consent_token)
         return _ClientConfig(
             # Built here, not lazily: a sink that cannot be built must fail
@@ -1192,8 +1189,8 @@ class Client(_Sessions):
         self._result_capture_mode = resolved.result_capture_mode
 
         # Sync mode uses a background thread + persistent loop bridge so the
-        # sink's async primitives (locks, background drain tasks, httpx
-        # clients) bind to one stable loop instead of a fresh one per emit.
+        # sink's async primitives (locks, tasks) bind to one stable loop
+        # instead of a fresh one per emit.
         # ⚠ **No bridge when the switch is on.** ``_SyncBridge.__init__``
         # starts a daemon thread and blocks until its event loop is running —
         # a background thread is exactly what "no wrap, no buffer, no queue"

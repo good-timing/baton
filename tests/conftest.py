@@ -45,6 +45,7 @@ from pytest_httpserver import HTTPServer
 
 from baton._state import PROCESS_DROPS
 from tests._fake_collector import COLLECTOR_DIR
+from tests._http_fakes import RELEASE
 
 
 @pytest.fixture(autouse=True)
@@ -52,6 +53,13 @@ def _fresh_drop_counts() -> Iterator[None]:
     """``PROCESS_DROPS`` is one per process, so each test starts from zero."""
     PROCESS_DROPS._reset()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _release_held_requests() -> Iterator[None]:
+    RELEASE.clear()
+    yield
+    RELEASE.set()
 
 
 @pytest.fixture(autouse=True)

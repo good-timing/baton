@@ -54,3 +54,5 @@ async def test_the_sink_keeps_its_promises(
         assert dropped == expect["dropped"]
     if "reports" in expect:
         assert got["reports"] == expect["reports"]
+    if "requests" in expect:
+        assert got["requests"] == expect["requests"]

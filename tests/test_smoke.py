@@ -16,15 +16,14 @@ def test_version_present() -> None:
     assert baton.__version__.startswith("0.")
 
 
-def test_httpx_is_a_core_dependency() -> None:
-    """A DSN always builds an ``HttpSink``, and ``mcp`` 2.x and ``fastmcp`` 4.x
-    depend on ``httpx2``, not ``httpx``. As an extra, httpx left a fresh
-    ``pip install "baton-sdk[mcp]"`` unable to run the DSN quickstart.
-    """
+def test_the_http_sinks_dependencies_are_core() -> None:
+    """A DSN always builds an ``HttpSink``, which sends with ``urllib3`` and
+    trusts ``certifi``'s certificates. As extras they would leave a fresh
+    ``pip install "baton-sdk[mcp]"`` unable to run the DSN quickstart."""
     pyproject = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
     deps = tomllib.loads(pyproject.read_text())["project"]["dependencies"]
-    # ``\b`` so ``httpx2`` does not satisfy it.
-    assert any(re.match(r"httpx\b", dep) for dep in deps), deps
+    for name in ("urllib3", "certifi"):
+        assert any(re.match(rf"{name}\b", dep) for dep in deps), deps
 
 
 def test_import_baton_needs_nothing_from_an_EXTRA() -> None:

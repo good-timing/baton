@@ -42,10 +42,12 @@ async def configured_mcp(
     in tests."""
 
     def ingest_handler(request: Any) -> Response:
-        captured.append(request.get_json())
+        captured.extend(request.get_json()["events"])
         return Response("", status=201)
 
-    httpserver.expect_request("/v0/events", method="POST").respond_with_handler(ingest_handler)
+    httpserver.expect_request("/v0/events/batch", method="POST").respond_with_handler(
+        ingest_handler
+    )
 
     mcp = FastMCP("test-vendor-mcp")
     handle = install_baton(
@@ -84,7 +86,9 @@ async def _server_tools(mcp: FastMCP) -> list[Any]:
 
 class TestInstallation:
     async def test_returns_handle_with_flush_and_aclose(self, httpserver: HTTPServer) -> None:
-        httpserver.expect_request("/v0/events", method="POST").respond_with_data("", status=201)
+        httpserver.expect_request("/v0/events/batch", method="POST").respond_with_data(
+            "", status=201
+        )
         mcp = FastMCP("x")
         handle = install_baton(
             mcp,
@@ -267,7 +271,7 @@ class TestInstallation:
         # Answer the ingest POST: without a handler pytest-httpserver 500s,
         # HttpSink retries with backoff, and the test takes 1.46s to assert
         # something that never touched the sink.
-        httpserver.expect_request("/v0/events").respond_with_response(Response(status=202))
+        httpserver.expect_request("/v0/events/batch").respond_with_response(Response(status=202))
         mcp = FastMCP("Acme Knowledge Base")
         handle = install_baton(
             mcp,
@@ -299,7 +303,7 @@ class TestInstallation:
         # Answer the ingest POST: without a handler pytest-httpserver 500s,
         # HttpSink retries with backoff, and the test takes 1.46s to assert
         # something that never touched the sink.
-        httpserver.expect_request("/v0/events").respond_with_response(Response(status=202))
+        httpserver.expect_request("/v0/events/batch").respond_with_response(Response(status=202))
         mcp = FastMCP()  # no name: fastmcp invents one
         assert mcp.name.startswith("FastMCP-")
         handle = install_baton(
@@ -352,7 +356,7 @@ class TestInstallation:
     async def test_annotation_tool_accepts_a_report(self, httpserver: HTTPServer) -> None:
         """The reactive channel is the product: the annotation tool is listed
         and accepts a report."""
-        httpserver.expect_request("/v0/events").respond_with_response(Response(status=202))
+        httpserver.expect_request("/v0/events/batch").respond_with_response(Response(status=202))
         mcp = FastMCP("x")
         handle = install_baton(
             mcp,
@@ -385,10 +389,10 @@ class TestInstallation:
         captured: list[dict[str, Any]] = []
 
         def ingest(request: Any) -> Response:
-            captured.append(request.get_json())
+            captured.extend(request.get_json()["events"])
             return Response("", status=201)
 
-        httpserver.expect_request("/v0/events", method="POST").respond_with_handler(ingest)
+        httpserver.expect_request("/v0/events/batch", method="POST").respond_with_handler(ingest)
         mcp = FastMCP("x")
         handle = install_baton(
             mcp,
@@ -424,10 +428,10 @@ class TestInstallation:
         captured: list[dict[str, Any]] = []
 
         def ingest(request: Any) -> Response:
-            captured.append(request.get_json())
+            captured.extend(request.get_json()["events"])
             return Response("", status=201)
 
-        httpserver.expect_request("/v0/events", method="POST").respond_with_handler(ingest)
+        httpserver.expect_request("/v0/events/batch", method="POST").respond_with_handler(ingest)
         mcp = FastMCP("x")
         handle = install_baton(
             mcp,
