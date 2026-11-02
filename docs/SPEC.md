@@ -1758,15 +1758,35 @@ Standard problem-details-ish error body for all 4xx/5xx:
 { "error": { "code": "consent_token_invalid", "message": "..." } }
 ```
 
+A collector MAY send other members beside `error`, such as a `detail` for older
+clients. A client reads `error.code` and MUST treat an unknown code by its
+status alone.
+
 Defined error codes:
-- `auth_invalid` — bearer missing or rejected (401)
+- `auth_invalid` — bearer missing, malformed, unknown or revoked, or a key that
+  does not belong to the named workspace (401). These MUST share this one code
+  and one message: a caller without a valid key must not learn which check
+  failed, or whether the key or the workspace exists.
 - `consent_token_invalid` — consent token unknown or expired (401)
-- `payload_malformed` — JSON schema violation (400)
-- `payload_too_large` — the body is over the cap (413)
+- `payload_malformed` — the body or an event in it does not match the schema
+  (400 or 422)
+- `payload_too_large` — the request body is over the collector's size limit (413)
+- `tenant_suspended` — the key is valid but its workspace is suspended (403)
+- `key_scope_refused` — the key is valid but its kind is not accepted here; for
+  example a publishable key on an endpoint that needs a workspace key (403)
+- `key_server_mismatch` — the key is bound to one server and the request names
+  another (403)
+- `quota_exhausted` — the workspace has used its monthly event quota (403, or a
+  refused result in a batch, §2.5). Not 429: a client MUST NOT retry it before
+  the quota resets.
 - `vendor_unknown` — `vendor_id` not registered (403)
-- `quota_exhausted` — the tenant's monthly event quota is used up (403, or a refused result in a batch, §2.5)
 - `signal_not_found` — return-channel query for unknown signal (404)
+- `rate_limited` — too many requests for now; retry later (429)
 - `server_error` — anything else (500)
+
+`tenant_suspended`, `key_scope_refused` and `key_server_mismatch` are sent only
+to a caller whose key verified, so they say nothing a key holder could not
+already learn.
 
 ---
 
