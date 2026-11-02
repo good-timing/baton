@@ -493,7 +493,9 @@ async def _wait_for_thread(done: concurrent.futures.Future[None], seconds: float
 
 
 def _proxy_for(url: str) -> str | None:
-    """The proxy the environment names for ``url``, as httpx read it."""
+    """The proxy the environment names for ``url``: the scheme's proxy, else
+    ``ALL_PROXY``, unless ``NO_PROXY`` covers the host. A value with no scheme
+    is ``http://``."""
     parts = urllib.parse.urlsplit(url)
     proxies = urllib.request.getproxies()
     proxy = proxies.get(parts.scheme) or proxies.get("all")
@@ -551,6 +553,21 @@ class _Pending:
 _Batch = list[tuple[Event, bytes]]
 
 
+_LIVE_SENDERS: weakref.WeakSet[_BatchSender] = weakref.WeakSet()
+
+
+def _reset_senders_in_child() -> None:
+    for sender in list(_LIVE_SENDERS):
+        try:
+            sender.reset_in_child()
+        except Exception:
+            pass  # a fork hook that raises would break the vendor's fork
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_senders_in_child)
+
+
 class _BatchSender:
     """The part of ``HttpSink`` its sending thread runs. It holds no reference
     to the sink, so a sink nobody closes can still be garbage collected.
@@ -594,7 +611,6 @@ class _BatchSender:
         self.flush_interval = flush_interval
         self.bound = buffer_size
         self.waiting: deque[_Pending] = deque()
-        self.unencoded: deque[_Pending] = deque()
         self.encoded = 0
         self.encoded_bytes = 0
         self.in_flight: deque[_Pending] = deque()
@@ -613,29 +629,26 @@ class _BatchSender:
         self.thread: threading.Thread | None = None
         self.exit_hook: Callable[[], None] | None = None
         self._new_locks()
+        _LIVE_SENDERS.add(self)
 
     def _new_locks(self) -> None:
-        self.pid = os.getpid()
         self.cond = threading.Condition()
         self.stopped = threading.Event()
         self.refusals_lock = threading.Lock()
 
-    def _after_fork(self) -> None:
-        # The parent's thread is gone; it may have held these locks, and its
-        # pool's sockets are shared with the parent. The batch it was sending
-        # is the parent's to deliver or count.
+    def reset_in_child(self) -> None:
+        """Run in a forked child before any of its threads: the parent's
+        thread is gone and may have held these locks, its pool's sockets are
+        shared with the parent, and every event recorded so far is the
+        parent's to deliver or count. The pool is built again on the next send."""
         self._new_locks()
-        self.pool = self.make_pool()
+        self.pool = None
         self.thread = None
         self.flushes = []
+        self.waiting.clear()
+        self.encoded = self.encoded_bytes = 0
         self.in_flight.clear()
-
-    def _lock(self) -> threading.Condition:
-        """``cond``, made new first in a forked child, where the parent's copy
-        may be held by a thread that no longer exists."""
-        if self.pid != os.getpid():
-            self._after_fork()
-        return self.cond
+        self.report = None
 
     def pending(self) -> int:
         return len(self.waiting) + len(self.in_flight)
@@ -643,7 +656,7 @@ class _BatchSender:
     # ---- called from the vendor's side ---------------------------------
 
     def enqueue(self, event: Event) -> None:
-        with self._lock():
+        with self.cond:
             if len(self.waiting) >= self.bound:
                 if not self.overflow_warned:
                     warnings.warn(
@@ -658,25 +671,22 @@ class _BatchSender:
                 self._drop_oldest_locked()
             pending = _Pending(event, monotonic())
             self.waiting.append(pending)
-            self.unencoded.append(pending)
             self.cond.notify()
 
     def _drop_oldest_locked(self) -> None:
         PROCESS_DROPS.add("buffer_full")
         dropped = self.waiting.popleft()
-        if dropped.body is None:
-            self.unencoded.popleft()
-        else:
+        if dropped.body is not None:
             self.encoded -= 1
             self.encoded_bytes -= len(dropped.body)
 
     def thread_alive(self) -> bool:
-        return self.pid == os.getpid() and self.thread is not None and self.thread.is_alive()
+        return self.thread is not None and self.thread.is_alive()
 
     def ensure_running(self) -> None:
         if self.thread_alive():
             return
-        with self._lock():
+        with self.cond:
             if self.stopping or (self.thread is not None and self.thread.is_alive()):
                 return
             self.thread = threading.Thread(target=self._run, name="baton-http-sink", daemon=True)
@@ -684,7 +694,7 @@ class _BatchSender:
 
     def request_flush(self) -> concurrent.futures.Future[None]:
         done: concurrent.futures.Future[None] = concurrent.futures.Future()
-        with self._lock():
+        with self.cond:
             if self.stopping or (not self.pending() and self.report is None):
                 done.set_result(None)
             else:
@@ -693,18 +703,17 @@ class _BatchSender:
         return done
 
     def stop_reports(self) -> None:
-        with self._lock():
+        with self.cond:
             self.reports_stopped = True
             self.report = None
 
     def stop(self) -> int:
         """Stops the thread before its next request; answers how many events
         it leaves unsent."""
-        with self._lock():
+        with self.cond:
             self.stopping = True
             left = self.pending()
             self.waiting.clear()
-            self.unencoded.clear()
             self.in_flight.clear()
             self.encoded = self.encoded_bytes = 0
             self.report = None
@@ -715,7 +724,7 @@ class _BatchSender:
 
     def retire(self) -> None:
         """The sink was garbage collected: send what is left, then end the thread."""
-        with self._lock():
+        with self.cond:
             self.retiring = True
             self.cond.notify_all()
 
@@ -724,7 +733,7 @@ class _BatchSender:
     def _run(self) -> None:
         while True:
             self._encode_head()
-            with self._lock():
+            with self.cond:
                 if self.stopping:
                     return
                 if self.retiring and not self.waiting and self.report is None:
@@ -734,7 +743,7 @@ class _BatchSender:
                 now = monotonic()
                 wait = self._seconds_until_due_locked(now)
                 if wait is None or wait > 0:
-                    if not self._to_encode_locked(now):
+                    if not self._can_encode_locked(now):
                         self.cond.wait(wait)
                     continue
                 batch = self._take_batch_locked()
@@ -788,7 +797,7 @@ class _BatchSender:
         sending thread alive."""
         while monotonic() < deadline:
             self._encode_head()
-            with self._lock():
+            with self.cond:
                 if self.stopping or not self.circuit.can_request() or self.not_before > monotonic():
                     return
                 batch = self._take_batch_locked()
@@ -837,24 +846,21 @@ class _BatchSender:
                 done.set_result(None)
         self.flushes = []
 
-    def _to_encode_locked(self, now: float) -> list[_Pending]:
-        """The head events still to encode, when a send could follow: none
+    def _can_encode_locked(self, now: float) -> bool:
+        """Whether head events wait to be encoded and a send could follow: not
         while the circuit, a ``Retry-After`` or the retry timer holds sends."""
-        if (
-            self.encoded >= BATCH_MAX_EVENTS
-            or not self.unencoded
-            or not self.circuit.can_request()
-            or self.not_before > now
-            or (self.retry_at > now and not self.flushes)
-        ):
-            return []
-        return list(itertools.islice(self.unencoded, BATCH_MAX_EVENTS - self.encoded))
+        return (
+            self.encoded < min(len(self.waiting), BATCH_MAX_EVENTS)
+            and self.circuit.can_request()
+            and self.not_before <= now
+            and (self.retry_at <= now or bool(self.flushes))
+        )
 
     def _encode_head(self) -> None:
-        with self._lock():
-            todo = self._to_encode_locked(monotonic())
-        if not todo:
-            return
+        with self.cond:
+            if not self._can_encode_locked(monotonic()):
+                return
+            todo = list(itertools.islice(self.waiting, self.encoded, BATCH_MAX_EVENTS))
         results: list[tuple[_Pending, bytes | Exception]] = []
         for pending in todo:
             try:
@@ -862,30 +868,27 @@ class _BatchSender:
             except Exception as exc:
                 results.append((pending, exc))
         log = logging.getLogger("baton")
-        dropped: list[tuple[Event, str]] = []
-        with self._lock():
+        # An exception, or None for an event too large to send.
+        dropped: list[tuple[Event, Exception | None]] = []
+        with self.cond:
             for pending, result in results:
                 # Pushed out of the buffer while it was being encoded.
-                if not self.unencoded or self.unencoded[0] is not pending:
+                if len(self.waiting) <= self.encoded or self.waiting[self.encoded] is not pending:
                     continue
-                self.unencoded.popleft()
-                too_large = (
-                    isinstance(result, bytes) and _body_size(1, len(result)) > BATCH_MAX_BYTES
-                )
-                if isinstance(result, bytes) and not too_large:
-                    pending.body = result
-                    self.encoded += 1
-                    self.encoded_bytes += len(result)
-                    continue
-                del self.waiting[self.encoded]
-                if too_large:
+                if isinstance(result, bytes):
+                    if _body_size(1, len(result)) <= BATCH_MAX_BYTES:
+                        pending.body = result
+                        self.encoded += 1
+                        self.encoded_bytes += len(result)
+                        continue
                     PROCESS_DROPS.add("refused")
-                    dropped.append((pending.event, "too_large"))
+                    dropped.append((pending.event, None))
                 else:
                     PROCESS_DROPS.add("encode_failed")
-                    dropped.append((pending.event, type(result).__name__))
-        for event, reason in dropped:
-            if reason == "too_large":
+                    dropped.append((pending.event, result))
+                del self.waiting[self.encoded]
+        for event, error in dropped:
+            if error is None:
                 log.warning(
                     "baton: a %s event is over the 1 MiB batch cap and has been "
                     "dropped — it is never sent.",
@@ -897,7 +900,7 @@ class _BatchSender:
                     "baton: a %s event could not be encoded and has been dropped (%s) "
                     "— the event is gone; the events after it are still sent.",
                     event.event_type,
-                    reason,
+                    type(error).__name__,
                 )
 
     def _take_batch_locked(self) -> _Batch:
@@ -932,7 +935,7 @@ class _BatchSender:
 
     def _put_back_in_flight(self) -> None:
         """A kept batch goes back to the front; then the bound applies again."""
-        with self._lock():
+        with self.cond:
             if self.stopping:
                 self.in_flight.clear()
                 return
@@ -998,6 +1001,8 @@ class _BatchSender:
                 timeout = min(timeout, deadline - monotonic())
                 if timeout <= 0:
                     return None
+            if self.pool is None:
+                self.pool = self.make_pool()
             try:
                 response = self.pool.urlopen(
                     "POST",
@@ -1016,7 +1021,7 @@ class _BatchSender:
                     wait = _retry_after_seconds(response.headers)
                     if wait is not None:
                         # The endpoint answered, so the circuit is not told.
-                        with self._lock():
+                        with self.cond:
                             self.not_before = monotonic() + wait
                             self._finish_flushes_locked()
                         return None
@@ -1036,7 +1041,7 @@ class _BatchSender:
 
     def _failed(self) -> None:
         self.circuit.record_failure()
-        with self._lock():
+        with self.cond:
             # The floor keeps a flush interval of 0 from retrying in a tight loop.
             self.retry_at = monotonic() + max(self.flush_interval, self.backoff_base)
             self._finish_flushes_locked()
@@ -1048,7 +1053,7 @@ class _BatchSender:
         report_refusal_stops = 200 <= status < 300 or status in (400, 422)
         refused: list[str] = []
         delivered: Event | None = None
-        with self._lock():
+        with self.cond:
             if self.stopping:
                 return
             for event, refusal in outcomes:
@@ -1141,23 +1146,23 @@ class _BatchSender:
 def _per_event_results(
     part: list[tuple[Event, bytes]], data: bytes
 ) -> list[tuple[Event, str | None]]:
-    """SPEC §2.5's results, matched by ``event_id``. An event the answer does
-    not name was taken: the collector answered 2xx."""
+    """SPEC §2.5's results, matched by ``event_id``. An entry that is not an
+    object, or whose ``event_id`` is not a string, is skipped. A ``refused``
+    entry counts whatever its ``error`` holds. An event with no readable
+    result was delivered: the collector answered 2xx."""
     refusals: dict[str, str] = {}
     try:
         results = json.loads(data)["results"]
     except Exception:
         results = []
     for result in results if isinstance(results, list) else []:
-        # One bad entry does not hide the refusals after it.
-        try:
-            if result.get("status") == "refused":
-                error = result.get("error") or {}
-                refusals[str(result["event_id"])] = (
-                    f"{error.get('code', 'refused')}: {error.get('message', '')}"
-                )
-        except Exception:
+        if not isinstance(result, dict) or not isinstance(result.get("event_id"), str):
             continue
+        if result.get("status") != "refused":
+            continue
+        error = result.get("error")
+        error = error if isinstance(error, dict) else {}
+        refusals[result["event_id"]] = f"{error.get('code', 'refused')}: {error.get('message', '')}"
     return [(event, refusals.get(str(event.event_id))) for event, _ in part]
 
 
@@ -1199,7 +1204,6 @@ class HttpSink(Sink):
             SHUTDOWN_FLUSH_TIMEOUT_SECONDS,
         )
         self._owns_client = _http_client is None
-        given = _http_client
         self._sender = _BatchSender(
             base_url=self._url,
             api_key=api_key,
@@ -1207,8 +1211,8 @@ class HttpSink(Sink):
             # forked child, which builds its own pool.
             make_pool=(
                 functools.partial(_pool_through, _proxy_for(self._url))
-                if given is None
-                else lambda: given
+                if _http_client is None
+                else lambda: _http_client
             ),
             buffer_size=buffer_size,
             request_timeout=request_timeout_seconds,
@@ -1238,10 +1242,6 @@ class HttpSink(Sink):
     def api_key(self) -> str:
         """Bearer token used to authenticate with the Console."""
         return self._api_key
-
-    @property
-    def _http_client(self) -> Any:
-        return self._sender.pool
 
     async def write(self, event: Event) -> None:
         if self._closed:
@@ -1281,7 +1281,8 @@ class HttpSink(Sink):
             self._atexit_callback = None
         if self._owns_client:
             try:
-                self._sender.pool.clear()
+                if self._sender.pool is not None:
+                    self._sender.pool.clear()
             except Exception:
                 log.warning("baton: closing the HTTP connections failed", exc_info=True)
 

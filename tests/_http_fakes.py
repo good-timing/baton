@@ -137,6 +137,6 @@ class ReportCollector:
 
 
 def pool_of(sink: HttpSink) -> FakePool:
-    pool = sink._http_client
+    pool = sink._sender.pool
     assert isinstance(pool, FakePool)
     return pool

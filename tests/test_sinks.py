@@ -1350,22 +1350,22 @@ def test_a_proxy_in_the_environment_is_used_unless_bypassed(
 ) -> None:
     no_ambient_proxy.setenv("HTTPS_PROXY", "http://proxy.example:3128")
     no_ambient_proxy.setenv("NO_PROXY", "skip.example")
-    proxied = HttpSink(url="https://collector.example", api_key="k")._http_client
-    direct = HttpSink(url="https://skip.example", api_key="k")._http_client
+    proxied = HttpSink(url="https://collector.example", api_key="k")._sender.pool
+    direct = HttpSink(url="https://skip.example", api_key="k")._sender.pool
     assert isinstance(proxied, urllib3.ProxyManager)
     assert not isinstance(direct, urllib3.ProxyManager)
 
 
 def test_a_proxy_without_a_scheme_is_http(no_ambient_proxy: pytest.MonkeyPatch) -> None:
     no_ambient_proxy.setenv("HTTPS_PROXY", "proxy.corp:3128")
-    pool = HttpSink(url="https://collector.example", api_key="k")._http_client
+    pool = HttpSink(url="https://collector.example", api_key="k")._sender.pool
     assert isinstance(pool, urllib3.ProxyManager)
     assert (pool.proxy.scheme, pool.proxy.host, pool.proxy.port) == ("http", "proxy.corp", 3128)
 
 
 def test_all_proxy_is_used(no_ambient_proxy: pytest.MonkeyPatch) -> None:
     no_ambient_proxy.setenv("ALL_PROXY", "http://proxy.corp:3128")
-    pool = HttpSink(url="https://collector.example", api_key="k")._http_client
+    pool = HttpSink(url="https://collector.example", api_key="k")._sender.pool
     assert isinstance(pool, urllib3.ProxyManager)
 
 
@@ -1373,7 +1373,7 @@ def test_a_proxy_password_goes_in_proxy_authorization_and_not_the_url(
     no_ambient_proxy: pytest.MonkeyPatch,
 ) -> None:
     no_ambient_proxy.setenv("HTTPS_PROXY", "http://us%40er:s3cret@proxy.corp:3128")
-    pool = HttpSink(url="https://collector.example", api_key="k")._http_client
+    pool = HttpSink(url="https://collector.example", api_key="k")._sender.pool
     assert isinstance(pool, urllib3.ProxyManager)
     expected = urllib3.make_headers(proxy_basic_auth="us@er:s3cret")["proxy-authorization"]
     assert pool.proxy_headers["proxy-authorization"] == expected
@@ -1386,7 +1386,7 @@ def test_a_bad_proxy_never_stops_the_sink_and_warns_once(
 ) -> None:
     no_ambient_proxy.setenv("HTTPS_PROXY", value)
     with caplog.at_level(logging.WARNING, logger="baton"):
-        pools = [HttpSink(url="https://collector.example", api_key="k")._http_client for _ in "ab"]
+        pools = [HttpSink(url="https://collector.example", api_key="k")._sender.pool for _ in "ab"]
     assert not any(isinstance(p, urllib3.ProxyManager) for p in pools)
     assert [r.getMessage() for r in caplog.records if "proxy" in r.getMessage()] == [
         caplog.records[0].getMessage()
@@ -1460,19 +1460,22 @@ def test_a_bad_flush_interval_falls_back_to_the_default_with_a_warning(
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
 @pytest.mark.filterwarnings("ignore:This process .* is multi-threaded")
-def test_a_forked_child_gets_its_own_connection_pool() -> None:
+def test_a_forked_child_starts_with_new_locks_no_pool_and_none_of_the_parents_events() -> None:
     sink = HttpSink(url="http://collector.example", api_key="k")
-    parent_pool = sink._sender.pool
+    sender = sink._sender
+    sender.enqueue(make_event())
+    parent = (sender.pool, sender.cond)
     read, write = os.pipe()
     pid = os.fork()
     if pid == 0:
-        sink._sender.enqueue(make_event())
-        os.write(write, b"1" if sink._sender.pool is not parent_pool else b"0")
+        reset = sender.pool is None and sender.cond is not parent[1] and not sender.waiting
+        os.write(write, b"1" if reset else b"0")
         os._exit(0)
     os.close(write)
     os.waitpid(pid, 0)
     assert os.read(read, 1) == b"1"
-    assert sink._sender.pool is parent_pool
+    assert (sender.pool, sender.cond) == parent
+    assert sender.pending() == 1
     sink._closed = True
 
 
@@ -1489,13 +1492,13 @@ def test_a_forked_child_gets_its_own_connection_pool() -> None:
 )
 def test_a_forked_child_never_waits_on_the_parents_lock(call: Any) -> None:
     """In a child, the parent's lock may be held by a thread the child does
-    not have: simulated by another pid and the lock held here."""
+    not have: simulated by holding it here and running the fork hook."""
     sink = fake_sink(lambda path, body: 200)
     sink._sender.enqueue(make_event())
     parents_lock = sink._sender.cond
     parents_lock.acquire()
-    sink._sender.pid = -1
     try:
+        sinks_module._reset_senders_in_child()
         worker = threading.Thread(target=call, args=(sink._sender,), daemon=True)
         worker.start()
         worker.join(timeout=2)
@@ -1505,7 +1508,7 @@ def test_a_forked_child_never_waits_on_the_parents_lock(call: Any) -> None:
     sink._closed = True
 
 
-def test_a_forked_child_leaves_the_parents_batch_in_flight_to_the_parent() -> None:
+def test_a_forked_child_leaves_every_event_and_the_report_to_the_parent() -> None:
     sink = fake_sink(lambda path, body: 200)
     sender = sink._sender
     sender.enqueue(make_event(sequence_number=1))
@@ -1514,9 +1517,35 @@ def test_a_forked_child_leaves_the_parents_batch_in_flight_to_the_parent() -> No
     with sender.cond:
         assert len(sender._take_batch_locked()) == 2
     sender.enqueue(make_event(sequence_number=3))
-    sender.pid = -1
-    assert sender.stop() == 1
+    sender._encode_head()
+    sender.report = (make_event(), b"{}", {})  # type: ignore[assignment]
+    sinks_module._reset_senders_in_child()
+    assert (sender.pending(), sender.encoded, sender.encoded_bytes, sender.report) == (
+        0,
+        0,
+        0,
+        None,
+    )
+    assert sender.stop() == 0
     sink._closed = True
+
+
+async def test_a_refused_result_counts_whatever_its_error_and_needs_a_string_event_id() -> None:
+    def answer(path: str, body: Any) -> Answer:
+        ids = [e["event_id"] for e in body["events"]]
+        results: list[Any] = [
+            {"event_id": ids[0], "status": "refused", "error": "not an object"},
+            {"event_id": [ids[1]], "status": "refused"},
+            {"event_id": ids[2], "status": "refused", "error": None},
+        ]
+        return Answer(200, json.dumps({"results": results}).encode())
+
+    sink = fake_sink(answer)
+    for n in (1, 2, 3):
+        await sink.write(make_event(sequence_number=n))
+    await sink.flush()
+    assert PROCESS_DROPS.total() == {"refused": 2}
+    await sink.aclose()
 
 
 async def test_a_bad_result_entry_does_not_hide_the_refusals_after_it() -> None:
@@ -1545,3 +1574,54 @@ async def test_a_flush_interval_of_0_does_not_retry_in_a_tight_loop() -> None:
     await asyncio.sleep(0.5)
     assert len(pool_of(sink).requests) <= 4
     await sink.aclose()
+
+
+def test_a_fork_hook_that_fails_for_one_sender_still_resets_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broken, healthy = fake_sink(lambda path, body: 200), fake_sink(lambda path, body: 200)
+
+    def fails() -> None:
+        raise RuntimeError("no pool")
+
+    monkeypatch.setattr(broken._sender, "reset_in_child", fails)
+    healthy._sender.enqueue(make_event())
+    sinks_module._reset_senders_in_child()
+    assert healthy._sender.pending() == 0
+    broken._closed = healthy._closed = True
+
+
+async def test_after_a_fork_the_next_send_builds_a_pool() -> None:
+    sink = fake_sink(lambda path, body: 200)
+    sinks_module._reset_senders_in_child()
+    assert sink._sender.pool is None
+    await sink.write(make_event())
+    await sink.flush()
+    assert len(pool_of(sink).requests) == 1
+    await sink.aclose()
+
+
+def test_an_event_pushed_out_while_it_is_encoded_lends_its_body_to_no_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sink = fake_sink(lambda path, body: 200, buffer_size=2)
+    sender = sink._sender
+    for n in (1, 2):
+        sender.enqueue(make_event(sequence_number=n))
+    encode = sinks_module._encode
+
+    def encode_while_a_write_overflows(event: Any) -> bytes:
+        if event.sequence_number == 1:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                sender.enqueue(make_event(sequence_number=3))
+        return encode(event)
+
+    monkeypatch.setattr(sinks_module, "_encode", encode_while_a_write_overflows)
+    sender._encode_head()
+    monkeypatch.setattr(sinks_module, "_encode", encode)
+    sender.send_inline(time.monotonic() + 2)
+    events = [e for e in pool_of(sink).events() if e["event_type"] != "client_report"]
+    assert [e["sequence_number"] for e in events] == [2, 3]
+    assert PROCESS_DROPS.total() == {"buffer_full": 1}
+    sink._closed = True
