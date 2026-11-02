@@ -622,11 +622,20 @@ class _BatchSender:
 
     def _after_fork(self) -> None:
         # The parent's thread is gone; it may have held these locks, and its
-        # pool's sockets are shared with the parent.
+        # pool's sockets are shared with the parent. The batch it was sending
+        # is the parent's to deliver or count.
         self._new_locks()
         self.pool = self.make_pool()
         self.thread = None
         self.flushes = []
+        self.in_flight.clear()
+
+    def _lock(self) -> threading.Condition:
+        """``cond``, made new first in a forked child, where the parent's copy
+        may be held by a thread that no longer exists."""
+        if self.pid != os.getpid():
+            self._after_fork()
+        return self.cond
 
     def pending(self) -> int:
         return len(self.waiting) + len(self.in_flight)
@@ -634,9 +643,7 @@ class _BatchSender:
     # ---- called from the vendor's side ---------------------------------
 
     def enqueue(self, event: Event) -> None:
-        if self.pid != os.getpid():
-            self._after_fork()
-        with self.cond:
+        with self._lock():
             if len(self.waiting) >= self.bound:
                 if not self.overflow_warned:
                     warnings.warn(
@@ -667,11 +674,9 @@ class _BatchSender:
         return self.pid == os.getpid() and self.thread is not None and self.thread.is_alive()
 
     def ensure_running(self) -> None:
-        if self.pid != os.getpid():
-            self._after_fork()
-        if self.thread is not None and self.thread.is_alive():
+        if self.thread_alive():
             return
-        with self.cond:
+        with self._lock():
             if self.stopping or (self.thread is not None and self.thread.is_alive()):
                 return
             self.thread = threading.Thread(target=self._run, name="baton-http-sink", daemon=True)
@@ -679,7 +684,7 @@ class _BatchSender:
 
     def request_flush(self) -> concurrent.futures.Future[None]:
         done: concurrent.futures.Future[None] = concurrent.futures.Future()
-        with self.cond:
+        with self._lock():
             if self.stopping or (not self.pending() and self.report is None):
                 done.set_result(None)
             else:
@@ -688,14 +693,14 @@ class _BatchSender:
         return done
 
     def stop_reports(self) -> None:
-        with self.cond:
+        with self._lock():
             self.reports_stopped = True
             self.report = None
 
     def stop(self) -> int:
         """Stops the thread before its next request; answers how many events
         it leaves unsent."""
-        with self.cond:
+        with self._lock():
             self.stopping = True
             left = self.pending()
             self.waiting.clear()
@@ -710,7 +715,7 @@ class _BatchSender:
 
     def retire(self) -> None:
         """The sink was garbage collected: send what is left, then end the thread."""
-        with self.cond:
+        with self._lock():
             self.retiring = True
             self.cond.notify_all()
 
@@ -719,7 +724,7 @@ class _BatchSender:
     def _run(self) -> None:
         while True:
             self._encode_head()
-            with self.cond:
+            with self._lock():
                 if self.stopping:
                     return
                 if self.retiring and not self.waiting and self.report is None:
@@ -783,7 +788,7 @@ class _BatchSender:
         sending thread alive."""
         while monotonic() < deadline:
             self._encode_head()
-            with self.cond:
+            with self._lock():
                 if self.stopping or not self.circuit.can_request() or self.not_before > monotonic():
                     return
                 batch = self._take_batch_locked()
@@ -846,7 +851,7 @@ class _BatchSender:
         return list(itertools.islice(self.unencoded, BATCH_MAX_EVENTS - self.encoded))
 
     def _encode_head(self) -> None:
-        with self.cond:
+        with self._lock():
             todo = self._to_encode_locked(monotonic())
         if not todo:
             return
@@ -858,7 +863,7 @@ class _BatchSender:
                 results.append((pending, exc))
         log = logging.getLogger("baton")
         dropped: list[tuple[Event, str]] = []
-        with self.cond:
+        with self._lock():
             for pending, result in results:
                 # Pushed out of the buffer while it was being encoded.
                 if not self.unencoded or self.unencoded[0] is not pending:
@@ -927,7 +932,7 @@ class _BatchSender:
 
     def _put_back_in_flight(self) -> None:
         """A kept batch goes back to the front; then the bound applies again."""
-        with self.cond:
+        with self._lock():
             if self.stopping:
                 self.in_flight.clear()
                 return
@@ -1011,7 +1016,7 @@ class _BatchSender:
                     wait = _retry_after_seconds(response.headers)
                     if wait is not None:
                         # The endpoint answered, so the circuit is not told.
-                        with self.cond:
+                        with self._lock():
                             self.not_before = monotonic() + wait
                             self._finish_flushes_locked()
                         return None
@@ -1031,8 +1036,9 @@ class _BatchSender:
 
     def _failed(self) -> None:
         self.circuit.record_failure()
-        with self.cond:
-            self.retry_at = monotonic() + self.flush_interval
+        with self._lock():
+            # The floor keeps a flush interval of 0 from retrying in a tight loop.
+            self.retry_at = monotonic() + max(self.flush_interval, self.backoff_base)
             self._finish_flushes_locked()
 
     def _settle(self, outcomes: list[tuple[Event, str | None]], status: int) -> None:
@@ -1042,7 +1048,7 @@ class _BatchSender:
         report_refusal_stops = 200 <= status < 300 or status in (400, 422)
         refused: list[str] = []
         delivered: Event | None = None
-        with self.cond:
+        with self._lock():
             if self.stopping:
                 return
             for event, refusal in outcomes:
@@ -1139,14 +1145,19 @@ def _per_event_results(
     not name was taken: the collector answered 2xx."""
     refusals: dict[str, str] = {}
     try:
-        for result in json.loads(data)["results"]:
+        results = json.loads(data)["results"]
+    except Exception:
+        results = []
+    for result in results if isinstance(results, list) else []:
+        # One bad entry does not hide the refusals after it.
+        try:
             if result.get("status") == "refused":
                 error = result.get("error") or {}
                 refusals[str(result["event_id"])] = (
                     f"{error.get('code', 'refused')}: {error.get('message', '')}"
                 )
-    except Exception:
-        pass
+        except Exception:
+            continue
     return [(event, refusals.get(str(event.event_id))) for event, _ in part]
 
 

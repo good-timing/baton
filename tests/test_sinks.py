@@ -25,7 +25,7 @@ import baton.sinks as sinks_module
 from baton._state import PROCESS_DROPS
 from baton.events import ToolCallStartEvent
 from baton.sinks import BATCH_MAX_BYTES, HttpSink, _BatchSender
-from tests._http_fakes import Answer, fake_sink, make_event, never_answers, until
+from tests._http_fakes import Answer, fake_sink, make_event, never_answers, pool_of, until
 
 BATCH = "/v0/events/batch"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1474,3 +1474,74 @@ def test_a_forked_child_gets_its_own_connection_pool() -> None:
     assert os.read(read, 1) == b"1"
     assert sink._sender.pool is parent_pool
     sink._closed = True
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda s: s.request_flush(),
+        lambda s: s.stop_reports(),
+        lambda s: s.stop(),
+        lambda s: s.flush_at_exit(0.05),
+        lambda s: s.enqueue(make_event()),
+    ],
+    ids=["request_flush", "stop_reports", "stop", "flush_at_exit", "enqueue"],
+)
+def test_a_forked_child_never_waits_on_the_parents_lock(call: Any) -> None:
+    """In a child, the parent's lock may be held by a thread the child does
+    not have: simulated by another pid and the lock held here."""
+    sink = fake_sink(lambda path, body: 200)
+    sink._sender.enqueue(make_event())
+    parents_lock = sink._sender.cond
+    parents_lock.acquire()
+    sink._sender.pid = -1
+    try:
+        worker = threading.Thread(target=call, args=(sink._sender,), daemon=True)
+        worker.start()
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+    finally:
+        parents_lock.release()
+    sink._closed = True
+
+
+def test_a_forked_child_leaves_the_parents_batch_in_flight_to_the_parent() -> None:
+    sink = fake_sink(lambda path, body: 200)
+    sender = sink._sender
+    sender.enqueue(make_event(sequence_number=1))
+    sender.enqueue(make_event(sequence_number=2))
+    sender._encode_head()
+    with sender.cond:
+        assert len(sender._take_batch_locked()) == 2
+    sender.enqueue(make_event(sequence_number=3))
+    sender.pid = -1
+    assert sender.stop() == 1
+    sink._closed = True
+
+
+async def test_a_bad_result_entry_does_not_hide_the_refusals_after_it() -> None:
+    def answer(path: str, body: Any) -> Answer:
+        ids = [e["event_id"] for e in body["events"]]
+        results: list[Any] = [None, "x", {"status": "refused"}]
+        results.append({"event_id": ids[1], "status": "refused"})
+        return Answer(200, json.dumps({"results": results}).encode())
+
+    sink = fake_sink(answer)
+    for n in (1, 2):
+        await sink.write(make_event(sequence_number=n))
+    await sink.flush()
+    assert PROCESS_DROPS.total() == {"refused": 1}
+    await sink.aclose()
+
+
+async def test_a_flush_interval_of_0_does_not_retry_in_a_tight_loop() -> None:
+    sink = fake_sink(
+        lambda path, body: 500,
+        flush_interval_seconds=0,
+        backoff_base_seconds=0.2,
+        circuit_breaker_threshold=1000,
+    )
+    await sink.write(make_event())
+    await asyncio.sleep(0.5)
+    assert len(pool_of(sink).requests) <= 4
+    await sink.aclose()
