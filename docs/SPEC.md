@@ -1764,6 +1764,7 @@ Defined error codes:
 - `payload_malformed` — JSON schema violation (400)
 - `payload_too_large` — the body is over the cap (413)
 - `vendor_unknown` — `vendor_id` not registered (403)
+- `quota_exhausted` — the tenant's monthly event quota is used up (403, or a refused result in a batch, §2.5)
 - `signal_not_found` — return-channel query for unknown signal (404)
 - `server_error` — anything else (500)
 
