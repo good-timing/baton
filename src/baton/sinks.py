@@ -975,7 +975,7 @@ class _BatchSender:
             report = self.report
             if (
                 report is not None
-                and batch[-1][0] is report[0]
+                and any(event is report[0] for event, _ in batch)
                 and (len(batch) == 1 or self.one_per_request)
             ):
                 self.report = None

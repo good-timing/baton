@@ -123,7 +123,7 @@ async def test_a_kept_batch_keeps_its_report(first: int) -> None:
                 status = next(statuses)
                 if status == 202:
                     in_delivery.set()
-                    gate.wait()
+                    gate.wait(5)
                 return status
             return 202
         reports.append(events[-1]["event_id"])
@@ -175,12 +175,12 @@ async def test_lone_reports_that_fail_do_not_hold_up_the_events(
     await sink.aclose()
 
 
-@pytest.mark.parametrize("batch_endpoint", [False, True], ids=["none", "gone-after-the-take"])
+@pytest.mark.parametrize(
+    "batch_endpoint", [False, True], ids=["no-batch-endpoint", "batch-endpoint-gone-mid-send"]
+)
 async def test_a_report_sent_one_event_per_request_is_not_kept_when_it_fails(
     batch_endpoint: bool,
 ) -> None:
-    """The second case takes the report into a batch, then learns from the
-    404 that it must go one event per request."""
     in_delivery, gate = threading.Event(), threading.Event()
     statuses = iter([400, 202])
     reports: list[str] = []
@@ -192,7 +192,7 @@ async def test_a_report_sent_one_event_per_request_is_not_kept_when_it_fails(
             status = next(statuses)
             if status == 202:
                 in_delivery.set()
-                gate.wait()
+                gate.wait(5)
             return status
         if body["event_type"] == "client_report":
             reports.append(body["event_id"])
@@ -200,7 +200,7 @@ async def test_a_report_sent_one_event_per_request_is_not_kept_when_it_fails(
         status = next(statuses, 202)
         if status == 202 and not in_delivery.is_set():
             in_delivery.set()
-            gate.wait()
+            gate.wait(5)
         return status
 
     sink = fake_sink(answer)
@@ -214,6 +214,37 @@ async def test_a_report_sent_one_event_per_request_is_not_kept_when_it_fails(
     await _send(sink, 3)
     assert len(reports) == 1
     assert sink._sender.report is None
+    await sink.aclose()
+
+
+async def test_a_report_taken_one_event_per_request_is_dropped_when_its_event_fails() -> None:
+    in_delivery, gate = threading.Event(), threading.Event()
+    statuses = iter([400, 202, 503])
+    reports: list[str] = []
+
+    def answer(path: str, body: Any) -> int:
+        if path.endswith("/batch"):
+            return 404
+        if body["event_type"] == "client_report":
+            reports.append(body["event_id"])
+            return 202
+        status = next(statuses, 202)
+        if status == 202 and not in_delivery.is_set():
+            in_delivery.set()
+            gate.wait(5)
+        return status
+
+    sink = fake_sink(answer)
+    await _send(sink, 1)
+    await sink.write(make_event())
+    flushing = asyncio.ensure_future(sink.flush())
+    assert await asyncio.to_thread(in_delivery.wait, 3)
+    await sink.write(make_event())
+    gate.set()
+    await flushing
+    await _send(sink, 1)
+    assert reports == []
+    assert sink._sender.pending() == 0
     await sink.aclose()
 
 
@@ -323,7 +354,7 @@ async def test_a_batch_refused_whole_with_the_report_in_it_does_not_stop_reports
         status = next(statuses)
         if len(batches) == 2:
             in_delivery.set()
-            gate.wait()
+            gate.wait(5)
         return Answer(status, b"payload_malformed: bad batch" if status == 400 else b"")
 
     sink = fake_sink(answer)
@@ -365,7 +396,7 @@ async def test_a_report_goes_while_every_batch_is_full(
     def answer(path: str, body: Any) -> int:
         batches.append([e["event_type"] for e in events_in(path, body)])
         if len(batches) == 2:
-            gate.wait()
+            gate.wait(5)
         return 400 if len(batches) == 1 else 202
 
     sink = fake_sink(answer)
@@ -396,10 +427,10 @@ async def test_a_report_answered_after_close_let_go_of_it_is_not_counted(
             status = next(statuses)
             if status == 202:
                 in_delivery.set()
-                delivery_gate.wait()
+                delivery_gate.wait(5)
             return status
         in_report.set()
-        report_gate.wait()
+        report_gate.wait(5)
         if whole_batch:
             return 422
         results = [
