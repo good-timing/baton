@@ -8,6 +8,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Fixed
+
+- **A prompt get or resource read that pauses for the client's input is one
+  request** (SPEC §11.4.4), on both adapters with mcp 2.x / fastmcp 4.x, as a
+  paused tool call already was. The paused round sends no `*_end`, and the
+  round that resumes it sends no `*_start`. Before, each round was a request
+  of its own. The end's `duration_ms` is the last round's. When the client
+  speaks a protocol older than 2026-07-28 the pause fails: fastmcp raises,
+  which Baton records as usual, and mcp's official server fails it after
+  Baton's seam returns, so Baton sends the `*_error` with mcp's message.
+
 ## 0.9.4: events are sent in batches
 
 ### Changed

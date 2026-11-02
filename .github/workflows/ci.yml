@@ -303,7 +303,7 @@ jobs:
         # because they drive both adapters; this job runs their official half.
         run: |
           pytest tests/integrations/official/ -q
-          pytest tests/functional/test_tool_list_parity.py tests/functional/test_lifecycle_parity.py -q -k official
+          pytest tests/functional/test_tool_list_parity.py tests/functional/test_lifecycle_parity.py tests/functional/test_lifecycle_mrtr.py -q -k official
 
   fastmcp-matrix:
     # On pip + setup-python because the leg's value is testing the floor a

@@ -41,7 +41,7 @@ the call actually completes; the client then retries the same logical call,
 carrying its answers via ``Context.input_responses``/``request_state``. A
 paused round is not a completion, so it gets no ``tool_call_end``
 (``_is_mrtr_pause``); a round that's continuing a prior pause is not a new
-call, so it gets no new ``tool_call_start`` (``_is_mrtr_continuation``) —
+call, so it gets no new ``tool_call_start`` (``resumes_a_pause``) —
 otherwise a 3-round exchange would misreport as one dangling start, one
 spurious mid-sequence start+end pair, and one real completion. Whichever
 round eventually returns a real result (or errors) gets the one true
@@ -104,6 +104,7 @@ from baton.integrations._llm_text import (
     required_param_names,
     scrub_goals,
 )
+from baton.integrations._mrtr import resumes_a_pause
 from baton.integrations._session import (
     ResolvedSession,
     end_of_ladder,
@@ -584,7 +585,7 @@ def _wrap_tool_run(
         # param strip above still runs unconditionally regardless: if a
         # continuation resends the original arguments, user_goal
         # must still never reach the vendor handler.
-        is_continuation = _is_mrtr_continuation(context)
+        is_continuation = resumes_a_pause(context)
         if not is_continuation:
             # ⚠ scrub_or_none, not a bare call. ``emit_before`` builds inside
             # a ``safe_emit`` thunk — but THIS runs while its ARGUMENTS are
@@ -776,25 +777,6 @@ async def _resolve_call_session(
     if from_header is not None:
         return ResolvedSession(from_header, "observed")
     return end_of_ladder(fallback=fallback, transport_observed=transport_observed)
-
-
-def _is_mrtr_continuation(context: Any) -> bool:
-    """True if this ``Tool.run`` invocation is a continuation of a previously
-    paused multi-round-trip (MRTR) call — mcp>=2.0's ``Context.input_responses``/
-    ``request_state`` carry the client's answers to an earlier
-    ``InputRequiredResult``'s ``input_requests`` (SEP, 2026-07-28+). Duck-typed,
-    not an ``isinstance`` check against ``mcp_types`` — mcp<2.0 has no such
-    properties on ``Context`` at all, so this is always False there. Never
-    raises: mirrors the rest of this module's best-effort context reads."""
-    if context is None:
-        return False
-    try:
-        return (
-            getattr(context, "input_responses", None) is not None
-            or getattr(context, "request_state", None) is not None
-        )
-    except (AttributeError, ValueError):
-        return False
 
 
 def _is_mrtr_pause(result: Any) -> bool:
