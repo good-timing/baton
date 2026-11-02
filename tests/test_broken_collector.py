@@ -6,11 +6,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import subprocess
-import sys
 import time
 import urllib.request
-from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -20,37 +17,8 @@ from baton.sinks import HttpSink
 from tests.functional.conftest import SPEC_ROOT
 from tests.test_sinks import _make_event
 
-_COLLECTOR = SPEC_ROOT / "collector" / "fake_collector.py"
 _FILE = SPEC_ROOT / "collector" / "scenarios.json"
 _SPEC: dict[str, Any] = json.loads(_FILE.read_text()) if _FILE.exists() else {"scenarios": []}
-
-
-@pytest.fixture
-def collector(request: pytest.FixtureRequest) -> Iterator[int]:
-    """The port of a collector in the scenario's mode, or 1, where nothing
-    listens, for "down"."""
-    scenario: dict[str, Any] = request.param
-    if scenario["mode"] == "down":
-        yield 1
-        return
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            str(_COLLECTOR),
-            "--mode",
-            scenario["mode"],
-            "--delay-ms",
-            str(scenario.get("delay_ms", 0)),
-        ],
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        assert process.stdout is not None
-        yield int(process.stdout.readline())
-    finally:
-        process.kill()
-        process.wait()
 
 
 def _received(port: int, mode: str, query: str = "") -> dict[str, Any]:

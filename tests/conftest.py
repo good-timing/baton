@@ -35,12 +35,16 @@ will rely on.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 from pytest_httpserver import HTTPServer
 
 from baton._state import PROCESS_DROPS
+from tests.functional.conftest import SPEC_ROOT
 
 
 @pytest.fixture(autouse=True)
@@ -76,3 +80,31 @@ def make_httpserver(
     server.clear()
     if server.is_running():
         server.stop()
+
+
+@pytest.fixture
+def collector(request: pytest.FixtureRequest) -> Iterator[int]:
+    """The port of a collector in the scenario's mode, or 1, where nothing
+    listens, for "down"."""
+    scenario: dict[str, Any] = request.param
+    if scenario["mode"] == "down":
+        yield 1
+        return
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SPEC_ROOT / "collector" / "fake_collector.py"),
+            "--mode",
+            scenario["mode"],
+            "--delay-ms",
+            str(scenario.get("delay_ms", 0)),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout is not None
+        yield int(process.stdout.readline())
+    finally:
+        process.kill()
+        process.wait()
