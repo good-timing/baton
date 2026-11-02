@@ -153,6 +153,7 @@ from baton.sinks import (
     safe_emit,
     safe_write,
     shutdown_budget_seconds,
+    write_unless_closed,
 )
 
 T = TypeVar("T")
@@ -1484,7 +1485,7 @@ class Client(_Sessions):
         # Caught here, on the loop, so a write that fails after the caller
         # stopped waiting still marks the surface for a resend.
         try:
-            await self._sink.write(event)
+            await write_unless_closed(self._sink, event, logger)
         except Exception:
             self._snapshot_write_failed(event)
 
@@ -1962,7 +1963,7 @@ class AsyncClient(_Sessions):
         served, event = self._serve(tools, server_info, capabilities, instructions)
         if event is not None and not self._dropping_after_close():
             try:
-                await self._sink.write(event)
+                await write_unless_closed(self._sink, event, logger)
             except Exception:
                 self._snapshot_write_failed(event)
             except BaseException:

@@ -8,16 +8,27 @@ import logging
 import threading
 import warnings
 from collections.abc import Callable, Coroutine
-from typing import Any, get_args
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, cast, get_args
 
 import httpx
 import pytest
 from pytest_httpserver import HTTPServer
 
-from baton import Client
+from baton import AsyncClient, Client
 from baton._state import PROCESS_DROPS, DropReason
 from baton.events import Event
-from baton.sinks import HttpSink, Sink, build_or_none, safe_write
+from baton.sinks import (
+    FileSink,
+    HttpSink,
+    MultiSink,
+    Sink,
+    SinkClosedError,
+    StdoutSink,
+    build_or_none,
+    safe_write,
+)
 from tests.test_sinks import _make_event
 
 
@@ -125,6 +136,103 @@ async def test_a_dropped_event_is_counted_once_under_its_reason(name: str) -> No
     reason, scenario = _SCENARIOS[name]
     await scenario()
     assert PROCESS_DROPS.total() == {reason: 1}
+
+
+@dataclass(eq=True)
+class _Unhashable(Sink):
+    closed: bool = False
+
+    async def write(self, event: Event) -> None:
+        if self.closed:
+            raise SinkClosedError
+
+    async def flush(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@dataclass(eq=True, slots=True)
+class _NoWeakref:
+    """Duck-typed: any ``Sink`` subclass takes a weakref."""
+
+    closed: bool = False
+
+    async def write(self, event: Event) -> None:
+        if self.closed:
+            raise SinkClosedError
+
+    async def flush(self) -> None:
+        pass
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.parametrize("make", ["http", "file", "stdout", "multi", "unhashable", "no_weakref"])
+async def test_a_write_after_the_sink_closed_is_counted_after_close_with_one_warning(
+    make: str, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    sinks: dict[str, Callable[[], Sink]] = {
+        "http": lambda: _http_sink(lambda request: httpx.Response(202)),
+        "file": lambda: FileSink(tmp_path / "events.jsonl"),
+        "stdout": StdoutSink,
+        "multi": lambda: MultiSink([FileSink(tmp_path / "m.jsonl"), StdoutSink()]),
+        "unhashable": _Unhashable,
+        "no_weakref": lambda: cast(Sink, _NoWeakref()),
+    }
+    sink = sinks[make]()
+    await sink.aclose()
+    for _ in range(3):
+        await safe_write(sink, _make_event(), logging.getLogger("baton"))
+    assert PROCESS_DROPS.total() == {"after_close": 3}
+    assert [(r.levelno, r.exc_info) for r in caplog.records if r.name == "baton"] == [
+        (logging.WARNING, None)
+    ]
+
+
+async def test_a_closed_sink_beside_a_cancelled_one_is_still_counted() -> None:
+    class _Cancelled(_WriteRaises):
+        async def write(self, event: Event) -> None:
+            raise asyncio.CancelledError
+
+    sink = MultiSink([_Unhashable(closed=True), _Cancelled()])
+    await safe_write(sink, _make_event(), logging.getLogger("baton"))
+    assert PROCESS_DROPS.total() == {"after_close": 1}
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_a_library_snapshot_to_a_closed_sink_is_counted_once_and_not_retried(
+    asynchronous: bool, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    sink = FileSink(tmp_path / "events.jsonl")
+    await sink.aclose()
+    tools = [{"name": "fetch", "inputSchema": {"type": "object"}}]
+    if asynchronous:
+        aclient = AsyncClient(sink=sink, vendor_id="v")
+        for _ in range(2):
+            await aclient.list_tools(tools)
+    else:
+        client = Client(sink=sink, vendor_id="v")
+        for _ in range(2):
+            await asyncio.to_thread(client.list_tools, tools)
+        await asyncio.to_thread(client.close)
+    assert PROCESS_DROPS.total() == {"after_close": 1}
+    baton = [r for r in caplog.records if r.name.startswith("baton")]
+    assert [(r.levelno, r.exc_info) for r in baton] == [(logging.WARNING, None)]
+
+
+async def test_a_multisink_with_one_closed_sink_still_delivers_and_counts_nothing(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    closed = FileSink(tmp_path / "closed.jsonl")
+    await closed.aclose()
+    sink = MultiSink([closed, FileSink(tmp_path / "open.jsonl")])
+    await safe_write(sink, _make_event(), logging.getLogger("baton"))
+    assert PROCESS_DROPS.total() == {}
+    assert (tmp_path / "open.jsonl").read_text().count("\n") == 1
+    assert [r for r in caplog.records if r.name.startswith("baton")] == []
 
 
 async def test_the_first_delivery_after_a_loss_says_what_was_lost(

@@ -83,7 +83,7 @@ from baton.integrations.standalone._session import (
     resolve_call_session,
 )
 from baton.scrub import identity_scrub
-from baton.sinks import Sink, safe_emit
+from baton.sinks import Sink, safe_emit, write_unless_closed
 
 logger = logging.getLogger(__name__)
 
@@ -275,10 +275,11 @@ class BatonMiddleware(Middleware):
             # seen before the write, by contrast, would permanently drop
             # this surface on a single transient sink failure with no retry
             # (unlike every other event type, which gets a fresh attempt
-            # next time). ``self._sink.write`` directly, not ``safe_write``
-            # — this block needs to observe success/failure, not swallow it.
+            # next time). ``write_unless_closed``, not ``safe_write`` — this
+            # block needs to observe success/failure, not swallow it.
             try:
-                await self._sink.write(event)
+                # A closed sink counts it once and is marked too, so it is not rebuilt.
+                await write_unless_closed(self._sink, event, logger)
             except Exception:
                 logger.exception("baton: surface snapshot capture failed")
                 return

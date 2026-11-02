@@ -8,6 +8,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Fixed
+
+- An event recorded after `handle.aclose()` on the MCP install path is now counted as `after_close` and logged once, as SPEC §11.2 says. Before, it was counted as `write_failed` and logged with a traceback for every event. Baton's sinks raise the new `baton.sinks.SinkClosedError`, a `RuntimeError`, on a write after close; a vendor sink can raise it too to get the same handling. This covers surface snapshots too, and a `MultiSink` with one closed sink still delivers to the others without counting a loss.
+
 ## 0.9.2: lost events are counted and reported, and blank means White_Space
 
 ### Added

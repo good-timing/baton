@@ -127,7 +127,7 @@ from baton.integrations.official import _auth
 from baton.integrations.official._compat import ToolErrorClass, set_server_instructions
 from baton.integrations.official._registry import get_tool_manager, get_tool_registry
 from baton.scrub import identity_scrub, scrub_or_none
-from baton.sinks import Sink, safe_emit
+from baton.sinks import Sink, safe_emit, write_unless_closed
 
 logger = logging.getLogger(__name__)
 
@@ -485,6 +485,7 @@ def _wrap_tool_run(
                         logger.exception("baton: surface snapshot capture failed")
                         surface_state.dirty = True
                     else:
+                        # Also when the sink is closed: counted once, not on every call.
                         surface_state.sent_surfaces.mark(digest)
 
         # Strip the injected goal params IN PLACE, before snapshotting params —
@@ -1032,7 +1033,8 @@ def _make_emitters(
         # on the next call rather than silently treating the surface as
         # emitted. The caller still fails open overall (SPEC §11.2): it
         # catches this and never lets it reach the vendor's tool call.
-        await sink.write(
+        await write_unless_closed(
+            sink,
             SurfaceSnapshotEvent(
                 tenant_id=tenant_id,
                 vendor_id=vendor_id,
@@ -1049,7 +1051,8 @@ def _make_emitters(
                     tools=snapshot["tools"],
                     seam_augmentations=snapshot["seam_augmentations"],
                 ),
-            )
+            ),
+            logger,
         )
 
     return emit_before, emit_after, emit_error, emit_surface

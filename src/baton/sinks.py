@@ -67,6 +67,45 @@ def _require_httpx() -> Any:
     return httpx
 
 
+class SinkClosedError(RuntimeError):
+    pass
+
+
+# By id(), since a vendor's sink may be unhashable; the weakref drops the
+# entry when the sink dies, before its id can be reused. A sink with no weakref
+# support stays by id, bounded: a later sink at that id may miss its warning.
+_warned_closed: dict[int, weakref.ref[Sink] | None] = {}
+_WARNED_WITHOUT_WEAKREF_MAX = 1024
+_warned_without_weakref = 0
+
+
+def _first_closed_warning(sink: Sink) -> bool:
+    global _warned_without_weakref
+    key = id(sink)
+    if key in _warned_closed:
+        return False
+    try:
+        _warned_closed[key] = weakref.ref(sink, lambda _: _warned_closed.pop(key, None))
+    except TypeError:
+        if _warned_without_weakref < _WARNED_WITHOUT_WEAKREF_MAX:
+            _warned_without_weakref += 1
+            _warned_closed[key] = None
+    return True
+
+
+async def write_unless_closed(sink: Sink, event: Event, logger: logging.Logger) -> bool:
+    """``sink.write``; False when the sink is closed, which counts the event
+    ``after_close`` and warns once per sink. Any other error propagates."""
+    try:
+        await sink.write(event)
+    except SinkClosedError:
+        PROCESS_DROPS.add("after_close")
+        if _first_closed_warning(sink):
+            logger.warning("baton: the sink is closed; further events are dropped.")
+        return False
+    return True
+
+
 async def safe_write(sink: Sink, event: Event, logger: logging.Logger) -> None:
     """Fail-open wrapper around ``sink.write``.
 
@@ -82,7 +121,7 @@ async def safe_write(sink: Sink, event: Event, logger: logging.Logger) -> None:
     and ``SystemExit`` must still propagate for clean shutdown.
     """
     try:
-        await sink.write(event)
+        await write_unless_closed(sink, event, logger)
     except Exception:
         PROCESS_DROPS.add("write_failed")
         logger.exception("baton: sink.write failed; event dropped, tool call continues")
@@ -149,7 +188,7 @@ class Sink(ABC):
 
     @abstractmethod
     async def aclose(self) -> None:
-        """Flush + release resources. After ``aclose``, ``write`` raises."""
+        """Flush + release resources. After ``aclose``, ``write`` raises ``SinkClosedError``."""
 
     async def __aenter__(self) -> Self:
         return self
@@ -183,7 +222,7 @@ class StdoutSink(Sink):
 
     async def write(self, event: Event) -> None:
         if self._closed:
-            raise RuntimeError("StdoutSink is closed")
+            raise SinkClosedError("StdoutSink is closed")
         line = json.dumps(event.model_dump(mode="json"), separators=(",", ":"))
         self._stream.write(line + "\n")
         self._stream.flush()
@@ -218,7 +257,7 @@ class FileSink(Sink):
 
     async def write(self, event: Event) -> None:
         if self._closed:
-            raise RuntimeError("FileSink is closed")
+            raise SinkClosedError("FileSink is closed")
         if self._file is None:
             self._file = self._path.open("a", buffering=1, encoding="utf-8")
         line = json.dumps(event.model_dump(mode="json"), separators=(",", ":"))
@@ -451,7 +490,7 @@ class HttpSink(Sink):
 
     async def write(self, event: Event) -> None:
         if self._closed:
-            raise RuntimeError("HttpSink is closed")
+            raise SinkClosedError("HttpSink is closed")
         self._enqueue(event)
         self._ensure_drain_running()
         self._ensure_atexit_registered()
@@ -963,8 +1002,11 @@ class MultiSink(Sink):
         # Narrow to Exception (not BaseException) — never aggregate
         # CancelledError / KeyboardInterrupt into a sink-failure group.
         errors = [r for r in results if isinstance(r, Exception)]
+        if any(r is None for r in results):
+            # Another sink took the event, so it was not lost.
+            errors = [e for e in errors if not isinstance(e, SinkClosedError)]
         if errors:
-            if len(errors) == 1:
+            if len(errors) == 1 or all(isinstance(e, SinkClosedError) for e in errors):
                 raise errors[0]
             raise ExceptionGroup("MultiSink fan-out failures", errors)
 
@@ -974,5 +1016,6 @@ __all__ = [
     "HttpSink",
     "MultiSink",
     "Sink",
+    "SinkClosedError",
     "StdoutSink",
 ]
