@@ -5,25 +5,23 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
-import pytest
 import uvicorn
 from mcp import ClientSession
 
-from baton.integrations.official import VendorConfig, install_baton
-from baton.integrations.official._compat import MCPServerClass as FastMCP
-from baton.sinks import HttpSink
+from tests._fake_collector import each_scenario, http_sink, install_echo, received, scenario_file
 from tests._mcp_session import connected_session
-from tests.functional.conftest import SPEC_ROOT
-from tests.integrations.official.test_http_sessions import MCP_MAJOR, _free_port, _http_client
-from tests.test_broken_collector import _received
+from tests.integrations.official.test_http_sessions import (
+    BOOT_TIMEOUT_S,
+    MCP_MAJOR,
+    _free_port,
+    _http_client,
+)
 
-_FILE = SPEC_ROOT / "collector" / "sessions.json"
-_SPEC: dict[str, Any] = json.loads(_FILE.read_text()) if _FILE.exists() else {"scenarios": []}
-_NOT_RUN: dict[str, str] = {}
+_SPEC = scenario_file("sessions.json")
 
 
 @contextlib.asynccontextmanager
@@ -49,7 +47,13 @@ async def _serving(mcp: Any, stateless: bool, given: set[str]) -> AsyncIterator[
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     serving = asyncio.ensure_future(server.serve())
+    deadline = time.monotonic() + BOOT_TIMEOUT_S
     while not server.started:
+        if serving.done():
+            serving.result()
+            raise RuntimeError("uvicorn stopped before it started")
+        if time.monotonic() > deadline:
+            raise TimeoutError("uvicorn did not start")
         await asyncio.sleep(0.01)
     try:
         yield f"http://127.0.0.1:{port}/mcp"
@@ -70,37 +74,12 @@ async def _session(mcp: Any, transport: str, url: str) -> AsyncIterator[ClientSe
             yield session
 
 
-@pytest.mark.skipif(not _FILE.exists(), reason="baton-spec submodule not checked out")
-@pytest.mark.parametrize(
-    ("scenario", "collector"),
-    [
-        pytest.param(
-            s,
-            {"mode": "ok"},
-            id=s["name"],
-            marks=[pytest.mark.skip(reason=_NOT_RUN[s["name"]])] if s["name"] in _NOT_RUN else [],
-        )
-        for s in _SPEC["scenarios"]
-    ],
-    indirect=["collector"],
-)
+@each_scenario(_SPEC, mode="ok")
 async def test_sessions_group_as_the_ladder_says(scenario: dict[str, Any], collector: int) -> None:
     transport = scenario["transport"]
     stateless = transport == "stateless_http"
-    mcp = FastMCP("sessions", **({"stateless_http": True} if stateless and MCP_MAJOR < 2 else {}))
-
-    @mcp.tool()
-    def echo(text: str) -> str:
-        return text
-
-    handle = install_baton(
-        mcp,
-        VendorConfig(
-            vendor_id="v",
-            vendor_display_name="V",
-            sink=HttpSink(url=f"http://127.0.0.1:{collector}", api_key="k"),
-        ),
-    )
+    server = {"stateless_http": True} if stateless and MCP_MAJOR < 2 else {}
+    mcp, handle = install_echo(http_sink(collector), **server)
     calls: list[tuple[str, str | None]] = []
     given: set[str] = set()
     serving = (
@@ -120,7 +99,7 @@ async def test_sessions_group_as_the_ladder_says(scenario: dict[str, Any], colle
 
     events = [
         e
-        for e in _received(collector, "ok")["events"]
+        for e in (await received(collector))["events"]
         if e["event_type"] in ("tool_call_start", "tool_call_end")
     ]
     expect = scenario["expect"]

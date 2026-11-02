@@ -3,51 +3,26 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import time
-import urllib.request
 from typing import Any
 
 import pytest
 
 from baton._state import PROCESS_DROPS
-from baton.sinks import HttpSink
-from tests.functional.conftest import SPEC_ROOT
+from tests._fake_collector import each_scenario, from_baton, http_sink, received, scenario_file
 from tests.test_sinks import _make_event
 
-_FILE = SPEC_ROOT / "collector" / "scenarios.json"
-_SPEC: dict[str, Any] = json.loads(_FILE.read_text()) if _FILE.exists() else {"scenarios": []}
+_SPEC = scenario_file("scenarios.json")
 
 
-def _received(port: int, mode: str, query: str = "") -> dict[str, Any]:
-    if mode == "down":
-        return {"accepted": [], "requests": 0, "reports": 0}
-    url = f"http://127.0.0.1:{port}/_received{query}"
-    with urllib.request.urlopen(url, timeout=5) as response:
-        received: dict[str, Any] = json.load(response)
-        return received
-
-
-@pytest.mark.skipif(not _FILE.exists(), reason="baton-spec submodule not checked out")
-@pytest.mark.parametrize(
-    ("scenario", "collector"),
-    [pytest.param(s, s, id=s["name"]) for s in _SPEC["scenarios"]],
-    indirect=["collector"],
-)
+@each_scenario(_SPEC)
 async def test_the_sink_keeps_its_promises(
     scenario: dict[str, Any], collector: int, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.WARNING, logger="baton")
     settings, limits = _SPEC["settings"], _SPEC["limits"]
-    sink = HttpSink(
-        url=f"http://127.0.0.1:{collector}",
-        api_key="k",
-        request_timeout_seconds=settings["request_timeout_ms"] / 1000,
-        shutdown_flush_timeout_seconds=settings["shutdown_budget_ms"] / 1000,
-        backoff_base_seconds=settings["backoff_base_ms"] / 1000,
-    )
+    sink = http_sink(collector, settings)
     sent = range(1, scenario["events"] + 1)
     for n in sent:
         started = time.monotonic()
@@ -57,7 +32,7 @@ async def test_the_sink_keeps_its_promises(
     if "reports" in expect:
         wait = f"?accepted={expect.get('accepted', 0)}&reports={expect['reports']}"
         wait += f"&wait_ms={limits['report_ms']}"
-        await asyncio.to_thread(_received, collector, scenario["mode"], wait)
+        await received(collector, scenario["mode"], wait)
     started = time.monotonic()
     await sink.aclose()
     assert (
@@ -65,12 +40,12 @@ async def test_the_sink_keeps_its_promises(
         <= (settings["shutdown_budget_ms"] + limits["close_margin_ms"]) / 1000
     )
 
-    received = _received(collector, scenario["mode"])
-    accepted = received["accepted"]
+    got = await received(collector, scenario["mode"])
+    accepted = got["accepted"]
     dropped = sum(PROCESS_DROPS.total().values())
     # A failure logged with a traceback is one that raised somewhere unseen.
-    assert not [r.getMessage() for r in caplog.records if r.exc_info]
-    assert scenario["mode"] == "down" or received["requests"] >= 1
+    assert not [r.getMessage() for r in from_baton(caplog.records) if r.exc_info]
+    assert scenario["mode"] == "down" or got["requests"] >= 1
     assert set(accepted) <= set(sent)
     assert len(accepted) + dropped >= len(sent)
     if "accepted" in expect:
@@ -78,4 +53,4 @@ async def test_the_sink_keeps_its_promises(
     if "dropped" in expect:
         assert dropped == expect["dropped"]
     if "reports" in expect:
-        assert received["reports"] == expect["reports"]
+        assert got["reports"] == expect["reports"]

@@ -44,7 +44,7 @@ import pytest
 from pytest_httpserver import HTTPServer
 
 from baton._state import PROCESS_DROPS
-from tests.functional.conftest import SPEC_ROOT
+from tests._fake_collector import COLLECTOR_DIR
 
 
 @pytest.fixture(autouse=True)
@@ -93,7 +93,7 @@ def collector(request: pytest.FixtureRequest) -> Iterator[int]:
     process = subprocess.Popen(
         [
             sys.executable,
-            str(SPEC_ROOT / "collector" / "fake_collector.py"),
+            str(COLLECTOR_DIR / "fake_collector.py"),
             "--mode",
             scenario["mode"],
             "--delay-ms",
