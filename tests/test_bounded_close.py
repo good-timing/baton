@@ -290,6 +290,30 @@ async def test_aclose_stops_the_sending_thread(stuck_sink: HttpSink) -> None:
     assert len(pool_of(stuck_sink).requests) == 1, "no retry starts after close"
 
 
+async def test_no_event_is_sent_after_close_gives_up(caplog: pytest.LogCaptureFixture) -> None:
+    held = threading.Event()
+    singles: list[int] = []
+
+    def old_collector(path: str, body: Any) -> int:
+        if path.endswith("/batch"):
+            return 404
+        singles.append(body["sequence_number"])
+        if len(singles) == 2:
+            held.wait()
+        return 202
+
+    sink = fake_sink(old_collector, shutdown_flush_timeout_seconds=0.1)
+    for n in (1, 2, 3):
+        await sink.write(_make_event(sequence_number=n))
+    await sink.aclose()
+    thread = sink._sender.thread
+    assert thread is not None
+    held.set()
+    thread.join(timeout=2)
+    assert singles == [1, 2]
+    assert PROCESS_DROPS.total() == {"unsent_at_close": 2}
+
+
 async def test_a_close_cancelled_from_outside_is_finished_by_the_next_aclose(
     stuck_sink: HttpSink,
 ) -> None:

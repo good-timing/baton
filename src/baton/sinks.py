@@ -748,10 +748,12 @@ class _BatchSender:
         if self.not_before > now:
             self._finish_flushes_locked()
             return self.not_before - now
-        if self.flushes or self.retiring:
+        if self.flushes:
             return 0.0
         if self.retry_at > now:
             return self.retry_at - now
+        if self.retiring:
+            return 0.0
         if len(self.buffer) >= BATCH_MAX_EVENTS or self._over_byte_cap_locked():
             return 0.0
         oldest = self.recorded_at[0] if self.recorded_at else math.inf
@@ -893,6 +895,8 @@ class _BatchSender:
         5xx, 429 or network failure after the retries, or a ``Retry-After``."""
         urllib3 = _require_urllib3()
         for attempt in range(self.max_retries + 1):
+            if self.stopping:
+                return None
             timeout = self.request_timeout
             if deadline is not None:
                 timeout = min(timeout, deadline - monotonic())
@@ -1192,7 +1196,7 @@ class HttpSink(Sink):
                     len(self._buffer),
                 )
             return
-        if self._buffer:
+        if self._buffer or self._sender.report is not None:
             self._sender.ensure_running()
         done = self._sender.request_flush()
         if await _wait_for_thread(done, seconds):
