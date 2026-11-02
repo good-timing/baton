@@ -1,0 +1,62 @@
+# baton-spec's speed and load measures, the last release against this commit
+# (scripts/bench.sh). Reports only: nothing here gates a release. A tag's
+# results are also kept on the bench-results branch.
+name: Bench
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      against:
+        description: "Release to compare with, such as 0.9.2. Empty: the newest tag before this commit."
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.19"
+      - run: scripts/bench.sh bench-results
+        env:
+          BENCH_AGAINST: ${{ inputs.against }}
+      - run: cat bench-results/compare.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-results/
+          retention-days: 90
+
+  keep:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: bench
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: bench-results
+          path: ${{ runner.temp }}/results
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch --quiet origin bench-results; then git switch bench-results; else git switch --orphan bench-results; fi
+          mkdir -p "$GITHUB_REF_NAME"
+          cp "$RUNNER_TEMP"/results/* "$GITHUB_REF_NAME"/
+          git add "$GITHUB_REF_NAME"
+          git commit --quiet -m "bench: $GITHUB_REF_NAME"
+          git push --quiet origin bench-results

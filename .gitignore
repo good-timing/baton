@@ -28,6 +28,7 @@ coverage.json
 coverage.xml
 coverage/
 htmlcov/
+bench-results/
 
 # Environment
 .env

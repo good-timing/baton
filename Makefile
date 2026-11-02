@@ -7,7 +7,7 @@ PYTHON_VERSION ?= 3.14
 VENV ?= .venv
 BIN = $(VENV)/bin
 
-.PHONY: install test test-fast test-perf test-functional soak test-watch test-cov lint format format-check typecheck ci clean build spec-check
+.PHONY: install test test-fast test-perf test-functional soak bench test-watch test-cov lint format format-check typecheck ci clean build spec-check
 
 # `--locked` is the point: it FAILS if uv.lock and pyproject.toml disagree,
 # rather than quietly re-resolving. That is what makes this venv the same one
@@ -52,6 +52,9 @@ test-functional:
 # launch and periodically after. See scripts/soak.py's module docstring.
 soak:
 	$(BIN)/python scripts/soak.py
+
+bench:
+	scripts/bench.sh
 
 test-watch:
 	$(BIN)/pytest-watch -q
