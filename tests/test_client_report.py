@@ -18,7 +18,16 @@ import baton._state as state_module
 import baton._uuid as uuid_module
 import baton.sinks as sinks_module
 from baton._state import PROCESS_DROPS, PROCESS_SEQUENCE
-from baton.sinks import HttpSink, _BatchSender
+from baton.events import ToolCallStartPayload
+from baton.sinks import (
+    _BATCH_CLOSE,
+    _BATCH_OPEN,
+    BATCH_MAX_BYTES,
+    BATCH_MAX_EVENTS,
+    HttpSink,
+    _BatchSender,
+    _encode,
+)
 from tests._http_fakes import (
     Answer,
     ReportCollector,
@@ -238,6 +247,45 @@ async def test_a_batch_refused_whole_with_the_report_in_it_does_not_stop_reports
     assert batches[2] == ["tool_call_start", "client_report"]
     assert batches[-1] == ["client_report"]
     assert PROCESS_DROPS.total() == {"refused": 2}
+    await sink.aclose()
+
+
+def _event_filling_half_a_batch() -> Any:
+    """Two of these fill a batch's bytes to within a few bytes of the cap."""
+    event = make_event()
+    room = (BATCH_MAX_BYTES - len(_BATCH_OPEN) - len(_BATCH_CLOSE) - 1) // 2
+    blob = room - len(_encode(event)) - len(',"params":{"blob":""}') - 5
+    return event.model_copy(
+        update={"payload": ToolCallStartPayload(tool_name="t", params={"blob": "x" * blob})}
+    )
+
+
+@pytest.mark.parametrize(
+    ("make", "full", "load"),
+    [(make_event, BATCH_MAX_EVENTS, 3 * BATCH_MAX_EVENTS), (_event_filling_half_a_batch, 2, 6)],
+    ids=["count-full", "bytes-full"],
+)
+async def test_a_report_goes_while_every_batch_is_full(
+    no_interval: None, make: Callable[[], Any], full: int, load: int
+) -> None:
+    gate = threading.Event()
+    batches: list[list[str]] = []
+
+    def answer(path: str, body: Any) -> int:
+        batches.append([e["event_type"] for e in events_in(path, body)])
+        if len(batches) == 2:
+            gate.wait()
+        return 400 if len(batches) == 1 else 202
+
+    sink = fake_sink(answer)
+    await _send(sink, 1)
+    for _ in range(load):
+        await sink.write(make())
+    flushing = asyncio.ensure_future(sink.flush())
+    gate.set()
+    await flushing
+    assert max(len(b) for b in batches) == full
+    assert len([b for b in batches if "client_report" in b and "tool_call_start" in b]) == 1
     await sink.aclose()
 
 

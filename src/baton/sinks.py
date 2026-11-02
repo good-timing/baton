@@ -939,13 +939,13 @@ class _BatchSender:
         batch: _Batch = []
         count = body_bytes = 0
         owner: tuple[str, str] | None = None
-        for pending in itertools.islice(self.waiting, min(self.encoded, BATCH_MAX_EVENTS)):
+        # SPEC §11.4.7: a due report keeps a place, or full batches would starve it.
+        held, held_bytes = (1, len(self.report[1])) if self.report is not None else (0, 0)
+        for pending in itertools.islice(self.waiting, min(self.encoded, BATCH_MAX_EVENTS - held)):
             assert pending.body is not None
             event = pending.event
-            if batch and (
-                (event.tenant_id, event.vendor_id) != owner
-                or _body_size(count + 1, body_bytes + len(pending.body)) > BATCH_MAX_BYTES
-            ):
+            size = _body_size(count + 1 + held, body_bytes + len(pending.body) + held_bytes)
+            if batch and ((event.tenant_id, event.vendor_id) != owner or size > BATCH_MAX_BYTES):
                 break
             owner = (event.tenant_id, event.vendor_id)
             count += 1
@@ -955,7 +955,7 @@ class _BatchSender:
             self.in_flight.append(self.waiting.popleft())
         self.encoded -= count
         self.encoded_bytes -= body_bytes
-        if self.report is not None and count < BATCH_MAX_EVENTS:
+        if self.report is not None:
             report, body, _ = self.report
             fits = _body_size(count + 1, body_bytes + len(body)) <= BATCH_MAX_BYTES
             if not batch or (fits and (report.tenant_id, report.vendor_id) == owner):
