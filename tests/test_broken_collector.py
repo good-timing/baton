@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import subprocess
@@ -52,10 +53,11 @@ def collector(request: pytest.FixtureRequest) -> Iterator[int]:
         process.wait()
 
 
-def _received(port: int, mode: str) -> dict[str, Any]:
+def _received(port: int, mode: str, query: str = "") -> dict[str, Any]:
     if mode == "down":
-        return {"accepted": [], "requests": 0}
-    with urllib.request.urlopen(f"http://127.0.0.1:{port}/_received", timeout=2) as response:
+        return {"accepted": [], "requests": 0, "reports": 0}
+    url = f"http://127.0.0.1:{port}/_received{query}"
+    with urllib.request.urlopen(url, timeout=5) as response:
         received: dict[str, Any] = json.load(response)
         return received
 
@@ -83,6 +85,11 @@ async def test_the_sink_keeps_its_promises(
         started = time.monotonic()
         await sink.write(_make_event(sequence_number=n))
         assert time.monotonic() - started <= limits["write_ms"] / 1000
+    expect = scenario.get("expect", {})
+    if "reports" in expect:
+        wait = f"?accepted={expect.get('accepted', 0)}&reports={expect['reports']}"
+        wait += f"&wait_ms={limits['report_ms']}"
+        await asyncio.to_thread(_received, collector, scenario["mode"], wait)
     started = time.monotonic()
     await sink.aclose()
     assert (
@@ -98,8 +105,9 @@ async def test_the_sink_keeps_its_promises(
     assert scenario["mode"] == "down" or received["requests"] >= 1
     assert set(accepted) <= set(sent)
     assert len(accepted) + dropped >= len(sent)
-    expect = scenario.get("expect", {})
     if "accepted" in expect:
         assert len(accepted) == expect["accepted"]
     if "dropped" in expect:
         assert dropped == expect["dropped"]
+    if "reports" in expect:
+        assert received["reports"] == expect["reports"]
