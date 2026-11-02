@@ -1087,15 +1087,17 @@ class _BatchSender:
             if self.stopping:
                 return
             for event, refusal in outcomes:
-                if self.report is not None and self.report[0] is event:
-                    if refusal is None:
-                        self.reported = self.report[2]
-                    elif _refusal_means_no_reports(refusal, status, alone):
-                        self.reports_stopped = True
-                    self.report = None
-                    continue
                 if self.in_flight and self.in_flight[0].event is event:
                     self.in_flight.popleft()
+                elif isinstance(event, ClientReportEvent):
+                    # Ours, never counted, even after stop_reports() let go of it.
+                    if self.report is not None and self.report[0] is event:
+                        if refusal is None:
+                            self.reported = self.report[2]
+                        elif _refusal_means_no_reports(refusal, status, alone):
+                            self.reports_stopped = True
+                        self.report = None
+                    continue
                 if refusal is None:
                     delivered = event
                 else:

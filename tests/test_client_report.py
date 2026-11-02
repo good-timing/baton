@@ -289,6 +289,53 @@ async def test_a_report_goes_while_every_batch_is_full(
     await sink.aclose()
 
 
+@pytest.mark.parametrize(
+    ("whole_batch", "refused"), [(True, 2), (False, 1)], ids=["whole-batch-422", "per-event"]
+)
+async def test_a_report_answered_after_close_let_go_of_it_is_not_counted(
+    whole_batch: bool, refused: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    in_delivery, delivery_gate = threading.Event(), threading.Event()
+    in_report, report_gate = threading.Event(), threading.Event()
+    statuses = iter([400, 202])
+
+    def answer(path: str, body: Any) -> int | Answer:
+        events = events_in(path, body)
+        if events[-1]["event_type"] != "client_report":
+            status = next(statuses)
+            if status == 202:
+                in_delivery.set()
+                delivery_gate.wait()
+            return status
+        in_report.set()
+        report_gate.wait()
+        if whole_batch:
+            return 422
+        results = [
+            {"event_id": e["event_id"], "status": "refused", "error": {"code": "x"}}
+            if e["event_type"] == "client_report"
+            else {"event_id": e["event_id"], "status": "accepted"}
+            for e in events
+        ]
+        return Answer(200, json.dumps({"results": results}).encode())
+
+    sink = fake_sink(answer)
+    await _send(sink, 1)
+    await sink.write(make_event())
+    flushing = asyncio.ensure_future(sink.flush())
+    assert await asyncio.to_thread(in_delivery.wait, 3)
+    await sink.write(make_event())
+    delivery_gate.set()
+    assert await asyncio.to_thread(in_report.wait, 3)
+    closing = asyncio.ensure_future(sink.aclose())
+    await until(lambda: sink._sender.reports_stopped)
+    report_gate.set()
+    await asyncio.gather(flushing, closing)
+    assert PROCESS_DROPS.total() == {"refused": refused}
+    logged = [r.getMessage() for r in caplog.records if "REFUSED" in r.getMessage()]
+    assert all("HTTP 400" in m or (whole_batch and "422" in m) for m in logged), logged
+
+
 def test_no_report_after_the_exit_flush(no_interval: None) -> None:
     collector = ReportCollector([400, 202])
     loop = asyncio.new_event_loop()
