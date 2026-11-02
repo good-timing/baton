@@ -1776,7 +1776,7 @@ Defined error codes:
 
   **Fixed: the Go SDK records the retired names.** It removed `expected_result` and `overall_task` from a call's arguments but dropped their values. It now records them as `call_expected` and `call_workflow`, with `intent_source: "injected_param"`, as `baton-sdk` and `baton-ts` do.
 
-- **Unreleased (spec only, 2026-11-01) — how the scrubber lowercases a key (§7).** Plain lowercasing, as Python's `str.lower()`, not case folding. This writes down what `baton-sdk` and `baton-ts` already do; `baton-spec`'s `scrub/cases.json` pins it. A Go producer using `strings.ToLower` differs on `U+0130`. No envelope field, event type or shape changes.
+- **Unreleased (spec only, 2026-11-01) — how the scrubber lowercases a key (§7).** Plain lowercasing, as Python's `str.lower()`, not case folding. This writes down what `baton-sdk` and `baton-ts` already do; `baton-spec`'s `scrub/cases.json` pins it. A Go producer using `strings.ToLower` differs on `U+0130`; the Go SDK maps it first, from 0.1.1. No envelope field, event type or shape changes.
 
 - **0.9.2, ts 0.6.2, go 0.1.1 (2026-11-01) — NEW event type `client_report` (§11.4.7), and the rule it reports on (§11.2 rule 8).** Additive. `baton-sdk`, `baton-ts` and the Go SDK already count by these reasons. An event left unsent when the process exits without close is warned about, not counted. `baton-sdk`, `baton-ts` and the Go SDK send the event from their next releases.
 
@@ -1800,7 +1800,7 @@ Defined error codes:
 
 - **Unreleased (spec only, 2026-10-30) — more rules for a third SDK, and stale text fixed.** No envelope field, event type or shape changes.
 
-  **(1) Scrubber digits, word boundaries and whitespace are fixed sets (§7).** Digits are `0`–`9`, boundaries are ASCII, and whitespace is space, tab, LF, CR, FF and `U+00A0`. `baton-sdk` 0.9.1 and `baton-proxy` 0.7.1 use Unicode digits and boundaries, so they also scrub, for example, a card number in Arabic-Indic digits. Python's and JavaScript's `\s` match more spaces than this set, and Go's matches fewer (no `U+00A0`). `baton-sdk`, `baton-ts` and `baton-proxy` on `main` use the set.
+  **(1) Scrubber digits, word boundaries and whitespace are fixed sets (§7).** Digits are `0`–`9`, boundaries are ASCII, and whitespace is space, tab, LF, CR, FF and `U+00A0`. `baton-sdk` 0.9.1 and `baton-proxy` 0.7.1 use Unicode digits and boundaries, so they also scrub, for example, a card number in Arabic-Indic digits. Python's and JavaScript's `\s` match more spaces than this set, and Go's matches fewer (no `U+00A0`). `baton-sdk`, `baton-ts` and `baton-proxy` on `main` use the set, as the Go SDK always has.
 
   **(2) A blank principal or organization `id` is empty after removing Unicode `White_Space` (§11.4),** the set `display_name` already uses. `baton-sdk` 0.9.1 and `baton-ts` 0.6.1 also remove `U+001C`–`U+001F`. Both narrow to this set on `main`.
 
