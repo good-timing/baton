@@ -965,13 +965,19 @@ class _BatchSender:
 
     def _put_back_in_flight(self, batch: _Batch) -> None:
         """A kept batch goes back to the front; then the bound applies again.
-        A report taken with no events is not kept (SPEC §11.4.7): the next
-        delivery builds a fresh one, so failing reports never hold up events."""
+        A report taken with no events, or sent one event per request, is not
+        kept (SPEC §11.4.7): the next delivery builds a fresh one, so failing
+        reports never hold up events."""
         with self.cond:
             if self.stopping:
                 self.in_flight.clear()
                 return
-            if len(batch) == 1 and self.report is not None and batch[0][0] is self.report[0]:
+            report = self.report
+            if (
+                report is not None
+                and batch[-1][0] is report[0]
+                and (len(batch) == 1 or self.one_per_request)
+            ):
                 self.report = None
             for pending in reversed(self.in_flight):
                 assert pending.body is not None

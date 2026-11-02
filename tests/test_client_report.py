@@ -175,6 +175,48 @@ async def test_lone_reports_that_fail_do_not_hold_up_the_events(
     await sink.aclose()
 
 
+@pytest.mark.parametrize("batch_endpoint", [False, True], ids=["none", "gone-after-the-take"])
+async def test_a_report_sent_one_event_per_request_is_not_kept_when_it_fails(
+    batch_endpoint: bool,
+) -> None:
+    """The second case takes the report into a batch, then learns from the
+    404 that it must go one event per request."""
+    in_delivery, gate = threading.Event(), threading.Event()
+    statuses = iter([400, 202])
+    reports: list[str] = []
+
+    def answer(path: str, body: Any) -> int | Answer:
+        if path.endswith("/batch"):
+            if not batch_endpoint or gate.is_set():
+                return 404
+            status = next(statuses)
+            if status == 202:
+                in_delivery.set()
+                gate.wait()
+            return status
+        if body["event_type"] == "client_report":
+            reports.append(body["event_id"])
+            return 503
+        status = next(statuses, 202)
+        if status == 202 and not in_delivery.is_set():
+            in_delivery.set()
+            gate.wait()
+        return status
+
+    sink = fake_sink(answer)
+    await _send(sink, 1)
+    await sink.write(make_event())
+    flushing = asyncio.ensure_future(sink.flush())
+    assert await asyncio.to_thread(in_delivery.wait, 3)
+    await sink.write(make_event())
+    gate.set()
+    await flushing
+    await _send(sink, 3)
+    assert len(reports) == 1
+    assert sink._sender.report is None
+    await sink.aclose()
+
+
 @pytest.mark.parametrize("status", [400, 422])
 async def test_a_collector_that_refuses_a_report_sent_alone_gets_no_more(
     no_interval: None, status: int, caplog: pytest.LogCaptureFixture
