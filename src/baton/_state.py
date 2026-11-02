@@ -132,7 +132,8 @@ PROCESS_DROPS = DropCounts()
 
 def _after_fork_in_child() -> None:
     # A forked child is a new process: its own id and counts. The parent's
-    # lock may have been held by another thread at fork, so it is replaced.
+    # locks may have been held by another thread at fork, so they are replaced.
+    PROCESS_SEQUENCE._lock = threading.Lock()
     PROCESS_DROPS._lock = threading.Lock()
     PROCESS_DROPS._reset()
 

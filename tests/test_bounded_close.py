@@ -191,7 +191,7 @@ class TestHttpSinkOnACollectorThatNeverAnswers:
 
 
 async def _until_unstalled(sink: HttpSink) -> None:
-    await until(lambda: sink._stalled is None or sink._stalled.done())
+    await until(lambda: sink._sender.stalled is None or sink._sender.stalled.done())
 
 
 async def test_each_stall_warns_once_when_a_flush_is_skipped(

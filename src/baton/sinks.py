@@ -50,6 +50,7 @@ from time import monotonic
 from types import TracebackType
 from typing import IO, TYPE_CHECKING, Any, Literal, Self, cast
 
+from baton import _state, _uuid
 from baton._state import PROCESS_DROPS, PROCESS_SEQUENCE
 from baton.events import ClientReportEvent, ClientReportPayload, Event
 
@@ -554,9 +555,12 @@ _Batch = list[tuple[Event, bytes]]
 
 
 _LIVE_SENDERS: weakref.WeakSet[_BatchSender] = weakref.WeakSet()
+_pid = os.getpid()
 
 
 def _reset_senders_in_child() -> None:
+    global _pid
+    _pid = os.getpid()
     for sender in list(_LIVE_SENDERS):
         try:
             sender.reset_in_child()
@@ -566,6 +570,20 @@ def _reset_senders_in_child() -> None:
 
 if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_reset_senders_in_child)
+
+
+def _reset_if_forked() -> None:
+    """Runs the fork hooks when they did not run: a fork that skips
+    ``PyOS_AfterFork_Child``, such as uWSGI's default prefork, or C's fork()."""
+    if os.getpid() == _pid:
+        return
+    # Not atomic: safe for the first use in a fresh worker, before a second thread uses Baton.
+    for hook in (_uuid._after_fork_in_child, _state._after_fork_in_child):
+        try:
+            hook()
+        except Exception:
+            pass
+    _reset_senders_in_child()
 
 
 class _BatchSender:
@@ -621,6 +639,9 @@ class _BatchSender:
         self.retry_at = -math.inf
         self.not_before = -math.inf
         self.flushes: list[concurrent.futures.Future[None]] = []
+        # The flush or close wait that ran out of budget, until the thread ends it.
+        self.stalled: concurrent.futures.Future[None] | None = None
+        self.skip_warned = False
         self.report: tuple[ClientReportEvent, bytes, dict[str, int]] | None = None
         self.report_at = -math.inf
         self.reported: dict[str, int] = {}
@@ -637,7 +658,7 @@ class _BatchSender:
         self.refusals_lock = threading.Lock()
 
     def reset_in_child(self) -> None:
-        """Run in a forked child before any of its threads: the parent's
+        """Run in a forked child, by the fork hook or on first use: the parent's
         thread is gone and may have held these locks, its pool's sockets are
         shared with the parent, and every event recorded so far is the
         parent's to deliver or count. The pool is built again on the next send."""
@@ -645,10 +666,13 @@ class _BatchSender:
         self.pool = None
         self.thread = None
         self.flushes = []
+        self.stalled = None
         self.waiting.clear()
         self.encoded = self.encoded_bytes = 0
         self.in_flight.clear()
         self.report = None
+        self.report_at = -math.inf
+        self.reported = {}
 
     def pending(self) -> int:
         return len(self.waiting) + len(self.in_flight)
@@ -656,6 +680,7 @@ class _BatchSender:
     # ---- called from the vendor's side ---------------------------------
 
     def enqueue(self, event: Event) -> None:
+        _reset_if_forked()
         with self.cond:
             if len(self.waiting) >= self.bound:
                 if not self.overflow_warned:
@@ -693,6 +718,7 @@ class _BatchSender:
             self.thread.start()
 
     def request_flush(self) -> concurrent.futures.Future[None]:
+        _reset_if_forked()
         done: concurrent.futures.Future[None] = concurrent.futures.Future()
         with self.cond:
             if self.stopping or (not self.pending() and self.report is None):
@@ -703,6 +729,7 @@ class _BatchSender:
         return done
 
     def stop_reports(self) -> None:
+        _reset_if_forked()
         with self.cond:
             self.reports_stopped = True
             self.report = None
@@ -710,6 +737,7 @@ class _BatchSender:
     def stop(self) -> int:
         """Stops the thread before its next request; answers how many events
         it leaves unsent."""
+        _reset_if_forked()
         with self.cond:
             self.stopping = True
             left = self.pending()
@@ -724,6 +752,7 @@ class _BatchSender:
 
     def retire(self) -> None:
         """The sink was garbage collected: send what is left, then end the thread."""
+        _reset_if_forked()
         with self.cond:
             self.retiring = True
             self.cond.notify_all()
@@ -1152,7 +1181,7 @@ def _per_event_results(
     result was delivered: the collector answered 2xx."""
     refusals: dict[str, str] = {}
     try:
-        results = json.loads(data)["results"]
+        results = json.loads(data.decode("utf-8-sig", errors="replace"))["results"]
     except Exception:
         results = []
     for result in results if isinstance(results, list) else []:
@@ -1226,9 +1255,6 @@ class HttpSink(Sink):
         )
         finalizer = weakref.finalize(self, self._sender.retire)
         finalizer.atexit = False  # type: ignore[misc]
-        # The flush or close wait that ran out of budget, until the thread ends it.
-        self._stalled: concurrent.futures.Future[None] | None = None
-        self._skip_warned = False
         self._closing: asyncio.Future[None] | None = None
         self._closed = False
         self._atexit_callback: Callable[[], None] | None = None
@@ -1292,13 +1318,14 @@ class HttpSink(Sink):
         close gives it ``seconds``. The thread goes on sending after a flush
         gives up; ``aclose()`` stops it."""
         log = logging.getLogger("baton")
-        stalled = self._stalled
+        _reset_if_forked()
+        stalled = self._sender.stalled
         if stalled is not None and not stalled.done():
             if what == "aclose()":
                 await _wait_for_thread(stalled, seconds)
                 return
-            if not self._skip_warned:
-                self._skip_warned = True
+            if not self._sender.skip_warned:
+                self._sender.skip_warned = True
                 log.warning(
                     "baton: flush() skipped: an earlier drain is still stuck; "
                     "%d event(s) wait to be sent.",
@@ -1310,8 +1337,8 @@ class HttpSink(Sink):
         done = self._sender.request_flush()
         if await _wait_for_thread(done, seconds):
             return
-        self._stalled = done
-        self._skip_warned = False
+        self._sender.stalled = done
+        self._sender.skip_warned = False
         if what == "flush()":
             log.warning(
                 "baton: flush() took over %.1fs; it goes on in the background.",

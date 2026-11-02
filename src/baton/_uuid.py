@@ -59,5 +59,15 @@ def _uuid7_fallback() -> uuid.UUID:
     return uuid.UUID(int=value)
 
 
+def _after_fork_in_child() -> None:
+    # Registered on import, so before ``baton._state``'s hook, which calls uuid7().
+    global _lock
+    _lock = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork_in_child)
+
+
 # Prefer the stdlib implementation on 3.14+; it is monotonic per the RFC too.
 uuid7 = _stdlib_uuid7 if _stdlib_uuid7 is not None else _uuid7_fallback

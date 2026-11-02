@@ -6,12 +6,18 @@ import asyncio
 import json
 import logging
 import os
+import select
+import signal
 import threading
+from collections.abc import Callable
 from typing import Any
 
 import pytest
 
-from baton._state import PROCESS_DROPS
+import baton._state as state_module
+import baton._uuid as uuid_module
+import baton.sinks as sinks_module
+from baton._state import PROCESS_DROPS, PROCESS_SEQUENCE
 from baton.sinks import HttpSink, _BatchSender
 from tests._http_fakes import (
     Answer,
@@ -205,3 +211,52 @@ def test_a_forked_child_reports_under_its_own_id_and_counts() -> None:
     os.waitpid(pid, 0)
     assert os.read(read, 1) == b"1"
     assert PROCESS_DROPS.instance_id == parent_id
+
+
+async def test_a_forked_child_reports_its_own_loss_even_when_it_matches_the_parents() -> None:
+    collector = ReportCollector([400, 202, 400, 202])
+    sink = fake_sink(collector)
+    await _send(sink, 2)
+    state_module._after_fork_in_child()
+    sinks_module._reset_senders_in_child()
+    await _send(sink, 2)
+    assert [r["payload"]["dropped"] for r in collector.reports] == [{"refused": 1}] * 2
+    await sink.aclose()
+
+
+def _child_answers(check: Callable[[], bool], seconds: float = 5.0) -> bytes:
+    """What a forked child running ``check`` writes back; empty when it hangs,
+    in the fork hooks or in ``check``."""
+    read, write = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.write(write, b"1" if check() else b"0")
+        os._exit(0)
+    os.close(write)
+    ready, _, _ = select.select([read], [], [], seconds)
+    if not ready:
+        os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    answer = os.read(read, 1) if ready else b""
+    os.close(read)
+    return answer
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
+@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded")
+def test_a_forked_child_never_waits_on_the_parents_sequence_lock() -> None:
+    with PROCESS_SEQUENCE._lock:
+        answer = _child_answers(lambda: PROCESS_SEQUENCE.next() > 0)
+    assert answer == b"1"
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
+@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded")
+def test_a_forked_child_never_waits_on_the_parents_uuid_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback is what Python < 3.14 runs, ``_state``'s fork hook included."""
+    monkeypatch.setattr(state_module, "uuid7", uuid_module._uuid7_fallback)
+    with uuid_module._lock:
+        answer = _child_answers(lambda: uuid_module._uuid7_fallback().version == 7)
+    assert answer == b"1"

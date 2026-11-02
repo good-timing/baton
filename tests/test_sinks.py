@@ -25,7 +25,15 @@ import baton.sinks as sinks_module
 from baton._state import PROCESS_DROPS
 from baton.events import ToolCallStartEvent
 from baton.sinks import BATCH_MAX_BYTES, HttpSink, _BatchSender
-from tests._http_fakes import Answer, fake_sink, make_event, never_answers, pool_of, until
+from tests._http_fakes import (
+    Answer,
+    fake_sink,
+    hold_first,
+    make_event,
+    never_answers,
+    pool_of,
+    until,
+)
 
 BATCH = "/v0/events/batch"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1598,6 +1606,84 @@ async def test_after_a_fork_the_next_send_builds_a_pool() -> None:
     await sink.write(make_event())
     await sink.flush()
     assert len(pool_of(sink).requests) == 1
+    await sink.aclose()
+
+
+@pytest.mark.parametrize("hook_ran", [True, False], ids=["fork hook", "no fork hook"])
+async def test_a_forked_child_does_not_wait_on_the_parents_stalled_flush(
+    hook_ran: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = threading.Event()
+    sink = fake_sink(hold_first(gate), shutdown_flush_timeout_seconds=0.05)
+    try:
+        await sink.write(make_event(sequence_number=1))
+        await sink.flush()
+        assert sink._sender.stalled is not None
+        if hook_ran:
+            sinks_module._reset_senders_in_child()
+        else:
+            monkeypatch.setattr(sinks_module, "_pid", -1)
+            await sink.flush()
+            assert sink._sender.stalled is None
+        await sink.write(make_event(sequence_number=2))
+        await sink.flush()
+        assert sink._sender.pending() == 0
+        await sink.aclose()
+        assert PROCESS_DROPS.total() == {}
+    finally:
+        gate.set()
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda s: s.request_flush(),
+        lambda s: s.stop_reports(),
+        lambda s: s.stop(),
+        lambda s: s.flush_at_exit(0.05),
+        lambda s: s.enqueue(make_event()),
+        lambda s: s.retire(),
+    ],
+    ids=["request_flush", "stop_reports", "stop", "flush_at_exit", "enqueue", "retire"],
+)
+def test_a_child_whose_fork_hook_did_not_run_resets_on_first_use(
+    call: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sink = fake_sink(lambda path, body: 200)
+    sink._sender.enqueue(make_event())
+    parents_lock = sink._sender.cond
+    parents_lock.acquire()
+    monkeypatch.setattr(sinks_module, "_pid", -1)
+    try:
+        worker = threading.Thread(target=call, args=(sink._sender,), daemon=True)
+        worker.start()
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+    finally:
+        parents_lock.release()
+    assert sink._sender.cond is not parents_lock
+    assert sinks_module._pid == os.getpid()
+    sink._closed = True
+
+
+@pytest.mark.parametrize(
+    "prefix, message", [(b"", b"bad \xff byte"), (b"\xef\xbb\xbf", b"ok")], ids=["bad byte", "bom"]
+)
+async def test_a_refusal_in_a_body_that_is_not_plain_utf8_still_counts(
+    prefix: bytes, message: bytes
+) -> None:
+    def answer(path: str, body: Any) -> Answer:
+        [event] = body["events"]
+        result = b'{"event_id":"%s","status":"refused","error":{"code":"x","message":"%s"}}' % (
+            event["event_id"].encode(),
+            message,
+        )
+        return Answer(200, prefix + b'{"results":[' + result + b"]}")
+
+    sink = fake_sink(answer)
+    await sink.write(make_event())
+    await sink.flush()
+    assert PROCESS_DROPS.total() == {"refused": 1}
     await sink.aclose()
 
 
