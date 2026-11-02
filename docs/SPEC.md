@@ -1529,7 +1529,7 @@ Read the predicate disjunctively: ANY of the four binds, not all four. A produce
 
 ⚠ **Neither obligation is assertable from a payload**, so no `baton-spec` vector covers either. The warning is checked by configuring a producer and capturing its warnings; the documentation rule is not machine-checkable.
 
-**Who the predicate binds.** `baton-sdk` offers the mode and emits all four from 0.8.15, and does both. `baton-ts` offers the mode and emits all four: it carries the documentation and does not yet emit the warning. `baton-proxy` emits all four and offers no mode, so the obligations first bind it in the release that gives it one.
+**Who the predicate binds.** `baton-sdk` offers the mode and emits all four from 0.8.15, and does both. `baton-ts` offers the mode and emits all four: it carries the documentation and does not yet emit the warning. `baton-proxy` emits all four and offers no mode, so the obligations first bind it in the release that gives it one. The Go SDK offers the mode and emits all four from 0.1.4, and does both; its warning also names `tool_list_error` (§11.4.5).
 
 **⚠ These legs have no pairing key.** No producer sends `call_id` on any of these twelve types, and §11.5.4 pairs on nothing else. A producer MAY mint one and the first that does needs no schema change; until then a consumer has nothing to pair a start with its end on.
 
@@ -1770,6 +1770,8 @@ Defined error codes:
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **go 0.1.4 (2026-11-02) — the Go SDK sends prompt, resource and tool-list events (§11.4.4, §11.4.5).** No envelope field or event type changes. `prompt_list`, `prompt_get`, `resource_list`, `resource_read` and `tool_list`, each a start and an end or error, in the shapes those subsections record: `uri` appears inside `resource_read_start.params` too, `params` is `{}` when a request has none, there is no `call_id`, and `error_type` is the Go error's type. The resolver runs once per request and its answer rides both events. A prompt get or resource read that pauses for the client's input (go-sdk v1.7+) is one start and one end, as a tool call is. A listing the SDK runs for itself sends none. On stateless HTTP each listing is a session of its own. **Consumer consequence:** a Go server's sessions can now hold only `tool_list_*` events, which §11.4.5 reads as "connected and did not use".
 
 - **go 0.1.3 (2026-11-02) — the Go SDK closes four gaps with `baton-sdk` and `baton-ts`.** No envelope field or event type changes.
 
