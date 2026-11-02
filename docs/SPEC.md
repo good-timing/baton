@@ -1796,7 +1796,7 @@ Defined error codes:
 
   **(1) Scrubber digits, word boundaries and whitespace are fixed sets (§7).** Digits are `0`–`9`, boundaries are ASCII, and whitespace is space, tab, LF, CR, FF and `U+00A0`. `baton-sdk` 0.9.1 and `baton-proxy` 0.7.1 use Unicode digits and boundaries, so they also scrub, for example, a card number in Arabic-Indic digits. Python's and JavaScript's `\s` match more spaces than this set, and Go's matches fewer (no `U+00A0`). `baton-sdk`, `baton-ts` and `baton-proxy` on `main` use the set.
 
-  **(2) A blank principal or organization `id` is empty after removing Unicode `White_Space` (§11.4),** the set `display_name` already uses. `baton-sdk` 0.9.1 and `baton-ts` 0.6.1 also remove `U+001C`–`U+001F`. `baton-sdk` narrows to this set on `main`; `baton-ts` narrows in a later release.
+  **(2) A blank principal or organization `id` is empty after removing Unicode `White_Space` (§11.4),** the set `display_name` already uses. `baton-sdk` 0.9.1 and `baton-ts` 0.6.1 also remove `U+001C`–`U+001F`. Both narrow to this set on `main`.
 
   **(3) Shutdown (§11.2 rule 7).** A second close waits for the first, an event after close is dropped with one warning, and the exit flush is capped at 3 seconds by default. `baton-sdk` 0.9.1 raises on use after close and returns from a second close before the first finishes. `baton-ts` 0.6.1 does not cap its exit flush. Both are fixed on `main` for the next release. Rule 7 also caps an explicit close or flush at the same limit, and one event's write wait at 1 second. `baton-sdk`'s fix for those is on `main` too. `baton-ts` 0.6.1's `HttpSink.aclose()` waits for a full drain with no limit; `baton-ts` `main` caps it.
 
