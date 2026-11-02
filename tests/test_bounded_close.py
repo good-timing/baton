@@ -26,8 +26,16 @@ from baton.sinks import (
     bounded_sink_call,
     shutdown_budget_seconds,
 )
-from tests._http_fakes import RELEASE, fake_sink, never_answers, pool_of
-from tests.test_sinks import _make_event
+from tests._http_fakes import (
+    RELEASE,
+    FakePool,
+    fake_sink,
+    hold_first,
+    make_event,
+    never_answers,
+    pool_of,
+    until,
+)
 
 
 class _NeverAnswers(Sink):
@@ -139,7 +147,7 @@ class TestHttpSinkOnACollectorThatNeverAnswers:
         self, stuck_sink: HttpSink, caplog: pytest.LogCaptureFixture
     ) -> None:
         sink = stuck_sink
-        await sink.write(_make_event())
+        await sink.write(make_event())
         with caplog.at_level(logging.WARNING, logger="baton"):
             started = time.monotonic()
             await sink.flush()
@@ -161,7 +169,7 @@ class TestHttpSinkOnACollectorThatNeverAnswers:
         self, stuck_sink: HttpSink, caplog: pytest.LogCaptureFixture
     ) -> None:
         sink = stuck_sink
-        await sink.write(_make_event())
+        await sink.write(make_event())
         with caplog.at_level(logging.WARNING, logger="baton"):
             first = asyncio.ensure_future(sink.aclose())
             await asyncio.sleep(0)
@@ -171,55 +179,35 @@ class TestHttpSinkOnACollectorThatNeverAnswers:
 
     async def test_flush_waits_again_once_the_stalled_drain_has_finished(self) -> None:
         release = threading.Event()
-        answered = 0
-
-        def answer(path: str, body: Any) -> int:
-            nonlocal answered
-            answered += 1
-            if answered == 1:
-                release.wait()
-            return 200
-
-        sink = fake_sink(answer, shutdown_flush_timeout_seconds=0.05)
-        await sink.write(_make_event())
+        sink = fake_sink(hold_first(release), shutdown_flush_timeout_seconds=0.05)
+        await sink.write(make_event())
         await sink.flush()
         release.set()
         await _until_unstalled(sink)
-        await sink.write(_make_event(sequence_number=2))
+        await sink.write(make_event(sequence_number=2))
         await sink.flush()
-        assert len(sink._buffer) == 0
+        assert sink._sender.pending() == 0
         await sink.aclose()
 
 
 async def _until_unstalled(sink: HttpSink) -> None:
-    for _ in range(100):
-        if sink._stalled is None or sink._stalled.done():
-            return
-        await asyncio.sleep(0.01)
+    await until(lambda: sink._stalled is None or sink._stalled.done())
 
 
 async def test_each_stall_warns_once_when_a_flush_is_skipped(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     first_answer = threading.Event()
-    answered = 0
-
-    def answer(path: str, body: Any) -> int:
-        nonlocal answered
-        answered += 1
-        if answered == 1:
-            first_answer.wait()
-            return 200
-        return never_answers(path, body)
-
-    sink = fake_sink(answer, shutdown_flush_timeout_seconds=0.05)
+    sink = fake_sink(
+        hold_first(first_answer, then=never_answers), shutdown_flush_timeout_seconds=0.05
+    )
     with caplog.at_level(logging.WARNING, logger="baton"):
-        await sink.write(_make_event())
+        await sink.write(make_event())
         await sink.flush()
         await sink.flush()
         first_answer.set()
         await _until_unstalled(sink)
-        await sink.write(_make_event(sequence_number=2))
+        await sink.write(make_event(sequence_number=2))
         await sink.flush()
         await sink.flush()
         await sink.aclose()
@@ -279,7 +267,7 @@ def test_the_sync_client_close_reports_what_a_stuck_http_sink_left_unsent(
 
 
 async def test_aclose_stops_the_sending_thread(stuck_sink: HttpSink) -> None:
-    await stuck_sink.write(_make_event())
+    await stuck_sink.write(make_event())
     await stuck_sink.flush()
     thread = stuck_sink._sender.thread
     assert thread is not None and thread.is_alive()
@@ -304,7 +292,7 @@ async def test_no_event_is_sent_after_close_gives_up(caplog: pytest.LogCaptureFi
 
     sink = fake_sink(old_collector, shutdown_flush_timeout_seconds=0.1)
     for n in (1, 2, 3):
-        await sink.write(_make_event(sequence_number=n))
+        await sink.write(make_event(sequence_number=n))
     await sink.aclose()
     thread = sink._sender.thread
     assert thread is not None
@@ -317,7 +305,7 @@ async def test_no_event_is_sent_after_close_gives_up(caplog: pytest.LogCaptureFi
 async def test_a_close_cancelled_from_outside_is_finished_by_the_next_aclose(
     stuck_sink: HttpSink,
 ) -> None:
-    await stuck_sink.write(_make_event())
+    await stuck_sink.write(make_event())
     first = asyncio.ensure_future(stuck_sink.aclose())
     await asyncio.sleep(0)
     assert stuck_sink._closing is not None
@@ -358,7 +346,7 @@ async def test_an_async_client_close_cancelled_from_outside_is_finished_by_the_n
 
 
 async def test_the_exit_flush_gives_a_stuck_drain_its_budget(stuck_sink: HttpSink) -> None:
-    await stuck_sink.write(_make_event())
+    await stuck_sink.write(make_event())
     await stuck_sink.flush()
     started = time.monotonic()
     stuck_sink._atexit_flush()
@@ -378,7 +366,7 @@ def _stuck_http_sink(budget: float, sink_type: type[HttpSink] = HttpSink) -> Htt
         url="http://collector.example",
         api_key="k",
         shutdown_flush_timeout_seconds=budget,
-        _http_client=fake_sink(never_answers)._http_client,
+        _http_client=FakePool(never_answers),  # type: ignore[arg-type]
     )
 
 
@@ -387,7 +375,7 @@ async def test_aclose_within_hands_the_time_left_to_our_sinks(
     wrap: bool, caplog: pytest.LogCaptureFixture
 ) -> None:
     http = _stuck_http_sink(budget=30)
-    http._enqueue_for_test(_make_event())
+    http._sender.enqueue(make_event())
     sink: Sink = MultiSink([http]) if wrap else http
     started = time.monotonic()
     with caplog.at_level(logging.WARNING, logger="baton"):
@@ -489,7 +477,7 @@ def test_the_sync_client_close_does_not_wait_on_a_sink_background_task(
 
 async def test_aclose_within_never_extends_a_sink_budget() -> None:
     http = _stuck_http_sink(budget=0.1)
-    http._enqueue_for_test(_make_event())
+    http._sender.enqueue(make_event())
     started = time.monotonic()
     await aclose_within(http, 30)
     assert time.monotonic() - started < 1.0

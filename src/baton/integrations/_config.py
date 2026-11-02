@@ -598,9 +598,7 @@ def resolve_config(config: VendorConfig) -> VendorConfig:
         # empty display name.
         vendor_display_name=config.vendor_display_name or dsn.vendor_id,
     )
-
     _validate_vendor_config(identity)
-
     return replace(
         identity,
         # Constructed here rather than lazily so a sink that cannot be built

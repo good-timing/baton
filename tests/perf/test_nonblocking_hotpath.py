@@ -216,7 +216,7 @@ class TestFailOpenOnBufferOverflow:
         session_cm = ASYNC_PATHS[path_name]
         collector.mode = "erroring"  # nothing drains, buffer stays full
         sink = HttpSink(url=collector.url, api_key="k", buffer_size=1, **TIGHT_SINK_KWARGS)
-        sink._enqueue_for_test(_make_start_event())  # pre-fill to capacity
+        sink._sender.enqueue(_make_start_event())  # pre-fill to capacity
         async with session_cm(sink) as call:  # type: ignore[operator]
             with warnings.catch_warnings():
                 warnings.filterwarnings("error", category=UserWarning)
@@ -228,7 +228,7 @@ class TestFailOpenOnBufferOverflow:
     ) -> None:
         collector.mode = "erroring"
         sink = HttpSink(url=collector.url, api_key="k", buffer_size=1, **TIGHT_SINK_KWARGS)
-        sink._enqueue_for_test(_make_start_event())
+        sink._sender.enqueue(_make_start_event())
         with library_session(sink) as call:
             with warnings.catch_warnings():
                 warnings.filterwarnings("error", category=UserWarning)

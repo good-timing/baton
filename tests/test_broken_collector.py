@@ -11,7 +11,7 @@ import pytest
 
 from baton._state import PROCESS_DROPS
 from tests._fake_collector import each_scenario, from_baton, http_sink, received, scenario_file
-from tests.test_sinks import _make_event
+from tests._http_fakes import make_event
 
 _SPEC = scenario_file("scenarios.json")
 
@@ -26,7 +26,7 @@ async def test_the_sink_keeps_its_promises(
     sent = range(1, scenario["events"] + 1)
     for n in sent:
         started = time.monotonic()
-        await sink.write(_make_event(sequence_number=n))
+        await sink.write(make_event(sequence_number=n))
         assert time.monotonic() - started <= limits["write_ms"] / 1000
     expect = scenario.get("expect", {})
     if "reports" in expect:

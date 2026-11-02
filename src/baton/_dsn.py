@@ -362,9 +362,9 @@ _NOT_IN_A_HOST = re.compile(r"[\\\s\x00-\x1f\x7f]")
 def _reject_a_non_host(authority: str, parts: SplitResult, safe: str) -> None:
     r"""Refuse an authority that is not a host, however well-formed the DSN is.
 
-    ⚠ **A BACKSLASH parses, and events then go nowhere.** Measured in Python
-    rather than ported: ``urlsplit`` does NOT fold ``\`` into a path the way
-    WHATWG does, so ``ingest.example.com\evil`` survives whole as the
+    ⚠ **A BACKSLASH parses, and events then go nowhere.** ``urlsplit`` does
+    NOT fold ``\`` into a path the way WHATWG does, so
+    ``ingest.example.com\evil`` survives whole as the
     authority, and ``urllib3`` then cuts the host at the ``\`` and posts to a
     path nobody typed. Every event is refused, which is logged, not raised, so
     what the vendor sees is an install that succeeded and a collector that

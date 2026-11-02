@@ -424,14 +424,9 @@ def test_the_bare_install_door_takes_an_ambient_dsn(monkeypatch: pytest.MonkeyPa
 def test_a_failing_config_never_leaves_a_sink_behind(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``HttpSink.__init__`` eagerly builds an ``httpx.AsyncClient``.
-
-    Constructing it before validation meant a config that failed for an
-    unrelated reason left that client unreachable and unclosed, printing a
-    transport warning on top of the error the vendor actually needs to read.
-    Asserted by counting constructions rather than by watching for a warning,
-    because a warning that stops being emitted would silently retire the test.
-    """
+    """A config that fails validation builds no sink, so nothing the sink
+    owns (its connection pool, a proxy warning) appears beside the error the
+    vendor needs to read."""
     from baton.integrations import _config
 
     built: list[str] = []

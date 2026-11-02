@@ -1188,9 +1188,9 @@ class Client(_Sessions):
         self._scrubber = scrubber if scrubber is not None else Scrubber()
         self._result_capture_mode = resolved.result_capture_mode
 
-        # Sync mode uses a background thread + persistent loop bridge so the
-        # sink's async primitives (locks, tasks) bind to one stable loop
-        # instead of a fresh one per emit.
+        # Sync mode uses a background thread + persistent loop bridge so a
+        # sink's coroutines, and anything a vendor's own sink binds to a loop,
+        # run on one stable loop instead of a fresh one per emit.
         # ⚠ **No bridge when the switch is on.** ``_SyncBridge.__init__``
         # starts a daemon thread and blocks until its event loop is running —
         # a background thread is exactly what "no wrap, no buffer, no queue"

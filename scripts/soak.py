@@ -76,7 +76,7 @@ async def _monitor(sink: HttpSink, state: _SoakState, phase_fn: Any, stop_at: fl
     last_open: bool | None = None
     while time.monotonic() < stop_at:
         phase = phase_fn()
-        occupancy = len(sink._buffer)  # internal — dev tool, mirrors test access patterns
+        occupancy = sink._sender.pending()  # internal — dev tool, mirrors test access patterns
         state.buffer_occupancy.append((time.monotonic(), phase, occupancy))
         is_open = not sink._circuit.can_request()
         if last_open is not None and is_open != last_open:
@@ -172,7 +172,7 @@ async def run_soak(
 
     collector.shutdown()
 
-    dropped_estimate = max(0, state.emitted - len(collector.received) - len(sink._buffer))
+    dropped_estimate = max(0, state.emitted - len(collector.received) - sink._sender.pending())
     report = {
         "concurrency": concurrency,
         "total_seconds": total_seconds,
@@ -188,7 +188,7 @@ async def run_soak(
         ],
         "events_emitted": state.emitted,
         "events_received_by_collector": len(collector.received),
-        "events_still_buffered_at_end": len(sink._buffer),
+        "events_still_buffered_at_end": sink._sender.pending(),
         "events_dropped_estimate": dropped_estimate,
     }
 

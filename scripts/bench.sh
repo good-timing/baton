@@ -23,8 +23,8 @@ for side in published checkout; do
   uv venv --quiet "$work/$side"
   uv pip install --quiet --python "$work/$side" -r "$work/requirements.txt"
 done
-# Resolved within the lock, so a dependency the release has and the checkout
-# dropped (0.9.3's httpx) is installed for it alone.
+# Resolved within the lock, so a dependency only the release has is
+# installed for it alone.
 uv pip install --quiet --python "$work/published" -c "$work/requirements.txt" "baton-sdk==$against"
 uv pip install --quiet --python "$work/checkout" --no-deps .
 

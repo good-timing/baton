@@ -29,12 +29,16 @@ from baton.sinks import (
     build_or_none,
     safe_write,
 )
-from tests._http_fakes import Answerer, events_in, fake_sink, never_answers, pool_of
-from tests.test_sinks import _make_event
-
-
-def _http_sink(answer: Answerer, **kwargs: Any) -> HttpSink:
-    return fake_sink(answer, max_retries=0, **kwargs)
+from tests._http_fakes import (
+    Answerer,
+    events_in,
+    fake_sink,
+    hold_first,
+    make_event,
+    never_answers,
+    pool_of,
+    until,
+)
 
 
 def _answers(statuses: list[int]) -> Answerer:
@@ -50,9 +54,6 @@ def _answers(statuses: list[int]) -> Answerer:
     return answer
 
 
-_never_answers = never_answers
-
-
 class _WriteRaises(Sink):
     async def write(self, event: Event) -> None:
         raise OSError("disk full")
@@ -65,15 +66,15 @@ class _WriteRaises(Sink):
 
 
 async def _buffer_full() -> None:
-    sink = _http_sink(_never_answers, buffer_size=2)
+    sink = fake_sink(never_answers, buffer_size=2)
     with pytest.warns(UserWarning):
         for _ in range(3):
-            sink._enqueue_for_test(_make_event())
+            sink._sender.enqueue(make_event())
 
 
 async def _refused() -> None:
-    sink = _http_sink(lambda path, body: 400)
-    await sink.write(_make_event())
+    sink = fake_sink(lambda path, body: 400)
+    await sink.write(make_event())
     await sink.flush()
 
 
@@ -85,7 +86,7 @@ async def _encode_failed() -> None:
 
 
 async def _write_failed() -> None:
-    await safe_write(_WriteRaises(), _make_event(), logging.getLogger("baton"))
+    await safe_write(_WriteRaises(), make_event(), logging.getLogger("baton"))
 
 
 async def _after_close() -> None:
@@ -95,8 +96,8 @@ async def _after_close() -> None:
 
 
 async def _unsent_at_close() -> None:
-    sink = _http_sink(_never_answers, shutdown_flush_timeout_seconds=0.05)
-    sink._enqueue_for_test(_make_event())
+    sink = fake_sink(never_answers, shutdown_flush_timeout_seconds=0.05)
+    sink._sender.enqueue(make_event())
     await sink.aclose()
 
 
@@ -169,7 +170,7 @@ async def test_a_write_after_the_sink_closed_is_counted_after_close_with_one_war
     make: str, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     sinks: dict[str, Callable[[], Sink]] = {
-        "http": lambda: _http_sink(lambda path, body: 202),
+        "http": lambda: fake_sink(lambda path, body: 202),
         "file": lambda: FileSink(tmp_path / "events.jsonl"),
         "stdout": StdoutSink,
         "multi": lambda: MultiSink([FileSink(tmp_path / "m.jsonl"), StdoutSink()]),
@@ -179,7 +180,7 @@ async def test_a_write_after_the_sink_closed_is_counted_after_close_with_one_war
     sink = sinks[make]()
     await sink.aclose()
     for _ in range(3):
-        await safe_write(sink, _make_event(), logging.getLogger("baton"))
+        await safe_write(sink, make_event(), logging.getLogger("baton"))
     assert PROCESS_DROPS.total() == {"after_close": 3}
     assert [(r.levelno, r.exc_info) for r in caplog.records if r.name == "baton"] == [
         (logging.WARNING, None)
@@ -192,7 +193,7 @@ async def test_a_closed_sink_beside_a_cancelled_one_is_still_counted() -> None:
             raise asyncio.CancelledError
 
     sink = MultiSink([_Unhashable(closed=True), _Cancelled()])
-    await safe_write(sink, _make_event(), logging.getLogger("baton"))
+    await safe_write(sink, make_event(), logging.getLogger("baton"))
     assert PROCESS_DROPS.total() == {"after_close": 1}
 
 
@@ -223,7 +224,7 @@ async def test_a_multisink_with_one_closed_sink_still_delivers_and_counts_nothin
     closed = FileSink(tmp_path / "closed.jsonl")
     await closed.aclose()
     sink = MultiSink([closed, FileSink(tmp_path / "open.jsonl")])
-    await safe_write(sink, _make_event(), logging.getLogger("baton"))
+    await safe_write(sink, make_event(), logging.getLogger("baton"))
     assert PROCESS_DROPS.total() == {}
     assert (tmp_path / "open.jsonl").read_text().count("\n") == 1
     assert [r for r in caplog.records if r.name.startswith("baton")] == []
@@ -232,20 +233,20 @@ async def test_a_multisink_with_one_closed_sink_still_delivers_and_counts_nothin
 async def test_the_first_delivery_after_a_loss_says_what_was_lost(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    sink = _http_sink(_answers([400, 202, 202]))
+    sink = fake_sink(_answers([400, 202, 202]))
     with caplog.at_level(logging.WARNING, logger="baton"):
         for _ in range(3):
-            await sink.write(_make_event())
+            await sink.write(make_event())
             await sink.flush()
     recovered = [r.getMessage() for r in caplog.records if "delivering again" in r.getMessage()]
     assert recovered == ["baton: delivering again; 1 event(s) lost before this: refused 1."]
 
 
 async def test_a_healthy_run_counts_and_logs_nothing(caplog: pytest.LogCaptureFixture) -> None:
-    sink = _http_sink(lambda path, body: 202)
+    sink = fake_sink(lambda path, body: 202)
     with caplog.at_level(logging.WARNING, logger="baton"):
         for _ in range(3):
-            await sink.write(_make_event())
+            await sink.write(make_event())
         await sink.aclose()
     assert PROCESS_DROPS.total() == {}
     assert caplog.records == []
@@ -266,7 +267,7 @@ def test_the_exit_flush_warns_about_what_the_collector_did_not_take_and_counts_n
     """SPEC §11.2 rule 8: nothing can send or log a count taken at exit."""
     httpserver.expect_request("/v0/events/batch").respond_with_data(status=503)
     sink = HttpSink(url=httpserver.url_for(""), api_key="k", backoff_base_seconds=0.001)
-    sink._enqueue_for_test(_make_event())
+    sink._sender.enqueue(make_event())
     with caplog.at_level(logging.WARNING, logger="baton"):
         sink._atexit_flush()
     assert PROCESS_DROPS.total() == {}
@@ -277,8 +278,8 @@ def test_the_exit_flush_warns_about_what_the_collector_did_not_take_and_counts_n
 def test_the_exit_flush_warns_and_counts_nothing_when_the_circuit_is_open(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    sink = _http_sink(_never_answers, circuit_breaker_threshold=1)
-    sink._enqueue_for_test(_make_event())
+    sink = fake_sink(never_answers, circuit_breaker_threshold=1)
+    sink._sender.enqueue(make_event())
     sink._circuit.record_failure()
     with caplog.at_level(logging.WARNING, logger="baton"):
         sink._atexit_flush()
@@ -291,8 +292,8 @@ def test_an_exit_flush_counts_nothing_and_the_close_after_it_counts_once() -> No
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
-    sink = _http_sink(_never_answers, shutdown_flush_timeout_seconds=0.05)
-    asyncio.run_coroutine_threadsafe(sink.write(_make_event()), loop).result(timeout=1)
+    sink = fake_sink(never_answers, shutdown_flush_timeout_seconds=0.05)
+    asyncio.run_coroutine_threadsafe(sink.write(make_event()), loop).result(timeout=1)
     sink._atexit_flush()
     assert PROCESS_DROPS.total() == {}
     asyncio.run_coroutine_threadsafe(sink.aclose(), loop).result(timeout=1)
@@ -307,9 +308,9 @@ def test_an_exit_flush_on_a_running_loop_warns_about_what_it_left(
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
-    sink = _http_sink(_never_answers, circuit_breaker_threshold=1)
+    sink = fake_sink(never_answers, circuit_breaker_threshold=1)
     sink._circuit.record_failure()
-    asyncio.run_coroutine_threadsafe(sink.write(_make_event()), loop).result(timeout=1)
+    asyncio.run_coroutine_threadsafe(sink.write(make_event()), loop).result(timeout=1)
     with caplog.at_level(logging.WARNING, logger="baton"):
         sink._atexit_flush()
     assert any("process exiting with 1 buffered event(s)" in m for m in caplog.messages)
@@ -320,11 +321,11 @@ def test_an_exit_flush_on_a_running_loop_warns_about_what_it_left(
 
 
 def test_an_overflow_warning_raised_as_an_error_counts_the_event_once() -> None:
-    sink = _http_sink(_never_answers, buffer_size=1)
-    sink._enqueue_for_test(_make_event())
+    sink = fake_sink(never_answers, buffer_size=1)
+    sink._sender.enqueue(make_event())
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        asyncio.run(safe_write(sink, _make_event(), logging.getLogger("baton")))
+        asyncio.run(safe_write(sink, make_event(), logging.getLogger("baton")))
     assert PROCESS_DROPS.total() == {"write_failed": 1}
     sink._closed = True
 
@@ -336,8 +337,8 @@ def test_a_failed_exit_flush_warns_and_counts_nothing(
         raise RuntimeError("no network at exit")
 
     monkeypatch.setattr(_BatchSender, "send_inline", broken)
-    sink = _http_sink(_never_answers)
-    sink._enqueue_for_test(_make_event())
+    sink = fake_sink(never_answers)
+    sink._sender.enqueue(make_event())
     with caplog.at_level(logging.WARNING, logger="baton"):
         sink._atexit_flush()
     assert PROCESS_DROPS.total() == {}
@@ -350,42 +351,57 @@ def test_a_failed_exit_flush_warns_and_counts_nothing(
 async def test_steady_loss_beside_delivery_says_so_once_a_minute(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    sink = _http_sink(_answers([400, 202, 400, 202]))
+    sink = fake_sink(_answers([400, 202, 400, 202]))
     with caplog.at_level(logging.WARNING, logger="baton"):
         for _ in range(4):
-            await sink.write(_make_event())
+            await sink.write(make_event())
             await sink.flush()
     assert sum("delivering again" in r.getMessage() for r in caplog.records) == 1
 
 
-async def test_an_event_pushed_out_while_being_sent_does_not_cost_the_next_one() -> None:
+async def test_an_event_being_sent_is_out_of_the_bound() -> None:
     gate = threading.Event()
-
-    def answer(path: str, body: Any) -> int:
-        gate.wait()
-        return 202
-
-    sink = _http_sink(answer, buffer_size=2, flush_interval_seconds=0)
-    for n in (1, 2, 3):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            await sink.write(_make_event(sequence_number=n))
-        await asyncio.sleep(0.01)  # event 1 is being sent when 3 pushes it out
+    sink = fake_sink(hold_first(gate), buffer_size=2, flush_interval_seconds=0)
+    await sink.write(make_event(sequence_number=1))
+    await until(lambda: pool_of(sink).requests)
+    for n in (2, 3):
+        await sink.write(make_event(sequence_number=n))
+    assert PROCESS_DROPS.total() == {}
     gate.set()
     await sink.aclose()
-    events = [e for e in pool_of(sink).events() if e["event_type"] != "client_report"]
-    assert [e["sequence_number"] for e in events] == [1, 2, 3]
+    assert [e["sequence_number"] for e in pool_of(sink).events()] == [1, 2, 3]
+    assert PROCESS_DROPS.total() == {}
+
+
+async def test_a_kept_batch_goes_back_first_and_the_bound_drops_the_oldest() -> None:
+    gate = threading.Event()
+
+    def held_then_failed(path: str, body: Any) -> int:
+        gate.wait()
+        return 500
+
+    sink = fake_sink(held_then_failed, buffer_size=3)
+    for n in (1, 2):
+        sink._sender.enqueue(make_event(sequence_number=n))
+    flushing = asyncio.ensure_future(sink.flush())
+    await until(lambda: pool_of(sink).requests)
+    for n in (3, 4):
+        sink._sender.enqueue(make_event(sequence_number=n))
+    gate.set()
+    await flushing
+    assert [p.event.sequence_number for p in sink._sender.waiting] == [2, 3, 4]
     assert PROCESS_DROPS.total() == {"buffer_full": 1}
+    sink._closed = True
 
 
 def test_a_network_failure_keeps_the_events_and_counts_nothing() -> None:
     def down(path: str, body: Any) -> int:
         raise urllib3.exceptions.ProtocolError("connection reset")
 
-    sink = _http_sink(down, shutdown_flush_timeout_seconds=0.2)
-    sink._enqueue_for_test(_make_event())
+    sink = fake_sink(down, shutdown_flush_timeout_seconds=0.2)
+    sink._sender.enqueue(make_event())
     asyncio.run(sink.flush())
-    assert len(sink._buffer) == 1
+    assert sink._sender.pending() == 1
     assert PROCESS_DROPS.total() == {}
     asyncio.run(sink.aclose())
     assert PROCESS_DROPS.total() == {"unsent_at_close": 1}

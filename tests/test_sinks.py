@@ -6,45 +6,35 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import socket
 import subprocess
 import sys
 import threading
 import time
 import warnings
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
+import urllib3
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Response
 
+import baton.sinks as sinks_module
 from baton._state import PROCESS_DROPS
-from baton.events import ToolCallStartEvent, ToolCallStartPayload
+from baton.events import ToolCallStartEvent
 from baton.sinks import BATCH_MAX_BYTES, HttpSink, _BatchSender
-from tests._http_fakes import fake_sink, never_answers
+from tests._http_fakes import Answer, fake_sink, make_event, never_answers, until
 
 BATCH = "/v0/events/batch"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _seqs(request: Any) -> list[int]:
-    return [e["sequence_number"] for e in request.get_json()["events"]]
-
-
-def _make_event(sequence_number: int = 1) -> ToolCallStartEvent:
-    return ToolCallStartEvent(
-        tenant_id="ten_test",
-        vendor_id="ten_test",
-        session_id="sess_test",
-        sequence_number=sequence_number,
-        captured_at=datetime.now(UTC),
-        consent_token="ct_test",
-        agent_runtime="claude-code",
-        call_id="call_test",
-        payload=ToolCallStartPayload(tool_name="t"),
-    )
+    """The sequence numbers of a batch's events, leaving out a ``client_report``."""
+    events = request.get_json()["events"]
+    return [e["sequence_number"] for e in events if e["event_type"] != "client_report"]
 
 
 # =============================================================================
@@ -56,7 +46,7 @@ class TestEmitPostsToIngest:
     async def test_events_are_posted_to_v0_events_batch(self, httpserver: HTTPServer) -> None:
         httpserver.expect_request(BATCH, method="POST").respond_with_data("", status=200)
         sink = HttpSink(url=httpserver.url_for(""), api_key="test-key")
-        await sink.write(_make_event())
+        await sink.write(make_event())
         await sink.flush()
         await sink.aclose()
         httpserver.check_assertions()
@@ -69,7 +59,7 @@ class TestEmitPostsToIngest:
             headers={"Authorization": "Bearer my-secret-key"},
         ).respond_with_data("", status=200)
         sink = HttpSink(url=httpserver.url_for(""), api_key="my-secret-key")
-        await sink.write(_make_event())
+        await sink.write(make_event())
         await sink.flush()
         await sink.aclose()
         httpserver.check_assertions()
@@ -83,7 +73,7 @@ class TestEmitPostsToIngest:
 
         httpserver.expect_request(BATCH, method="POST").respond_with_handler(handler)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
-        event = _make_event(sequence_number=42)
+        event = make_event(sequence_number=42)
         await sink.write(event)
         await sink.flush()
         await sink.aclose()
@@ -96,16 +86,10 @@ class TestEmitPostsToIngest:
         assert body["payload"]["tool_name"] == "t"
 
     async def test_multiple_events_sent_in_order_in_one_batch(self, httpserver: HTTPServer) -> None:
-        batches: list[list[int]] = []
-
-        def handler(request: Any) -> Response:
-            batches.append(_seqs(request))
-            return Response("", status=200)
-
-        httpserver.expect_request(BATCH, method="POST").respond_with_handler(handler)
+        batches = _recording_batches(httpserver)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
         for i in range(5):
-            await sink.write(_make_event(sequence_number=i + 1))
+            await sink.write(make_event(sequence_number=i + 1))
         await sink.flush()
         await sink.aclose()
 
@@ -131,10 +115,10 @@ class TestBufferOverflow:
             warnings.simplefilter("always")
             # Queued without starting the sending thread, so nothing is sent.
             for i in range(5):
-                sink._enqueue_for_test(_make_event(sequence_number=i + 1))
+                sink._sender.enqueue(make_event(sequence_number=i + 1))
 
-        assert len(sink._buffer) == 3
-        seqs_in_buffer = [ev.sequence_number for ev in sink._buffer]
+        assert sink._sender.pending() == 3
+        seqs_in_buffer = [p.event.sequence_number for p in sink._sender.waiting]
         assert seqs_in_buffer == [3, 4, 5]
         warning_messages = [str(w.message) for w in caught if w.category is UserWarning]
         assert any("buffer" in msg.lower() and "drop" in msg.lower() for msg in warning_messages)
@@ -150,7 +134,7 @@ class TestBufferOverflow:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             for i in range(10):
-                sink._enqueue_for_test(_make_event(sequence_number=i + 1))
+                sink._sender.enqueue(make_event(sequence_number=i + 1))
 
         warning_count = sum(
             1 for w in caught if w.category is UserWarning and "drop" in str(w.message).lower()
@@ -168,18 +152,12 @@ def _recording_batches(httpserver: HTTPServer) -> list[list[int]]:
     batches: list[list[int]] = []
 
     def handler(request: Any) -> Response:
-        batches.append(_seqs(request))
+        if seqs := _seqs(request):
+            batches.append(seqs)
         return Response("", status=200)
 
     httpserver.expect_request(BATCH, method="POST").respond_with_handler(handler)
     return batches
-
-
-async def _until(condition: Any, seconds: float = 3.0) -> None:
-    deadline = time.monotonic() + seconds
-    while not condition():
-        assert time.monotonic() < deadline, "timed out"
-        await asyncio.sleep(0.01)
 
 
 class TestWhenABatchGoes:
@@ -190,10 +168,10 @@ class TestWhenABatchGoes:
         sink = HttpSink(url=httpserver.url_for(""), api_key="k", flush_interval_seconds=0.3)
         written = time.monotonic()
         for n in (1, 2, 3):
-            await sink.write(_make_event(sequence_number=n))
+            await sink.write(make_event(sequence_number=n))
         await asyncio.sleep(0.15)
         assert batches == []
-        await _until(lambda: batches)
+        await until(lambda: batches)
         assert time.monotonic() - written >= 0.3
         assert batches == [[1, 2, 3]]
         await sink.aclose()
@@ -201,7 +179,7 @@ class TestWhenABatchGoes:
     async def test_flush_sends_at_once(self, httpserver: HTTPServer) -> None:
         batches = _recording_batches(httpserver)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k", flush_interval_seconds=60)
-        await sink.write(_make_event(sequence_number=1))
+        await sink.write(make_event(sequence_number=1))
         started = time.monotonic()
         await sink.flush()
         assert time.monotonic() - started < 1.0
@@ -214,8 +192,8 @@ class TestWhenABatchGoes:
         batches = _recording_batches(httpserver)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k", flush_interval_seconds=60)
         for n in range(1, 151):
-            await sink.write(_make_event(sequence_number=n))
-        await _until(lambda: batches)
+            await sink.write(make_event(sequence_number=n))
+        await until(lambda: batches)
         assert batches == [list(range(1, 101))]
         await sink.flush()
         assert batches[1:] == [list(range(101, 151))]
@@ -227,14 +205,14 @@ class TestWhenABatchGoes:
         batches = _recording_batches(httpserver)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k", flush_interval_seconds=60)
         events = [
-            _make_event(sequence_number=1),
+            make_event(sequence_number=1),
             _make_event_with_params(2, {"blob": "x" * 600_000}),
             _make_event_with_params(3, {"blob": "x" * 600_000}),
-            _make_event(sequence_number=4),
+            make_event(sequence_number=4),
         ]
         for event in events:
             await sink.write(event)
-        await _until(lambda: len(batches) >= 1)
+        await until(lambda: len(batches) >= 1)
         await asyncio.sleep(0.1)
         assert batches == [[1, 2]], "the rest waits for the timer"
         await sink.flush()
@@ -242,34 +220,35 @@ class TestWhenABatchGoes:
         assert all(len(r.data) <= BATCH_MAX_BYTES for r, _ in httpserver.log)
         await sink.aclose()
 
-    async def test_an_event_alone_over_the_cap_is_sent_alone_and_refused_on_413(
-        self, httpserver: HTTPServer
+    async def test_an_event_alone_over_the_cap_is_never_sent_and_is_refused(
+        self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
     ) -> None:
-        sizes: list[int] = []
-
-        def handler(request: Any) -> Response:
-            events = request.get_json()["events"]
-            sizes.append(sum(e["event_type"] != "client_report" for e in events))
-            if len(request.data) > BATCH_MAX_BYTES:
-                return Response("", status=413)
-            return Response("", status=200)
-
-        httpserver.expect_request(BATCH, method="POST").respond_with_handler(handler)
+        batches = _recording_batches(httpserver)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k", flush_interval_seconds=60)
-        await sink.write(_make_event_with_params(1, {"blob": "x" * (BATCH_MAX_BYTES + 1)}))
-        await sink.write(_make_event(sequence_number=2))
-        await sink.flush()
-        assert sizes[:2] == [1, 1] and sum(sizes) == 2
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            await sink.write(_make_event_with_params(1, {"blob": "x" * BATCH_MAX_BYTES}))
+            await sink.write(make_event(sequence_number=2))
+            await sink.flush()
+        assert batches == [[2]]
         assert PROCESS_DROPS.total() == {"refused": 1}
-        assert len(sink._buffer) == 0
+        assert any("over the 1 MiB batch cap" in m for m in caplog.messages)
+        await sink.aclose()
+
+    async def test_a_413_on_one_event_refuses_it(self, httpserver: HTTPServer) -> None:
+        httpserver.expect_request(BATCH, method="POST").respond_with_data("", status=413)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k")
+        await sink.write(make_event())
+        await sink.flush()
+        assert len(httpserver.log) == 1
+        assert PROCESS_DROPS.total() == {"refused": 1}
         await sink.aclose()
 
     async def test_aclose_drains_pending_events(self, httpserver: HTTPServer) -> None:
         httpserver.expect_request(BATCH, method="POST").respond_with_data("", status=200)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
-        await sink.write(_make_event())
+        await sink.write(make_event())
         await sink.aclose()
-        assert len(sink._buffer) == 0
+        assert sink._sender.pending() == 0
         httpserver.check_assertions()
 
     async def test_one_request_at_a_time(self, httpserver: HTTPServer) -> None:
@@ -290,7 +269,7 @@ class TestWhenABatchGoes:
         httpserver.expect_request(BATCH, method="POST").respond_with_handler(handler)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k", flush_interval_seconds=0)
         for n in range(1, 401):
-            await sink.write(_make_event(sequence_number=n))
+            await sink.write(make_event(sequence_number=n))
             if n % 50 == 0:
                 await asyncio.sleep(0.005)
         await sink.aclose()
@@ -315,11 +294,11 @@ class TestAnswers:
         httpserver.expect_request(BATCH, method="POST").respond_with_handler(handler)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
         for n in range(1, 6):
-            await sink.write(_make_event(sequence_number=n))
+            await sink.write(make_event(sequence_number=n))
         await sink.flush()
         assert sizes == [5, 2, 3, 1, 2]
         assert PROCESS_DROPS.total() == {}
-        assert len(sink._buffer) == 0
+        assert sink._sender.pending() == 0
         await sink.aclose()
 
     @pytest.mark.parametrize("status", [404, 405])
@@ -336,9 +315,9 @@ class TestAnswers:
         httpserver.expect_request("/v0/events", method="POST").respond_with_handler(one)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
         for n in (1, 2, 3):
-            await sink.write(_make_event(sequence_number=n))
+            await sink.write(make_event(sequence_number=n))
         await sink.flush()
-        await sink.write(_make_event(sequence_number=4))
+        await sink.write(make_event(sequence_number=4))
         await sink.flush()
         await sink.aclose()
         assert single == [1, 2, 3, 4]
@@ -365,10 +344,10 @@ class TestAnswers:
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
         with caplog.at_level(logging.WARNING, logger="baton"):
             for n in (1, 2, 3):
-                await sink.write(_make_event(sequence_number=n))
+                await sink.write(make_event(sequence_number=n))
             await sink.flush()
         assert PROCESS_DROPS.total() == {"refused": 1}
-        assert len(sink._buffer) == 0
+        assert sink._sender.pending() == 0
         [warning] = [r.getMessage() for r in caplog.records if "REFUSED" in r.getMessage()]
         assert "payload_malformed: no tool_name" in warning
         await sink.aclose()
@@ -389,7 +368,7 @@ class TestAnswers:
         httpserver.expect_request(BATCH, method="POST").respond_with_handler(handler)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
         for n in (1, 2, 3):
-            await sink.write(_make_event(sequence_number=n))
+            await sink.write(make_event(sequence_number=n))
         await sink.flush()
         assert PROCESS_DROPS.total() == {"refused": 1}
         await sink.aclose()
@@ -405,12 +384,12 @@ class TestAnswers:
 
         httpserver.expect_request(BATCH, method="POST").respond_with_handler(handler)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k", flush_interval_seconds=0.05)
-        await sink.write(_make_event())
+        await sink.write(make_event())
         await sink.flush()
-        assert len(times) == 1 and len(sink._buffer) == 1
+        assert len(times) == 1 and sink._sender.pending() == 1
         await sink.flush()
         assert len(times) == 1, "a flush does not send before Retry-After"
-        await _until(lambda: not sink._buffer)
+        await until(lambda: not sink._sender.pending())
         assert times[1] - times[0] >= 1.0
         assert PROCESS_DROPS.total() == {}
         await sink.aclose()
@@ -422,7 +401,7 @@ class TestAnswers:
         httpserver.expect_request(BATCH, method="POST").respond_with_data("no", status=status)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
         for n in (1, 2, 3):
-            await sink.write(_make_event(sequence_number=n))
+            await sink.write(make_event(sequence_number=n))
         await sink.flush()
         assert PROCESS_DROPS.total() == {"refused": 3}
         assert len(httpserver.log) == 1
@@ -438,8 +417,8 @@ class TestAnswers:
         sink = HttpSink(
             url=httpserver.url_for(""), api_key="k", max_retries=0, flush_interval_seconds=0.1
         )
-        await sink.write(_make_event())
-        await _until(lambda: not sink._buffer)
+        await sink.write(make_event())
+        await until(lambda: not sink._sender.pending())
         assert len(httpserver.log) == 2
         await sink.aclose()
 
@@ -452,9 +431,9 @@ class TestAnswers:
 
         httpserver.expect_request(BATCH, method="POST").respond_with_handler(handler)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
-        other = _make_event(sequence_number=2)
+        other = make_event(sequence_number=2)
         other.tenant_id = "ten_other"
-        for event in (_make_event(sequence_number=1), other, _make_event(sequence_number=3)):
+        for event in (make_event(sequence_number=1), other, make_event(sequence_number=3)):
             await sink.write(event)
         await sink.flush()
         assert tenants == [{"ten_test"}, {"ten_other"}, {"ten_test"}]
@@ -469,7 +448,7 @@ class TestNoLogLinePerRequest:
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
         with caplog.at_level(logging.INFO):
             for n in range(1, 4):
-                await sink.write(_make_event(sequence_number=n))
+                await sink.write(make_event(sequence_number=n))
                 await sink.flush()
             await sink.aclose()
         assert len(httpserver.log) == 3
@@ -495,11 +474,11 @@ class TestRetry:
             max_retries=3,
             backoff_base_seconds=0.001,
         )
-        await sink.write(_make_event())
+        await sink.write(make_event())
         await sink.flush()
         await sink.aclose()
 
-        assert len(sink._buffer) == 0
+        assert sink._sender.pending() == 0
         httpserver.check_assertions()
 
     async def test_does_not_retry_4xx(self, httpserver: HTTPServer) -> None:
@@ -519,12 +498,12 @@ class TestRetry:
             max_retries=3,
             backoff_base_seconds=0.001,
         )
-        await sink.write(_make_event())
+        await sink.write(make_event())
         await sink.flush()
         await sink.aclose()
 
         assert call_count == 1
-        assert len(sink._buffer) == 0
+        assert sink._sender.pending() == 0
 
 
 # =============================================================================
@@ -555,12 +534,12 @@ class TestCircuitBreaker:
         )
 
         for _ in range(5):
-            await sink.write(_make_event())
+            await sink.write(make_event())
             await sink.flush()
 
         # 3 failed flushes x 2 attempts each; then the circuit is open.
         assert call_count == 6
-        assert len(sink._buffer) == 5
+        assert sink._sender.pending() == 5
         await sink.aclose()
 
 
@@ -574,19 +553,19 @@ class TestLifecycle:
         httpserver.expect_request(BATCH, method="POST").respond_with_data("", status=200)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
         for i in range(10):
-            await sink.write(_make_event(sequence_number=i + 1))
+            await sink.write(make_event(sequence_number=i + 1))
         await sink.flush()
-        assert len(sink._buffer) == 0
+        assert sink._sender.pending() == 0
         await sink.aclose()
 
     async def test_aclose_flushes_and_closes(self, httpserver: HTTPServer) -> None:
         httpserver.expect_request(BATCH, method="POST").respond_with_data("", status=200)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
-        await sink.write(_make_event())
+        await sink.write(make_event())
         await sink.aclose()
-        assert len(sink._buffer) == 0
+        assert sink._sender.pending() == 0
         with pytest.raises(RuntimeError):
-            await sink.write(_make_event(sequence_number=2))
+            await sink.write(make_event(sequence_number=2))
 
     async def test_aclose_keeps_its_budget_against_a_collector_that_never_answers(
         self, caplog: pytest.LogCaptureFixture
@@ -601,7 +580,7 @@ class TestLifecycle:
                 request_timeout_seconds=30,
                 shutdown_flush_timeout_seconds=0.3,
             )
-            await sink.write(_make_event())
+            await sink.write(make_event())
             started = time.monotonic()
             with caplog.at_level(logging.WARNING, logger="baton"):
                 await sink.aclose()
@@ -613,14 +592,14 @@ class TestLifecycle:
         sink = fake_sink(never_answers, flush_interval_seconds=0, shutdown_flush_timeout_seconds=0)
         started = time.monotonic()
         for n in range(1, 201):
-            await sink.write(_make_event(sequence_number=n))
+            await sink.write(make_event(sequence_number=n))
         assert time.monotonic() - started < 0.5
         await sink.aclose()
 
     async def test_the_sending_thread_is_a_daemon(self, httpserver: HTTPServer) -> None:
         httpserver.expect_request(BATCH, method="POST").respond_with_data("", status=200)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
-        await sink.write(_make_event())
+        await sink.write(make_event())
         thread = sink._sender.thread
         assert thread is not None and thread.daemon
         await sink.aclose()
@@ -643,31 +622,31 @@ class TestShutdownFlush:
     ) -> None:
         httpserver.expect_request(BATCH, method="POST").respond_with_data("", status=200)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
-        assert sink._atexit_registered is False
-        await sink.write(_make_event())
-        assert sink._atexit_registered is True
+        assert sink._atexit_callback is None
+        await sink.write(make_event())
+        assert sink._atexit_callback is not None
         await sink.aclose()
-        assert sink._atexit_registered is False
+        assert sink._atexit_callback is None
 
     async def test_flushes_leftover_buffer_with_no_sending_thread(
         self, httpserver: HTTPServer
     ) -> None:
         batches = _recording_batches(httpserver)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
-        sink._enqueue_for_test(_make_event(sequence_number=1))
-        sink._enqueue_for_test(_make_event(sequence_number=2))
+        sink._sender.enqueue(make_event(sequence_number=1))
+        sink._sender.enqueue(make_event(sequence_number=2))
 
         sink._atexit_flush()
 
         assert sink._sender.thread is None
         assert batches == [[1, 2]]
-        assert len(sink._buffer) == 0
+        assert sink._sender.pending() == 0
         sink._closed = True
 
     async def test_hands_the_flush_to_a_live_sending_thread(self, httpserver: HTTPServer) -> None:
         batches = _recording_batches(httpserver)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k", flush_interval_seconds=60)
-        await sink.write(_make_event(sequence_number=1))
+        await sink.write(make_event(sequence_number=1))
         assert sink._sender.thread_alive()
         sink._atexit_flush()
         assert batches == [[1]]
@@ -676,13 +655,13 @@ class TestShutdownFlush:
     async def test_noop_when_already_closed(self, httpserver: HTTPServer) -> None:
         httpserver.expect_request(BATCH, method="POST").respond_with_data("", status=200)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
-        sink._enqueue_for_test(_make_event())
+        sink._sender.enqueue(make_event())
         sink._closed = True
 
         sink._atexit_flush()
 
         assert len(httpserver.log) == 0
-        assert len(sink._buffer) == 1
+        assert sink._sender.pending() == 1
 
     async def test_noop_when_buffer_empty(self, httpserver: HTTPServer) -> None:
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
@@ -692,23 +671,23 @@ class TestShutdownFlush:
     async def test_permanent_failure_dropped_without_retry(self, httpserver: HTTPServer) -> None:
         httpserver.expect_request(BATCH, method="POST").respond_with_data("bad", status=400)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
-        sink._enqueue_for_test(_make_event())
+        sink._sender.enqueue(make_event())
 
         sink._atexit_flush()
 
         assert len(httpserver.log) == 1
-        assert len(sink._buffer) == 0
+        assert sink._sender.pending() == 0
         sink._closed = True
 
     async def test_transient_failure_stops_and_leaves_buffer(self, httpserver: HTTPServer) -> None:
         httpserver.expect_request(BATCH, method="POST").respond_with_data("err", status=500)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k", backoff_base_seconds=0.001)
-        sink._enqueue_for_test(_make_event(sequence_number=1))
-        sink._enqueue_for_test(_make_event(sequence_number=2))
+        sink._sender.enqueue(make_event(sequence_number=1))
+        sink._sender.enqueue(make_event(sequence_number=2))
 
         sink._atexit_flush()
 
-        assert len(sink._buffer) == 2
+        assert sink._sender.pending() == 2
         sink._closed = True
 
     async def test_skips_entirely_when_circuit_open(self, httpserver: HTTPServer) -> None:
@@ -716,12 +695,12 @@ class TestShutdownFlush:
         for _ in range(3):
             sink._circuit.record_failure()
         assert sink._circuit.can_request() is False
-        sink._enqueue_for_test(_make_event())
+        sink._sender.enqueue(make_event())
 
         sink._atexit_flush()
 
         assert len(httpserver.log) == 0
-        assert len(sink._buffer) == 1
+        assert sink._sender.pending() == 1
         sink._closed = True
 
     @pytest.mark.parametrize("thread", [False, True])
@@ -741,9 +720,9 @@ class TestShutdownFlush:
         )
         for i in range(5):
             if thread:
-                await sink.write(_make_event(sequence_number=i + 1))
+                await sink.write(make_event(sequence_number=i + 1))
             else:
-                sink._enqueue_for_test(_make_event(sequence_number=i + 1))
+                sink._sender.enqueue(make_event(sequence_number=i + 1))
 
         start = time.monotonic()
         sink._atexit_flush()
@@ -786,7 +765,7 @@ class TestCrossThreadShutdownFlush:
         sink = HttpSink(url=httpserver.url_for(""), api_key="k", flush_interval_seconds=0)
 
         async def write(n: int) -> None:
-            await sink.write(_make_event(sequence_number=n))
+            await sink.write(make_event(sequence_number=n))
 
         try:
             asyncio.run_coroutine_threadsafe(write(1), loop).result(timeout=5.0)
@@ -796,7 +775,7 @@ class TestCrossThreadShutdownFlush:
 
             assert sorted(posted) == [1, 2]
             assert len(posted) == 2
-            assert len(sink._buffer) == 0
+            assert sink._sender.pending() == 0
         finally:
             sink._closed = True
             loop.call_soon_threadsafe(loop.stop)
@@ -808,12 +787,12 @@ def test_a_process_that_exits_without_close_still_sends(httpserver: HTTPServer) 
     batches = _recording_batches(httpserver)
     script = f"""
 import asyncio
-from tests.test_sinks import _make_event
+from tests._http_fakes import make_event
 from baton.sinks import HttpSink
 
 async def main():
     sink = HttpSink(url={httpserver.url_for("")!r}, api_key="k")
-    await sink.write(_make_event(sequence_number=7))
+    await sink.write(make_event(sequence_number=7))
 
 asyncio.run(main())
 """
@@ -832,7 +811,7 @@ class TestAtexitDoesNotPinUnclosedSink:
 
         httpserver.expect_request(BATCH, method="POST").respond_with_data("", status=200)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
-        await sink.write(_make_event())
+        await sink.write(make_event())
         await sink.flush()
         thread = sink._sender.thread
         assert thread is not None
@@ -859,8 +838,8 @@ class TestStdoutSink:
 
         buf = io.StringIO()
         sink = StdoutSink(stream=buf)
-        await sink.write(_make_event(sequence_number=1))
-        await sink.write(_make_event(sequence_number=2))
+        await sink.write(make_event(sequence_number=1))
+        await sink.write(make_event(sequence_number=2))
         await sink.aclose()
 
         lines = buf.getvalue().splitlines()
@@ -894,7 +873,7 @@ class TestStdoutSink:
         sink = StdoutSink(stream=io.StringIO())
         await sink.aclose()
         with pytest.raises(RuntimeError, match="closed"):
-            await sink.write(_make_event())
+            await sink.write(make_event())
 
     async def test_does_not_close_user_owned_stream(self) -> None:
         """aclose() should not close the underlying stream — the caller
@@ -920,8 +899,8 @@ class TestFileSink:
 
         path = tmp_path / "events.jsonl"
         sink = FileSink(path)
-        await sink.write(_make_event(sequence_number=1))
-        await sink.write(_make_event(sequence_number=2))
+        await sink.write(make_event(sequence_number=1))
+        await sink.write(make_event(sequence_number=2))
         await sink.aclose()
 
         lines = path.read_text().splitlines()
@@ -948,11 +927,11 @@ class TestFileSink:
 
         path = tmp_path / "events.jsonl"
         sink_a = FileSink(path)
-        await sink_a.write(_make_event(sequence_number=1))
+        await sink_a.write(make_event(sequence_number=1))
         await sink_a.aclose()
 
         sink_b = FileSink(path)
-        await sink_b.write(_make_event(sequence_number=2))
+        await sink_b.write(make_event(sequence_number=2))
         await sink_b.aclose()
 
         lines = path.read_text().splitlines()
@@ -964,7 +943,7 @@ class TestFileSink:
         sink = FileSink(tmp_path / "x.jsonl")
         await sink.aclose()
         with pytest.raises(RuntimeError, match="closed"):
-            await sink.write(_make_event())
+            await sink.write(make_event())
 
 
 # =============================================================================
@@ -982,7 +961,7 @@ class TestMultiSink:
         path = tmp_path / "events.jsonl"
         sink = MultiSink([StdoutSink(stream=buf), FileSink(path)])
 
-        await sink.write(_make_event(sequence_number=1))
+        await sink.write(make_event(sequence_number=1))
         await sink.aclose()
 
         # Both sinks received the event
@@ -1028,7 +1007,7 @@ class TestMultiSink:
         sink = MultiSink([_AlwaysFailSink(), _BufferSink(), FileSink(path)])
 
         with pytest.raises(RuntimeError, match="broken sink"):
-            await sink.write(_make_event())
+            await sink.write(make_event())
 
         # The two healthy sinks still got the event
         assert good_buf.getvalue() == "written\n"
@@ -1055,7 +1034,7 @@ class TestMultiSink:
         sink = MultiSink([_AlwaysFailSink("first"), _AlwaysFailSink("second")])
 
         with pytest.raises(ExceptionGroup) as info:
-            await sink.write(_make_event())
+            await sink.write(make_event())
         msgs = {str(e) for e in info.value.exceptions}
         assert msgs == {"first", "second"}
 
@@ -1073,12 +1052,14 @@ class TestARejectedEventSaysSo:
             '{"detail":"envelope carries both `principal` and `principal_id`"}', status=422
         )
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
-        sink._enqueue_for_test(_make_event())
+        sink._sender.enqueue(make_event())
 
         with caplog.at_level(logging.WARNING, logger="baton"):
             await sink.flush()
 
-        assert len(sink._buffer) == 0, "the event is still dropped — this is not a retry change"
+        assert sink._sender.pending() == 0, (
+            "the event is still dropped — this is not a retry change"
+        )
         blob = caplog.text
         assert "422" in blob, f"the status must name itself: {blob!r}"
         assert "principal" in blob, f"the collector's reason must survive: {blob!r}"
@@ -1090,12 +1071,12 @@ class TestARejectedEventSaysSo:
     ) -> None:
         httpserver.expect_request(BATCH, method="POST").respond_with_data("", status=200)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
-        sink._enqueue_for_test(_make_event())
+        sink._sender.enqueue(make_event())
 
         with caplog.at_level(logging.WARNING, logger="baton"):
             await sink.flush()
 
-        assert len(sink._buffer) == 0
+        assert sink._sender.pending() == 0
         assert caplog.text == "", f"a successful send logged: {caplog.text!r}"
         sink._closed = True
 
@@ -1114,7 +1095,7 @@ class TestRepeatedRefusalsAreCounted:
     async def _send(sink: HttpSink, n: int) -> None:
         """One request per event."""
         for i in range(n):
-            sink._enqueue_for_test(_make_event(i))
+            sink._sender.enqueue(make_event(i))
             await sink.flush()
 
     @staticmethod
@@ -1147,7 +1128,7 @@ class TestRepeatedRefusalsAreCounted:
     ) -> None:
         sink = self._sink(httpserver, [(422, "bad")])
         for i in range(3):
-            sink._enqueue_for_test(_make_event(i))
+            sink._sender.enqueue(make_event(i))
         with caplog.at_level(logging.WARNING, logger="baton"):
             await sink.flush()
         [warning] = self._refusal_warnings(caplog)
@@ -1197,8 +1178,8 @@ class TestRepeatedRefusalsAreCounted:
         sink = self._sink(httpserver, [(422, "bad")] * 2)
         with caplog.at_level(logging.WARNING, logger="baton"):
             asyncio.run(self._send(sink, 1))
-            sink._enqueue_for_test(_make_event(1))
-            sink._enqueue_for_test(_make_event(2))
+            sink._sender.enqueue(make_event(1))
+            sink._sender.enqueue(make_event(2))
             sink._atexit_flush()
             assert len(self._refusal_warnings(caplog)) == 1
             assert (
@@ -1240,20 +1221,9 @@ class TestRepeatedRefusalsAreCounted:
 
 
 def _make_event_with_params(sequence_number: int, params: dict[str, Any]) -> ToolCallStartEvent:
-    event = _make_event(sequence_number)
+    event = make_event(sequence_number)
     event.payload.params = params
     return event
-
-
-def _record_posted_sequence_numbers(httpserver: HTTPServer) -> list[int]:
-    posted: list[int] = []
-
-    def handler(request: Any) -> Response:
-        posted.extend(_seqs(request))
-        return Response("", status=200)
-
-    httpserver.expect_request(BATCH, method="POST").respond_with_handler(handler)
-    return posted
 
 
 _UNSERIALIZABLE = {"q": object()}
@@ -1264,15 +1234,15 @@ class TestAnUnencodableEventDoesNotBlockTheQueue:
     async def test_the_sender_drops_it_and_ships_what_follows(
         self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
     ) -> None:
-        posted = _record_posted_sequence_numbers(httpserver)
+        batches = _recording_batches(httpserver)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
         with caplog.at_level(logging.WARNING, logger="baton"):
             await sink.write(_make_event_with_params(1, _UNSERIALIZABLE))
-            await sink.write(_make_event(sequence_number=2))
+            await sink.write(make_event(sequence_number=2))
             await sink.aclose()
 
-        assert posted == [2]
-        assert len(sink._buffer) == 0
+        assert batches == [[2]]
+        assert sink._sender.pending() == 0
         assert PROCESS_DROPS.total() == {"encode_failed": 1}
         dropped = [r for r in caplog.records if "has been dropped" in r.getMessage()]
         assert len(dropped) == 1
@@ -1282,45 +1252,45 @@ class TestAnUnencodableEventDoesNotBlockTheQueue:
     async def test_the_shutdown_flush_drops_it_and_ships_what_follows(
         self, httpserver: HTTPServer
     ) -> None:
-        posted = _record_posted_sequence_numbers(httpserver)
+        batches = _recording_batches(httpserver)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
-        sink._enqueue_for_test(_make_event_with_params(1, _UNSERIALIZABLE))
-        sink._enqueue_for_test(_make_event(sequence_number=2))
+        sink._sender.enqueue(_make_event_with_params(1, _UNSERIALIZABLE))
+        sink._sender.enqueue(make_event(sequence_number=2))
 
         sink._atexit_flush()
 
-        assert posted == [2]
-        assert len(sink._buffer) == 0
+        assert batches == [[2]]
+        assert sink._sender.pending() == 0
         assert PROCESS_DROPS.total() == {"encode_failed": 1}
         sink._closed = True
 
     async def test_a_lone_surrogate_is_dropped_and_does_not_stop_the_sender(
         self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
     ) -> None:
-        posted = _record_posted_sequence_numbers(httpserver)
+        batches = _recording_batches(httpserver)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
         with caplog.at_level(logging.WARNING, logger="baton"):
             await sink.write(_make_event_with_params(1, _LONE_SURROGATE))
-            await sink.write(_make_event(sequence_number=2))
+            await sink.write(make_event(sequence_number=2))
             await sink.aclose()
 
-        assert posted == [2]
+        assert batches == [[2]]
         assert PROCESS_DROPS.total() == {"encode_failed": 1}
         assert "half an emoji" not in caplog.text
 
     async def test_a_lone_surrogate_does_not_stop_the_shutdown_flush(
         self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture
     ) -> None:
-        posted = _record_posted_sequence_numbers(httpserver)
+        batches = _recording_batches(httpserver)
         sink = HttpSink(url=httpserver.url_for(""), api_key="k")
-        sink._enqueue_for_test(_make_event_with_params(1, _LONE_SURROGATE))
-        sink._enqueue_for_test(_make_event(sequence_number=2))
+        sink._sender.enqueue(_make_event_with_params(1, _LONE_SURROGATE))
+        sink._sender.enqueue(make_event(sequence_number=2))
 
         with caplog.at_level(logging.WARNING, logger="baton"):
             sink._atexit_flush()
 
-        assert posted == [2]
-        assert len(sink._buffer) == 0
+        assert batches == [[2]]
+        assert sink._sender.pending() == 0
         assert "half an emoji" not in caplog.text
         sink._closed = True
 
@@ -1332,21 +1302,21 @@ class TestAnUnencodableEventDoesNotBlockTheQueue:
             circuit_breaker_reset_seconds=0.0,
         )
         sink._circuit.record_failure()
-        sink._enqueue_for_test(_make_event_with_params(1, _UNSERIALIZABLE))
+        sink._sender.enqueue(_make_event_with_params(1, _UNSERIALIZABLE))
 
         await sink.flush()
 
-        assert len(sink._buffer) == 0
+        assert sink._sender.pending() == 0
         assert sink._circuit._opened_at is not None
         await sink.aclose()
 
     async def test_an_unreachable_sink_url_is_not_blamed_on_the_event(self) -> None:
         sink = HttpSink(url="http://127.0.0.1:9/\x00", api_key="k", max_retries=0)
-        sink._enqueue_for_test(_make_event())
+        sink._sender.enqueue(make_event())
 
         await sink.flush()
 
-        assert len(sink._buffer) == 1
+        assert sink._sender.pending() == 1
         assert PROCESS_DROPS.total() == {}
         sink._closed = True
 
@@ -1354,7 +1324,7 @@ class TestAnUnencodableEventDoesNotBlockTheQueue:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         sink = HttpSink(url="http://127.0.0.1:9", api_key="k\u2603")
-        sink._enqueue_for_test(_make_event())
+        sink._sender.enqueue(make_event())
 
         with caplog.at_level(logging.WARNING, logger="baton"):
             await sink.flush()
@@ -1362,19 +1332,145 @@ class TestAnUnencodableEventDoesNotBlockTheQueue:
         assert record.exc_info is not None
         assert isinstance(record.exc_info[1], UnicodeEncodeError)
 
-        assert len(sink._buffer) == 1
+        assert sink._sender.pending() == 1
         assert PROCESS_DROPS.total() == {}
         sink._closed = True
 
 
-def test_a_proxy_in_the_environment_is_used_unless_bypassed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import urllib3
+@pytest.fixture
+def no_ambient_proxy(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    for name in [n for n in os.environ if n.lower().endswith("_proxy")]:
+        monkeypatch.delenv(name)
+    monkeypatch.setattr(sinks_module, "_proxy_warned", False)
+    return monkeypatch
 
-    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
-    monkeypatch.setenv("NO_PROXY", "skip.example")
+
+def test_a_proxy_in_the_environment_is_used_unless_bypassed(
+    no_ambient_proxy: pytest.MonkeyPatch,
+) -> None:
+    no_ambient_proxy.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+    no_ambient_proxy.setenv("NO_PROXY", "skip.example")
     proxied = HttpSink(url="https://collector.example", api_key="k")._http_client
     direct = HttpSink(url="https://skip.example", api_key="k")._http_client
     assert isinstance(proxied, urllib3.ProxyManager)
     assert not isinstance(direct, urllib3.ProxyManager)
+
+
+def test_a_proxy_without_a_scheme_is_http(no_ambient_proxy: pytest.MonkeyPatch) -> None:
+    no_ambient_proxy.setenv("HTTPS_PROXY", "proxy.corp:3128")
+    pool = HttpSink(url="https://collector.example", api_key="k")._http_client
+    assert isinstance(pool, urllib3.ProxyManager)
+    assert (pool.proxy.scheme, pool.proxy.host, pool.proxy.port) == ("http", "proxy.corp", 3128)
+
+
+def test_all_proxy_is_used(no_ambient_proxy: pytest.MonkeyPatch) -> None:
+    no_ambient_proxy.setenv("ALL_PROXY", "http://proxy.corp:3128")
+    pool = HttpSink(url="https://collector.example", api_key="k")._http_client
+    assert isinstance(pool, urllib3.ProxyManager)
+
+
+def test_a_proxy_password_goes_in_proxy_authorization_and_not_the_url(
+    no_ambient_proxy: pytest.MonkeyPatch,
+) -> None:
+    no_ambient_proxy.setenv("HTTPS_PROXY", "http://us%40er:s3cret@proxy.corp:3128")
+    pool = HttpSink(url="https://collector.example", api_key="k")._http_client
+    assert isinstance(pool, urllib3.ProxyManager)
+    expected = urllib3.make_headers(proxy_basic_auth="us@er:s3cret")["proxy-authorization"]
+    assert pool.proxy_headers["proxy-authorization"] == expected
+    assert "s3cret" not in str(pool.proxy)
+
+
+@pytest.mark.parametrize("value", ["socks5://proxy.corp:1080", "http://[proxy.corp"])
+def test_a_bad_proxy_never_stops_the_sink_and_warns_once(
+    no_ambient_proxy: pytest.MonkeyPatch, value: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    no_ambient_proxy.setenv("HTTPS_PROXY", value)
+    with caplog.at_level(logging.WARNING, logger="baton"):
+        pools = [HttpSink(url="https://collector.example", api_key="k")._http_client for _ in "ab"]
+    assert not any(isinstance(p, urllib3.ProxyManager) for p in pools)
+    assert [r.getMessage() for r in caplog.records if "proxy" in r.getMessage()] == [
+        caplog.records[0].getMessage()
+    ]
+    assert "proxy.corp" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("header", "seconds"),
+    [
+        ("0", 1.0),
+        ("30", 30.0),
+        (" 30 ", 30.0),
+        ("120", 60.0),
+        ("0.2", None),
+        ("1.5", None),
+        ("-3", None),
+        ("soon", None),
+        ("inf", None),
+        ("nan", None),
+        ("Wed, 21 Oct 2026 07:28:00 GMT", None),
+        (None, None),
+    ],
+)
+def test_retry_after_is_whole_seconds_from_1_to_60(
+    header: str | None, seconds: float | None
+) -> None:
+    headers = {} if header is None else {"Retry-After": header}
+    assert sinks_module._retry_after_seconds(headers) == seconds
+
+
+async def test_retry_after_0_waits_a_second_rather_than_looping(httpserver: HTTPServer) -> None:
+    times: list[float] = []
+
+    def handler(request: Any) -> Response:
+        times.append(time.monotonic())
+        if len(times) == 1:
+            return Response("", status=429, headers={"Retry-After": "0"})
+        return Response("", status=200)
+
+    httpserver.expect_request(BATCH, method="POST").respond_with_handler(handler)
+    sink = HttpSink(url=httpserver.url_for(""), api_key="k", flush_interval_seconds=0.01)
+    await sink.write(make_event())
+    await until(lambda: len(times) >= 2)
+    assert times[1] - times[0] >= 1.0
+    await sink.aclose()
+    assert len(times) == 2
+
+
+@pytest.mark.parametrize(("header", "failures"), [("1", 0), ("soon", 1)])
+async def test_only_a_readable_retry_after_spares_the_circuit(header: str, failures: int) -> None:
+    sink = fake_sink(lambda path, body: Answer(429, headers={"Retry-After": header}))
+    await sink.write(make_event())
+    await sink.flush()
+    assert sink._circuit._failures == failures
+    assert sink._sender.pending() == 1
+    await sink.aclose()
+
+
+@pytest.mark.parametrize("interval", [float("inf"), float("nan"), -1, 1e12, "5"])
+def test_a_bad_flush_interval_falls_back_to_the_default_with_a_warning(
+    interval: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="baton"):
+        sink = HttpSink(
+            url="http://collector.example", api_key="k", flush_interval_seconds=interval
+        )
+    assert sink._sender.flush_interval == sinks_module.FLUSH_INTERVAL_SECONDS
+    assert any("flush_interval_seconds" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
+@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded")
+def test_a_forked_child_gets_its_own_connection_pool() -> None:
+    sink = HttpSink(url="http://collector.example", api_key="k")
+    parent_pool = sink._sender.pool
+    read, write = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        sink._sender.enqueue(make_event())
+        os.write(write, b"1" if sink._sender.pool is not parent_pool else b"0")
+        os._exit(0)
+    os.close(write)
+    os.waitpid(pid, 0)
+    assert os.read(read, 1) == b"1"
+    assert sink._sender.pool is parent_pool
+    sink._closed = True
