@@ -44,7 +44,8 @@ async def test_shutdown_keeps_its_promises(
     scenario: dict[str, Any], collector: int, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.WARNING, logger="baton")
-    settings, limits = _SPEC["settings"], _SPEC["limits"]
+    settings = {**_SPEC["settings"], **scenario.get("settings", {})}
+    limits = _SPEC["limits"]
     close_limit = (settings["shutdown_budget_ms"] + limits["close_margin_ms"]) / 1000
     mcp = FastMCP("shutdown")
 
