@@ -127,6 +127,7 @@ def install_baton(
 
     shared = build_shared(checked.config)
     handle = attach(mcp, checked.config, text, shared)
+    # After attach, so an install that fails reads no settings.
     shared.start()
     return handle
 

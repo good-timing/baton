@@ -37,7 +37,6 @@ class Shared:
     capture_settings: CaptureSettings | None = None
 
     def start(self) -> None:
-        """Once the install has changed the server, so a failed install reads nothing."""
         if self.capture_settings is not None:
             self.capture_settings.start()
 
