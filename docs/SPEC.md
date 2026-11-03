@@ -74,7 +74,7 @@ Every request MUST include both:
 The collector MUST reject any request without a valid bearer. The collector MUST reject any event payload without a `consent_token` matching the SDK's registered consent records.
 
 ### 2.4 Idempotency
-- Event POSTs MUST carry a client-generated `event_id` (UUIDv7 recommended for sortability). The collector MUST treat repeated POSTs with the same `event_id` as the same event (no duplicate ingestion).
+- Event POSTs MUST carry a client-generated `event_id` (UUIDv7 recommended for sortability). The collector MUST treat repeated POSTs with the same `event_id` in the same workspace as the same event (no duplicate ingestion). The same `event_id` in another workspace is a different event.
 - Response updates on the deferred return-channel endpoints above are collector-authoritative; no client idempotency key needed.
 
 ### 2.5 Batches
@@ -82,7 +82,7 @@ The collector MUST reject any request without a valid bearer. The collector MUST
 
 - **Caps.** A batch holds at most **100** events and its body is at most **1 MiB** (1,048,576 bytes). A collector MUST accept a batch within both caps. A producer MUST NOT send a larger one, so it cuts batches by size as well as by count. An event that alone makes a body over 1 MiB is never sent: the producer counts it `refused` (§11.2 rule 8).
 - **One tenant.** Every event in a batch has the same `tenant_id` and `vendor_id`. A collector answers `400` `payload_malformed` to a batch that mixes them.
-- **Answer.** `200` with `{"results": [...]}`, one result per event, in the order sent: `{"event_id": ..., "status": "accepted" | "duplicate" | "refused", "error": {"code": ..., "message": ...}}`. `error` is present only on `refused`, with a §12 code. `duplicate` is an `event_id` the collector already holds (§2.4). A refused event does not affect the others in its batch. A producer reads a result by its `event_id`, a string. A result whose `status` is `"refused"` refuses its event even when its `error` cannot be read. An event with no readable result in a `2xx` answer counts as delivered. A `2xx` whose body cannot be read before the request times out is a failed request, and the batch is sent again.
+- **Answer.** `200` with `{"results": [...]}`, one result per event, in the order sent: `{"event_id": ..., "status": "accepted" | "duplicate" | "refused", "error": {"code": ..., "message": ...}}`. `error` is present only on `refused`, with a §12 code. `duplicate` is an `event_id` the collector already holds for that workspace (§2.4). A refused event does not affect the others in its batch. A producer reads a result by its `event_id`, a string. A result whose `status` is `"refused"` refuses its event even when its `error` cannot be read. An event with no readable result in a `2xx` answer counts as delivered. A `2xx` whose body cannot be read before the request times out is a failed request, and the batch is sent again.
 - **Errors for the whole batch.** `401` and `403` refuse every event in it. `400` refuses every event, and is the answer to a body that is not an object with an `events` array, to an empty batch, to more than 100 events, and to mixed tenants. `413` `payload_too_large` means the body is over the cap. `429` means too many requests: the producer keeps the events and sends nothing until the wait is over. The wait is the `Retry-After` header read as a whole number of seconds (RFC 9110 `delay-seconds`), at least 1 and at most 60; a `429` with any other `Retry-After`, or none, is handled like a `5xx`. A `429` with a readable `Retry-After` does not count towards the circuit breaker (§11.2 rule 4). Close does not send during the wait: what is waiting is `unsent_at_close`. A `5xx`, a network error, or a `3xx` (a producer does not follow redirects) keeps the events for a later try. Resending a batch is safe, because `event_id` makes each event idempotent.
 - **A collector with no batch endpoint.** A producer that gets `404` or `405` from `/v0/events/batch` sends to `/v0/events`, one event per request, for the rest of the process, and sends the batch it was holding that way. It counts nothing as lost for the `404` or `405`. Events still wait for the same timer, then go one per request.
 
@@ -864,7 +864,7 @@ A conforming SDK MUST NOT:
 
 A conforming Console MUST:
 
-1. **Ingest events idempotently.** Re-receiving the same `event_id` MUST be a no-op (deduplicated).
+1. **Ingest events idempotently.** Re-receiving the same `event_id` for the same workspace MUST be a no-op (deduplicated).
 2. **Reconstruct sessions from events.** Group by `session_id`; sort by `sequence_number`; tolerate small reordering windows for late-arriving events. In `per-call` mode (§3.4) a session is one request, and a worker MUST NOT group per-call sessions together except by §11.5.1's join, which keys on the principal: adjacent requests on one server may come from different customers.
 3. **Stitch events into SignalPayload** (§3) per the correlation rules in §11.5. A per-call session that no join has grouped is one call, so its signals are single-call signals (§11.5, closing paragraph).
 4. **Detect retry_loop and other state-dependent signal types** by querying recent events for the session/tool/params.
@@ -1782,6 +1782,7 @@ Defined error codes:
   the quota resets.
 - `vendor_unknown` — `vendor_id` not registered (403)
 - `signal_not_found` — return-channel query for unknown signal (404)
+- `method_not_allowed` — the path exists but not for this HTTP method (405)
 - `rate_limited` — too many requests for now; retry later (429)
 - `server_error` — anything else (500)
 
