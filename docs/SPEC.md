@@ -54,6 +54,7 @@ End User ──► Calling Agent ──MCP──► Vendor MCP Server [Baton SDK
 - Primary endpoint (relative to the collector base URL):
   - `POST /v0/events/batch` — SDK → collector, several events in one request (§2.5)
   - `POST /v0/events` — SDK → collector, one event per request (event-stream ingest; see §11.4 for the envelope). A producer uses it only when the collector has no batch endpoint (§2.5)
+  - `GET /v0/settings?server=<vendor_id>` — collector → SDK, the server's capture settings, read only by a producer the vendor told to (§2.6)
 - Deferred endpoints — collector return channel, no specified caller:
   - `GET  /v0/signals/{signal_id}` — lazy re-query
   - `GET  /v0/signals?session_id=...` — session-scoped lookup
@@ -85,6 +86,56 @@ The collector MUST reject any request without a valid bearer. The collector MUST
 - **Answer.** `200` with `{"results": [...]}`, one result per event, in the order sent: `{"event_id": ..., "status": "accepted" | "duplicate" | "refused", "error": {"code": ..., "message": ...}}`. `error` is present only on `refused`, with a §12 code. `duplicate` is an `event_id` the collector already holds for that workspace (§2.4). A refused event does not affect the others in its batch. A producer reads a result by its `event_id`, a string. A result whose `status` is `"refused"` refuses its event even when its `error` cannot be read. When several refused results name one `event_id`, the last one's code counts. An event with no readable result in a `2xx` answer counts as delivered. A `2xx` whose body cannot be read before the request times out is a failed request, and the batch is sent again.
 - **Errors for the whole batch.** `401` and `403` refuse every event in it. `400` refuses every event, and is the answer to a body that is not an object with an `events` array, to an empty batch, to more than 100 events, and to mixed tenants. `413` `payload_too_large` means the body is over the cap. `429` means too many requests: the producer keeps the events and sends nothing until the wait is over. The wait is the `Retry-After` header read as a whole number of seconds (RFC 9110 `delay-seconds`), at least 1 and at most 60; a `429` with any other `Retry-After`, or none, is handled like a `5xx`. A `429` with a readable `Retry-After` does not count towards the circuit breaker (§11.2 rule 4). Close does not send during the wait: what is waiting is `unsent_at_close`. A `5xx`, a network error, or a `3xx` (a producer does not follow redirects) keeps the events for a later try. Resending a batch is safe, because `event_id` makes each event idempotent.
 - **A collector with no batch endpoint.** A producer that gets `404` or `405` from `/v0/events/batch` sends to `/v0/events`, one event per request, for the rest of the process, and sends the batch it was holding that way. It counts nothing as lost for the `404` or `405`. Events still wait for the same timer, then go one per request.
+
+### 2.6 Capture settings
+
+A vendor can choose to manage some capture settings in the collector instead of in code. A producer reads them only when the vendor turned that on (in `baton-sdk`, `VendorConfig(settings="console")`). Otherwise it never calls this endpoint and uses the values in the vendor's code. The settings change what Baton records and what Baton adds to the tool list. They never change what the vendor's server does.
+
+**The request.** `GET /v0/settings?server=<vendor_id>`, with the same `Authorization` bearer the producer sends events with (§2.3) and its `tenant_id` in the `X-Baton-Tenant-Id` header. A producer sends the last `ETag` it received as `If-None-Match`.
+
+| Answer | Producer |
+|---|---|
+| `200` with the document and an `ETag` | uses the document, if it is valid (below) |
+| `304` | keeps the document it holds |
+| `204` | nothing is saved for this server: uses the values in the vendor's code, and drops any document it held |
+| anything else, a network error, or a body it cannot read | keeps the document it holds, or the code values if it has none |
+
+**When.** Once in the background when the server is wrapped, then on a fixed interval, 60 seconds by default and never less than 15. A call never waits on a read. Each process reads on its own.
+
+**The document.**
+
+```json
+{
+  "version": 7,
+  "audiences": [
+    {"id": "beta", "match": {"label": ["beta"]},
+     "capture": {"goal": "required", "reports": "on", "results": "full"}},
+    {"id": "sampled", "match": {"share": 0.1},
+     "capture": {"goal": "required", "reports": "on", "results": "full"}},
+    {"id": "everyone", "match": {},
+     "capture": {"goal": "required", "reports": "on", "results": "off"}}
+  ]
+}
+```
+
+A document is valid when `version` is a positive integer, `audiences` is a non-empty list, and every audience has a string `id` and object `match` and `capture`. A producer ignores an invalid document and keeps what it held. Within a valid document:
+
+- **The first audience that matches wins.** Audiences are checked in order. The collector saves only documents whose last audience has an empty `match`, so every caller matches one.
+- **`match` keys combine with AND.** An empty `match` matches every caller.
+  - `label`: a list of labels. Matches when the caller's `labels` (§11.4) hold any of them.
+  - `client`: a list of names. Matches when the event's `client_observed.info.name` (§11.4), the name the client declared, equals one of them. A request with no declared name matches no `client` rule.
+  - `share`: a number above 0 and at most 1. Matches a fixed share of identified callers (below).
+  - A key the producer does not know, or a value of the wrong type, makes that audience match nobody.
+- **`share`.** The caller's key is `principal.id`, or `organization.id` when there is no principal. A caller with neither never matches `share`. The bucket is the first 8 bytes of SHA-256 over the UTF-8 bytes of `vendor_id`, a line feed (U+000A) and the key, read as an unsigned big-endian integer, modulo 10000. The caller matches when the bucket is less than `share` × 10000, rounded to the nearest integer. So one caller stays in or out until the share changes, and raising it keeps everyone already in.
+- **`capture`** holds three settings. A value the producer does not know falls back to the vendor's code value for that setting alone.
+
+| key | values | vendor's code setting in `baton-sdk` | takes effect |
+|---|---|---|---|
+| `goal` | `"required"`, `"optional"` | `intent_param_mode` | the next `tools/list` |
+| `reports` | `"on"`, `"off"` | `report_mode` | the next `tools/list` |
+| `results` | `"full"`, `"off"` | `result_capture_mode` | the next call |
+
+Each event records which settings it ran under in `capture` (§11.4).
 
 ---
 
@@ -907,6 +958,8 @@ Every event has these fields:
     "info": {"name": "claude-code", "version": "2.1.292"},
     "headers": {"user-agent": "claude-code/2.1.292 (sdk-cli)"}
   },
+  "labels": ["beta", "org_7f3k9q2"],         // optional; the vendor's names for the caller's groups; see below
+  "capture": {"settings_version": 7, "audience": "beta"},  // optional; which collector settings the call ran under (§2.6); see below
   "runtime_meta": {"claudecode/toolUseId": "...", "progressToken": 1},  // optional; verbatim _meta from MCP request (PII-scrubbed); see §11.4.1
   "payload": { ... }                         // event-type-specific fields
 }
@@ -1098,6 +1151,23 @@ Four rules, each of them a mistake this project has already made or nearly made:
 - A consumer MAY use `agent_runtime` as the label only where it is not `"unknown"`. That value can only have come from a producer that predates this object and resolved the name itself.
 
 **It goes in its own envelope field, never inside `runtime_meta`.** That dict is the client's `_meta` forwarded verbatim (§11.4.1); a header is not `_meta`, and `info` may come from the handshake.
+
+**`labels` — the vendor's names for the caller's groups (OPTIONAL list of strings).** The vendor's resolver returns them beside the principal or organization: `beta`, `enterprise`, or one unguessable key per customer that the vendor keeps (`org_7f3k9q2`). A `label` rule matches on them (§2.6), and a consumer can offer the labels it has seen. **Absent or `null` when there are none**, and never an empty list.
+
+- A producer sends every usable label, in the order the resolver gave them, without repeats, and at most 20. A label is usable when it is a string of at most 64 Unicode code points, is not empty after removing Unicode `White_Space`, is well-formed Unicode and holds no U+0000. An unusable label is dropped alone.
+- Labels are sent as given, without the scrubber (§7): the vendor chose them as names it is happy for Baton to see.
+- **They are not identity.** A consumer MUST NOT read them as a principal or use them for authorization.
+- **Which events carry them.** Every event that carries `principal` or `organization` can carry them, including when the resolver returned labels alone.
+
+**`capture` — which collector settings the call ran under (OPTIONAL object).** Present only when the producer applied a settings document (§2.6). Absent when the vendor manages settings in code, and before the first document is read. Members, each omitted when it has no value:
+
+| member | holds |
+|---|---|
+| `settings_version` | the document's `version` |
+| `audience` | the `id` of the audience that matched this caller |
+| `overlay` | reserved for the hash of the overlay a call saw; no producer sends it yet |
+
+A consumer MUST NOT trust `settings_version` as proof a document was saved: any key holder can send any value. A consumer ignores a member it does not know.
 
 **`tenant_id` vs `vendor_id`.** Both are required and they are not synonyms. `tenant_id` identifies the **account** the events belong to (the Baton customer). `vendor_id` identifies the **wrapped vendor** the SDK is instrumenting, and matches `VendorConfig.vendor_id`. In vendor-mode the account corresponds to a single wrapped vendor (the SDK currently sets `tenant_id` to the vendor's own id). In customer-mode a single account wraps several vendors under a distinct `tenant_id`, and the collector groups friction per wrapped vendor with `(tenant_id, vendor_id)`. Implementations MUST NOT assume `tenant_id == vendor_id` in general. The collector MUST reject envelopes missing either field.
 
@@ -1805,6 +1875,8 @@ already learn.
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **Unreleased (2026-11-02) — capture settings from the collector, and two envelope members (§2.6, §11.4).** NEW endpoint `GET /v0/settings`, read only by a producer the vendor turned it on for. NEW optional envelope members `labels` and `capture`. A vendor's resolver can return labels, and the collector's settings can then differ by label, client name or a share of callers. No event type changes, and a producer on code settings sends neither member unless its resolver returns labels. The collector accepts both members from its 2026-11-02 deploy. `baton-sdk`: `Principal.labels` and `Organization.labels`, and `VendorConfig(settings="console", settings_refresh_s=60)`, which applies `results` per call. `goal` and `reports` still come from the vendor's code, because the tool list is built once per server; per-caller tool lists are the next change. **Consumer consequence:** a collector that refuses unknown envelope members rejects an event carrying either, so it MUST accept them before any producer sends them.
 
 - **Unreleased (SDK, 2026-11-02) — `baton-sdk`: `create_baton()` for servers built per request.** No envelope field or event type changes. One `create_baton()` holds the sink, the sequence counter and the record of sent surfaces (§11.4.2); `wrap(server)` attaches to each server and gives it its own fallback session id, so connections that §3.4 cannot tell apart are not merged into one session. A surface is sent once rather than once per server. §11.2 rule 7 applies to its one `aclose()`; a wrapped server has nothing to close. Rule 10 applies at `create_baton()`, and every setting is checked there, so no request fails on configuration. One counter per Baton matters: two servers built per request can see the same client `Mcp-Session-Id`, and a counter per server would number that session from 1 on each, repeating sequence numbers within one `session_id` (rule 5). A per-request session is numbered by the clock (§5.6 rule 3) and keeps no entry, so the counter grows by one entry per client session, as one long-lived install's does. `baton-ts`'s `createBaton().wrap()` is the same API. **Consumer consequence:** none on sessions; a vendor that moves from one `install_baton` per request to `create_baton` sends each surface once instead of once per request.
 

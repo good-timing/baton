@@ -331,6 +331,14 @@ class ClientObserved(_OmitsUnset):
     SPEC registers: ``integrations/client_observed.py`` holds the list."""
 
 
+class CaptureObserved(_OmitsUnset):
+    """Which collector settings a call ran under (SPEC §11.4, §2.6)."""
+
+    settings_version: int | None = Field(default=None, ge=1)
+    audience: str | None = None
+    overlay: str | None = None
+
+
 class PrincipalWire(BaseModel):
     """The principal AS EMITTED — the finished envelope value (SPEC §11.4).
 
@@ -443,6 +451,13 @@ class _EventEnvelope(BaseModel):
     organization: OrganizationWire | None = None
     """The company the caller belongs to, from the same resolver as
     ``principal`` and independent of it (SPEC §11.4). Never a person."""
+    labels: list[Annotated[str, Field(min_length=1, max_length=64)]] | None = Field(
+        default=None, min_length=1, max_length=20
+    )
+    """The vendor's names for the caller's groups, from the same resolver
+    (SPEC §11.4). ``None``, never ``[]``, when there are none."""
+    capture: CaptureObserved | None = None
+    """Set only when a collector settings document was applied (SPEC §2.6)."""
     call_id: str | None = None
     """The minted per-call correlation key (SPEC §11.4). Required on
     ``tool_call_start``, ``tool_call_end`` and ``tool_call_error``, the SAME
@@ -906,6 +921,7 @@ Event = Annotated[
 __all__ = [
     "AnnotationEvent",
     "AnnotationPayload",
+    "CaptureObserved",
     "ClientReportEvent",
     "ClientReportPayload",
     "Event",
