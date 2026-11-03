@@ -15,7 +15,7 @@ import mcp.types as mcp_types
 import pytest
 from fastmcp import Client, FastMCP
 
-from baton import Organization, Principal
+from baton import Organization, Principal, create_baton
 from baton._capture_settings import (
     Caller,
     CaptureSettings,
@@ -337,10 +337,12 @@ class TestConfig:
 class _Fetcher:
     def __init__(self, body: bytes | None) -> None:
         self.document = parse_document(body) if body is not None else None
-        self.running = self.started = False
+        self.running = False
+        self.starts = 0
 
     def start(self) -> None:
-        self.running = self.started = True
+        self.running = True
+        self.starts += 1
 
     def stop(self) -> None:
         self.running = False
@@ -383,13 +385,17 @@ def _config(module: Any, events_path: Path) -> Any:
 Settings = Callable[[], CaptureSettings] | None
 
 
+def _use_settings(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None:
+    from baton.integrations import _shared
+
+    if settings is not None:
+        monkeypatch.setattr(_shared, "build_capture_settings", lambda *_: settings())
+
+
 async def _drive_official(
     events_path: Path, monkeypatch: pytest.MonkeyPatch, client: str, settings: Settings
 ) -> None:
-    from baton.integrations.official import install
-
-    if settings is not None:
-        monkeypatch.setattr(install, "build_capture_settings", lambda *_: settings())
+    _use_settings(monkeypatch, settings)
     mcp = OfficialFastMCP("settings-official")
 
     @mcp.tool()
@@ -408,10 +414,7 @@ async def _drive_official(
 async def _drive_standalone(
     events_path: Path, monkeypatch: pytest.MonkeyPatch, client: str, settings: Settings
 ) -> None:
-    from baton.integrations.standalone import install
-
-    if settings is not None:
-        monkeypatch.setattr(install, "build_capture_settings", lambda *_: settings())
+    _use_settings(monkeypatch, settings)
     mcp: Any = FastMCP("settings-standalone")
 
     @mcp.tool
@@ -428,7 +431,30 @@ async def _drive_standalone(
         await handle.aclose()
 
 
-DRIVERS = pytest.mark.parametrize("drive", [_drive_official, _drive_standalone])
+async def _drive_create_baton(
+    events_path: Path, monkeypatch: pytest.MonkeyPatch, client: str, settings: Settings
+) -> None:
+    _use_settings(monkeypatch, settings)
+    baton = create_baton(_config(official, events_path))
+    try:
+        for _ in range(2):
+            mcp = OfficialFastMCP("settings-per-request")
+
+            @mcp.tool()
+            def lookup(name: str) -> dict[str, Any]:
+                return {"name": name}
+
+            baton.wrap(mcp)
+        async with connected_session(mcp, declared_name=client) as session:
+            await session.list_tools()
+            await session.call_tool("lookup", {"name": "alice", "user_goal": "find alice"})
+    finally:
+        await baton.aclose()
+
+
+DRIVERS = pytest.mark.parametrize(
+    "drive", [_drive_official, _drive_standalone, _drive_create_baton]
+)
 
 
 def _end(events_path: Path) -> dict[str, Any]:
@@ -491,13 +517,13 @@ async def test_settings_that_fail_to_apply_still_serve_the_call(
 
 
 @DRIVERS
-async def test_the_read_starts_at_install_and_stops_at_close(
+async def test_one_read_starts_at_install_and_stops_at_close(
     drive: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fetcher = _Fetcher(None)
     settings = CaptureSettings(vendor_id="srv", fetcher=fetcher)  # type: ignore[arg-type]
     await drive(tmp_path / "e.jsonl", monkeypatch, "claude-code", lambda: settings)
-    assert fetcher.started
+    assert fetcher.starts == 1
     assert not fetcher.running
 
 
