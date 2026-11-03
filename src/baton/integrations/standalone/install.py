@@ -221,9 +221,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
 
     # Server instructions — load-bearing on instruction-aware runtimes.
     _set_instructions(mcp, with_vendor_instructions(mcp, text.instructions, shared.warned))
-    per_caller = per_caller_surface(
-        mcp, config, text, shared.capture_settings, _set_instructions, shared.warned
-    )
+    per_caller = per_caller_surface(mcp, config, text, shared, _set_instructions)
 
     # This adapter sees a tool's schema only when tools are listed, so the
     # sentence goes from the sessions that start after the first listing.

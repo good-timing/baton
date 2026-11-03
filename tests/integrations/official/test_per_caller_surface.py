@@ -17,7 +17,7 @@ from pydantic import BaseModel, RootModel
 from baton import create_baton
 from baton._capture_settings import CaptureSettings, parse_document
 from baton.integrations import official
-from baton.integrations._config import build_config
+from baton.integrations._config import _validate_vendor_config, build_config
 from baton.integrations._llm_text import (
     INTENT_INSTRUCTIONS,
     build_server_instructions,
@@ -418,6 +418,18 @@ class TestReportModeDefault:
     def test_a_vendor_who_turns_reports_off_keeps_them_off(self) -> None:
         given = official.VendorConfig(dsn=DSN, settings="console", report_mode="off")
         assert build_config(given, None).report_mode == "off"
+
+    def test_a_dsn_from_the_environment_turns_reports_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("BATON_DSN", DSN)
+        config = build_config(official.VendorConfig(settings="console"), None)
+        assert config.report_mode == "on"
+
+    def test_console_mode_without_a_dsn_says_it_needs_one(self) -> None:
+        given = official.VendorConfig(vendor_id="acme", tenant_id="t", settings="console")
+        with pytest.raises(ValueError, match="so it needs a dsn"):
+            _validate_vendor_config(build_config(given, None))
 
     def test_local_mode_keeps_reports_off(self) -> None:
         assert build_config(official.VendorConfig(dsn=DSN), None).report_mode == "off"

@@ -154,9 +154,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
     # writable backing differs across the rename (``_mcp_server`` →
     # ``_lowlevel_server``), so route through the compat helper.
     set_server_instructions(mcp, with_vendor_instructions(mcp, text.instructions, shared.warned))
-    per_caller = per_caller_surface(
-        mcp, config, text, shared.capture_settings, set_server_instructions, shared.warned
-    )
+    per_caller = per_caller_surface(mcp, config, text, shared, set_server_instructions)
 
     # Wrap currently-registered tools + patch add_tool for future ones.
     param_registry = install_wraps(

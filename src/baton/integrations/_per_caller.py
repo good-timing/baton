@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from baton._capture_settings import CaptureSettings
 from baton.integrations._annotation_name import InstallText
@@ -12,13 +12,16 @@ from baton.integrations._config import VendorConfig
 from baton.integrations._llm_text import (
     INTENT_INSTRUCTIONS,
     USER_GOAL_PARAM_NAME,
+    a_tool_declares_user_goal,
     build_user_goal_param_description,
     inject_goal_params,
     remove_subagent_clause,
-    subagent_clause_removed,
     with_vendor_instructions,
 )
 from baton.integrations.identity_adapter import ResolvedCaller
+
+if TYPE_CHECKING:
+    from baton.integrations._shared import Shared
 
 logger = logging.getLogger("baton")
 
@@ -27,22 +30,21 @@ def per_caller_surface(
     mcp: Any,
     config: VendorConfig,
     text: InstallText,
-    settings: CaptureSettings | None,
+    shared: Shared,
     write_instructions: Callable[[Any, str], None],
-    warned: set[str],
 ) -> PerCallerSurface | None:
     """For an install whose instructions are already written; ``None`` with
     no Console settings."""
-    if settings is None:
+    if shared.capture_settings is None:
         return None
     surface = PerCallerSurface(
         mcp=mcp,
-        settings=settings,
+        settings=shared.capture_settings,
         intent_param_mode=config.intent_param_mode,
         annotation_tool_name=text.names.annotation_tool_name if text.names else None,
         instructions=text.instructions,
         write_instructions=write_instructions,
-        warned=warned,
+        warned=shared.warned,
     )
     # Now, not at the first request: ``initialize`` passes no seam of ours.
     surface.follow_settings()
@@ -53,8 +55,8 @@ class PerCallerSurface:
     """Rewrites each ``tools/list`` result for its caller, and keeps the
     instructions' report pointer while some audience has reports on.
 
-    Runs on the server's event loop, never the settings thread, so it does not
-    race the other writers of the instructions."""
+    Runs at install and then on the server's event loop, never the settings
+    thread, so it does not race the other writers of the instructions."""
 
     def __init__(
         self,
@@ -70,14 +72,15 @@ class PerCallerSurface:
         self._mcp = mcp
         self._settings = settings
         self._intent_param_mode = intent_param_mode
-        self._annotation_tool_name = annotation_tool_name or None
+        self._annotation_tool_name = annotation_tool_name
         self._instructions = instructions
         self._write = write_instructions
         self._warned = warned
         self._pointer_on = True
 
     def follow_settings(self) -> None:
-        """Called on every request; writes only when the report pointer should change."""
+        """Called at install and on every request; writes only when the report
+        pointer should change."""
         if self._annotation_tool_name is None:
             return
         try:
@@ -87,7 +90,7 @@ class PerCallerSurface:
                 return
             ours = self._instructions if pointer_on else INTENT_INSTRUCTIONS
             self._write(self._mcp, with_vendor_instructions(self._mcp, ours, self._warned))
-            if subagent_clause_removed(self._mcp):
+            if a_tool_declares_user_goal(self._mcp):
                 remove_subagent_clause(self._mcp, self._write)
             self._pointer_on = pointer_on
         except Exception:
