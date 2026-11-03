@@ -67,6 +67,7 @@ from baton.integrations._lifecycle import (
     install_lifecycle_capture,
 )
 from baton.integrations._llm_text import drop_subagent_clause, with_vendor_instructions
+from baton.integrations._per_caller import PerCallerSurface
 from baton.integrations._shared import Shared, check_config, install_one, server_session
 from baton.integrations._surface import build_server_meta
 from baton.integrations.client_observed import meta_to_dict
@@ -220,6 +221,19 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
 
     # Server instructions — load-bearing on instruction-aware runtimes.
     _set_instructions(mcp, with_vendor_instructions(mcp, text.instructions, shared.warned))
+    per_caller = (
+        None
+        if shared.capture_settings is None
+        else PerCallerSurface(
+            mcp=mcp,
+            settings=shared.capture_settings,
+            intent_param_mode=config.intent_param_mode,
+            annotation_tool_name=annotation_tool_name,
+            instructions=text.instructions,
+            write_instructions=_set_instructions,
+            warned=shared.warned,
+        )
+    )
 
     # This adapter sees a tool's schema only when tools are listed, so the
     # sentence goes from the sessions that start after the first listing.
@@ -293,6 +307,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
         capture_settings=shared.capture_settings,
         read_request=read_request,
         read_access_token=_auth.current_access_token,
+        per_caller=per_caller,
         call_seam=CallSeam(
             annotation_tool_name=annotation_tool_name,
             result_capture_mode=config.result_capture_mode,

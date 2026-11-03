@@ -354,7 +354,7 @@ def resolve_install_text(
 ) -> InstallText:
     """Baton's server instructions and the annotation tool's names, per ``report_mode``.
     ``warned`` is shared by servers built per request, so each warning is said once."""
-    if config.report_mode == "off":
+    if config.report_mode != "on":
         if config.annotation_tool_name is not None and _first_time(warned, "unused tool name"):
             logger.warning(
                 "baton: annotation_tool_name=%r has no effect with report_mode='off', "

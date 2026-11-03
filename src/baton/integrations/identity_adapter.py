@@ -99,9 +99,17 @@ class ResolvedCaller:
         }
 
     def result_capture_mode(self, code_value: str) -> str:
-        if self.settings is None or self.settings.result_capture_mode is None:
-            return code_value
-        return self.settings.result_capture_mode
+        return self._setting("result_capture_mode", code_value)
+
+    def intent_param_mode(self, code_value: str) -> str:
+        return self._setting("intent_param_mode", code_value)
+
+    def report_mode(self, code_value: str) -> str:
+        return self._setting("report_mode", code_value)
+
+    def _setting(self, name: str, code_value: str) -> str:
+        value = None if self.settings is None else getattr(self.settings, name)
+        return code_value if value is None else value
 
 
 NO_CALLER = ResolvedCaller()

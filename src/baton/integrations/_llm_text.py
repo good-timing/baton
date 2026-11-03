@@ -264,12 +264,7 @@ def drop_subagent_clause(mcp: Any, tool_name: str, write: Callable[[Any, str], N
     # Never raises: it runs inside tool registration and tool listing, which
     # must not fail over this.
     try:
-        current = mcp.instructions
-        if current == INTENT_INSTRUCTIONS:
-            write(mcp, "")
-        elif isinstance(current, str) and _INSTRUCTIONS_SUBAGENT_CLAUSE in current:
-            write(mcp, current.replace(_INSTRUCTIONS_SUBAGENT_CLAUSE, ""))
-        else:
+        if not remove_subagent_clause(mcp, write):
             return
     except Exception:
         logger.exception("baton: could not remove the subagent sentence from the instructions")
@@ -279,6 +274,22 @@ def drop_subagent_clause(mcp: Any, tool_name: str, write: Callable[[Any, str], N
         "removed from the server instructions; a session that already started keeps it",
         tool_name,
     )
+
+
+def remove_subagent_clause(mcp: Any, write: Callable[[Any, str], None]) -> bool:
+    """``drop_subagent_clause`` without its warning; whether there was one to remove."""
+    current = mcp.instructions
+    if current == INTENT_INSTRUCTIONS:
+        write(mcp, "")
+    elif isinstance(current, str) and _INSTRUCTIONS_SUBAGENT_CLAUSE in current:
+        write(mcp, current.replace(_INSTRUCTIONS_SUBAGENT_CLAUSE, ""))
+    else:
+        return False
+    return True
+
+
+def has_subagent_clause(instructions: Any) -> bool:
+    return isinstance(instructions, str) and INTENT_INSTRUCTIONS in instructions
 
 
 def declares_user_goal(schema: Any) -> bool:

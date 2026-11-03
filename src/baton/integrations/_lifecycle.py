@@ -48,6 +48,7 @@ from baton.integrations._llm_text import (
     scrub_goals,
 )
 from baton.integrations._mrtr import mcp_refusal, pause_refused, paused, resumes_a_pause
+from baton.integrations._per_caller import PerCallerSurface
 from baton.integrations._session import ResolvedSession, next_sequence
 from baton.integrations.client_observed import clean_runtime_meta, observe_client
 from baton.integrations.identity_adapter import (
@@ -109,8 +110,9 @@ class CallSeam:
 
 # SPEC §11.4.4 records that the two start payloads build ``params``
 # differently: a read sends every param, a prompt get sends ``arguments`` alone.
+_TOOL_LIST = _Family("tools/list", "ListToolsRequest", "tool_list", count_key="tools")
 _FAMILIES = (
-    _Family("tools/list", "ListToolsRequest", "tool_list", count_key="tools"),
+    _TOOL_LIST,
     _Family("resources/list", "ListResourcesRequest", "resource_list", count_key="resources"),
     _Family(
         "resources/read",
@@ -146,6 +148,7 @@ def install_lifecycle_capture(
     read_access_token: Callable[[], Any],
     call_seam: CallSeam | None = None,
     capture_settings: CaptureSettings | None = None,
+    per_caller: PerCallerSurface | None = None,
 ) -> None:
     """Send the tool list, resource and prompt events of the low-level ``mcp``
     server ``find_server`` returns, and with ``call_seam``, install the outer
@@ -165,6 +168,8 @@ def install_lifecycle_capture(
         arguments: dict[str, Any] | None = None,
     ) -> _Opened | None:
         """``None`` when a read failed and the request is served without events."""
+        if per_caller is not None:
+            per_caller.follow_settings()
         try:
             request = await read_request(read_request_context())
             client = observe_client(
@@ -244,7 +249,7 @@ def install_lifecycle_capture(
         request = await opened(family, read_request_context, params)
         if request is None:
             return await serve(params)
-        envelope, sent, subject, session, _ = request
+        envelope, sent, subject, session, caller = request
 
         async def emit_leg(leg: str, build_payload: Callable[[], dict[str, Any]]) -> None:
             await emit(
@@ -279,6 +284,8 @@ def install_lifecycle_capture(
             )
             raise
         duration_ms = int((monotonic() - started_at) * 1000)
+        if per_caller is not None and family is _TOOL_LIST:
+            result = per_caller.tools_for(result, caller)
         if paused(result):
             if pause_refused(read_request_context):
                 # mcp fails the pause after this seam returns.

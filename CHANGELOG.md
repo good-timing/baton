@@ -33,6 +33,25 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   session. The config is checked at
   `create_baton`. `install_baton` is unchanged for vendors; inside, it is now
   "check, then attach one server".
+- **Labels on callers.** `Principal(labels=...)` and
+  `Organization(labels=...)` take up to 20 names, sent on every event the
+  caller makes as `labels` (SPEC §11.4). Send only names you are happy for
+  Baton to see.
+- **Capture settings from the Console.** With `VendorConfig(settings="console")`
+  the SDK reads the settings saved on the Console's Capture page every
+  `settings_refresh_s` seconds (60 by default, at least 15), and they can
+  differ by label, client or a share of callers (SPEC §2.6). `results` applies
+  to the next call. `goal` and `reports` apply to the next `tools/list`, where a
+  caller with reports off does not see the report tool. Each event says which
+  settings it ran under in `capture`. Until the first read succeeds, and when
+  nothing is saved, the config's own values apply. One `create_baton()` reads
+  once for all its servers.
+
+### Changed
+
+- **`report_mode` is `"on"` by default with `settings="console"`.** It stays
+  `"off"` by default otherwise. Set `report_mode="off"` to have no report tool,
+  and the Console can then not turn reports on.
 
 ## 0.9.5: with no DSN, your server starts
 

@@ -31,6 +31,8 @@ LABELS_MAX = 20
 LABEL_MAX_LENGTH = 64
 
 _MATCH_KEYS = frozenset({"label", "client", "share"})
+_GOAL_VALUES = frozenset({"required", "optional"})
+_REPORTS_VALUES = frozenset({"on", "off"})
 
 
 def clean_labels(values: Iterable[Any]) -> tuple[str, ...]:
@@ -63,9 +65,11 @@ class Caller:
 class CallSettings:
     """The settings one call runs under."""
 
-    result_capture_mode: str | None
-    """``None`` means this config's value."""
     capture: CaptureObserved
+    # ``None`` in any of these means this config's value.
+    result_capture_mode: str | None = None
+    intent_param_mode: str | None = None
+    report_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +80,10 @@ class Audience:
     labels: frozenset[str] | None = None
     clients: frozenset[str] | None = None
     share_threshold: int | None = None
+
+    @property
+    def matches_everyone(self) -> bool:
+        return self.labels is None and self.clients is None and self.share_threshold is None
 
     def matches(self, caller: Caller, bucket: int | None) -> bool:
         if self.labels is not None and self.labels.isdisjoint(caller.labels):
@@ -106,11 +114,23 @@ class SettingsDocument:
                 return audience.settings
         return self.unmatched
 
+    def reports_on_for_anyone(self, code_value: str) -> bool:
+        """Whether some caller can get reports, so the instructions point to the tool."""
+        reachable = [a.settings for a in self.audiences]
+        if not any(a.matches_everyone for a in self.audiences):
+            reachable.append(self.unmatched)
+        return any((s.report_mode or code_value) == "on" for s in reachable)
+
 
 def _string_set(value: Any) -> frozenset[str] | None:
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         return None
     return frozenset(value)
+
+
+def _known(value: Any, values: frozenset[str]) -> bool:
+    # A str check first: an unhashable value must not raise here.
+    return isinstance(value, str) and value in values
 
 
 def _audience(
@@ -131,10 +151,12 @@ def _audience(
             return None
         # Half up, not round(): SPEC §2.6, pinned by test_a_half_rounds_up.
         threshold = math.floor(share * 10000 + 0.5)
-    results = capture.get("results")
+    results, goal, reports = (capture.get(k) for k in ("results", "goal", "reports"))
     settings = CallSettings(
-        results if is_registered_mode(results) else None,
         CaptureObserved(settings_version=version, audience=audience_id),
+        result_capture_mode=results if is_registered_mode(results) else None,
+        intent_param_mode=goal if _known(goal, _GOAL_VALUES) else None,
+        report_mode=reports if _known(reports, _REPORTS_VALUES) else None,
     )
     return Audience(settings, labels, clients, threshold)
 
@@ -167,7 +189,7 @@ def parse_document(body: bytes) -> SettingsDocument | None:
     return SettingsDocument(
         version,
         tuple(parsed),
-        unmatched=CallSettings(None, CaptureObserved(settings_version=version)),
+        unmatched=CallSettings(CaptureObserved(settings_version=version)),
         uses_share=any(a.share_threshold is not None for a in parsed),
     )
 
@@ -272,7 +294,11 @@ class CaptureSettings:
     def stop(self) -> None:
         self._fetcher.stop()
 
+    @property
+    def document(self) -> SettingsDocument | None:
+        return self._fetcher.document
+
     def for_caller(self, caller: Caller) -> CallSettings | None:
         """``None`` while no document is held, and this config's values apply."""
-        document = self._fetcher.document
+        document = self.document
         return None if document is None else document.settings_for(caller, self._vendor_id)

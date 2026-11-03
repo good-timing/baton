@@ -412,10 +412,11 @@ class VendorConfig:
     ``required`` entry. A tool that already declares ``user_goal`` keeps its
     own."""
 
-    report_mode: str = "off"
+    report_mode: str | None = None
     """Whether the agent is given a tool to report problems with yours.
+    Unset, it is ``"on"`` with ``settings="console"`` and ``"off"`` otherwise.
 
-    ``"off"`` (default) registers no annotation tool, and Baton's server
+    ``"off"`` registers no annotation tool, and Baton's server
     instructions are ``INTENT_INSTRUCTIONS`` alone: the one sentence that
     passes the message number to subagents. Each call still carries its
     goal and success clause in ``user_goal``, and its errors in its events.
@@ -433,8 +434,11 @@ class VendorConfig:
     share of callers (SPEC §2.6). Needs a ``dsn``. Until the first read
     succeeds, and whenever nothing is saved, this config's values apply.
 
-    Only ``results`` (``result_capture_mode``) is applied per call. ``goal``
-    and ``reports`` still come from this config."""
+    ``results`` (``result_capture_mode``) is applied per call. ``goal``
+    (``intent_param_mode``) and ``reports`` (``report_mode``) are applied per
+    ``tools/list``. With ``report_mode="off"`` no annotation tool is
+    registered, so the Console can hide reports from some callers only when
+    they are on here."""
 
     settings_refresh_s: float = DEFAULT_REFRESH_S
     """How often ``settings="console"`` reads the saved settings, in seconds. At
@@ -612,6 +616,8 @@ def resolve_config(config: VendorConfig) -> VendorConfig:
     that rewrites its argument would make the second one inherit the first's
     resolution.
     """
+    if config.report_mode is None:
+        config = replace(config, report_mode="on" if config.settings == "console" else "off")
     dsn_string = select_dsn(
         config.dsn,
         {
@@ -732,7 +738,7 @@ def _validate_vendor_config(config: VendorConfig) -> None:
         raise ValueError(
             f"VendorConfig.settings_refresh_s must be at least {MIN_REFRESH_S:g} seconds."
         )
-    if config.report_mode not in _REPORT_MODES:
+    if config.report_mode is not None and config.report_mode not in _REPORT_MODES:
         raise ValueError(
             f"VendorConfig.report_mode {config.report_mode!r} must be "
             f"one of {sorted(_REPORT_MODES)}."
