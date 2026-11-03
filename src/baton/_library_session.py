@@ -118,7 +118,7 @@ def new_session(
         base.session_id_origin,
         principal=caller.principal,
         organization=caller.organization,
-        labels=caller.wire_labels,
+        labels=list(caller.labels) or None,
         client_observed=(
             observe_client(
                 request_meta, client_info=client_info, headers=headers, scrubber=scrubber

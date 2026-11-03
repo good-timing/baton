@@ -1,5 +1,6 @@
-"""End-user identity off a vendor's hook — resolve the principal and put it on
-the wire as the hook stated it.
+"""End-user identity off a vendor's hook — resolve the principal, organization
+and labels and put them on the wire as the hook stated them, with the capture
+settings the caller matches.
 
 Shared by BOTH adapters, beside ``client_observed.py`` and for the same reason:
 a capture signal that lives under one adapter's package is one the other
@@ -12,14 +13,14 @@ the token's subject or email passes one of the ready-made hooks in
 ``oauth_hooks.py``; one who wants anything else writes their own. Every
 principal this module emits is ``source: "asserted"``.
 
-Keep all of it apart from ``client_observed``: that is what a client says it is,
-and this is who the vendor says the person is. They answer different questions.
+Identity never comes from ``client_observed``: that is what a client says it
+is, and this is who the vendor says the person is. The client's declared name
+is read only to match capture settings (SPEC §2.6).
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from itertools import islice
@@ -27,8 +28,8 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from baton._capture_settings import Caller, CallSettings, CaptureSettings, clean_labels
-from baton._white_space import is_blank
-from baton.events import CaptureObserved, ClientObserved, OrganizationWire, PrincipalWire
+from baton._white_space import UNSENDABLE, is_blank, usable_text
+from baton.events import ClientObserved, OrganizationWire, PrincipalWire
 from baton.identity import PRINCIPAL_FORM_RAW, PRINCIPAL_FORMS, Organization, Principal
 from baton.integrations._hooks import run_vendor_hook
 
@@ -53,10 +54,6 @@ PRINCIPAL_ID_MAX_LEN = 128
 #: same bytes for one resolver output.
 DISPLAY_NAME_MAX_LEN = 128
 
-# A lone surrogate cannot be UTF-8 encoded and U+0000 is refused by Postgres
-# text; either would cost a collector the whole EVENT, not the label.
-_UNSENDABLE = re.compile("[\x00\ud800-\udfff]")
-
 
 def wire_display_name(value: object) -> str | None:
     """The resolver's ``display_name`` as it goes on the wire, or ``None``.
@@ -66,13 +63,9 @@ def wire_display_name(value: object) -> str | None:
     U+0000 is dropped ALONE — the rest of the principal is still emitted,
     because a bad label is no reason to lose a good id.
     """
-    if not isinstance(value, str) or len(value) > DISPLAY_NAME_MAX_LEN:
-        return None
-    if is_blank(value):
-        return None
-    if _UNSENDABLE.search(value):
-        return None
-    return value
+    if isinstance(value, str) and usable_text(value, DISPLAY_NAME_MAX_LEN):
+        return value
+    return None
 
 
 #: A vendor's per-request identity resolver. Takes the adapter-neutral
@@ -89,25 +82,28 @@ ResolvePrincipalHook = Callable[
 
 @dataclass(frozen=True)
 class ResolvedCaller:
-    """The envelope's ``principal`` and ``organization`` for one request.
-    Either, both or neither may be set: SPEC §11.4 keeps them independent."""
+    """The envelope's ``principal``, ``organization`` and ``labels`` for one
+    request, and the capture settings it runs under. Principal and
+    organization are independent (SPEC §11.4): either, both or neither."""
 
     principal: PrincipalWire | None = None
     organization: OrganizationWire | None = None
     labels: tuple[str, ...] = ()
     settings: CallSettings | None = None
-    """Set by ``CaptureSettings.apply``; ``None`` means the code values."""
+    """``None`` means this config's values."""
 
-    @property
-    def wire_labels(self) -> list[str] | None:
-        return list(self.labels) or None
-
-    @property
-    def capture(self) -> CaptureObserved | None:
-        return self.settings.capture if self.settings is not None else None
+    def envelope_fields(self) -> dict[str, Any]:
+        return {
+            "principal": self.principal,
+            "organization": self.organization,
+            "labels": list(self.labels) or None,
+            "capture": self.settings.capture if self.settings is not None else None,
+        }
 
     def result_capture_mode(self, code_value: str) -> str:
-        return code_value if self.settings is None else self.settings.result_capture_mode
+        if self.settings is None or self.settings.result_capture_mode is None:
+            return code_value
+        return self.settings.result_capture_mode
 
 
 NO_CALLER = ResolvedCaller()
@@ -221,7 +217,7 @@ def _wire_identity(
         # A blank id names nobody, and every such caller would merge into one.
         logger.warning("baton: an empty or non-string %s — ignoring it.", field)
         return None
-    if _UNSENDABLE.search(value_id):
+    if UNSENDABLE.search(value_id):
         logger.warning("baton: a %s holding a lone surrogate or U+0000 — ignoring it.", field)
         return None
     if not isinstance(form, str) or form not in PRINCIPAL_FORMS:
@@ -319,8 +315,8 @@ async def resolve_caller(
     ``settings`` the capture settings it runs under (SPEC §2.6). The identity is the
     vendor's hook, or nothing.
 
-    ``NO_CALLER`` when no hook is configured or it has no answer, which is the
-    common case and never an error. SPEC §11.4 carries the consumer-side rules.
+    No principal or organization when no hook is configured or it has no
+    answer, which is the common case and never an error. SPEC §11.4 carries the consumer-side rules.
     There is no fallback: a vendor who wants the token's subject passes
     ``baton.principal_from_oauth_sub`` as the hook.
 
@@ -333,7 +329,8 @@ async def resolve_caller(
 
     Fail-open throughout, like everything on this path: a hook that raises,
     returns the wrong type, or returns ``None`` costs the event its
-    ``principal`` and ``organization`` and nothing else.
+    ``principal``, ``organization`` and labels and nothing else, and a failure
+    applying settings leaves this config's values.
     """
     if hook is None or hook_context is None:
         caller = NO_CALLER
@@ -343,10 +340,11 @@ async def resolve_caller(
     if settings is None:
         return caller
     try:
-        return replace(caller, settings=settings.for_caller(_match_view(caller, client)))
+        call_settings = settings.for_caller(_match_view(caller, client))
     except Exception:
         logger.exception("baton: applying capture settings failed; this call uses the code values")
         return caller
+    return caller if call_settings is None else replace(caller, settings=call_settings)
 
 
 def _match_view(caller: ResolvedCaller, client: ClientObserved | None) -> Caller:

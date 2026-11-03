@@ -43,8 +43,9 @@ class BatonHandle:
         await bounded_sink_call(self.sink, "flush")
 
     async def aclose(self) -> None:
-        """Flush and release sink resources. Returns within the sink's shutdown
-        budget plus a quarter second, and never raises (SPEC §11.2 rule 7)."""
+        """Stop reading capture settings, then flush and release sink resources.
+        Returns within the sink's shutdown budget plus a quarter second, and
+        never raises (SPEC §11.2 rule 7)."""
         if self._capture_settings is not None:
             self._capture_settings.stop()
         await bounded_sink_call(self.sink, "aclose")

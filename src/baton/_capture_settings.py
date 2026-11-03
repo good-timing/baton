@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import logging
 import math
+import os
 import threading
-import urllib.error
 import urllib.parse
-import urllib.request
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from baton._white_space import is_blank
+from baton._result_capture import is_registered_mode
+from baton._white_space import usable_text
 from baton.events import CaptureObserved
+from baton.sinks import _pool_through, _proxy_for, _require_urllib3
 
 logger = logging.getLogger("baton")
 
@@ -30,27 +32,14 @@ LABELS_MAX = 20
 LABEL_MAX_LENGTH = 64
 
 _MATCH_KEYS = frozenset({"label", "client", "share"})
-_RESULT_MODES = frozenset({"full", "off"})
-
-
-def usable_label(value: Any) -> bool:
-    if not isinstance(value, str) or len(value) > LABEL_MAX_LENGTH or is_blank(value):
-        return False
-    if "\x00" in value:
-        return False
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
-        return False
-    return True
 
 
 def clean_labels(values: Iterable[Any]) -> tuple[str, ...]:
-    """Usable labels in the order given, without repeats, at most 20 (SPEC §11.4)."""
-    kept: list[str] = []
+    """Usable labels in the order given, without repeats (SPEC §11.4)."""
+    kept: dict[str, None] = {}
     for value in values:
-        if usable_label(value) and value not in kept:
-            kept.append(value)
+        if usable_text(value, LABEL_MAX_LENGTH):
+            kept[value] = None
             if len(kept) == LABELS_MAX:
                 break
     return tuple(kept)
@@ -71,29 +60,33 @@ class Caller:
 
 
 @dataclass(frozen=True)
-class Audience:
-    id: str
-    match: dict[str, Any]
-    capture: dict[str, Any]
+class CallSettings:
+    """The settings one call runs under. ``None`` means the code value."""
 
-    def matches(self, caller: Caller, vendor_id: str) -> bool:
-        if not set(self.match) <= _MATCH_KEYS:
+    result_capture_mode: str | None
+    capture: CaptureObserved
+
+
+@dataclass(frozen=True)
+class Audience:
+    """One audience, its ``match`` checked once when the document is read."""
+
+    settings: CallSettings
+    readable: bool
+    labels: frozenset[str] | None = None
+    clients: frozenset[str] | None = None
+    share_threshold: int | None = None
+
+    def matches(self, caller: Caller, bucket: Callable[[], int | None]) -> bool:
+        if not self.readable:
             return False
-        if "label" in self.match:
-            wanted = self.match["label"]
-            if not isinstance(wanted, list) or not any(w in caller.labels for w in wanted):
-                return False
-        if "client" in self.match:
-            names = self.match["client"]
-            if not isinstance(names, list) or caller.client_name not in names:
-                return False
-        if "share" in self.match:
-            share = self.match["share"]
-            if isinstance(share, bool) or not isinstance(share, int | float):
-                return False
-            if not math.isfinite(share) or not 0 < share <= 1 or caller.share_key is None:
-                return False
-            if share_bucket(vendor_id, caller.share_key) >= math.floor(share * 10000 + 0.5):
+        if self.labels is not None and self.labels.isdisjoint(caller.labels):
+            return False
+        if self.clients is not None and caller.client_name not in self.clients:
+            return False
+        if self.share_threshold is not None:
+            caller_bucket = bucket()
+            if caller_bucket is None or caller_bucket >= self.share_threshold:
                 return False
         return True
 
@@ -103,11 +96,48 @@ class SettingsDocument:
     version: int
     audiences: tuple[Audience, ...]
 
-    def audience_for(self, caller: Caller, vendor_id: str) -> Audience | None:
+    def settings_for(self, caller: Caller, vendor_id: str) -> CallSettings:
+        @functools.cache
+        def bucket() -> int | None:
+            return None if caller.share_key is None else share_bucket(vendor_id, caller.share_key)
+
         for audience in self.audiences:
-            if audience.matches(caller, vendor_id):
-                return audience
+            if audience.matches(caller, bucket):
+                return audience.settings
+        return CallSettings(None, CaptureObserved(settings_version=self.version))
+
+
+def _string_set(value: Any) -> frozenset[str] | None:
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         return None
+    return frozenset(value)
+
+
+def _audience(
+    version: int, audience_id: str, match: dict[str, Any], capture: dict[str, Any]
+) -> Audience:
+    results = capture.get("results")
+    settings = CallSettings(
+        results if is_registered_mode(results) else None,
+        CaptureObserved(settings_version=version, audience=audience_id),
+    )
+    unreadable = Audience(settings, readable=False)
+    if not set(match) <= _MATCH_KEYS:
+        return unreadable
+    labels = clients = threshold = None
+    if "label" in match and (labels := _string_set(match["label"])) is None:
+        return unreadable
+    if "client" in match and (clients := _string_set(match["client"])) is None:
+        return unreadable
+    if "share" in match:
+        share = match["share"]
+        if isinstance(share, bool) or not isinstance(share, int | float):
+            return unreadable
+        if not math.isfinite(share) or not 0 < share <= 1:
+            return unreadable
+        # Half up, not round(): SPEC §2.6, pinned by test_a_half_rounds_up.
+        threshold = math.floor(share * 10000 + 0.5)
+    return Audience(settings, True, labels, clients, threshold)
 
 
 def parse_document(body: bytes) -> SettingsDocument | None:
@@ -133,16 +163,8 @@ def parse_document(body: bytes) -> SettingsDocument | None:
             return None
         if not isinstance(match, dict) or not isinstance(capture, dict):
             return None
-        parsed.append(Audience(audience_id, match, capture))
+        parsed.append(_audience(version, audience_id, match, capture))
     return SettingsDocument(version, tuple(parsed))
-
-
-@dataclass(frozen=True)
-class CallSettings:
-    """The settings one call runs under."""
-
-    result_capture_mode: str
-    capture: CaptureObserved | None = None
 
 
 class SettingsFetcher:
@@ -155,56 +177,69 @@ class SettingsFetcher:
         api_key: str,
         tenant_id: str,
         vendor_id: str,
-        refresh_s: float = DEFAULT_REFRESH_S,
-        opener: Callable[[urllib.request.Request, float], tuple[int, dict[str, str], bytes]]
-        | None = None,
+        refresh_s: float,
+        make_pool: Callable[[], Any] | None = None,
     ) -> None:
         query = urllib.parse.urlencode({"server": vendor_id})
         self._url = f"{origin}{SETTINGS_PATH}?{query}"
         self._headers = {"Authorization": f"Bearer {api_key}", TENANT_HEADER: tenant_id}
         self._refresh_s = refresh_s
-        self._open = opener or _open_without_redirects
+        # The proxy is looked up here, at install, as HttpSink does.
+        self._make_pool = make_pool or functools.partial(_pool_through, _proxy_for(origin))
+        self._pool: Any = None
         self._etag: str | None = None
         self._document: SettingsDocument | None = None
         self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._pid: int | None = None
         self._warned = False
 
     @property
     def document(self) -> SettingsDocument | None:
+        if self._pid is not None and self._pid != os.getpid() and not self._stop.is_set():
+            # A forked child has no reading thread.
+            self.start()
         return self._document
 
     def start(self) -> None:
-        self._thread = threading.Thread(target=self._run, name="baton-settings", daemon=True)
-        self._thread.start()
+        self._pid = os.getpid()
+        self._pool = None
+        threading.Thread(target=self._run, name="baton-settings", daemon=True).start()
 
     def stop(self) -> None:
         self._stop.set()
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            try:
-                self.read_once()
-            except Exception:
-                logger.debug("baton: reading capture settings failed", exc_info=True)
+            self.read_once()
             self._stop.wait(self._refresh_s)
 
     def read_once(self) -> None:
         """One request. Never raises: a failure keeps what is held."""
+        try:
+            self._read()
+        except Exception:
+            logger.debug("baton: reading capture settings failed", exc_info=True)
+
+    def _read(self) -> None:
+        urllib3 = _require_urllib3()
+
         headers = dict(self._headers)
         if self._etag is not None:
             headers["If-None-Match"] = self._etag
-        try:
-            status, response_headers, body = self._open(
-                urllib.request.Request(self._url, headers=headers), REQUEST_TIMEOUT_S
-            )
-        except Exception:
-            logger.debug("baton: reading capture settings failed", exc_info=True)
-            return
-        if status == 204:
+        if self._pool is None:
+            self._pool = self._make_pool()
+        response = self._pool.urlopen(
+            "GET",
+            self._url,
+            headers=headers,
+            timeout=urllib3.Timeout(total=REQUEST_TIMEOUT_S),
+            retries=False,
+            redirect=False,
+        )
+        if response.status == 204:
             self._document, self._etag = None, None
-        elif status == 200:
-            document = parse_document(body)
+        elif response.status == 200:
+            document = parse_document(response.data)
             if document is None:
                 if not self._warned:
                     self._warned = True
@@ -213,63 +248,23 @@ class SettingsFetcher:
                     )
                 return
             self._document = document
-            self._etag = response_headers.get("etag")
-
-
-class _NoRedirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
-        return None
-
-
-_OPENER = urllib.request.build_opener(_NoRedirects)
-
-
-def _open_without_redirects(
-    request: urllib.request.Request, timeout: float
-) -> tuple[int, dict[str, str], bytes]:
-    try:
-        with _OPENER.open(request, timeout=timeout) as response:
-            headers = {k.lower(): v for k, v in response.headers.items()}
-            return response.status, headers, response.read()
-    except urllib.error.HTTPError as error:
-        return error.code, {k.lower(): v for k, v in error.headers.items()}, b""
+            self._etag = response.headers.get("etag")
 
 
 class CaptureSettings:
-    """Per-call settings: the code values, or the matched audience's (SPEC §2.6)."""
+    """Per-call settings from the matched audience (SPEC §2.6)."""
 
-    def __init__(
-        self,
-        *,
-        vendor_id: str,
-        result_capture_mode: str,
-        fetcher: SettingsFetcher | None = None,
-    ) -> None:
+    def __init__(self, *, vendor_id: str, fetcher: SettingsFetcher) -> None:
         self._vendor_id = vendor_id
-        self._code = CallSettings(result_capture_mode=result_capture_mode)
         self._fetcher = fetcher
 
     def start(self) -> None:
-        if self._fetcher is not None:
-            self._fetcher.start()
+        self._fetcher.start()
 
     def stop(self) -> None:
-        if self._fetcher is not None:
-            self._fetcher.stop()
+        self._fetcher.stop()
 
-    def for_caller(self, caller: Caller) -> CallSettings:
-        document = self._fetcher.document if self._fetcher is not None else None
-        if document is None:
-            return self._code
-        audience = document.audience_for(caller, self._vendor_id)
-        capture = CaptureObserved(
-            settings_version=document.version,
-            audience=audience.id if audience is not None else None,
-        )
-        results = audience.capture.get("results") if audience is not None else None
-        return CallSettings(
-            result_capture_mode=results
-            if isinstance(results, str) and results in _RESULT_MODES
-            else self._code.result_capture_mode,
-            capture=capture,
-        )
+    def for_caller(self, caller: Caller) -> CallSettings | None:
+        """``None`` until a document is held: the code values apply."""
+        document = self._fetcher.document
+        return None if document is None else document.settings_for(caller, self._vendor_id)

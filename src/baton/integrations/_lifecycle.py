@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import monotonic
 from types import FrameType
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import TypeAdapter
 
@@ -86,6 +86,14 @@ class _Family:
     subject_key: str | None = None
     count_key: str | None = None
     start_params: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+
+
+class _Opened(NamedTuple):
+    envelope: dict[str, Any]
+    sent: dict[str, Any]
+    subject: dict[str, Any]
+    session: ResolvedSession
+    caller: ResolvedCaller
 
 
 @dataclass(frozen=True)
@@ -155,13 +163,8 @@ def install_lifecycle_capture(
         params: Any,
         tool_name: str | None = None,
         arguments: dict[str, Any] | None = None,
-    ) -> (
-        tuple[dict[str, Any], dict[str, Any], dict[str, Any], ResolvedSession, ResolvedCaller]
-        | None
-    ):
-        """The envelope, the request's params, the subject, the session and the
-        caller, or ``None`` when a read failed and the request is served
-        without events."""
+    ) -> _Opened | None:
+        """``None`` when a read failed and the request is served without events."""
         try:
             request = await read_request(read_request_context())
             client = observe_client(
@@ -200,14 +203,11 @@ def install_lifecycle_capture(
                 "session_id": request.session.id,
                 "session_id_origin": request.session.origin,
                 "client_observed": client,
-                "principal": caller.principal,
-                "organization": caller.organization,
-                "labels": caller.wire_labels,
-                "capture": caller.capture,
+                **caller.envelope_fields(),
                 "transport_observed": request.transport_observed,
                 "runtime_meta": clean_runtime_meta(scrubber, request.meta, logger),
             }
-            return envelope, sent, subject, request.session, caller
+            return _Opened(envelope, sent, subject, request.session, caller)
         except Exception:
             logger.exception(
                 "baton: %s capture failed; the request is served without it", family.method
@@ -244,7 +244,12 @@ def install_lifecycle_capture(
         request = await opened(family, read_request_context, params)
         if request is None:
             return await serve(params)
-        envelope, sent, subject, session, _ = request
+        envelope, sent, subject, session = (
+            request.envelope,
+            request.sent,
+            request.subject,
+            request.session,
+        )
 
         async def emit_leg(leg: str, build_payload: Callable[[], dict[str, Any]]) -> None:
             await emit(
@@ -399,8 +404,8 @@ def install_lifecycle_capture(
             request = await opened(_CALL_FAMILY, read_request_context, params, name, arguments)
             if request is None:
                 return
-            envelope, _, _, session, caller = request
-            envelope = {**envelope, "call_id": str(uuid7())}
+            session, caller = request.session, request.caller
+            envelope = {**request.envelope, "call_id": str(uuid7())}
             scrubbed = scrub_goals(scrubber, goals or (None, None, None), logger)
             # SPEC §11.4.3: an unknown tool's message is the library's and stays
             # under "off"; a refusal's is the vendor's and is withheld.

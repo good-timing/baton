@@ -47,6 +47,10 @@ seams is the stronger move than re-validating at each one.
 _MODES: frozenset[str] = frozenset({"full", WITHHELD})
 
 
+def is_registered_mode(mode: object) -> bool:
+    return isinstance(mode, str) and mode in _MODES
+
+
 def withholding(mode: str) -> bool:
     """Whether `mode` withholds result-derived data.
 

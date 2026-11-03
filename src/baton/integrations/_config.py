@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from baton._capture_settings import (
+    DEFAULT_REFRESH_S,
     MIN_REFRESH_S,
     SETTINGS_MODES,
     CaptureSettings,
@@ -426,21 +427,22 @@ class VendorConfig:
 
     settings: str = "local"
     """Where capture settings come from. ``"local"`` (default): the values in
-    this config, and Baton is never asked. ``"console"``: the Capture page,
-    read in the background every ``settings_refresh_s`` seconds, so they can
-    differ by label, client or a share of callers (SPEC §2.6). Needs a
-    ``dsn``. Until the first read succeeds, and whenever nothing is saved,
-    this config's values apply.
+    this config, and Baton is never asked. ``"console"``: the settings saved on
+    the Console's Capture page, read from the collector every
+    ``settings_refresh_s`` seconds, so they can differ by label, client or a
+    share of callers (SPEC §2.6). Needs a ``dsn``. Until the first read
+    succeeds, and whenever nothing is saved, this config's values apply.
 
-    Applied per call today: ``results`` (``result_capture_mode``)."""
+    Only ``results`` (``result_capture_mode``) is applied; the saved ``goal``
+    and ``reports`` are ignored."""
 
-    settings_refresh_s: float = 60.0
-    """How often ``settings="console"`` reads the Capture page, at least 15."""
+    settings_refresh_s: float = DEFAULT_REFRESH_S
+    """How often ``settings="console"`` reads them, in seconds, at least 15."""
 
     resolve_principal: ResolvePrincipalHook | None = None
     """Optional vendor-supplied identity resolver — the ONLY source of
-    ``principal`` and ``organization`` (SPEC §11.4). Unset, no event carries
-    either.
+    ``principal``, ``organization`` and ``labels`` (SPEC §11.4). Unset, no
+    event carries any of them.
 
     Takes a ``SessionResolutionContext`` — headers, meta, tool name, arguments
     and the verified token's ``claims`` — and returns ``Principal | Organization
@@ -649,7 +651,7 @@ def resolve_config(config: VendorConfig) -> VendorConfig:
 def build_capture_settings(config: VendorConfig, tenant_id: str) -> CaptureSettings | None:
     """The per-call settings, not yet reading; ``None`` when the vendor manages
     them in code."""
-    if config.settings != "console" or not config.dsn:
+    if config.settings != "console" or config.dsn is None:
         return None
     dsn = parse_dsn(config.dsn)
     fetcher = SettingsFetcher(
@@ -659,11 +661,7 @@ def build_capture_settings(config: VendorConfig, tenant_id: str) -> CaptureSetti
         vendor_id=config.vendor_id,
         refresh_s=config.settings_refresh_s,
     )
-    return CaptureSettings(
-        vendor_id=config.vendor_id,
-        result_capture_mode=config.result_capture_mode,
-        fetcher=fetcher,
-    )
+    return CaptureSettings(vendor_id=config.vendor_id, fetcher=fetcher)
 
 
 def _validate_vendor_config(config: VendorConfig) -> None:
@@ -723,7 +721,12 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             "VendorConfig(settings='console') reads the Capture page with the "
             "dsn's key, so it needs a dsn."
         )
-    if not math.isfinite(config.settings_refresh_s) or config.settings_refresh_s < MIN_REFRESH_S:
+    refresh = config.settings_refresh_s
+    if (
+        isinstance(refresh, bool)
+        or not isinstance(refresh, int | float)
+        or not MIN_REFRESH_S <= refresh < math.inf
+    ):
         raise ValueError(
             f"VendorConfig.settings_refresh_s must be at least {MIN_REFRESH_S:g} seconds."
         )

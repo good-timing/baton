@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import itertools
 import json
-import sys
-import urllib.request
+import logging
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -26,19 +28,21 @@ from baton.events import CaptureObserved
 from baton.integrations import _config as config_module
 from baton.integrations import official, standalone
 from baton.integrations._config import build_capture_settings
+from baton.integrations.identity_adapter import _wire_caller
 from baton.integrations.official._compat import MCPServerClass as OfficialFastMCP
 from baton.sinks import FileSink
 from tests._event_helpers import read_events, without_surface_snapshots
 from tests._mcp_session import connected_session
 
 DSN = "https://baton_pk_x@h.example.com/ten_" + "0" * 32 + "/srv"
+LOGGER = logging.getLogger("test")
 
 
 def _document(*audiences: dict[str, Any], version: int = 3) -> bytes:
     return json.dumps({"version": version, "audiences": list(audiences)}).encode()
 
 
-def _audience(audience_id: str, match: dict[str, Any], results: str = "full") -> dict[str, Any]:
+def _audience(audience_id: str, match: dict[str, Any], results: Any = "full") -> dict[str, Any]:
     return {
         "id": audience_id,
         "match": match,
@@ -47,6 +51,12 @@ def _audience(audience_id: str, match: dict[str, Any], results: str = "full") ->
 
 
 EVERYONE = _audience("everyone", {}, results="off")
+
+
+def _matched(body: bytes, caller: Caller) -> str | None:
+    document = parse_document(body)
+    assert document is not None
+    return document.settings_for(caller, "srv").capture.audience
 
 
 class TestLabels:
@@ -63,6 +73,27 @@ class TestLabels:
     def test_at_most_twenty_are_kept(self) -> None:
         assert clean_labels([f"l{i}" for i in range(25)]) == tuple(f"l{i}" for i in range(20))
 
+    def test_an_organization_alone_can_carry_labels(self) -> None:
+        caller = _wire_caller(Organization("org_1", labels=["enterprise"]), logger=LOGGER)
+        assert caller.principal is None
+        assert caller.envelope_fields()["labels"] == ["enterprise"]
+
+    @staticmethod
+    def _then_raise() -> Any:
+        yield "beta"
+        raise RuntimeError("resolver bug")
+
+    @staticmethod
+    def _endless() -> Any:
+        while True:
+            yield "beta"
+
+    @pytest.mark.parametrize("labels", [_then_raise, _endless])
+    def test_labels_a_resolver_cannot_read_never_raise(self, labels: Any) -> None:
+        caller = _wire_caller(Principal("u", labels=labels()), logger=LOGGER)
+        assert caller.principal is not None
+        assert len(caller.labels) <= 20
+
 
 class TestShare:
     def test_the_bucket_is_pinned(self) -> None:
@@ -75,24 +106,23 @@ class TestShare:
 
     def test_a_half_rounds_up(self) -> None:
         # 0.00025 * 10000 is exactly 2.5, so buckets 0, 1 and 2 are in.
+        key = next(k for i in itertools.count() if share_bucket("srv", k := f"u{i}") == 2)
         body = _document(_audience("tiny", {"share": 0.00025}), EVERYONE)
-        document = parse_document(body)
-        assert document is not None
-        keys = [f"user-{i}" for i in range(200000)]
-        key = next(k for k in keys if share_bucket("srv", k) == 2)
-        audience = document.audience_for(Caller(share_key=key), "srv")
-        assert audience is not None and audience.id == "tiny"
+        assert _matched(body, Caller(share_key=key)) == "tiny"
 
     def test_raising_the_share_keeps_everyone_already_in(self) -> None:
+        small = _document(_audience("in", {"share": 0.1}), EVERYONE)
+        large = _document(_audience("in", {"share": 0.5}), EVERYONE)
         keys = [f"user-{i}" for i in range(500)]
-        small = {k for k in keys if share_bucket("srv", k) < 1000}
-        large = {k for k in keys if share_bucket("srv", k) < 5000}
-        assert small and small <= large
+        in_small = {k for k in keys if _matched(small, Caller(share_key=k)) == "in"}
+        in_large = {k for k in keys if _matched(large, Caller(share_key=k)) == "in"}
+        assert 25 < len(in_small) < 75
+        assert in_small < in_large
 
-    def test_the_share_is_close_to_what_was_asked(self) -> None:
-        keys = [f"user-{i}" for i in range(5000)]
-        inside = sum(share_bucket("srv", k) < 1000 for k in keys)
-        assert 400 < inside < 600
+    def test_share_needs_an_identity(self) -> None:
+        body = _document(_audience("all", {"share": 1}), EVERYONE)
+        assert _matched(body, Caller()) == "everyone"
+        assert _matched(body, Caller(share_key="user-1")) == "all"
 
 
 class TestDocument:
@@ -101,10 +131,10 @@ class TestDocument:
         [
             b"not json",
             b"[]",
+            b"[" * 100000,
             _document(version=0),
             json.dumps({"version": True, "audiences": [EVERYONE]}).encode(),
             json.dumps({"version": 1, "audiences": []}).encode(),
-            b"[" * 100000,
             json.dumps(
                 {"version": 1, "audiences": [{"id": 1, "match": {}, "capture": {}}]}
             ).encode(),
@@ -116,40 +146,30 @@ class TestDocument:
     def test_an_invalid_document_is_refused(self, body: bytes) -> None:
         assert parse_document(body) is None
 
-    def _audience_for(self, body: bytes, caller: Caller) -> str | None:
-        document = parse_document(body)
-        assert document is not None
-        audience = document.audience_for(caller, "srv")
-        return audience.id if audience is not None else None
-
     def test_the_first_matching_audience_wins(self) -> None:
         body = _document(
             _audience("beta", {"label": ["beta", "alpha"]}),
             _audience("claude", {"client": ["claude-code"]}),
             EVERYONE,
         )
-        both = Caller(labels=("alpha",), client_name="claude-code")
-        assert self._audience_for(body, both) == "beta"
-        assert self._audience_for(body, Caller(client_name="claude-code")) == "claude"
-        assert self._audience_for(body, Caller(labels=("gamma",))) == "everyone"
+        assert _matched(body, Caller(labels=("alpha",), client_name="claude-code")) == "beta"
+        assert _matched(body, Caller(client_name="claude-code")) == "claude"
+        assert _matched(body, Caller(labels=("gamma",))) == "everyone"
 
     def test_match_keys_combine_with_and(self) -> None:
         body = _document(_audience("both", {"label": ["beta"], "client": ["cursor"]}), EVERYONE)
-        assert self._audience_for(body, Caller(labels=("beta",))) == "everyone"
-        assert self._audience_for(body, Caller(labels=("beta",), client_name="cursor")) == "both"
-
-    def test_share_needs_an_identity(self) -> None:
-        body = _document(_audience("all", {"share": 1}), EVERYONE)
-        assert self._audience_for(body, Caller()) == "everyone"
-        assert self._audience_for(body, Caller(share_key="user-1")) == "all"
+        assert _matched(body, Caller(labels=("beta",))) == "everyone"
+        assert _matched(body, Caller(labels=("beta",), client_name="cursor")) == "both"
 
     @pytest.mark.parametrize(
         "match",
         [
             {"organization": ["org_1"]},
             {"label": "beta"},
+            {"label": [1]},
             {"client": "cursor"},
             {"share": "0.5"},
+            {"share": True},
             {"share": 5},
             {"share": -1},
             {"share": 1e305},
@@ -159,115 +179,112 @@ class TestDocument:
     )
     def test_an_audience_it_cannot_read_matches_nobody(self, match: dict[str, Any]) -> None:
         body = _document(_audience("odd", match), EVERYONE)
-        caller = Caller(labels=("beta",), client_name="cursor", share_key="u")
-        assert self._audience_for(body, caller) == "everyone"
-
-
-class _Fetcher:
-    def __init__(self, body: bytes | None) -> None:
-        self.document = parse_document(body) if body is not None else None
-        self.running = False
-        self.started = False
-
-    def start(self) -> None:
-        self.running = self.started = True
-
-    def stop(self) -> None:
-        self.running = False
-
-
-class TestForCaller:
-    def _settings(self, body: bytes | None) -> CaptureSettings:
-        return CaptureSettings(
-            vendor_id="srv",
-            result_capture_mode="full",
-            fetcher=_Fetcher(body),  # type: ignore[arg-type]
+        assert _matched(body, Caller(labels=("beta",), client_name="cursor", share_key="u")) == (
+            "everyone"
         )
 
-    def test_without_a_document_the_code_values_apply_and_nothing_is_recorded(self) -> None:
-        settings = self._settings(None).for_caller(Caller())
-        assert settings.result_capture_mode == "full"
-        assert settings.capture is None
-
     def test_the_matched_audience_sets_results_and_is_recorded(self) -> None:
-        body = _document(_audience("beta", {"label": ["beta"]}), EVERYONE, version=7)
-        settings = self._settings(body)
-        beta = settings.for_caller(Caller(labels=("beta",)))
+        document = parse_document(
+            _document(_audience("beta", {"label": ["beta"]}), EVERYONE, version=7)
+        )
+        assert document is not None
+        beta = document.settings_for(Caller(labels=("beta",)), "srv")
         assert beta.result_capture_mode == "full"
         assert beta.capture == CaptureObserved(settings_version=7, audience="beta")
-        rest = settings.for_caller(Caller())
+        rest = document.settings_for(Caller(), "srv")
         assert rest.result_capture_mode == "off"
         assert rest.capture == CaptureObserved(settings_version=7, audience="everyone")
 
     @pytest.mark.parametrize("results", ["metadata", ["full"], {"a": 1}, None])
-    def test_an_unknown_results_value_falls_back_to_the_code_value(self, results: Any) -> None:
-        body = _document(_audience("everyone", {}, results=results))
-        assert self._settings(body).for_caller(Caller()).result_capture_mode == "full"
+    def test_an_unknown_results_value_leaves_the_code_value(self, results: Any) -> None:
+        document = parse_document(_document(_audience("everyone", {}, results=results)))
+        assert document is not None
+        assert document.settings_for(Caller(), "srv").result_capture_mode is None
 
     def test_no_matching_audience_records_the_version_alone(self) -> None:
-        body = _document(_audience("beta", {"label": ["beta"]}))
-        settings = self._settings(body).for_caller(Caller())
-        assert settings.result_capture_mode == "full"
+        document = parse_document(_document(_audience("beta", {"label": ["beta"]})))
+        assert document is not None
+        settings = document.settings_for(Caller(), "srv")
+        assert settings.result_capture_mode is None
         assert settings.capture == CaptureObserved(settings_version=3)
 
 
-class _Opener:
-    def __init__(self, *answers: tuple[int, dict[str, str], bytes] | Exception) -> None:
-        self.answers = list(answers)
-        self.requests: list[urllib.request.Request] = []
+@dataclass
+class _Response:
+    status: int
+    headers: dict[str, str] = field(default_factory=dict)
+    data: bytes = b""
 
-    def __call__(
-        self, request: urllib.request.Request, timeout: float
-    ) -> tuple[int, dict[str, str], bytes]:
-        self.requests.append(request)
+
+class _Pool:
+    def __init__(self, *answers: _Response | Exception) -> None:
+        self.answers = list(answers)
+        self.requests: list[tuple[str, str, dict[str, str]]] = []
+
+    def urlopen(self, method: str, url: str, *, headers: dict[str, str], **_: Any) -> _Response:
+        self.requests.append((method, url, headers))
         answer = self.answers.pop(0)
         if isinstance(answer, Exception):
             raise answer
         return answer
 
 
-def _fetcher(opener: _Opener) -> SettingsFetcher:
+def _fetcher(pool: _Pool) -> SettingsFetcher:
     return SettingsFetcher(
         origin="https://h.example.com",
         api_key="baton_pk_x",
         tenant_id="ten_1",
         vendor_id="srv",
-        opener=opener,
+        refresh_s=60,
+        make_pool=lambda: pool,
     )
 
 
 class TestFetcher:
     def test_the_request_names_the_server_and_carries_the_key(self) -> None:
-        opener = _Opener((204, {}, b""))
-        _fetcher(opener).read_once()
-        (request,) = opener.requests
-        assert request.full_url == "https://h.example.com/v0/settings?server=srv"
-        assert request.get_header("Authorization") == "Bearer baton_pk_x"
-        assert request.get_header("X-baton-tenant-id") == "ten_1"
+        pool = _Pool(_Response(204))
+        _fetcher(pool).read_once()
+        assert pool.requests == [
+            (
+                "GET",
+                "https://h.example.com/v0/settings?server=srv",
+                {"Authorization": "Bearer baton_pk_x", "X-Baton-Tenant-Id": "ten_1"},
+            )
+        ]
 
     def test_a_200_is_used_and_its_etag_sent_back(self) -> None:
-        opener = _Opener((200, {"etag": '"v3-w1"'}, _document(EVERYONE)), (304, {}, b""))
-        fetcher = _fetcher(opener)
+        pool = _Pool(_Response(200, {"etag": '"v3-w1"'}, _document(EVERYONE)), _Response(304))
+        fetcher = _fetcher(pool)
         fetcher.read_once()
         fetcher.read_once()
         assert fetcher.document is not None and fetcher.document.version == 3
-        assert opener.requests[1].get_header("If-none-match") == '"v3-w1"'
+        assert pool.requests[1][2]["If-None-Match"] == '"v3-w1"'
 
     def test_a_204_drops_the_document(self) -> None:
-        fetcher = _fetcher(_Opener((200, {}, _document(EVERYONE)), (204, {}, b"")))
+        fetcher = _fetcher(_Pool(_Response(200, data=_document(EVERYONE)), _Response(204)))
         fetcher.read_once()
         fetcher.read_once()
         assert fetcher.document is None
 
     @pytest.mark.parametrize(
         "failure",
-        [(500, {}, b""), (401, {}, b""), (200, {}, b"{}"), OSError("down")],
+        [_Response(500), _Response(401), _Response(200, data=b"{}"), OSError("down")],
     )
     def test_a_failure_keeps_the_document_held(self, failure: Any) -> None:
-        fetcher = _fetcher(_Opener((200, {}, _document(EVERYONE)), failure))
+        fetcher = _fetcher(_Pool(_Response(200, data=_document(EVERYONE)), failure))
         fetcher.read_once()
         fetcher.read_once()
         assert fetcher.document is not None
+
+    def test_a_forked_child_starts_its_own_read(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fetcher = _fetcher(_Pool())
+        started: list[int] = []
+        monkeypatch.setattr(fetcher, "start", lambda: started.append(1))
+        assert fetcher.document is None and not started
+        fetcher._pid = -1
+        assert fetcher.document is None and started == [1]
+        fetcher.stop()
+        assert fetcher.document is None and started == [1]
 
 
 class TestConfig:
@@ -279,34 +296,62 @@ class TestConfig:
             ({"settings_refresh_s": 5, "dsn": DSN}, "15"),
             ({"settings_refresh_s": float("nan"), "dsn": DSN}, "15"),
             ({"settings_refresh_s": float("inf"), "dsn": DSN}, "15"),
+            ({"settings_refresh_s": "60", "dsn": DSN}, "15"),
         ],
     )
     def test_bad_settings_are_refused_at_install(
         self, kwargs: dict[str, Any], message: str
     ) -> None:
-        mcp = OfficialFastMCP("config")
         with pytest.raises(ValueError, match=message):
-            official.install_baton(mcp, official.VendorConfig(**kwargs))
+            official.install_baton(OfficialFastMCP("config"), official.VendorConfig(**kwargs))
 
     def test_local_settings_read_nothing(self) -> None:
         assert build_capture_settings(official.VendorConfig(dsn=DSN), "ten_1") is None
 
     def test_console_settings_read_with_the_dsns_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        opener = _Opener((204, {}, b""))
-        built: list[SettingsFetcher] = []
+        given: list[dict[str, Any]] = []
+        monkeypatch.setattr(config_module, "SettingsFetcher", lambda **kw: given.append(kw))
+        config = config_module.resolve_config(
+            official.VendorConfig(dsn=DSN, settings="console", settings_refresh_s=30)
+        )
+        assert build_capture_settings(config, "ten_1") is not None
+        assert given == [
+            {
+                "origin": "https://h.example.com",
+                "api_key": "baton_pk_x",
+                "tenant_id": "ten_1",
+                "vendor_id": "srv",
+                "refresh_s": 30,
+            }
+        ]
 
-        def fetcher(**kwargs: Any) -> SettingsFetcher:
-            built.append(SettingsFetcher(**kwargs, opener=opener))
-            return built[-1]
 
-        monkeypatch.setattr(config_module, "SettingsFetcher", fetcher)
-        config = config_module.resolve_config(official.VendorConfig(dsn=DSN, settings="console"))
-        assert build_capture_settings(config, "ten_" + "0" * 32) is not None
-        built[0].read_once()
-        (request,) = opener.requests
-        assert request.full_url == "https://h.example.com/v0/settings?server=srv"
-        assert request.get_header("Authorization") == "Bearer baton_pk_x"
-        assert request.get_header("X-baton-tenant-id") == "ten_" + "0" * 32
+class _Fetcher:
+    def __init__(self, body: bytes | None) -> None:
+        self.document = parse_document(body) if body is not None else None
+        self.running = self.started = False
+
+    def start(self) -> None:
+        self.running = self.started = True
+
+    def stop(self) -> None:
+        self.running = False
+
+
+class _Raising(CaptureSettings):
+    def for_caller(self, caller: Caller) -> Any:
+        raise RuntimeError("settings bug")
+
+
+def _console(body: bytes | None = None) -> CaptureSettings:
+    """A document already read, with no network."""
+    if body is None:
+        body = _document(
+            _audience("beta", {"label": ["beta"], "client": ["claude-code"]}, results="off"),
+            EVERYONE,
+            version=9,
+        )
+    return CaptureSettings(vendor_id="srv", fetcher=_Fetcher(body))  # type: ignore[arg-type]
 
 
 def _resolver(context: Any) -> Principal:
@@ -317,21 +362,7 @@ def _resolver(context: Any) -> Principal:
     )
 
 
-def _console_settings(results: str = "off") -> CaptureSettings:
-    """A document already read, with no network."""
-    body = _document(
-        _audience("beta", {"label": ["beta"], "client": ["claude-code"]}, results=results),
-        EVERYONE,
-        version=9,
-    )
-    return CaptureSettings(
-        vendor_id="srv",
-        result_capture_mode="full",
-        fetcher=_Fetcher(body),  # type: ignore[arg-type]
-    )
-
-
-def _config(module: Any, events_path: Path, **kwargs: Any) -> Any:
+def _config(module: Any, events_path: Path) -> Any:
     return module.VendorConfig(
         vendor_id="srv",
         vendor_display_name="Server",
@@ -339,14 +370,19 @@ def _config(module: Any, events_path: Path, **kwargs: Any) -> Any:
         tenant_id="ten_1",
         sink=FileSink(str(events_path)),
         resolve_principal=_resolver,
-        **kwargs,
     )
 
 
-async def _drive_official(events_path: Path, monkeypatch: pytest.MonkeyPatch, client: str) -> None:
+Settings = Callable[[], CaptureSettings] | None
+
+
+async def _drive_official(
+    events_path: Path, monkeypatch: pytest.MonkeyPatch, client: str, settings: Settings
+) -> None:
     from baton.integrations.official import install
 
-    monkeypatch.setattr(install, "build_capture_settings", lambda *_: _console_settings())
+    if settings is not None:
+        monkeypatch.setattr(install, "build_capture_settings", lambda *_: settings())
     mcp = OfficialFastMCP("settings-official")
 
     @mcp.tool()
@@ -363,11 +399,12 @@ async def _drive_official(events_path: Path, monkeypatch: pytest.MonkeyPatch, cl
 
 
 async def _drive_standalone(
-    events_path: Path, monkeypatch: pytest.MonkeyPatch, client: str
+    events_path: Path, monkeypatch: pytest.MonkeyPatch, client: str, settings: Settings
 ) -> None:
     from baton.integrations.standalone import install
 
-    monkeypatch.setattr(install, "build_capture_settings", lambda *_: _console_settings())
+    if settings is not None:
+        monkeypatch.setattr(install, "build_capture_settings", lambda *_: settings())
     mcp: Any = FastMCP("settings-standalone")
 
     @mcp.tool
@@ -387,21 +424,30 @@ async def _drive_standalone(
 DRIVERS = pytest.mark.parametrize("drive", [_drive_official, _drive_standalone])
 
 
+def _events(events_path: Path) -> list[dict[str, Any]]:
+    return without_surface_snapshots(read_events(events_path))
+
+
+def _end(events_path: Path) -> dict[str, Any]:
+    (end,) = [e for e in read_events(events_path) if e["event_type"] == "tool_call_end"]
+    return end
+
+
 @DRIVERS
 async def test_events_carry_the_callers_labels_and_audience(
     drive: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     events_path = tmp_path / "e.jsonl"
-    await drive(events_path, monkeypatch, "claude-code")
-    events = without_surface_snapshots(read_events(events_path))
-    types = {e["event_type"] for e in events}
-    assert {"tool_call_start", "tool_call_end", "tool_list_end"} <= types
+    await drive(events_path, monkeypatch, "claude-code", _console)
+    events = _events(events_path)
+    assert {"tool_call_start", "tool_call_end", "tool_list_end"} <= {
+        e["event_type"] for e in events
+    }
     for event in events:
         assert event["labels"] == ["beta", "enterprise"], event["event_type"]
         assert event["capture"] == {"settings_version": 9, "audience": "beta"}, event["event_type"]
-    (end,) = [e for e in events if e["event_type"] == "tool_call_end"]
-    assert end["payload"]["result_capture"] == "off"
-    assert end["payload"]["result"] is None
+    assert _end(events_path)["payload"]["result_capture"] == "off"
+    assert _end(events_path)["payload"]["result"] is None
 
 
 @DRIVERS
@@ -409,110 +455,85 @@ async def test_a_caller_outside_the_audience_gets_everyones_settings(
     drive: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     events_path = tmp_path / "e.jsonl"
-    await drive(events_path, monkeypatch, "cursor")
-    (end,) = [e for e in read_events(events_path) if e["event_type"] == "tool_call_end"]
-    assert end["capture"] == {"settings_version": 9, "audience": "everyone"}
-    assert end["payload"]["result_capture"] == "off"
+    await drive(events_path, monkeypatch, "cursor", _console)
+    assert _end(events_path)["capture"] == {"settings_version": 9, "audience": "everyone"}
+    assert _end(events_path)["payload"]["result_capture"] == "off"
 
 
-async def test_code_settings_send_labels_and_no_capture(tmp_path: Path) -> None:
+@DRIVERS
+async def test_code_settings_send_labels_and_no_capture(
+    drive: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     events_path = tmp_path / "e.jsonl"
-    mcp = OfficialFastMCP("settings-local")
-
-    @mcp.tool()
-    def lookup(name: str) -> dict[str, Any]:
-        return {"name": name}
-
-    handle = official.install_baton(mcp, _config(official, events_path))
-    try:
-        async with connected_session(mcp) as session:
-            await session.call_tool("lookup", {"name": "alice", "user_goal": "find alice"})
-    finally:
-        await handle.aclose()
-    (end,) = [e for e in read_events(events_path) if e["event_type"] == "tool_call_end"]
+    await drive(events_path, monkeypatch, "claude-code", None)
+    end = _end(events_path)
     assert end["labels"] == ["beta", "enterprise"]
     assert end["capture"] is None
     assert end["payload"]["result"] is not None
 
 
-def test_an_organization_alone_can_carry_labels() -> None:
-    from baton.integrations.identity_adapter import _wire_caller
-
-    caller = _wire_caller(
-        Organization("org_1", labels=["enterprise"]), logger=__import__("logging").getLogger()
-    )
-    assert caller.principal is None
-    assert caller.wire_labels == ["enterprise"]
+@DRIVERS
+async def test_settings_that_fail_to_apply_still_serve_the_call(
+    drive: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events_path = tmp_path / "e.jsonl"
+    raising = _Raising(vendor_id="srv", fetcher=_Fetcher(None))  # type: ignore[arg-type]
+    await drive(events_path, monkeypatch, "claude-code", lambda: raising)
+    assert not [e for e in read_events(events_path) if e["event_type"] == "tool_call_error"]
+    end = _end(events_path)
+    assert end["capture"] is None
+    assert end["labels"] == ["beta", "enterprise"]
 
 
 @DRIVERS
 async def test_the_read_starts_at_install_and_stops_at_close(
     drive: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fetchers: list[_Fetcher] = []
-    real = _console_settings
-
-    def recording() -> CaptureSettings:
-        settings = real()
-        fetchers.append(settings._fetcher)  # type: ignore[arg-type]
-        return settings
-
-    monkeypatch.setattr(sys.modules[__name__], "_console_settings", recording)
-    await drive(tmp_path / "e.jsonl", monkeypatch, "claude-code")
-    (fetcher,) = fetchers
+    fetcher = _Fetcher(None)
+    settings = CaptureSettings(vendor_id="srv", fetcher=fetcher)  # type: ignore[arg-type]
+    await drive(tmp_path / "e.jsonl", monkeypatch, "claude-code", lambda: settings)
     assert fetcher.started
     assert not fetcher.running
 
 
-def _labels_then_raise() -> Any:
-    yield "beta"
-    raise RuntimeError("resolver bug")
+def test_a_real_request_reads_the_document_and_its_etag() -> None:
+    import http.server
+    import threading
 
+    seen: list[dict[str, str]] = []
 
-def _endless_labels() -> Any:
-    while True:
-        yield "beta"
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen.append({"path": self.path, **dict(self.headers.items())})
+            if self.headers.get("If-None-Match") == '"v3-w1"':
+                self.send_response(304)
+                self.end_headers()
+                return
+            body = _document(EVERYONE)
+            self.send_response(200)
+            self.send_header("ETag", '"v3-w1"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
+        def log_message(self, *args: Any) -> None:
+            pass
 
-@pytest.mark.parametrize("labels", [_labels_then_raise, _endless_labels])
-def test_labels_a_resolver_cannot_read_never_raise(labels: Any) -> None:
-    import logging
-
-    from baton.integrations.identity_adapter import _wire_caller
-
-    caller = _wire_caller(Principal("u", labels=labels()), logger=logging.getLogger())
-    assert caller.principal is not None
-    assert len(caller.labels) <= 20
-
-
-async def test_settings_that_fail_to_apply_still_serve_the_call(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from baton.integrations.official import install
-
-    class _Raising(CaptureSettings):
-        def for_caller(self, caller: Caller) -> Any:
-            raise RuntimeError("settings bug")
-
-    monkeypatch.setattr(
-        install,
-        "build_capture_settings",
-        lambda *_: _Raising(vendor_id="srv", result_capture_mode="full"),
-    )
-    events_path = tmp_path / "e.jsonl"
-    mcp = OfficialFastMCP("settings-raise")
-
-    @mcp.tool()
-    def lookup(name: str) -> dict[str, Any]:
-        return {"name": name}
-
-    handle = official.install_baton(mcp, _config(official, events_path))
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        async with connected_session(mcp) as session:
-            await session.call_tool("lookup", {"name": "alice", "user_goal": "find"})
+        fetcher = SettingsFetcher(
+            origin=f"http://127.0.0.1:{server.server_port}",
+            api_key="baton_pk_x",
+            tenant_id="ten_1",
+            vendor_id="srv",
+            refresh_s=60,
+        )
+        fetcher.read_once()
+        fetcher.read_once()
     finally:
-        await handle.aclose()
-    assert not [e for e in read_events(events_path) if e["event_type"] == "tool_call_error"]
-    (end,) = [e for e in read_events(events_path) if e["event_type"] == "tool_call_end"]
-    assert end["capture"] is None
-    assert end["labels"] == ["beta", "enterprise"]
+        server.shutdown()
+    assert fetcher.document is not None and fetcher.document.version == 3
+    assert [r["path"] for r in seen] == ["/v0/settings?server=srv"] * 2
+    assert seen[0]["Authorization"] == "Bearer baton_pk_x"
+    assert seen[1]["If-None-Match"] == '"v3-w1"'
