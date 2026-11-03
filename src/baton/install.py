@@ -61,18 +61,23 @@ this call. See ``baton._optout``.
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any
 
 from baton._optout import capture_disabled
 from baton.integrations._handle import disabled_handle
+from baton.integrations._llm_text import _first_time
+from baton.sinks import Sink, bounded_sink_call
 
 if TYPE_CHECKING:
+    from baton.integrations._annotation_name import InstallText
     from baton.integrations._config import VendorConfig
     from baton.integrations._handle import BatonHandle
+    from baton.integrations._shared import CheckedConfig, Shared
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["install_baton"]
+__all__ = ["Baton", "create_baton", "install_baton"]
 
 
 def _has_fastmcp_middleware_seam(server: Any) -> bool:
@@ -132,27 +137,29 @@ def install_baton(
         # door returns before either adapter is reached.
         return disabled_handle(switch, "install_baton", config.sink if config else None)
 
-    is_fastmcp = _has_fastmcp_middleware_seam(server)
+    adapter = _adapter_for(server)
+    return adapter.install_baton(server, config, dsn=dsn)  # type: ignore[no-any-return]
 
-    # Checked FIRST and on its own. ``fastmcp`` 2.x carries a ``_tool_manager``
-    # as well, so requiring the registry to be absent here refuses every server
-    # on the declared floor — which is exactly what 0.7.0 shipped. The official
-    # SDK has never exposed ``add_middleware`` on either major, so its presence
-    # is decisive rather than merely suggestive.
-    if is_fastmcp:
-        from baton.integrations.standalone import install_baton as _install
+
+def _adapter_for(server: Any, door: str = "baton.install_baton") -> Any:
+    """The adapter package. fastmcp 2.x also has a tool registry, so the
+    middleware seam is tested first."""
+    if _has_fastmcp_middleware_seam(server):
+        import baton.integrations.standalone as standalone
 
         logger.debug("baton: routing to the standalone fastmcp adapter")
-        return _install(server, config, dsn=dsn)
-
+        return standalone
     if _has_official_tool_registry(server):
-        from baton.integrations.official import install_baton as _install
+        import baton.integrations.official as official
 
         logger.debug("baton: routing to the official mcp SDK adapter")
-        return _install(server, config, dsn=dsn)
+        return official
+    raise _not_a_server(server, door)
 
-    raise TypeError(
-        "baton.install_baton does not recognise this object as an MCP server it "
+
+def _not_a_server(server: Any, door: str = "baton.install_baton") -> TypeError:
+    return TypeError(
+        f"{door} does not recognise this object as an MCP server it "
         "can install into. It has no ``add_middleware`` (the standalone "
         "``fastmcp`` seam) and no resolvable tool registry (the official ``mcp`` "
         "SDK seam). A bare low-level ``mcp.server.lowlevel.Server`` lands here: "
@@ -160,4 +167,137 @@ def install_baton(
         "wrapped instead — not supported yet. If this IS a FastMCP or MCPServer, "
         "the installed ``mcp``/``fastmcp`` may be outside the supported range; "
         f"got {type(server).__module__}.{type(server).__qualname__}."
+    )
+
+
+class _Named:
+    """A stand-in server: the install text reads only a server's name."""
+
+    def __init__(self, name: str | None) -> None:
+        self.name = name
+
+
+class Baton:
+    """One Baton for a process that builds a new MCP server per request. It
+    owns the sink and the state the servers share, so a request has nothing
+    to close. Use it from one event loop, as one server's capture is."""
+
+    def __init__(
+        self,
+        *,
+        sink: Sink,
+        shared: Shared | None = None,
+        checked: CheckedConfig | None = None,
+        first_text: InstallText | None = None,
+        _from_create_baton: bool = False,
+    ) -> None:
+        if not _from_create_baton:
+            raise TypeError("make a Baton with baton.create_baton(), which checks the config")
+        self._sink = sink
+        self._shared = shared
+        self._checked = checked
+        self._texts: OrderedDict[str | None, InstallText] = OrderedDict()
+        self._closed = self._warned_closed = False
+        if first_text is not None:
+            self._texts[None] = first_text
+
+    def wrap(self, server: Any) -> None:
+        """Install into one server. Raises ``TypeError`` only for an object that
+        is not a server this SDK supports; the config was checked at create."""
+        if self._checked is None:
+            return
+        adapter = _adapter_for(server, "Baton.wrap").install
+        adapter.require_server(server)
+        if self._closed:
+            if not self._warned_closed:
+                self._warned_closed = True
+                logger.warning("baton: Baton.wrap after aclose; servers wrapped now record nothing")
+            return
+        if self._shared is None:
+            return
+        vendor_instructions = getattr(server, "instructions", None)
+        try:
+            adapter.attach(server, self._checked.config, self._text_for(server), self._shared)
+        except Exception:
+            # The config was checked at create, so this is the server's layout;
+            # a request must not fail over capture (SPEC §11.2). Baton's text
+            # goes, as it names a report tool that may not have been added.
+            try:
+                adapter.set_instructions(server, vendor_instructions)
+            except Exception:
+                pass
+            if _first_time(self._shared.warned, "attach failed"):
+                logger.exception(
+                    "baton: Baton.wrap could not finish installing; this server's capture "
+                    "may be partial, and later failures are logged at debug"
+                )
+            else:
+                logger.debug("baton: Baton.wrap could not finish installing", exc_info=True)
+
+    def _text_for(self, server: Any) -> InstallText:
+        """With reports on, the text names the server, so it is computed once
+        per server name; with them off, once. Its warnings follow suit."""
+        from baton.integrations._annotation_name import (
+            _name_the_vendor_chose,
+            resolve_install_text,
+        )
+
+        assert self._checked is not None
+        key = _name_the_vendor_chose(server) if self._checked.config.report_mode == "on" else None
+        text = self._texts.get(key)
+        if text is None:
+            text = resolve_install_text(
+                _Named(key),
+                self._checked.config,
+                display_name_given=self._checked.display_name_given,
+            )
+            self._texts[key] = text
+            if len(self._texts) > _TEXTS_CAP:
+                self._texts.popitem(last=False)
+        else:
+            self._texts.move_to_end(key)
+        return text
+
+    async def flush(self) -> None:
+        """Returns within the sink's shutdown budget and never raises (SPEC §11.2 rule 7)."""
+        await bounded_sink_call(self._sink, "flush")
+
+    async def aclose(self) -> None:
+        """Returns within the sink's shutdown budget and never raises (SPEC §11.2 rule 7)."""
+        self._closed = True
+        await bounded_sink_call(self._sink, "aclose")
+
+
+_TEXTS_CAP = 64
+
+
+def create_baton(config: VendorConfig | None = None, *, dsn: str | None = None) -> Baton:
+    """Create once at startup, then ``wrap`` each server built per request. For
+    a server that lives as long as the process, use ``install_baton``.
+
+    Takes what ``install_baton`` takes and checks it the same way, here, so no
+    request fails on configuration."""
+    from baton.integrations._annotation_name import resolve_install_text
+    from baton.integrations._handle import unconfigured_handle
+    from baton.integrations._shared import build_shared, check_config
+
+    switch = capture_disabled()
+    if switch is not None:
+        handle = disabled_handle(switch, "create_baton", config.sink if config else None)
+        return Baton(sink=handle.sink, _from_create_baton=True)
+    checked = check_config(config, dsn)
+    # The server-free half of install's text check, before the sink is built.
+    first_text = resolve_install_text(
+        _Named(None), checked.config, display_name_given=checked.display_name_given
+    )
+    if checked.unconfigured:
+        handle = unconfigured_handle("create_baton")
+        return Baton(sink=handle.sink, checked=checked, _from_create_baton=True)
+    shared = build_shared(checked.config)
+    return Baton(
+        sink=shared.sink,
+        shared=shared,
+        checked=checked,
+        first_text=first_text,
+        _from_create_baton=True,
     )

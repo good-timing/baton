@@ -155,10 +155,10 @@ class _SurfaceState:
     ``seam_augmentations.injected_tools``.
     """
 
-    def __init__(self, server_meta: dict[str, Any]) -> None:
+    def __init__(self, server_meta: dict[str, Any], sent_surfaces: SentSurfaces) -> None:
         self.server_meta = server_meta
         self.raw_tools: dict[str, dict[str, Any]] = {}
-        self.sent_surfaces = SentSurfaces()
+        self.sent_surfaces = sent_surfaces
         self.dirty = False
 
     def note_tool(self, name: str, tool: Any) -> None:
@@ -195,6 +195,7 @@ def install_wraps(
     result_capture_mode: ResultCaptureMode = "full",
     server_meta: dict[str, Any] | None = None,
     resolve_principal_hook: ResolvePrincipalHook | None = None,
+    sent_surfaces: SentSurfaces | None = None,
 ) -> dict[str, dict[str, str]]:
     """Inject + wrap all currently-registered tools AND future registrations.
 
@@ -205,7 +206,9 @@ def install_wraps(
     # independently. A plain dict (no lock) is safe: all access is on the one
     # asyncio loop, so no statement interleaves.
     param_registry: dict[str, dict[str, str]] = {}
-    surface_state = _SurfaceState(server_meta or {})
+    surface_state = _SurfaceState(
+        server_meta or {}, sent_surfaces if sent_surfaces is not None else SentSurfaces()
+    )
     emit_before, emit_after, emit_error, emit_surface = _make_emitters(
         tenant_id=tenant_id,
         vendor_id=vendor_id,

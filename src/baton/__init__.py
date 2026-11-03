@@ -58,6 +58,7 @@ __all__ = [
     "INTENT_PARAMS",
     "AsyncClient",
     "AsyncTrace",
+    "Baton",
     "Client",
     "IntentParam",
     "Organization",
@@ -65,6 +66,7 @@ __all__ = [
     "Trace",
     "VendorConfig",
     "__version__",
+    "create_baton",
     "install_baton",
     "principal_from_oauth_email",
     "principal_from_oauth_sub",
@@ -81,7 +83,7 @@ from baton.identity import Organization, Principal
 # One entry point for both adapters, detecting on structure — see
 # ``baton.install``. Imported last: it pulls in ``integrations`` lazily inside
 # the call, so neither optional extra is required to import ``baton``.
-from baton.install import install_baton
+from baton.install import Baton, create_baton, install_baton
 from baton.integrations._config import VendorConfig
 from baton.integrations._llm_text import INTENT_INSTRUCTIONS, INTENT_PARAMS, IntentParam
 from baton.integrations.oauth_hooks import principal_from_oauth_email, principal_from_oauth_sub

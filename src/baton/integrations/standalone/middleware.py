@@ -120,6 +120,7 @@ class BatonMiddleware(Middleware):
         server_meta: dict[str, Any] | None = None,
         resolve_principal_hook: ResolvePrincipalHook | None = None,
         on_native_user_goal: Callable[[str], None] | None = None,
+        sent_surfaces: SentSurfaces | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._vendor_id = vendor_id
@@ -141,7 +142,7 @@ class BatonMiddleware(Middleware):
         self._param_registry: dict[str, dict[str, str]] = {}
         # No lock: two concurrent listings of a new surface may both send it,
         # and the consumer stores a hash once.
-        self._sent_surfaces = SentSurfaces()
+        self._sent_surfaces = sent_surfaces if sent_surfaces is not None else SentSurfaces()
 
     async def on_list_tools(
         self,

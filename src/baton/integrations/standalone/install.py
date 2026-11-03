@@ -56,26 +56,18 @@ from fastmcp import FastMCP
 from fastmcp.server.context import Context
 
 from baton._optout import capture_disabled
-from baton._state import SessionCounter
-from baton._uuid import uuid7
-from baton.integrations._annotation_name import resolve_install_text
+from baton.integrations._annotation_name import InstallText, resolve_install_text
 from baton.integrations._config import (
     VendorConfig,
-    _resolve_tenant_id,
-    _validate_vendor_config,
-    build_config,
-    nothing_configured,
-    resolve_sink,
-    with_stand_in_identity,
 )
 from baton.integrations._handle import BatonHandle, disabled_handle, unconfigured_handle
 from baton.integrations._lifecycle import (
     CallSeam,
     CapturedRequest,
     install_lifecycle_capture,
-    warn_if_results_are_withheld,
 )
 from baton.integrations._llm_text import drop_subagent_clause, with_vendor_instructions
+from baton.integrations._shared import Shared, build_shared, check_config, server_session
 from baton.integrations._surface import build_server_meta
 from baton.integrations.client_observed import meta_to_dict
 from baton.integrations.official._registry import get_tool_manager
@@ -87,7 +79,6 @@ from baton.integrations.standalone._session import (
 )
 from baton.integrations.standalone.annotation import register_annotation_tool
 from baton.integrations.standalone.middleware import BatonMiddleware
-from baton.scrub import Scrubber
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +145,10 @@ def _require_fastmcp_server(mcp: Any) -> None:
     )
 
 
+# The server check ``baton.create_baton``'s ``wrap`` runs, as install does.
+require_server = _require_fastmcp_server
+
+
 def _set_instructions(mcp: Any, instructions: str) -> None:
     # ``instructions`` is a read-only property on FastMCP >=1.10; the backing
     # MCPServer attribute is the fallback.
@@ -161,6 +156,10 @@ def _set_instructions(mcp: Any, instructions: str) -> None:
         mcp.instructions = instructions
     except AttributeError:
         mcp._mcp_server.instructions = instructions
+
+
+# What ``baton.create_baton``'s ``wrap`` restores when an install fails partway.
+set_instructions = _set_instructions
 
 
 def install_baton(
@@ -190,35 +189,19 @@ def install_baton(
     # succeed on the official SDK's server, and only ``add_middleware`` finally
     # dies, on a server Baton has already modified.
     _require_fastmcp_server(mcp)
-    # Read BEFORE ``build_config`` and the stand-in below, which fill an unset
-    # display name in and so leave a defaulted value and a chosen one looking alike.
-    display_name_given = config is not None and bool(config.vendor_display_name)
-    unconfigured = nothing_configured(config, dsn)
-    if unconfigured:
-        config = with_stand_in_identity(config)
-    config = build_config(config, dsn)
-    _validate_vendor_config(config)
-    if not unconfigured:
-        warn_if_results_are_withheld(config.result_capture_mode)
-
-    text = resolve_install_text(mcp, config, display_name_given=display_name_given)
+    checked = check_config(config, dsn)
+    text = resolve_install_text(mcp, checked.config, display_name_given=checked.display_name_given)
     # Every setting is checked; from here on the install builds a sink and changes the server.
-    if unconfigured:
+    if checked.unconfigured:
         return unconfigured_handle("install_baton (standalone fastmcp adapter)")
 
-    # Default to a fresh Scrubber per install so PII redaction is on out
-    # of the box; vendors needing raw payloads pass ``identity_scrub``
-    # via ``VendorConfig.scrubber``.
-    scrubber = config.scrubber or Scrubber()
-    # Resolved once and passed to both capture paths. Two independent
-    # resolutions could disagree, and an annotation filed under a different
-    # tenant than its tool call is unjoinable — the one correlation the
-    # sensor exists to produce.
-    tenant_id = _resolve_tenant_id(config.tenant_id, config.vendor_id)
-    fallback_session_id = f"sdk-{uuid7()}"
-    counter = SessionCounter()
+    return attach(mcp, checked.config, text, build_shared(checked.config))
 
-    sink = resolve_sink(config)
+
+def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared) -> BatonHandle:
+    """Install into one server with state its siblings share (``baton.create_baton``)."""
+    scrubber, tenant_id, sink = shared.scrubber, shared.tenant_id, shared.sink
+    counter, fallback_session_id = server_session(shared)
     annotation_tool_name = text.names.annotation_tool_name if text.names else ""
 
     # Captured BEFORE any Baton mutation below — the vendor-true baseline the
@@ -236,7 +219,7 @@ def install_baton(
         server_meta = {}
 
     # Server instructions — load-bearing on instruction-aware runtimes.
-    _set_instructions(mcp, with_vendor_instructions(mcp, text.instructions))
+    _set_instructions(mcp, with_vendor_instructions(mcp, text.instructions, shared.warned))
 
     # This adapter sees a tool's schema only when tools are listed, so the
     # sentence goes from the sessions that start after the first listing.
@@ -271,6 +254,7 @@ def install_baton(
             resolve_principal_hook=config.resolve_principal,
             server_meta=server_meta,
             on_native_user_goal=on_native_user_goal,
+            sent_surfaces=shared.sent_surfaces,
         )
         mcp.add_middleware(middleware)
     resolve_dispositions = middleware.resolve_dispositions

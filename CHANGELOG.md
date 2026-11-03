@@ -8,6 +8,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Added
+
+- **`baton.create_baton()` for servers built per request.** Create one at
+  startup, call `.wrap(server)` on each new server, and `await .aclose()` once
+  at shutdown, as `baton-ts`'s `createBaton()` does. The servers share one
+  sink, one sequence counter and one record of the tool surface, so the surface
+  is sent once and no sender is started per request. Each server keeps its own
+  session. The config is checked at
+  `create_baton`. `install_baton` is unchanged for vendors; inside, it is now
+  "check, then attach one server".
+
 ## 0.9.5: with no DSN, your server starts
 
 ### Changed

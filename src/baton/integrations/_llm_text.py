@@ -344,7 +344,7 @@ def _ends_in_ours(current: Any, vendor: Any) -> bool:
     )
 
 
-def with_vendor_instructions(mcp: Any, ours: str) -> str:
+def with_vendor_instructions(mcp: Any, ours: str, warned: set[str] | None = None) -> str:
     """SPEC §5.1.2: the vendor's own instructions first, ours below them.
 
     The runtime cuts at ``_CLAUDE_CODE_TRUNCATION_CAP`` from the end, so the
@@ -360,7 +360,8 @@ def with_vendor_instructions(mcp: Any, ours: str) -> str:
     if not isinstance(vendor, str) or is_blank(vendor):
         return ours
     combined = f"{vendor}\n\n{ours}"
-    if len(combined) > _CLAUDE_CODE_TRUNCATION_CAP:
+    # ``warned`` is shared by servers built per request, so this is said once.
+    if len(combined) > _CLAUDE_CODE_TRUNCATION_CAP and _first_time(warned, "instructions over cap"):
         logger.warning(
             "baton: the server instructions are %d chars (yours %d, Baton's %d); "
             "Claude Code cuts them at ~%d, so the end of Baton's text is lost there",
@@ -370,6 +371,15 @@ def with_vendor_instructions(mcp: Any, ours: str) -> str:
             _CLAUDE_CODE_TRUNCATION_CAP,
         )
     return combined
+
+
+def _first_time(warned: set[str] | None, key: str) -> bool:
+    if warned is None:
+        return True
+    if key in warned:
+        return False
+    warned.add(key)
+    return True
 
 
 def build_annotation_tool_description(*, vendor_display_name: str) -> str:

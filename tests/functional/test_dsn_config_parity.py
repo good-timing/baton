@@ -30,6 +30,7 @@ from werkzeug.wrappers import Request, Response
 
 from baton.events import DEFAULT_CONSENT_TOKEN
 from baton.integrations._config import VendorConfig
+from tests.functional._tools import list_tools, tool_schema
 
 pytestmark = pytest.mark.functional
 
@@ -192,13 +193,6 @@ async def test_the_sink_posts_to_the_dsns_origin_with_its_key(
     assert set(bearers) == {f"Bearer {KEY}"}
 
 
-async def _tools(server: Any) -> list[Any]:
-    """fastmcp 2.x lists with ``get_tools``, a mapping; later versions with ``list_tools``."""
-    if hasattr(server, "list_tools"):
-        return list(await server.list_tools())
-    return list((await server.get_tools()).values())
-
-
 DOORS = ["baton.install", "baton.integrations.standalone", "baton.integrations.official"]
 
 
@@ -301,8 +295,8 @@ class TestTheRulesAreTheSameOnBothDoors:
         with caplog.at_level("WARNING", logger="baton"):
             handle = importlib.import_module(door).install_baton(server, config)
         assert caplog.text.count("no DSN") == 1
-        [tool] = await _tools(server)
-        schema = getattr(tool, "inputSchema", None) or tool.parameters
+        [tool] = await list_tools(server)
+        schema = tool_schema(tool)
         assert "user_goal" not in schema.get("properties", {})
         assert server.instructions == "Vendor text."
         await handle.aclose()

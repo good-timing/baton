@@ -39,6 +39,26 @@ Copy the DSN from **/account**. It packs four values: the collector to send to, 
 
 Sending to your own collector instead, or trying the package before you have a key, means naming the parts rather than passing a DSN: [Without a DSN](https://goodtiming.ai/docs.html#without-dsn).
 
+### Servers built per request
+
+If your app builds a new MCP server for each request, don't call `install_baton` on each one: every call starts its own sender. Create one Baton at startup and wrap each server:
+
+```python
+import baton
+
+shared = baton.create_baton(dsn="https://baton_pk_...@baton.goodtiming.ai/ten_.../your-vendor")
+
+def build_server() -> FastMCP:
+    server = FastMCP("your-vendor")
+    ...                    # register your tools
+    shared.wrap(server)    # after your tools, as with install_baton
+    return server
+
+await shared.aclose()      # once, at shutdown
+```
+
+`create_baton` takes what `install_baton` takes and checks it at once, so no request fails on a bad setting. Its servers share one sender and one record of the tool list, which is sent once. Each server's calls keep their own session. `wrap` raises only for an object that is not a supported server. With no DSN, or with `BATON_DISABLED=1`, `wrap` adds nothing. Use one Baton from one event loop.
+
 ## Library API
 
 For vendors whose customers reach the API through agent-generated code (the Skills pattern) rather than MCP tool calls. Same event envelope, same sinks, different emission boundary:
