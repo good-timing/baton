@@ -286,6 +286,8 @@ class Baton:
     async def aclose(self) -> None:
         """Returns within the sink's shutdown budget and never raises (SPEC §11.2 rule 7)."""
         self._closed = True
+        if self._shared is not None:
+            self._shared.stop()
         await bounded_sink_call(self._sink, "aclose")
 
 
@@ -315,6 +317,7 @@ def create_baton(config: VendorConfig | None = None, *, dsn: str | None = None) 
         handle = unconfigured_handle("create_baton")
         return Baton(sink=handle.sink, checked=checked, _from_create_baton=True)
     shared = build_shared(checked.config)
+    shared.start()
     return Baton(
         sink=shared.sink,
         shared=shared,

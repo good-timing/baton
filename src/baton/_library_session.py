@@ -34,6 +34,7 @@ class LibrarySession:
     session_id_origin: SessionOrigin
     principal: PrincipalWire | None = None
     organization: OrganizationWire | None = None
+    labels: list[str] | None = None
     client_observed: ClientObserved | None = None
     runtime_meta: dict[str, Any] | None = None
 
@@ -44,6 +45,7 @@ class LibrarySession:
             "transport_observed": TRANSPORT_LIBRARY,
             "principal": self.principal,
             "organization": self.organization,
+            "labels": self.labels,
             "client_observed": self.client_observed,
             "runtime_meta": self.runtime_meta,
         }
@@ -116,6 +118,7 @@ def new_session(
         base.session_id_origin,
         principal=caller.principal,
         organization=caller.organization,
+        labels=caller.wire_labels,
         client_observed=(
             observe_client(
                 request_meta, client_info=client_info, headers=headers, scrubber=scrubber

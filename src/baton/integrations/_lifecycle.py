@@ -26,6 +26,7 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
+from baton._capture_settings import CaptureSettings
 from baton._result_capture import ResultCaptureMode
 from baton._state import SessionCounter
 from baton._uuid import uuid7
@@ -50,6 +51,7 @@ from baton.integrations._mrtr import mcp_refusal, pause_refused, paused, resumes
 from baton.integrations._session import ResolvedSession, next_sequence
 from baton.integrations.client_observed import clean_runtime_meta, observe_client
 from baton.integrations.identity_adapter import (
+    ResolvedCaller,
     ResolvePrincipalHook,
     resolve_caller,
     token_claims,
@@ -135,6 +137,7 @@ def install_lifecycle_capture(
     read_request: Callable[[Any], Awaitable[CapturedRequest]],
     read_access_token: Callable[[], Any],
     call_seam: CallSeam | None = None,
+    capture_settings: CaptureSettings | None = None,
 ) -> None:
     """Send the tool list, resource and prompt events of the low-level ``mcp``
     server ``find_server`` returns, and with ``call_seam``, install the outer
@@ -152,11 +155,21 @@ def install_lifecycle_capture(
         params: Any,
         tool_name: str | None = None,
         arguments: dict[str, Any] | None = None,
-    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], ResolvedSession] | None:
-        """The envelope, the request's params, the subject and the session, or
-        ``None`` when a read failed and the request is served without events."""
+    ) -> (
+        tuple[dict[str, Any], dict[str, Any], dict[str, Any], ResolvedSession, ResolvedCaller]
+        | None
+    ):
+        """The envelope, the request's params, the subject, the session and the
+        caller, or ``None`` when a read failed and the request is served
+        without events."""
         try:
             request = await read_request(read_request_context())
+            client = observe_client(
+                request.meta,
+                context=request.handshake_context,
+                headers=request.headers,
+                scrubber=scrubber,
+            )
             caller = await resolve_caller(
                 hook=resolve_principal_hook,
                 hook_context=(
@@ -171,6 +184,8 @@ def install_lifecycle_capture(
                     else None
                 ),
                 logger=logger,
+                settings=capture_settings,
+                client=client,
             )
             sent = _params_sent(params)
             subject = (
@@ -184,18 +199,15 @@ def install_lifecycle_capture(
                 "consent_token": consent_token,
                 "session_id": request.session.id,
                 "session_id_origin": request.session.origin,
-                "client_observed": observe_client(
-                    request.meta,
-                    context=request.handshake_context,
-                    headers=request.headers,
-                    scrubber=scrubber,
-                ),
+                "client_observed": client,
                 "principal": caller.principal,
                 "organization": caller.organization,
+                "labels": caller.wire_labels,
+                "capture": caller.capture,
                 "transport_observed": request.transport_observed,
                 "runtime_meta": clean_runtime_meta(scrubber, request.meta, logger),
             }
-            return envelope, sent, subject, request.session
+            return envelope, sent, subject, request.session, caller
         except Exception:
             logger.exception(
                 "baton: %s capture failed; the request is served without it", family.method
@@ -232,7 +244,7 @@ def install_lifecycle_capture(
         request = await opened(family, read_request_context, params)
         if request is None:
             return await serve(params)
-        envelope, sent, subject, session = request
+        envelope, sent, subject, session, _ = request
 
         async def emit_leg(leg: str, build_payload: Callable[[], dict[str, Any]]) -> None:
             await emit(
@@ -387,7 +399,7 @@ def install_lifecycle_capture(
             request = await opened(_CALL_FAMILY, read_request_context, params, name, arguments)
             if request is None:
                 return
-            envelope, _, _, session = request
+            envelope, _, _, session, caller = request
             envelope = {**envelope, "call_id": str(uuid7())}
             scrubbed = scrub_goals(scrubber, goals or (None, None, None), logger)
             # SPEC §11.4.3: an unknown tool's message is the library's and stays
@@ -395,7 +407,8 @@ def install_lifecycle_capture(
             if call_seam.knows_tool(name) is False:
                 failure_kind, mode = "unknown_tool", "full"
             else:
-                failure_kind, mode = "refused", call_seam.result_capture_mode
+                failure_kind = "refused"
+                mode = caller.result_capture_mode(call_seam.result_capture_mode)
             if raised is not None:
                 error_type = type(raised).__name__
                 fields = raised_error_fields(

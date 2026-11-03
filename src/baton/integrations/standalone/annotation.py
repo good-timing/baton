@@ -22,6 +22,7 @@ from typing import Any
 
 from fastmcp import Context, FastMCP
 
+from baton._capture_settings import CaptureSettings
 from baton._state import SessionCounter
 from baton.events import AnnotationEvent
 from baton.integrations._annotation_name import derive_annotation_tool_name
@@ -76,6 +77,7 @@ def register_annotation_tool(
     annotation_tool_name: str,
     scrubber: Callable[[Any], Any] = identity_scrub,
     resolve_principal_hook: ResolvePrincipalHook | None = None,
+    capture_settings: CaptureSettings | None = None,
 ) -> str:
     """Register the annotation tool on ``mcp``. Returns the resolved tool name."""
     name = annotation_tool_name
@@ -140,6 +142,8 @@ def register_annotation_tool(
             hook=resolve_principal_hook,
             hook_context=identity_hook_context,
             logger=logger,
+            settings=capture_settings,
+            client=client,
         )
         # safe_emit, not safe_write: `build_annotation_payload` runs the
         # vendor's scrubber on five fields, and as an ARGUMENT expression it
@@ -161,6 +165,8 @@ def register_annotation_tool(
                 client_observed=client,
                 principal=annotation_caller.principal,
                 organization=annotation_caller.organization,
+                labels=annotation_caller.wire_labels,
+                capture=annotation_caller.capture,
                 transport_observed=call_transport,
                 session_id_origin=call_session.origin,
                 runtime_meta=scrubbed_meta,

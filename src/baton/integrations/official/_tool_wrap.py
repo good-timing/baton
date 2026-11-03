@@ -69,6 +69,7 @@ from datetime import UTC, datetime
 from time import monotonic
 from typing import Any
 
+from baton._capture_settings import CaptureSettings
 from baton._result_capture import ResultCaptureMode, end_result_fields
 from baton._state import SessionCounter
 from baton._uuid import uuid7
@@ -196,6 +197,7 @@ def install_wraps(
     server_meta: dict[str, Any] | None = None,
     resolve_principal_hook: ResolvePrincipalHook | None = None,
     sent_surfaces: SentSurfaces | None = None,
+    capture_settings: CaptureSettings | None = None,
 ) -> dict[str, dict[str, str]]:
     """Inject + wrap all currently-registered tools AND future registrations.
 
@@ -275,6 +277,7 @@ def install_wraps(
                 fallback_session_id=fallback_session_id,
                 tenant_id=tenant_id,
                 resolve_principal_hook=resolve_principal_hook,
+                capture_settings=capture_settings,
                 surface_state=surface_state,
                 emit_surface=emit_surface,
                 annotation_tool_name=annotation_tool_name,
@@ -428,6 +431,7 @@ def _wrap_tool_run(
     fallback_session_id: str,
     tenant_id: str,
     resolve_principal_hook: ResolvePrincipalHook | None,
+    capture_settings: CaptureSettings | None,
     surface_state: _SurfaceState,
     emit_surface: _EmitSurface,
     annotation_tool_name: str | None,
@@ -554,6 +558,8 @@ def _wrap_tool_run(
             hook=resolve_principal_hook,
             hook_context=identity_hook_context,
             logger=logger,
+            settings=capture_settings,
+            client=call_client,
         )
         scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, logger)
         call_session = await _resolve_call_session(
@@ -884,6 +890,8 @@ def _make_emitters(
                 client_observed=client_observed,
                 principal=caller.principal,
                 organization=caller.organization,
+                labels=caller.wire_labels,
+                capture=caller.capture,
                 transport_observed=transport_observed,
                 call_id=call_id,
                 runtime_meta=runtime_meta,
@@ -923,7 +931,7 @@ def _make_emitters(
         # result is read twice, and a lambda would run it once per read.
         def build() -> ToolCallEndEvent:
             end = end_result_fields(
-                mode=result_capture_mode,
+                mode=caller.result_capture_mode(result_capture_mode),
                 scrubber=scrubber,
                 to_jsonable=_result_to_jsonable,
                 result=result,
@@ -939,6 +947,8 @@ def _make_emitters(
                 client_observed=client_observed,
                 principal=caller.principal,
                 organization=caller.organization,
+                labels=caller.wire_labels,
+                capture=caller.capture,
                 transport_observed=transport_observed,
                 call_id=call_id,
                 runtime_meta=runtime_meta,
@@ -986,7 +996,7 @@ def _make_emitters(
         def build() -> ToolCallErrorEvent:
             if raised is not None:
                 resolved = raised_error_fields(
-                    mode=result_capture_mode,
+                    mode=caller.result_capture_mode(result_capture_mode),
                     scrubber=scrubber,
                     raised=raised,
                     tool_error=ToolErrorClass,
@@ -995,7 +1005,7 @@ def _make_emitters(
                 # SPEC §11.4.3(2): both result-derived members, decided
                 # together, and the projection owns the scrubber call.
                 resolved = returned_error_fields(
-                    mode=result_capture_mode,
+                    mode=caller.result_capture_mode(result_capture_mode),
                     scrubber=scrubber,
                     result=result,
                 )
@@ -1010,6 +1020,8 @@ def _make_emitters(
                 client_observed=client_observed,
                 principal=caller.principal,
                 organization=caller.organization,
+                labels=caller.wire_labels,
+                capture=caller.capture,
                 transport_observed=transport_observed,
                 call_id=call_id,
                 runtime_meta=runtime_meta,

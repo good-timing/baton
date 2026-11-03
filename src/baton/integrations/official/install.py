@@ -125,7 +125,10 @@ def install_baton(
     if checked.unconfigured:
         return unconfigured_handle("install_baton (official mcp SDK adapter)")
 
-    return attach(mcp, checked.config, text, build_shared(checked.config))
+    shared = build_shared(checked.config)
+    handle = attach(mcp, checked.config, text, shared)
+    shared.start()
+    return handle
 
 
 def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared) -> BatonHandle:
@@ -168,6 +171,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
         intent_param_mode=config.intent_param_mode,
         result_capture_mode=config.result_capture_mode,
         resolve_principal_hook=config.resolve_principal,
+        capture_settings=shared.capture_settings,
         server_meta=server_meta,
         sent_surfaces=shared.sent_surfaces,
     )
@@ -195,6 +199,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
         counter=counter,
         scrubber=scrubber,
         resolve_principal_hook=config.resolve_principal,
+        capture_settings=shared.capture_settings,
         read_request=read_request,
         read_access_token=_auth.current_access_token,
         call_seam=CallSeam(
@@ -221,14 +226,17 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
             # the capture layer's skip and the instructions name the same tool.
             annotation_tool_name=annotation_tool_name,
             resolve_principal_hook=config.resolve_principal,
+            capture_settings=shared.capture_settings,
             scrubber=scrubber,
         )
 
+    # Last, so an install that raised above leaves no thread reading settings.
     return BatonHandle(
         sink=sink,
         annotation_tool_name=annotation_tool_name,
         vendor_id=config.vendor_id,
         session_id=fallback_session_id,
+        capture_settings=shared.capture_settings,
     )
 
 

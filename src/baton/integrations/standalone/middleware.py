@@ -30,6 +30,7 @@ from fastmcp.tools import Tool
 from mcp.types import CallToolRequestParams, ListToolsRequest
 from pydantic_core import to_jsonable_python
 
+from baton._capture_settings import CaptureSettings
 from baton._result_capture import ResultCaptureMode, end_result_fields
 from baton._state import SessionCounter
 from baton._uuid import uuid7
@@ -119,6 +120,7 @@ class BatonMiddleware(Middleware):
         result_capture_mode: ResultCaptureMode = "full",
         server_meta: dict[str, Any] | None = None,
         resolve_principal_hook: ResolvePrincipalHook | None = None,
+        capture_settings: CaptureSettings | None = None,
         on_native_user_goal: Callable[[str], None] | None = None,
         sent_surfaces: SentSurfaces | None = None,
     ) -> None:
@@ -135,6 +137,7 @@ class BatonMiddleware(Middleware):
         self._server_meta = server_meta or {}
         self._on_native_user_goal = on_native_user_goal
         self._resolve_principal_hook = resolve_principal_hook
+        self._capture_settings = capture_settings
         # tool_name -> {param_name: "injected" | "native"}. Populated at
         # on_list_tools; read at on_call_tool to decide strip-vs-forward, per
         # param, independently. A plain dict (no lock) is safe: all access is
@@ -407,6 +410,8 @@ class BatonMiddleware(Middleware):
             hook=self._resolve_principal_hook,
             hook_context=identity_hook_context,
             logger=logger,
+            settings=self._capture_settings,
+            client=client,
         )
         scrubbed_meta = clean_runtime_meta(self._scrubber, meta_dict, logger)
 
@@ -452,6 +457,8 @@ class BatonMiddleware(Middleware):
                     client_observed=client,
                     principal=caller.principal,
                     organization=caller.organization,
+                    labels=caller.wire_labels,
+                    capture=caller.capture,
                     transport_observed=call_transport,
                     session_id_origin=call_session.origin,
                     call_id=call_id,
@@ -474,7 +481,7 @@ class BatonMiddleware(Middleware):
             seq_err: int, raised: BaseException, duration_ms: int
         ) -> ToolCallErrorEvent:
             fields = raised_error_fields(
-                mode=self._result_capture_mode,
+                mode=caller.result_capture_mode(self._result_capture_mode),
                 scrubber=self._scrubber,
                 raised=raised,
                 tool_error=ToolError,
@@ -489,6 +496,8 @@ class BatonMiddleware(Middleware):
                 client_observed=client,
                 principal=caller.principal,
                 organization=caller.organization,
+                labels=caller.wire_labels,
+                capture=caller.capture,
                 transport_observed=call_transport,
                 session_id_origin=call_session.origin,
                 call_id=call_id,
@@ -541,7 +550,7 @@ class BatonMiddleware(Middleware):
             seq_err: int, returned: Any, failure_kind: str | None = None
         ) -> ToolCallErrorEvent:
             err = returned_error_fields(
-                mode=self._result_capture_mode,
+                mode=caller.result_capture_mode(self._result_capture_mode),
                 scrubber=self._scrubber,
                 result=returned,
             )
@@ -555,6 +564,8 @@ class BatonMiddleware(Middleware):
                 client_observed=client,
                 principal=caller.principal,
                 organization=caller.organization,
+                labels=caller.wire_labels,
+                capture=caller.capture,
                 transport_observed=call_transport,
                 session_id_origin=call_session.origin,
                 call_id=call_id,
@@ -590,7 +601,7 @@ class BatonMiddleware(Middleware):
         # stays inside `safe_emit`'s guard.
         def build_end(seq_end: int) -> ToolCallEndEvent:
             end = end_result_fields(
-                mode=self._result_capture_mode,
+                mode=caller.result_capture_mode(self._result_capture_mode),
                 scrubber=self._scrubber,
                 to_jsonable=self._result_to_jsonable,
                 result=result,
@@ -605,6 +616,8 @@ class BatonMiddleware(Middleware):
                 client_observed=client,
                 principal=caller.principal,
                 organization=caller.organization,
+                labels=caller.wire_labels,
+                capture=caller.capture,
                 transport_observed=call_transport,
                 session_id_origin=call_session.origin,
                 call_id=call_id,

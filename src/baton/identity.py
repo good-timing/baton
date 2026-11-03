@@ -9,6 +9,7 @@ sends it on as stated.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -28,6 +29,10 @@ class Organization:
     organization_id: str
     display_name: str | None = None
     form: Literal["raw", "hashed"] = "raw"
+    labels: Sequence[str] = ()
+    """Your names for the groups this caller is in, for capture settings to
+    match (SPEC §11.4). Baton sees them, so use group names or keys you keep,
+    never raw ids."""
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,9 @@ class Principal:
     ``"hashed"`` as personal data, so leave it unset unless the resolver
     hashed the value."""
     organization: Organization | None = None
+    labels: Sequence[str] = ()
+    """As ``Organization.labels``. A principal's labels and its organization's
+    are sent together."""
 
 
 class IdentityResolver(Protocol):

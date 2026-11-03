@@ -6,12 +6,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from baton._capture_settings import CaptureSettings
 from baton._state import SessionCounter
 from baton._uuid import uuid7
 from baton.integrations._config import (
     VendorConfig,
     _resolve_tenant_id,
     _validate_vendor_config,
+    build_capture_settings,
     build_config,
     nothing_configured,
     resolve_sink,
@@ -32,6 +34,16 @@ class Shared:
     sent_surfaces: SentSurfaces = field(default_factory=SentSurfaces)
     # And the warnings they would each repeat are said once.
     warned: set[str] = field(default_factory=set)
+    capture_settings: CaptureSettings | None = None
+
+    def start(self) -> None:
+        """Once the install has changed the server, so a failed install reads nothing."""
+        if self.capture_settings is not None:
+            self.capture_settings.start()
+
+    def stop(self) -> None:
+        if self.capture_settings is not None:
+            self.capture_settings.stop()
 
 
 class ServerCounter(SessionCounter):
@@ -59,11 +71,13 @@ def server_session(shared: Shared) -> tuple[ServerCounter, str]:
 
 def build_shared(config: VendorConfig) -> Shared:
     """For a checked config. Builds the sink, so call it after the last check."""
+    tenant_id = _resolve_tenant_id(config.tenant_id, config.vendor_id)
     return Shared(
         # A fresh Scrubber per install or Baton, so PII redaction is on by default.
         scrubber=config.scrubber or Scrubber(),
-        tenant_id=_resolve_tenant_id(config.tenant_id, config.vendor_id),
+        tenant_id=tenant_id,
         sink=resolve_sink(config),
+        capture_settings=build_capture_settings(config, tenant_id),
     )
 
 

@@ -20,13 +20,14 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Iterable, Mapping
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from baton._capture_settings import Caller, CallSettings, CaptureSettings, clean_labels
 from baton._white_space import is_blank
-from baton.events import OrganizationWire, PrincipalWire
+from baton.events import CaptureObserved, ClientObserved, OrganizationWire, PrincipalWire
 from baton.identity import PRINCIPAL_FORM_RAW, PRINCIPAL_FORMS, Organization, Principal
 from baton.integrations._hooks import run_vendor_hook
 
@@ -92,6 +93,20 @@ class ResolvedCaller:
 
     principal: PrincipalWire | None = None
     organization: OrganizationWire | None = None
+    labels: tuple[str, ...] = ()
+    settings: CallSettings | None = None
+    """Set by ``CaptureSettings.apply``; ``None`` means the code values."""
+
+    @property
+    def wire_labels(self) -> list[str] | None:
+        return list(self.labels) or None
+
+    @property
+    def capture(self) -> CaptureObserved | None:
+        return self.settings.capture if self.settings is not None else None
+
+    def result_capture_mode(self, code_value: str) -> str:
+        return code_value if self.settings is None else self.settings.result_capture_mode
 
 
 NO_CALLER = ResolvedCaller()
@@ -264,11 +279,26 @@ def _wire_caller(
     if resolved is None:
         return NO_CALLER
     if isinstance(resolved, Organization):
-        return ResolvedCaller(organization=_wire_organization(resolved, logger=logger))
+        return ResolvedCaller(
+            organization=_wire_organization(resolved, logger=logger),
+            labels=_labels_of(resolved),
+        )
+    organization = resolved.organization
     return ResolvedCaller(
         principal=_wire_principal(resolved, logger=logger),
-        organization=_wire_organization(resolved.organization, logger=logger),
+        organization=_wire_organization(organization, logger=logger),
+        labels=_labels_of(resolved, organization),
     )
+
+
+def _labels_of(*sources: object) -> tuple[str, ...]:
+    labels: list[Any] = []
+    for source in sources:
+        given = getattr(source, "labels", ())
+        if isinstance(given, str | bytes) or not isinstance(given, Iterable):
+            continue
+        labels.extend(given)
+    return clean_labels(labels)
 
 
 async def resolve_caller(
@@ -276,8 +306,11 @@ async def resolve_caller(
     hook: ResolvePrincipalHook | None,
     hook_context: SessionResolutionContext | None,
     logger: logging.Logger,
+    settings: CaptureSettings | None = None,
+    client: ClientObserved | None = None,
 ) -> ResolvedCaller:
-    """The envelope's ``principal`` and ``organization`` for one call: the
+    """The envelope's ``principal``, ``organization`` and labels for one call, and with
+    ``settings`` the capture settings it runs under (SPEC §2.6). The identity is the
     vendor's hook, or nothing.
 
     ``NO_CALLER`` when no hook is configured or it has no answer, which is the
@@ -297,6 +330,19 @@ async def resolve_caller(
     ``principal`` and ``organization`` and nothing else.
     """
     if hook is None or hook_context is None:
-        return NO_CALLER
-    resolved = await resolve_principal_via_hook(hook, hook_context, logger=logger)
-    return _wire_caller(resolved, logger=logger)
+        caller = NO_CALLER
+    else:
+        resolved = await resolve_principal_via_hook(hook, hook_context, logger=logger)
+        caller = _wire_caller(resolved, logger=logger)
+    if settings is None:
+        return caller
+    return replace(caller, settings=settings.for_caller(_match_view(caller, client)))
+
+
+def _match_view(caller: ResolvedCaller, client: ClientObserved | None) -> Caller:
+    identity = caller.principal or caller.organization
+    return Caller(
+        labels=caller.labels,
+        client_name=client.info.name if client is not None and client.info is not None else None,
+        share_key=identity.id if identity is not None else None,
+    )

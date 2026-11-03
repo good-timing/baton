@@ -6,6 +6,7 @@ identical). Both adapters now import from here.
 
 from __future__ import annotations
 
+from baton._capture_settings import CaptureSettings
 from baton.sinks import Sink, bounded_sink_call
 
 
@@ -28,8 +29,10 @@ class BatonHandle:
         annotation_tool_name: str,
         vendor_id: str,
         session_id: str,
+        capture_settings: CaptureSettings | None = None,
     ) -> None:
         self.sink = sink
+        self._capture_settings = capture_settings
         self.annotation_tool_name = annotation_tool_name
         self.vendor_id = vendor_id
         self.session_id = session_id
@@ -42,6 +45,8 @@ class BatonHandle:
     async def aclose(self) -> None:
         """Flush and release sink resources. Returns within the sink's shutdown
         budget plus a quarter second, and never raises (SPEC §11.2 rule 7)."""
+        if self._capture_settings is not None:
+            self._capture_settings.stop()
         await bounded_sink_call(self.sink, "aclose")
 
 

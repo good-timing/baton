@@ -8,6 +8,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from baton._capture_settings import (
+    MIN_REFRESH_S,
+    SETTINGS_MODES,
+    CaptureSettings,
+    SettingsFetcher,
+)
 from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
 from baton._dsn import parse_dsn, resolve_dsn, select_dsn
 from baton._result_capture import ResultCaptureMode, validate_mode
@@ -417,6 +423,19 @@ class VendorConfig:
     call before it answers, and the tool and its instructions add to every
     request's input."""
 
+    settings: str = "local"
+    """Where capture settings come from. ``"local"`` (default): the values in
+    this config, and Baton is never asked. ``"console"``: the Capture page,
+    read in the background every ``settings_refresh_s`` seconds, so they can
+    differ by label, client or a share of callers (SPEC §2.6). Needs a
+    ``dsn``. Until the first read succeeds, and whenever nothing is saved,
+    this config's values apply.
+
+    Applied per call today: ``results`` (``result_capture_mode``)."""
+
+    settings_refresh_s: float = 60.0
+    """How often ``settings="console"`` reads the Capture page, at least 15."""
+
     resolve_principal: ResolvePrincipalHook | None = None
     """Optional vendor-supplied identity resolver — the ONLY source of
     ``principal`` and ``organization`` (SPEC §11.4). Unset, no event carries
@@ -626,6 +645,26 @@ def resolve_config(config: VendorConfig) -> VendorConfig:
     )
 
 
+def build_capture_settings(config: VendorConfig, tenant_id: str) -> CaptureSettings | None:
+    """The per-call settings, not yet reading; ``None`` when the vendor manages
+    them in code."""
+    if config.settings != "console" or not config.dsn:
+        return None
+    dsn = parse_dsn(config.dsn)
+    fetcher = SettingsFetcher(
+        origin=dsn.origin,
+        api_key=dsn.key,
+        tenant_id=tenant_id,
+        vendor_id=config.vendor_id,
+        refresh_s=config.settings_refresh_s,
+    )
+    return CaptureSettings(
+        vendor_id=config.vendor_id,
+        result_capture_mode=config.result_capture_mode,
+        fetcher=fetcher,
+    )
+
+
 def _validate_vendor_config(config: VendorConfig) -> None:
     if not config.vendor_id:
         raise ValueError(
@@ -673,6 +712,19 @@ def _validate_vendor_config(config: VendorConfig) -> None:
         raise ValueError(
             f"VendorConfig.intent_param_mode {config.intent_param_mode!r} must be "
             f"one of {sorted(_INTENT_PARAM_MODES)}."
+        )
+    if config.settings not in SETTINGS_MODES:
+        raise ValueError(
+            f"VendorConfig.settings {config.settings!r} must be one of {sorted(SETTINGS_MODES)}."
+        )
+    if config.settings == "console" and not config.dsn:
+        raise ValueError(
+            "VendorConfig(settings='console') reads the Capture page with the "
+            "dsn's key, so it needs a dsn."
+        )
+    if config.settings_refresh_s < MIN_REFRESH_S:
+        raise ValueError(
+            f"VendorConfig.settings_refresh_s must be at least {MIN_REFRESH_S:g} seconds."
         )
     if config.report_mode not in _REPORT_MODES:
         raise ValueError(
