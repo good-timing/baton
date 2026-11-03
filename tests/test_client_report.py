@@ -8,6 +8,7 @@ import logging
 import os
 import threading
 from collections.abc import Callable
+from time import monotonic
 from typing import Any
 
 import pytest
@@ -26,6 +27,7 @@ from baton.sinks import (
     HttpSink,
     _BatchSender,
     _encode,
+    _Pending,
 )
 from tests._http_fakes import (
     Answer,
@@ -475,7 +477,7 @@ async def test_a_report_goes_first_when_the_head_event_does_not_fit_beside_it() 
 
 
 async def test_a_report_that_cannot_ride_does_not_hurry_the_events_ahead_of_it() -> None:
-    sink = fake_sink(lambda path, body: 202, flush_interval_seconds=1.0)
+    sink = fake_sink(lambda path, body: 202)
     sender = sink._sender
     PROCESS_DROPS.add("refused")
     with sender.cond:
@@ -483,11 +485,42 @@ async def test_a_report_that_cannot_ride_does_not_hurry_the_events_ahead_of_it()
         sender.report_at -= 10
     for _ in range(5):
         await sink.write(make_event())
-        await asyncio.sleep(0.02)
-    await asyncio.sleep(0.3)
-    assert pool_of(sink).requests == []
+    with sender.cond:
+        assert sender.waiting
+        assert sender._seconds_until_due_locked(sender.waiting[0].recorded_at) > 0
     await sink.flush()
     assert [len(events_in(*r)) for r in pool_of(sink).requests] == [5, 1]
+    await sink.aclose()
+
+
+async def test_an_event_not_yet_encoded_decides_whether_the_report_rides() -> None:
+    """A write can land after the sender encoded the queue and before it takes a batch."""
+    sink = fake_sink(lambda path, body: 202)
+    sender = sink._sender
+    PROCESS_DROPS.add("refused")
+    with sender.cond:
+        sender._maybe_report_locked(_event_of_another_tenant())
+        now = monotonic()
+        sender.report_at = now - 10
+        sender.waiting.append(_Pending(make_event(), now))
+        assert sender._seconds_until_due_locked(now) > 0
+    await sink.aclose()
+
+
+async def test_a_report_waits_for_its_own_tenants_event_to_be_encoded() -> None:
+    sink = fake_sink(lambda path, body: 202)
+    sender = sink._sender
+    PROCESS_DROPS.add("refused")
+    head = make_event()
+    with sender.cond:
+        sender._maybe_report_locked(make_event())
+        assert sender.report is not None
+        report = sender.report[0]
+        sender.waiting.append(_Pending(head, monotonic()))
+        assert [event for event, _ in sender._take_batch_locked()] != [report]
+    sender._encode_head()
+    with sender.cond:
+        assert [event for event, _ in sender._take_batch_locked()] == [head, report]
     await sink.aclose()
 
 

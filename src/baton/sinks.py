@@ -942,9 +942,13 @@ class _BatchSender:
         batch: _Batch = []
         count = body_bytes = 0
         owner: tuple[str, str] | None = None
-        held = held_bytes = 0
+        riding: tuple[ClientReportEvent, bytes] | None = None
         if self.report is not None and self._rides_head_locked(self.report[0]):
-            held, held_bytes = 1, len(self.report[1])
+            if self.waiting and not self.encoded:
+                # The next pass encodes the head event, which may fit beside the report.
+                return batch
+            riding = self.report[0], self.report[1]
+        held, held_bytes = (1, len(riding[1])) if riding else (0, 0)
         for pending in itertools.islice(self.waiting, min(self.encoded, BATCH_MAX_EVENTS - held)):
             assert pending.body is not None
             event = pending.event
@@ -959,13 +963,13 @@ class _BatchSender:
             self.in_flight.append(self.waiting.popleft())
         self.encoded -= count
         self.encoded_bytes -= body_bytes
-        if held and self.report is not None:
-            report, body, _ = self.report
-            batch.append((report, body))
+        if riding:
+            batch.append(riding)
         return batch
 
     def _rides_head_locked(self, report: ClientReportEvent) -> bool:
-        if not self.encoded:
+        """Whether the queue is empty or its head event has the report's tenant."""
+        if not self.waiting:
             return True
         head = self.waiting[0].event
         return (report.tenant_id, report.vendor_id) == (head.tenant_id, head.vendor_id)
