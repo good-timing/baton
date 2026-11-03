@@ -59,10 +59,10 @@ class ServerCounter(SessionCounter):
         self._shared = shared
         self._own = own_session_id
 
-    async def next(self, session_id: str) -> int:
+    async def next(self, session_id: str, *, observed: bool = False) -> int:
         if session_id == self._own:
-            return await super().next(session_id)
-        return await self._shared.next(session_id)
+            return await super().next(session_id, observed=observed)
+        return await self._shared.next(session_id, observed=observed)
 
 
 def server_session(shared: Shared) -> tuple[ServerCounter, str]:

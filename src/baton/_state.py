@@ -18,29 +18,35 @@ import logging
 import os
 import threading
 import time
-from collections import Counter
+from collections import Counter, OrderedDict
 from typing import Literal
 
 from baton._uuid import uuid7
 
+SESSION_CAP = 4096
+
 
 class SessionCounter:
-    """Atomic per-session sequence-number counter.
+    """Atomic per-session sequence-number counter (SPEC §11.2 rule 5).
 
-    Use ``await counter.next(session_id)`` to get the next sequence number
-    for a given session. Counters are independent across sessions; first
-    call returns 1.
+    Keeps at most ``SESSION_CAP`` sessions and forgets the least recently used.
+    A minted session counts 1, 2, 3; an observed one is numbered at least by
+    the clock in microseconds, so its numbers still rise after it is forgotten.
     """
 
     def __init__(self) -> None:
-        self._counters: dict[str, int] = {}
+        self._counters: OrderedDict[str, int] = OrderedDict()
         self._lock = asyncio.Lock()
 
-    async def next(self, session_id: str) -> int:
+    async def next(self, session_id: str, *, observed: bool = False) -> int:
         async with self._lock:
-            current = self._counters.get(session_id, 0)
-            new = current + 1
+            new = self._counters.get(session_id, 0) + 1
+            if observed:
+                new = max(new, time.time_ns() // 1000)
             self._counters[session_id] = new
+            self._counters.move_to_end(session_id)
+            if len(self._counters) > SESSION_CAP:
+                self._counters.popitem(last=False)
             return new
 
 
@@ -79,7 +85,8 @@ _RECOVERY_LOG_SECONDS = 60.0
 
 class DropCounts:
     """Events this process did not deliver, by reason: every event is either
-    delivered or counted here. One per process, like ``PROCESS_SEQUENCE``:
+    delivered or counted here, except at close, where the count is best effort
+    (SPEC §11.2 rule 8). One per process, like ``PROCESS_SEQUENCE``:
     drops happen on the vendor's threads and the bridge's."""
 
     def __init__(self) -> None:

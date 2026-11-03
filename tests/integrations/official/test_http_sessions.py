@@ -146,4 +146,11 @@ async def test_a_stateful_http_session_is_still_the_clients() -> None:
     assert len(sessions) == 2
     assert handle.session_id not in sessions
     assert {e.session_id_origin for e in calls} == {"observed"}
-    assert {e.sequence_number for e in calls} == {1, 2}
+    # SPEC §11.2 rule 5: an observed session is numbered by the clock too.
+    assert all(e.sequence_number > CLOCK_FLOOR for e in calls), [e.sequence_number for e in calls]
+    for session in sessions:
+        start, end = (
+            next(e.sequence_number for e in calls if e.session_id == session and e.event_type == t)
+            for t in ("tool_call_start", "tool_call_end")
+        )
+        assert start < end

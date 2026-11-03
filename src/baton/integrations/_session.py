@@ -30,8 +30,8 @@ class ResolvedSession(NamedTuple):
     """A ``session_id`` with the envelope's ``session_id_origin`` (SPEC §11.4).
     How the id was found decides the origin, never the id's spelling.
 
-    ``per_call`` ids are clock-numbered: a counter would keep an entry for
-    every request the process serves."""
+    ``per_call`` ids are clock-numbered: they would fill the session counter
+    with sessions that never come back and push out live ones."""
 
     id: str
     origin: SessionOrigin
@@ -50,7 +50,7 @@ def end_of_ladder(*, fallback: str, transport_observed: str | None) -> ResolvedS
 async def next_sequence(counter: SessionCounter, session: ResolvedSession) -> int:
     if session.per_call:
         return PROCESS_SEQUENCE.next()
-    return await counter.next(session.id)
+    return await counter.next(session.id, observed=session.origin == "observed")
 
 
 def session_id_from_headers(headers: Any) -> str | None:

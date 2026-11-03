@@ -983,11 +983,8 @@ class TestStatefulHttpSessionResolution:
     async def test_sequence_numbers_independent_per_resolved_session(
         self, configured_mcp: tuple[Any, Any, str]
     ) -> None:
-        """SessionCounter must key on the RESOLVED session id, not the
-        install-time fallback, or two users' sequences would interleave into
-        one shared counter. Each tool call emits two events (start + end)
-        against the per-session counter, so 2 calls for user-a means seqs
-        1-4 and 1 call for user-b means seqs 1-2 — independently."""
+        """Each session a header names gets its own events, numbered from the
+        clock because it is observed (SPEC §11.2 rule 5)."""
         mcp, handle, path = configured_mcp
 
         @mcp.tool()
@@ -1006,8 +1003,11 @@ class TestStatefulHttpSessionResolution:
         by_session: dict[str, list[int]] = {}
         for e in events:
             by_session.setdefault(e["session_id"], []).append(e["sequence_number"])
-        assert sorted(by_session["user-a"]) == [1, 2, 3, 4]
-        assert sorted(by_session["user-b"]) == [1, 2]
+        clock_floor = 10**15
+        assert len(by_session["user-a"]) == 4
+        assert len(by_session["user-b"]) == 2
+        for seqs in by_session.values():
+            assert seqs == sorted(set(seqs)) and seqs[0] > clock_floor, seqs
 
 
 class TestTheRetiredMetaSessionRungs:
