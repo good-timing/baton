@@ -63,17 +63,31 @@ def disabled_handle(switch: str, surface: str, supplied_sink: Sink | None = None
     switch is on nothing was resolved: inventing a session id would put a real
     identifier on a handle whose whole meaning is that no events exist under it.
     """
-    from baton._optout import DisabledSink, log_disabled
+    from baton._optout import log_disabled
 
     log_disabled(switch, surface)
+    return _noop_handle("baton-disabled", supplied_sink)
+
+
+def unconfigured_handle(surface: str) -> BatonHandle:
+    """As Sentry does with no DSN: the vendor's server starts as usual."""
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "baton: no DSN (dsn= or BATON_DSN) and no vendor_id, so %s installed nothing and records nothing",
+        surface,
+    )
+    return _noop_handle("baton-unconfigured", None)
+
+
+def _noop_handle(session_id: str, supplied_sink: Sink | None) -> BatonHandle:
+    from baton._optout import DisabledSink
+
     return BatonHandle(
         # A sink the VENDOR constructed is held rather than dropped, so their
-        # ``handle.aclose()`` still releases it — we took ownership of that
-        # object the moment they passed it, and the switch does not undo that.
-        # Nothing writes to it: nothing is wrapped, and a handle has no
-        # network path of its own to reach it by.
+        # ``handle.aclose()`` still releases it.
         sink=supplied_sink if supplied_sink is not None else DisabledSink(),
         annotation_tool_name="",
         vendor_id="",
-        session_id="baton-disabled",
+        session_id=session_id,
     )

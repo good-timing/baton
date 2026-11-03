@@ -57,9 +57,11 @@ from baton.integrations._config import (
     _resolve_tenant_id,
     _validate_vendor_config,
     build_config,
+    nothing_configured,
     resolve_sink,
+    with_stand_in_identity,
 )
-from baton.integrations._handle import BatonHandle, disabled_handle
+from baton.integrations._handle import BatonHandle, disabled_handle, unconfigured_handle
 from baton.integrations._lifecycle import (
     CallSeam,
     CapturedRequest,
@@ -126,12 +128,21 @@ def install_baton(
     # the instructions write silently succeeds on a bare ``Server``, and only
     # ``install_wraps`` finally dies, on a server Baton has already modified.
     require_high_level_server(mcp)
-    # Read BEFORE ``build_config``, which fills an unset display name in from
-    # the DSN and so leaves a defaulted value and a chosen one looking alike.
+    # Read BEFORE ``build_config`` and the stand-in below, which fill an unset
+    # display name in and so leave a defaulted value and a chosen one looking alike.
     display_name_given = config is not None and bool(config.vendor_display_name)
+    unconfigured = nothing_configured(config, dsn)
+    if unconfigured:
+        config = with_stand_in_identity(config)
     config = build_config(config, dsn)
     _validate_vendor_config(config)
-    warn_if_results_are_withheld(config.result_capture_mode)
+    if not unconfigured:
+        warn_if_results_are_withheld(config.result_capture_mode)
+
+    text = resolve_install_text(mcp, config, display_name_given=display_name_given)
+    # Every setting is checked; from here on the install builds a sink and changes the server.
+    if unconfigured:
+        return unconfigured_handle("install_baton (official mcp SDK adapter)")
 
     # Default to a fresh Scrubber per install so PII redaction is on out
     # of the box; vendors needing raw payloads pass ``identity_scrub``
@@ -144,9 +155,8 @@ def install_baton(
     tenant_id = _resolve_tenant_id(config.tenant_id, config.vendor_id)
     fallback_session_id = f"sdk-{uuid7()}"
     counter = SessionCounter()
-    sink = resolve_sink(config)
 
-    text = resolve_install_text(mcp, config, display_name_given=display_name_given)
+    sink = resolve_sink(config)
     annotation_tool_name = text.names.annotation_tool_name if text.names else ""
 
     # Captured BEFORE any Baton mutation below — the vendor-true baseline the

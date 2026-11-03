@@ -10,6 +10,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+### Changed
+
+- **With no DSN, `install_baton` installs nothing and your server starts.**
+  When there is no `dsn`, no `BATON_DSN`, no `vendor_id`, no `tenant_id` and
+  no sink, it logs a warning and returns a handle whose `aclose()` does
+  nothing (SPEC §11.2 rule 10). A `BATON_TENANT_ID` left in the environment
+  does not count. Before, it raised `ValueError`, so an unset
+  `BATON_DSN` on a customer's machine stopped the server. A server of the wrong
+  kind, or a setting whose value is not valid, still raises. `baton.Client` is
+  unchanged.
+
 ### Fixed
 
 - **A prompt get or resource read that pauses for the client's input is one

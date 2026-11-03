@@ -18,9 +18,10 @@ handle = install_baton(mcp, VendorConfig(
 ))
 ```
 
-If ``sink`` is omitted, defaults to ``StdoutSink()`` — zero-config dev mode
-that writes one JSON envelope per line to stderr. Swap in ``HttpSink(...)``
-when you're ready to ship events to a collector.
+If ``sink`` is omitted and ``vendor_id`` is set, it defaults to ``StdoutSink()``,
+which writes one JSON envelope per line to stderr. Swap in ``HttpSink(...)``
+when you're ready to ship events to a collector. With no dsn, no ``vendor_id``,
+no ``tenant_id`` and no sink, install adds nothing and logs a warning.
 
 Returns a ``BatonHandle`` exposing ``flush()`` + ``aclose()`` for graceful
 shutdown.
@@ -63,9 +64,11 @@ from baton.integrations._config import (
     _resolve_tenant_id,
     _validate_vendor_config,
     build_config,
+    nothing_configured,
     resolve_sink,
+    with_stand_in_identity,
 )
-from baton.integrations._handle import BatonHandle, disabled_handle
+from baton.integrations._handle import BatonHandle, disabled_handle, unconfigured_handle
 from baton.integrations._lifecycle import (
     CallSeam,
     CapturedRequest,
@@ -187,12 +190,21 @@ def install_baton(
     # succeed on the official SDK's server, and only ``add_middleware`` finally
     # dies, on a server Baton has already modified.
     _require_fastmcp_server(mcp)
-    # Read BEFORE ``build_config``, which fills an unset display name in from
-    # the DSN and so leaves a defaulted value and a chosen one looking alike.
+    # Read BEFORE ``build_config`` and the stand-in below, which fill an unset
+    # display name in and so leave a defaulted value and a chosen one looking alike.
     display_name_given = config is not None and bool(config.vendor_display_name)
+    unconfigured = nothing_configured(config, dsn)
+    if unconfigured:
+        config = with_stand_in_identity(config)
     config = build_config(config, dsn)
     _validate_vendor_config(config)
-    warn_if_results_are_withheld(config.result_capture_mode)
+    if not unconfigured:
+        warn_if_results_are_withheld(config.result_capture_mode)
+
+    text = resolve_install_text(mcp, config, display_name_given=display_name_given)
+    # Every setting is checked; from here on the install builds a sink and changes the server.
+    if unconfigured:
+        return unconfigured_handle("install_baton (standalone fastmcp adapter)")
 
     # Default to a fresh Scrubber per install so PII redaction is on out
     # of the box; vendors needing raw payloads pass ``identity_scrub``
@@ -205,9 +217,8 @@ def install_baton(
     tenant_id = _resolve_tenant_id(config.tenant_id, config.vendor_id)
     fallback_session_id = f"sdk-{uuid7()}"
     counter = SessionCounter()
-    sink = resolve_sink(config)
 
-    text = resolve_install_text(mcp, config, display_name_given=display_name_given)
+    sink = resolve_sink(config)
     annotation_tool_name = text.names.annotation_tool_name if text.names else ""
 
     # Captured BEFORE any Baton mutation below — the vendor-true baseline the

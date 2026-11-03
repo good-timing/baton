@@ -20,6 +20,7 @@ assertion cannot reach.
 
 from __future__ import annotations
 
+import importlib
 import json
 from typing import Any
 
@@ -28,6 +29,7 @@ from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Request, Response
 
 from baton.events import DEFAULT_CONSENT_TOKEN
+from baton.integrations._config import VendorConfig
 
 pytestmark = pytest.mark.functional
 
@@ -190,6 +192,16 @@ async def test_the_sink_posts_to_the_dsns_origin_with_its_key(
     assert set(bearers) == {f"Bearer {KEY}"}
 
 
+async def _tools(server: Any) -> list[Any]:
+    """fastmcp 2.x lists with ``get_tools``, a mapping; later versions with ``list_tools``."""
+    if hasattr(server, "list_tools"):
+        return list(await server.list_tools())
+    return list((await server.get_tools()).values())
+
+
+DOORS = ["baton.install", "baton.integrations.standalone", "baton.integrations.official"]
+
+
 class TestTheRulesAreTheSameOnBothDoors:
     """Each rule asserted on the install path AND the library path. A rule that
     holds on one door and not the other is the exact failure this file exists
@@ -251,16 +263,106 @@ class TestTheRulesAreTheSameOnBothDoors:
         with pytest.raises(ValueError, match="dsn"):
             Client(vendor_id="v")
 
-    def test_install_baton_with_neither_config_nor_dsn_says_so(
+    @staticmethod
+    def _server(door: str) -> Any:
+        if door == "baton.integrations.official":
+            from baton.integrations.official._compat import MCPServerClass
+
+            server: Any = MCPServerClass("x", instructions="Vendor text.")
+        else:
+            from fastmcp import FastMCP
+
+            server = FastMCP("x", instructions="Vendor text.")
+
+        @server.tool()
+        def lookup(name: str) -> str:
+            return name
+
+        return server
+
+    @pytest.mark.parametrize("door", DOORS)
+    @pytest.mark.parametrize(
+        "config",
+        [
+            None,
+            VendorConfig(),
+            VendorConfig(result_capture_mode="off"),
+            VendorConfig(report_mode="on"),
+            # With a DSN this only warns, as report_mode is off; so it does here.
+            VendorConfig(annotation_tool_name="bad name!"),
+        ],
+        ids=["no config", "empty", "result_capture off", "report_mode on", "unused bad name"],
+    )
+    async def test_with_nothing_saying_where_events_go_install_adds_nothing(
+        self, door: str, config: VendorConfig | None, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """SPEC §11.2 rule 10."""
+        server = self._server(door)
+        with caplog.at_level("WARNING", logger="baton"):
+            handle = importlib.import_module(door).install_baton(server, config)
+        assert caplog.text.count("no DSN") == 1
+        [tool] = await _tools(server)
+        schema = getattr(tool, "inputSchema", None) or tool.parameters
+        assert "user_goal" not in schema.get("properties", {})
+        assert server.instructions == "Vendor text."
+        await handle.aclose()
+
+    @pytest.mark.parametrize("door", DOORS)
+    @pytest.mark.parametrize(
+        "config",
+        [
+            VendorConfig(report_mode="bogus"),
+            VendorConfig(consent_token=""),
+            VendorConfig(tenant_id="ten_x"),
+            VendorConfig(report_mode="on", annotation_tool_name="bad name!"),
+            VendorConfig(report_mode="on", vendor_display_name="V" * 2000),
+        ],
+        ids=[
+            "bad report_mode",
+            "empty consent_token",
+            "tenant_id alone",
+            "bad annotation name",
+            "instructions over budget",
+        ],
+    )
+    def test_with_no_dsn_a_setting_that_is_not_valid_still_raises(
+        self, door: str, config: VendorConfig
+    ) -> None:
+        with pytest.raises(ValueError):
+            importlib.import_module(door).install_baton(self._server(door), config)
+
+    async def test_a_stale_tenant_id_in_the_environment_does_not_stop_the_server(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("BATON_TENANT_ID", "ten_x")
+        handle = importlib.import_module(DOORS[0]).install_baton(self._server(DOORS[1]))
+        await handle.aclose()
+
+    def test_with_no_dsn_the_wrong_server_still_raises(self) -> None:
+        from baton.integrations.official._compat import get_lowlevel_server
+
+        standalone = importlib.import_module("baton.integrations.standalone")
+        official = importlib.import_module("baton.integrations.official")
+        with pytest.raises(TypeError):
+            standalone.install_baton(self._server("baton.integrations.official"))
+        with pytest.raises(TypeError):
+            official.install_baton(get_lowlevel_server(self._server("baton.integrations.official")))
+
+    def test_with_no_dsn_the_dispatcher_still_rejects_what_is_not_a_server(self) -> None:
+        with pytest.raises(TypeError):
+            importlib.import_module("baton.install").install_baton(object())
+
+    async def test_a_dsn_from_the_environment_still_installs(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from fastmcp import FastMCP
 
         from baton.install import install_baton
 
-        monkeypatch.delenv("BATON_DSN", raising=False)
-        with pytest.raises(ValueError, match="either a VendorConfig or a dsn"):
-            install_baton(FastMCP("x"))
+        monkeypatch.setenv("BATON_DSN", f"https://{KEY}@h.example.com/{WORKSPACE}/{SERVER}")
+        handle = install_baton(FastMCP("x"))
+        assert handle.vendor_id == SERVER
+        await handle.aclose()
 
     def test_a_config_and_a_dsn_kwarg_together_raise(self) -> None:
         from fastmcp import FastMCP

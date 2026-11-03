@@ -295,14 +295,12 @@ class TestItCannotBreakABoot:
         assert install_baton(FastMCP("x"), dsn="not-a-dsn-at-all") is not None
 
     def test_nothing_at_all_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Without the switch this is the "needs either a VendorConfig or a
-        dsn" refusal."""
         from fastmcp import FastMCP
 
         from baton.install import install_baton
 
         monkeypatch.setenv(SWITCH, "1")
-        assert install_baton(FastMCP("x")) is not None
+        assert install_baton(FastMCP("x")).session_id == "baton-disabled"
 
     def test_the_handle_survives_the_vendors_finally_block(
         self, monkeypatch: pytest.MonkeyPatch

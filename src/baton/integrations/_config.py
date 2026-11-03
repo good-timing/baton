@@ -322,7 +322,8 @@ class VendorConfig:
     sink: Sink | None = None
     """Where events go. ``None`` (the default) means the SDK picks: an
     ``HttpSink`` built from ``dsn`` when there is one, otherwise ``StdoutSink``
-    — zero-config dev mode, writing JSON Lines to stderr. Pass an ``HttpSink``
+    when ``vendor_id`` or ``tenant_id`` is set, writing JSON Lines to stderr.
+    With none of them, install adds nothing (SPEC §11.2 rule 10). Pass an ``HttpSink``
     to ship to a collector, ``FileSink`` to capture for later analysis, or
     ``MultiSink`` to fan out (e.g., stdout + http during development).
 
@@ -511,6 +512,29 @@ class VendorConfig:
     every identity option are unaffected — set them alongside a DSN freely."""
 
 
+def nothing_configured(config: VendorConfig | None, dsn: str | None) -> bool:
+    """No dsn, no ``BATON_DSN`` and no setting naming who sends events or where
+    they go: install checks the rest, then adds nothing (SPEC §11.2 rule 10).
+    ``BATON_TENANT_ID`` alone does not count: a stale variable must not stop a
+    server from starting."""
+    given = config or VendorConfig()
+    return (
+        resolve_dsn(dsn or given.dsn) is None
+        and not given.vendor_id
+        and not given.tenant_id
+        and given.sink is None
+    )
+
+
+def with_stand_in_identity(config: VendorConfig | None) -> VendorConfig:
+    """``config`` with an identity it lacks, so an install with nothing
+    configured runs every check a configured one does before adding nothing."""
+    given = config or VendorConfig()
+    return replace(
+        given, vendor_id="unset", vendor_display_name=given.vendor_display_name or "unset"
+    )
+
+
 def build_config(config: VendorConfig | None, dsn: str | None) -> VendorConfig:
     """Resolve ``install_baton``'s two call shapes into one ``VendorConfig``.
 
@@ -532,12 +556,6 @@ def build_config(config: VendorConfig | None, dsn: str | None) -> VendorConfig:
             "place holding it."
         )
     if config is None:
-        if resolve_dsn(dsn) is None:
-            raise ValueError(
-                "install_baton needs either a VendorConfig or a dsn — the "
-                "packed value from /account, which starts with https:// and "
-                "can also arrive as BATON_DSN."
-            )
         config = VendorConfig(dsn=dsn)
     return resolve_config(config)
 
@@ -545,9 +563,9 @@ def build_config(config: VendorConfig | None, dsn: str | None) -> VendorConfig:
 def resolve_sink(config: VendorConfig) -> Sink:
     """``sink``: explicit → built from the ``dsn`` → ``StdoutSink``.
 
-    The ``StdoutSink`` tail is the zero-config dev mode the SDK has always had:
-    a vendor who wires nothing still sees their events as JSON Lines on stderr,
-    which is the first thing that proves an install works at all.
+    The ``StdoutSink`` tail is the dev mode for a vendor who names a
+    ``vendor_id`` and no destination: their events print as JSON Lines on
+    stderr. Naming nothing at all installs nothing (SPEC §11.2 rule 10).
     """
     return config.sink if config.sink is not None else StdoutSink()
 
