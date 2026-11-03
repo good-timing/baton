@@ -73,6 +73,16 @@ class TestShare:
             7404,
         ]
 
+    def test_a_half_rounds_up(self) -> None:
+        # 0.00025 * 10000 is exactly 2.5, so buckets 0, 1 and 2 are in.
+        body = _document(_audience("tiny", {"share": 0.00025}), EVERYONE)
+        document = parse_document(body)
+        assert document is not None
+        keys = [f"user-{i}" for i in range(200000)]
+        key = next(k for k in keys if share_bucket("srv", k) == 2)
+        audience = document.audience_for(Caller(share_key=key), "srv")
+        assert audience is not None and audience.id == "tiny"
+
     def test_raising_the_share_keeps_everyone_already_in(self) -> None:
         keys = [f"user-{i}" for i in range(500)]
         small = {k for k in keys if share_bucket("srv", k) < 1000}
@@ -94,6 +104,7 @@ class TestDocument:
             _document(version=0),
             json.dumps({"version": True, "audiences": [EVERYONE]}).encode(),
             json.dumps({"version": 1, "audiences": []}).encode(),
+            b"[" * 100000,
             json.dumps(
                 {"version": 1, "audiences": [{"id": 1, "match": {}, "capture": {}}]}
             ).encode(),
@@ -134,7 +145,17 @@ class TestDocument:
 
     @pytest.mark.parametrize(
         "match",
-        [{"organization": ["org_1"]}, {"label": "beta"}, {"client": "cursor"}, {"share": "0.5"}],
+        [
+            {"organization": ["org_1"]},
+            {"label": "beta"},
+            {"client": "cursor"},
+            {"share": "0.5"},
+            {"share": 5},
+            {"share": -1},
+            {"share": 1e305},
+            {"share": float("inf")},
+            {"share": float("nan")},
+        ],
     )
     def test_an_audience_it_cannot_read_matches_nobody(self, match: dict[str, Any]) -> None:
         body = _document(_audience("odd", match), EVERYONE)
@@ -178,8 +199,9 @@ class TestForCaller:
         assert rest.result_capture_mode == "off"
         assert rest.capture == CaptureObserved(settings_version=7, audience="everyone")
 
-    def test_an_unknown_results_value_falls_back_to_the_code_value(self) -> None:
-        body = _document(_audience("everyone", {}, results="metadata"))
+    @pytest.mark.parametrize("results", ["metadata", ["full"], {"a": 1}, None])
+    def test_an_unknown_results_value_falls_back_to_the_code_value(self, results: Any) -> None:
+        body = _document(_audience("everyone", {}, results=results))
         assert self._settings(body).for_caller(Caller()).result_capture_mode == "full"
 
     def test_no_matching_audience_records_the_version_alone(self) -> None:
@@ -255,6 +277,8 @@ class TestConfig:
             ({"settings": "cloud", "dsn": DSN}, "settings"),
             ({"settings": "console", "vendor_id": "srv", "vendor_display_name": "S"}, "dsn"),
             ({"settings_refresh_s": 5, "dsn": DSN}, "15"),
+            ({"settings_refresh_s": float("nan"), "dsn": DSN}, "15"),
+            ({"settings_refresh_s": float("inf"), "dsn": DSN}, "15"),
         ],
     )
     def test_bad_settings_are_refused_at_install(
@@ -438,3 +462,57 @@ async def test_the_read_starts_at_install_and_stops_at_close(
     (fetcher,) = fetchers
     assert fetcher.started
     assert not fetcher.running
+
+
+def _labels_then_raise() -> Any:
+    yield "beta"
+    raise RuntimeError("resolver bug")
+
+
+def _endless_labels() -> Any:
+    while True:
+        yield "beta"
+
+
+@pytest.mark.parametrize("labels", [_labels_then_raise, _endless_labels])
+def test_labels_a_resolver_cannot_read_never_raise(labels: Any) -> None:
+    import logging
+
+    from baton.integrations.identity_adapter import _wire_caller
+
+    caller = _wire_caller(Principal("u", labels=labels()), logger=logging.getLogger())
+    assert caller.principal is not None
+    assert len(caller.labels) <= 20
+
+
+async def test_settings_that_fail_to_apply_still_serve_the_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from baton.integrations.official import install
+
+    class _Raising(CaptureSettings):
+        def for_caller(self, caller: Caller) -> Any:
+            raise RuntimeError("settings bug")
+
+    monkeypatch.setattr(
+        install,
+        "build_capture_settings",
+        lambda *_: _Raising(vendor_id="srv", result_capture_mode="full"),
+    )
+    events_path = tmp_path / "e.jsonl"
+    mcp = OfficialFastMCP("settings-raise")
+
+    @mcp.tool()
+    def lookup(name: str) -> dict[str, Any]:
+        return {"name": name}
+
+    handle = official.install_baton(mcp, _config(official, events_path))
+    try:
+        async with connected_session(mcp) as session:
+            await session.call_tool("lookup", {"name": "alice", "user_goal": "find"})
+    finally:
+        await handle.aclose()
+    assert not [e for e in read_events(events_path) if e["event_type"] == "tool_call_error"]
+    (end,) = [e for e in read_events(events_path) if e["event_type"] == "tool_call_end"]
+    assert end["capture"] is None
+    assert end["labels"] == ["beta", "enterprise"]

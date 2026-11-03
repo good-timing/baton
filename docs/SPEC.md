@@ -124,9 +124,9 @@ A document is valid when `version` is a positive integer, `audiences` is a non-e
 - **`match` keys combine with AND.** An empty `match` matches every caller.
   - `label`: a list of labels. Matches when the caller's `labels` (§11.4) hold any of them.
   - `client`: a list of names. Matches when the event's `client_observed.info.name` (§11.4), the name the client declared, equals one of them. A request with no declared name matches no `client` rule.
-  - `share`: a number above 0 and at most 1. Matches a fixed share of identified callers (below).
+  - `share`: a number above 0 and at most 1. Matches a fixed share of identified callers (below). A value outside that range makes the audience match nobody.
   - A key the producer does not know, or a value of the wrong type, makes that audience match nobody.
-- **`share`.** The caller's key is `principal.id`, or `organization.id` when there is no principal. A caller with neither never matches `share`. The bucket is the first 8 bytes of SHA-256 over the UTF-8 bytes of `vendor_id`, a line feed (U+000A) and the key, read as an unsigned big-endian integer, modulo 10000. The caller matches when the bucket is less than `share` × 10000, rounded to the nearest integer. So one caller stays in or out until the share changes, and raising it keeps everyone already in.
+- **`share`.** The caller's key is `principal.id`, or `organization.id` when there is no principal. A caller with neither never matches `share`. The bucket is the first 8 bytes of SHA-256 over the UTF-8 bytes of `vendor_id`, a line feed (U+000A) and the key, read as an unsigned big-endian integer, modulo 10000. The caller matches when the bucket is less than `share` × 10000 rounded to the nearest integer, a half rounding up (`floor(share × 10000 + 0.5)`). So one caller stays in or out until the share changes, and raising it keeps everyone already in.
 - **`capture`** holds three settings. A value the producer does not know falls back to the vendor's code value for that setting alone.
 
 | key | values | vendor's code setting in `baton-sdk` | takes effect |

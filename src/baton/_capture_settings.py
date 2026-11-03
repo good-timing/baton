@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import threading
 import urllib.error
 import urllib.parse
@@ -90,9 +91,9 @@ class Audience:
             share = self.match["share"]
             if isinstance(share, bool) or not isinstance(share, int | float):
                 return False
-            if caller.share_key is None:
+            if not math.isfinite(share) or not 0 < share <= 1 or caller.share_key is None:
                 return False
-            if share_bucket(vendor_id, caller.share_key) >= round(share * 10000):
+            if share_bucket(vendor_id, caller.share_key) >= math.floor(share * 10000 + 0.5):
                 return False
         return True
 
@@ -113,7 +114,7 @@ def parse_document(body: bytes) -> SettingsDocument | None:
     """The document in ``body``, or ``None`` when it is not a valid one (SPEC §2.6)."""
     try:
         data = json.loads(body)
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, RecursionError):
         return None
     if not isinstance(data, dict):
         return None
@@ -182,7 +183,10 @@ class SettingsFetcher:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            self.read_once()
+            try:
+                self.read_once()
+            except Exception:
+                logger.debug("baton: reading capture settings failed", exc_info=True)
             self._stop.wait(self._refresh_s)
 
     def read_once(self) -> None:
@@ -265,7 +269,7 @@ class CaptureSettings:
         results = audience.capture.get("results") if audience is not None else None
         return CallSettings(
             result_capture_mode=results
-            if results in _RESULT_MODES
+            if isinstance(results, str) and results in _RESULT_MODES
             else self._code.result_capture_mode,
             capture=capture,
         )

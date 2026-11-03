@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -722,7 +723,7 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             "VendorConfig(settings='console') reads the Capture page with the "
             "dsn's key, so it needs a dsn."
         )
-    if config.settings_refresh_s < MIN_REFRESH_S:
+    if not math.isfinite(config.settings_refresh_s) or config.settings_refresh_s < MIN_REFRESH_S:
         raise ValueError(
             f"VendorConfig.settings_refresh_s must be at least {MIN_REFRESH_S:g} seconds."
         )

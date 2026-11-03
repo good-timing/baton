@@ -22,6 +22,7 @@ import logging
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
+from itertools import islice
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -110,6 +111,7 @@ class ResolvedCaller:
 
 
 NO_CALLER = ResolvedCaller()
+_LABELS_READ_MAX = 1000
 
 
 async def resolve_principal_via_hook(
@@ -281,23 +283,27 @@ def _wire_caller(
     if isinstance(resolved, Organization):
         return ResolvedCaller(
             organization=_wire_organization(resolved, logger=logger),
-            labels=_labels_of(resolved),
+            labels=_labels_of(resolved, logger=logger),
         )
     organization = resolved.organization
     return ResolvedCaller(
         principal=_wire_principal(resolved, logger=logger),
         organization=_wire_organization(organization, logger=logger),
-        labels=_labels_of(resolved, organization),
+        labels=_labels_of(resolved, organization, logger=logger),
     )
 
 
-def _labels_of(*sources: object) -> tuple[str, ...]:
+def _labels_of(*sources: object, logger: logging.Logger) -> tuple[str, ...]:
     labels: list[Any] = []
     for source in sources:
         given = getattr(source, "labels", ())
         if isinstance(given, str | bytes) or not isinstance(given, Iterable):
             continue
-        labels.extend(given)
+        try:
+            # Bounded, so an endless iterator from a resolver cannot hang the call.
+            labels.extend(islice(given, _LABELS_READ_MAX))
+        except Exception:
+            logger.exception("baton: reading the resolver's labels failed; sending none from it")
     return clean_labels(labels)
 
 
@@ -336,7 +342,11 @@ async def resolve_caller(
         caller = _wire_caller(resolved, logger=logger)
     if settings is None:
         return caller
-    return replace(caller, settings=settings.for_caller(_match_view(caller, client)))
+    try:
+        return replace(caller, settings=settings.for_caller(_match_view(caller, client)))
+    except Exception:
+        logger.exception("baton: applying capture settings failed; this call uses the code values")
+        return caller
 
 
 def _match_view(caller: ResolvedCaller, client: ClientObserved | None) -> Caller:
