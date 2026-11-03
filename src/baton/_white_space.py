@@ -1,4 +1,5 @@
-"""Unicode ``White_Space``, exactly: the set SPEC §11.4's blank rule removes.
+"""SPEC §11.4's text rules: what is blank (Unicode ``White_Space``, exactly) and
+which strings can be sent.
 
 Not ``str.strip()`` or ``str.isspace()``: those also take U+001C to U+001F,
 which Go's ``strings.TrimSpace`` keeps, so the SDKs would disagree on what is
@@ -8,6 +9,7 @@ blank.
 from __future__ import annotations
 
 import re
+from typing import TypeGuard
 
 WHITE_SPACE = (
     "\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005"
@@ -28,8 +30,9 @@ def is_blank(value: str) -> bool:
 UNSENDABLE = re.compile("[\x00\ud800-\udfff]")
 
 
-def usable_text(value: object, max_length: int) -> bool:
-    """SPEC §11.4's rule for a vendor-chosen string sent verbatim."""
+def usable_text(value: object, max_length: int) -> TypeGuard[str]:
+    """SPEC §11.4's rule for labels and ``display_name``: an unusable value is
+    dropped, never trimmed."""
     return (
         isinstance(value, str)
         and len(value) <= max_length

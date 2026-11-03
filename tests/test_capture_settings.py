@@ -19,6 +19,7 @@ from baton import Organization, Principal
 from baton._capture_settings import (
     Caller,
     CaptureSettings,
+    SettingsDocument,
     SettingsFetcher,
     clean_labels,
     parse_document,
@@ -53,10 +54,14 @@ def _audience(audience_id: str, match: dict[str, Any], results: Any = "full") ->
 EVERYONE = _audience("everyone", {}, results="off")
 
 
-def _matched(body: bytes, caller: Caller) -> str | None:
+def _parsed(body: bytes) -> SettingsDocument:
     document = parse_document(body)
     assert document is not None
-    return document.settings_for(caller, "srv").capture.audience
+    return document
+
+
+def _matched(body: bytes, caller: Caller) -> str | None:
+    return _parsed(body).settings_for(caller, "srv").capture.audience
 
 
 class TestLabels:
@@ -87,6 +92,15 @@ class TestLabels:
     def _endless() -> Any:
         while True:
             yield "beta"
+
+    def test_a_label_that_cannot_be_hashed_is_sent_as_plain_text(self) -> None:
+        class Label(str):
+            def __eq__(self, other: object) -> bool:
+                return str.__eq__(self, other)
+
+        caller = _wire_caller(Principal("u", labels=[Label("beta")]), logger=LOGGER)
+        assert caller.labels == ("beta",)
+        assert type(caller.labels[0]) is str
 
     @pytest.mark.parametrize("labels", [_then_raise, _endless])
     def test_labels_a_resolver_cannot_read_never_raise(self, labels: Any) -> None:
@@ -175,6 +189,7 @@ class TestDocument:
             {"share": 1e305},
             {"share": float("inf")},
             {"share": float("nan")},
+            {"share": 10**400},
         ],
     )
     def test_an_audience_it_cannot_read_matches_nobody(self, match: dict[str, Any]) -> None:
@@ -184,10 +199,7 @@ class TestDocument:
         )
 
     def test_the_matched_audience_sets_results_and_is_recorded(self) -> None:
-        document = parse_document(
-            _document(_audience("beta", {"label": ["beta"]}), EVERYONE, version=7)
-        )
-        assert document is not None
+        document = _parsed(_document(_audience("beta", {"label": ["beta"]}), EVERYONE, version=7))
         beta = document.settings_for(Caller(labels=("beta",)), "srv")
         assert beta.result_capture_mode == "full"
         assert beta.capture == CaptureObserved(settings_version=7, audience="beta")
@@ -197,13 +209,11 @@ class TestDocument:
 
     @pytest.mark.parametrize("results", ["metadata", ["full"], {"a": 1}, None])
     def test_an_unknown_results_value_leaves_the_code_value(self, results: Any) -> None:
-        document = parse_document(_document(_audience("everyone", {}, results=results)))
-        assert document is not None
+        document = _parsed(_document(_audience("everyone", {}, results=results)))
         assert document.settings_for(Caller(), "srv").result_capture_mode is None
 
     def test_no_matching_audience_records_the_version_alone(self) -> None:
-        document = parse_document(_document(_audience("beta", {"label": ["beta"]})))
-        assert document is not None
+        document = _parsed(_document(_audience("beta", {"label": ["beta"]})))
         settings = document.settings_for(Caller(), "srv")
         assert settings.result_capture_mode is None
         assert settings.capture == CaptureObserved(settings_version=3)
@@ -241,17 +251,6 @@ def _fetcher(pool: _Pool) -> SettingsFetcher:
 
 
 class TestFetcher:
-    def test_the_request_names_the_server_and_carries_the_key(self) -> None:
-        pool = _Pool(_Response(204))
-        _fetcher(pool).read_once()
-        assert pool.requests == [
-            (
-                "GET",
-                "https://h.example.com/v0/settings?server=srv",
-                {"Authorization": "Bearer baton_pk_x", "X-Baton-Tenant-Id": "ten_1"},
-            )
-        ]
-
     def test_a_200_is_used_and_its_etag_sent_back(self) -> None:
         pool = _Pool(_Response(200, {"etag": '"v3-w1"'}, _document(EVERYONE)), _Response(304))
         fetcher = _fetcher(pool)
@@ -280,11 +279,19 @@ class TestFetcher:
         fetcher = _fetcher(_Pool())
         started: list[int] = []
         monkeypatch.setattr(fetcher, "start", lambda: started.append(1))
-        assert fetcher.document is None and not started
-        fetcher._pid = -1
-        assert fetcher.document is None and started == [1]
+        fetcher.reset_in_child()
+        assert started == [1]
         fetcher.stop()
-        assert fetcher.document is None and started == [1]
+        fetcher.reset_in_child()
+        assert started == [1]
+
+    def test_a_started_read_is_reset_by_the_fork_hook(self) -> None:
+        from baton.sinks import _LIVE_SENDERS
+
+        fetcher = _fetcher(_Pool(_Response(204)))
+        fetcher.start()
+        fetcher.stop()
+        assert fetcher in _LIVE_SENDERS
 
 
 class TestConfig:
@@ -297,6 +304,7 @@ class TestConfig:
             ({"settings_refresh_s": float("nan"), "dsn": DSN}, "15"),
             ({"settings_refresh_s": float("inf"), "dsn": DSN}, "15"),
             ({"settings_refresh_s": "60", "dsn": DSN}, "15"),
+            ({"settings_refresh_s": 1e10, "dsn": DSN}, "15"),
         ],
     )
     def test_bad_settings_are_refused_at_install(
@@ -343,14 +351,13 @@ class _Raising(CaptureSettings):
         raise RuntimeError("settings bug")
 
 
-def _console(body: bytes | None = None) -> CaptureSettings:
+def _console() -> CaptureSettings:
     """A document already read, with no network."""
-    if body is None:
-        body = _document(
-            _audience("beta", {"label": ["beta"], "client": ["claude-code"]}, results="off"),
-            EVERYONE,
-            version=9,
-        )
+    body = _document(
+        _audience("beta", {"label": ["beta"], "client": ["claude-code"]}, results="off"),
+        EVERYONE,
+        version=9,
+    )
     return CaptureSettings(vendor_id="srv", fetcher=_Fetcher(body))  # type: ignore[arg-type]
 
 
@@ -424,10 +431,6 @@ async def _drive_standalone(
 DRIVERS = pytest.mark.parametrize("drive", [_drive_official, _drive_standalone])
 
 
-def _events(events_path: Path) -> list[dict[str, Any]]:
-    return without_surface_snapshots(read_events(events_path))
-
-
 def _end(events_path: Path) -> dict[str, Any]:
     (end,) = [e for e in read_events(events_path) if e["event_type"] == "tool_call_end"]
     return end
@@ -439,15 +442,16 @@ async def test_events_carry_the_callers_labels_and_audience(
 ) -> None:
     events_path = tmp_path / "e.jsonl"
     await drive(events_path, monkeypatch, "claude-code", _console)
-    events = _events(events_path)
+    events = without_surface_snapshots(read_events(events_path))
     assert {"tool_call_start", "tool_call_end", "tool_list_end"} <= {
         e["event_type"] for e in events
     }
     for event in events:
         assert event["labels"] == ["beta", "enterprise"], event["event_type"]
         assert event["capture"] == {"settings_version": 9, "audience": "beta"}, event["event_type"]
-    assert _end(events_path)["payload"]["result_capture"] == "off"
-    assert _end(events_path)["payload"]["result"] is None
+    end = _end(events_path)
+    assert end["payload"]["result_capture"] == "off"
+    assert end["payload"]["result"] is None
 
 
 @DRIVERS
@@ -456,8 +460,9 @@ async def test_a_caller_outside_the_audience_gets_everyones_settings(
 ) -> None:
     events_path = tmp_path / "e.jsonl"
     await drive(events_path, monkeypatch, "cursor", _console)
-    assert _end(events_path)["capture"] == {"settings_version": 9, "audience": "everyone"}
-    assert _end(events_path)["payload"]["result_capture"] == "off"
+    end = _end(events_path)
+    assert end["capture"] == {"settings_version": 9, "audience": "everyone"}
+    assert end["payload"]["result_capture"] == "off"
 
 
 @DRIVERS
@@ -536,4 +541,5 @@ def test_a_real_request_reads_the_document_and_its_etag() -> None:
     assert fetcher.document is not None and fetcher.document.version == 3
     assert [r["path"] for r in seen] == ["/v0/settings?server=srv"] * 2
     assert seen[0]["Authorization"] == "Bearer baton_pk_x"
+    assert seen[0]["X-Baton-Tenant-Id"] == "ten_1"
     assert seen[1]["If-None-Match"] == '"v3-w1"'

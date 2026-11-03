@@ -61,11 +61,9 @@ def wire_display_name(value: object) -> str | None:
     Verbatim when usable. A non-string, a blank (only Unicode
     ``White_Space``), an over-long value, or one holding a lone surrogate or
     U+0000 is dropped ALONE — the rest of the principal is still emitted,
-    because a bad label is no reason to lose a good id.
+    because a bad display name is no reason to lose a good id.
     """
-    if isinstance(value, str) and usable_text(value, DISPLAY_NAME_MAX_LEN):
-        return value
-    return None
+    return value if usable_text(value, DISPLAY_NAME_MAX_LEN) else None
 
 
 #: A vendor's per-request identity resolver. Takes the adapter-neutral
@@ -315,7 +313,7 @@ async def resolve_caller(
     ``settings`` the capture settings it runs under (SPEC §2.6). The identity is the
     vendor's hook, or nothing.
 
-    No principal or organization when no hook is configured or it has no
+    No principal, organization or labels when no hook is configured or it has no
     answer, which is the common case and never an error. SPEC §11.4 carries the consumer-side rules.
     There is no fallback: a vendor who wants the token's subject passes
     ``baton.principal_from_oauth_sub`` as the hook.
@@ -342,7 +340,9 @@ async def resolve_caller(
     try:
         call_settings = settings.for_caller(_match_view(caller, client))
     except Exception:
-        logger.exception("baton: applying capture settings failed; this call uses the code values")
+        logger.exception(
+            "baton: applying capture settings failed; this call uses the config's values"
+        )
         return caller
     return caller if call_settings is None else replace(caller, settings=call_settings)
 

@@ -38,7 +38,8 @@ ResultCaptureMode = str
 """What a vendor may set: `"full"` or `WITHHELD`.
 
 An alias rather than a `Literal`, matching `intent_param_mode`, which is a
-plain `str` validated once at the config door.
+plain `str` validated where it enters: the config door and the settings
+document.
 ⚠ If the partial rung lands and a third value has to be threaded, narrowing
 this to a `Literal` and letting mypy-strict enforce it at the adapter-internal
 seams is the stronger move than re-validating at each one.

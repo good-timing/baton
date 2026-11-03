@@ -244,12 +244,7 @@ def install_lifecycle_capture(
         request = await opened(family, read_request_context, params)
         if request is None:
             return await serve(params)
-        envelope, sent, subject, session = (
-            request.envelope,
-            request.sent,
-            request.subject,
-            request.session,
-        )
+        envelope, sent, subject, session, _ = request
 
         async def emit_leg(leg: str, build_payload: Callable[[], dict[str, Any]]) -> None:
             await emit(

@@ -7,7 +7,6 @@ import hashlib
 import json
 import logging
 import math
-import os
 import threading
 import urllib.parse
 from collections.abc import Callable, Iterable
@@ -17,7 +16,7 @@ from typing import Any
 from baton._result_capture import is_registered_mode
 from baton._white_space import usable_text
 from baton.events import CaptureObserved
-from baton.sinks import _pool_through, _proxy_for, _require_urllib3
+from baton.sinks import _LIVE_SENDERS, _pool_through, _proxy_for, _require_urllib3
 
 logger = logging.getLogger("baton")
 
@@ -39,7 +38,8 @@ def clean_labels(values: Iterable[Any]) -> tuple[str, ...]:
     kept: dict[str, None] = {}
     for value in values:
         if usable_text(value, LABEL_MAX_LENGTH):
-            kept[value] = None
+            # A plain copy: a str subclass can refuse to hash.
+            kept[str.__str__(value)] = None
             if len(kept) == LABELS_MAX:
                 break
     return tuple(kept)
@@ -61,9 +61,10 @@ class Caller:
 
 @dataclass(frozen=True)
 class CallSettings:
-    """The settings one call runs under. ``None`` means the code value."""
+    """The settings one call runs under."""
 
     result_capture_mode: str | None
+    """``None`` means this config's value."""
     capture: CaptureObserved
 
 
@@ -72,21 +73,17 @@ class Audience:
     """One audience, its ``match`` checked once when the document is read."""
 
     settings: CallSettings
-    readable: bool
     labels: frozenset[str] | None = None
     clients: frozenset[str] | None = None
     share_threshold: int | None = None
 
-    def matches(self, caller: Caller, bucket: Callable[[], int | None]) -> bool:
-        if not self.readable:
-            return False
+    def matches(self, caller: Caller, bucket: int | None) -> bool:
         if self.labels is not None and self.labels.isdisjoint(caller.labels):
             return False
         if self.clients is not None and caller.client_name not in self.clients:
             return False
         if self.share_threshold is not None:
-            caller_bucket = bucket()
-            if caller_bucket is None or caller_bucket >= self.share_threshold:
+            if bucket is None or bucket >= self.share_threshold:
                 return False
         return True
 
@@ -95,16 +92,19 @@ class Audience:
 class SettingsDocument:
     version: int
     audiences: tuple[Audience, ...]
+    unmatched: CallSettings
+    uses_share: bool
 
     def settings_for(self, caller: Caller, vendor_id: str) -> CallSettings:
-        @functools.cache
-        def bucket() -> int | None:
-            return None if caller.share_key is None else share_bucket(vendor_id, caller.share_key)
-
+        bucket = (
+            share_bucket(vendor_id, caller.share_key)
+            if self.uses_share and caller.share_key is not None
+            else None
+        )
         for audience in self.audiences:
             if audience.matches(caller, bucket):
                 return audience.settings
-        return CallSettings(None, CaptureObserved(settings_version=self.version))
+        return self.unmatched
 
 
 def _string_set(value: Any) -> frozenset[str] | None:
@@ -115,29 +115,28 @@ def _string_set(value: Any) -> frozenset[str] | None:
 
 def _audience(
     version: int, audience_id: str, match: dict[str, Any], capture: dict[str, Any]
-) -> Audience:
+) -> Audience | None:
+    """``None`` for an audience that can match nobody (SPEC §2.6)."""
+    if not set(match) <= _MATCH_KEYS:
+        return None
+    labels = clients = threshold = None
+    if "label" in match and (labels := _string_set(match["label"])) is None:
+        return None
+    if "client" in match and (clients := _string_set(match["client"])) is None:
+        return None
+    if "share" in match:
+        share = match["share"]
+        # The range test alone also refuses NaN, inf and integers too big for a float.
+        if isinstance(share, bool) or not isinstance(share, int | float) or not 0 < share <= 1:
+            return None
+        # Half up, not round(): SPEC §2.6, pinned by test_a_half_rounds_up.
+        threshold = math.floor(share * 10000 + 0.5)
     results = capture.get("results")
     settings = CallSettings(
         results if is_registered_mode(results) else None,
         CaptureObserved(settings_version=version, audience=audience_id),
     )
-    unreadable = Audience(settings, readable=False)
-    if not set(match) <= _MATCH_KEYS:
-        return unreadable
-    labels = clients = threshold = None
-    if "label" in match and (labels := _string_set(match["label"])) is None:
-        return unreadable
-    if "client" in match and (clients := _string_set(match["client"])) is None:
-        return unreadable
-    if "share" in match:
-        share = match["share"]
-        if isinstance(share, bool) or not isinstance(share, int | float):
-            return unreadable
-        if not math.isfinite(share) or not 0 < share <= 1:
-            return unreadable
-        # Half up, not round(): SPEC §2.6, pinned by test_a_half_rounds_up.
-        threshold = math.floor(share * 10000 + 0.5)
-    return Audience(settings, True, labels, clients, threshold)
+    return Audience(settings, labels, clients, threshold)
 
 
 def parse_document(body: bytes) -> SettingsDocument | None:
@@ -163,8 +162,14 @@ def parse_document(body: bytes) -> SettingsDocument | None:
             return None
         if not isinstance(match, dict) or not isinstance(capture, dict):
             return None
-        parsed.append(_audience(version, audience_id, match, capture))
-    return SettingsDocument(version, tuple(parsed))
+        if (readable := _audience(version, audience_id, match, capture)) is not None:
+            parsed.append(readable)
+    return SettingsDocument(
+        version,
+        tuple(parsed),
+        unmatched=CallSettings(None, CaptureObserved(settings_version=version)),
+        uses_share=any(a.share_threshold is not None for a in parsed),
+    )
 
 
 class SettingsFetcher:
@@ -190,20 +195,23 @@ class SettingsFetcher:
         self._etag: str | None = None
         self._document: SettingsDocument | None = None
         self._stop = threading.Event()
-        self._pid: int | None = None
         self._warned = False
 
     @property
     def document(self) -> SettingsDocument | None:
-        if self._pid is not None and self._pid != os.getpid() and not self._stop.is_set():
-            # A forked child has no reading thread.
-            self.start()
         return self._document
 
     def start(self) -> None:
-        self._pid = os.getpid()
+        _LIVE_SENDERS.add(self)
         self._pool = None
         threading.Thread(target=self._run, name="baton-settings", daemon=True).start()
+
+    def reset_in_child(self) -> None:
+        """A forked child has no reading thread, and the pool's sockets are the
+        parent's."""
+        if not self._stop.is_set():
+            self._stop = threading.Event()
+            self.start()
 
     def stop(self) -> None:
         self._stop.set()
@@ -265,6 +273,6 @@ class CaptureSettings:
         self._fetcher.stop()
 
     def for_caller(self, caller: Caller) -> CallSettings | None:
-        """``None`` until a document is held: the code values apply."""
+        """``None`` while no document is held, and this config's values apply."""
         document = self._fetcher.document
         return None if document is None else document.settings_for(caller, self._vendor_id)

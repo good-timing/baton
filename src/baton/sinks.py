@@ -48,7 +48,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
 from types import TracebackType
-from typing import IO, TYPE_CHECKING, Any, Literal, Self, cast
+from typing import IO, TYPE_CHECKING, Any, Literal, Protocol, Self, cast
 
 from baton import _state, _uuid
 from baton._state import PROCESS_DROPS, PROCESS_SEQUENCE
@@ -554,7 +554,12 @@ class _Pending:
 _Batch = list[tuple[Event, bytes]]
 
 
-_LIVE_SENDERS: weakref.WeakSet[_BatchSender] = weakref.WeakSet()
+class _ResetsInChild(Protocol):
+    def reset_in_child(self) -> None: ...
+
+
+#: Everything with a thread or a pool that a forked child must rebuild.
+_LIVE_SENDERS: weakref.WeakSet[_ResetsInChild] = weakref.WeakSet()
 _pid = os.getpid()
 
 

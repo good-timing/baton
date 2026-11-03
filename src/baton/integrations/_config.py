@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-import math
 import os
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -433,11 +433,12 @@ class VendorConfig:
     share of callers (SPEC §2.6). Needs a ``dsn``. Until the first read
     succeeds, and whenever nothing is saved, this config's values apply.
 
-    Only ``results`` (``result_capture_mode``) is applied; the saved ``goal``
-    and ``reports`` are ignored."""
+    Only ``results`` (``result_capture_mode``) is applied per call. ``goal``
+    and ``reports`` still come from this config."""
 
     settings_refresh_s: float = DEFAULT_REFRESH_S
-    """How often ``settings="console"`` reads them, in seconds, at least 15."""
+    """How often ``settings="console"`` reads the saved settings, in seconds. At
+    least 15."""
 
     resolve_principal: ResolvePrincipalHook | None = None
     """Optional vendor-supplied identity resolver — the ONLY source of
@@ -450,7 +451,8 @@ class VendorConfig:
     person and their company, or ``Organization(...)`` alone when only the
     company is known: a company returned as a ``Principal`` is counted as a
     person. ``None``, a wrong type, or a raised exception (logged, never
-    propagated) means the event ships with neither. Sync or async. Import the
+    propagated) means the event ships with none of them. Labels go on
+    ``Principal.labels`` or ``Organization.labels``. Sync or async. Import the
     return types as ``from baton import Organization, Principal``.
 
     Called once per tool call, and once per ``tools/list``, resource and
@@ -725,7 +727,7 @@ def _validate_vendor_config(config: VendorConfig) -> None:
     if (
         isinstance(refresh, bool)
         or not isinstance(refresh, int | float)
-        or not MIN_REFRESH_S <= refresh < math.inf
+        or not MIN_REFRESH_S <= refresh <= threading.TIMEOUT_MAX
     ):
         raise ValueError(
             f"VendorConfig.settings_refresh_s must be at least {MIN_REFRESH_S:g} seconds."
