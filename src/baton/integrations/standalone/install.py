@@ -67,7 +67,7 @@ from baton.integrations._lifecycle import (
     install_lifecycle_capture,
 )
 from baton.integrations._llm_text import drop_subagent_clause, with_vendor_instructions
-from baton.integrations._shared import Shared, build_shared, check_config, server_session
+from baton.integrations._shared import Shared, check_config, install_one, server_session
 from baton.integrations._surface import build_server_meta
 from baton.integrations.client_observed import meta_to_dict
 from baton.integrations.official._registry import get_tool_manager
@@ -195,11 +195,7 @@ def install_baton(
     if checked.unconfigured:
         return unconfigured_handle("install_baton (standalone fastmcp adapter)")
 
-    shared = build_shared(checked.config)
-    handle = attach(mcp, checked.config, text, shared)
-    # After attach, so an install that fails reads no settings.
-    shared.start()
-    return handle
+    return install_one(attach, mcp, checked, text)
 
 
 def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared) -> BatonHandle:
@@ -322,11 +318,10 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
             capture_settings=shared.capture_settings,
         )
 
-    # Last, so an install that raised above leaves no thread reading settings.
     return BatonHandle(
         sink=sink,
         annotation_tool_name=annotation_tool_name,
         vendor_id=config.vendor_id,
         session_id=fallback_session_id,
-        capture_settings=shared.capture_settings,
+        shared=shared,
     )

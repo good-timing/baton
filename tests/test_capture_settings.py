@@ -285,7 +285,7 @@ class TestFetcher:
         fetcher.reset_in_child()
         assert started == [1]
 
-    def test_a_started_read_is_reset_by_the_fork_hook(self) -> None:
+    def test_a_started_read_registers_for_the_fork_hook(self) -> None:
         from baton.sinks import _LIVE_SENDERS
 
         fetcher = _fetcher(_Pool(_Response(204)))
@@ -525,6 +525,24 @@ async def test_one_read_starts_at_install_and_stops_at_close(
     await drive(tmp_path / "e.jsonl", monkeypatch, "claude-code", lambda: settings)
     assert fetcher.starts == 1
     assert not fetcher.running
+
+
+@pytest.mark.parametrize("adapter", [official, standalone])
+def test_a_failed_install_reads_no_settings(
+    adapter: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fetcher = _Fetcher(None)
+    settings = CaptureSettings(vendor_id="srv", fetcher=fetcher)  # type: ignore[arg-type]
+    _use_settings(monkeypatch, lambda: settings)
+
+    def failing_attach(*_: Any) -> Any:
+        raise RuntimeError("attach failed")
+
+    monkeypatch.setattr(adapter.install, "attach", failing_attach)
+    server = OfficialFastMCP("failed") if adapter is official else FastMCP("failed")
+    with pytest.raises(RuntimeError, match="attach failed"):
+        adapter.install_baton(server, _config(adapter, tmp_path / "e.jsonl"))
+    assert fetcher.starts == 0
 
 
 def test_a_real_request_reads_the_document_and_its_etag() -> None:

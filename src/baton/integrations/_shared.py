@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from baton._capture_settings import CaptureSettings
 from baton._state import SessionCounter
@@ -22,6 +22,10 @@ from baton.integrations._config import (
 from baton.integrations._surface import SentSurfaces
 from baton.scrub import Scrubber
 from baton.sinks import Sink
+
+if TYPE_CHECKING:
+    from baton.integrations._annotation_name import InstallText
+    from baton.integrations._handle import BatonHandle
 
 
 @dataclass
@@ -78,6 +82,21 @@ def build_shared(config: VendorConfig) -> Shared:
         sink=resolve_sink(config),
         capture_settings=build_capture_settings(config, tenant_id),
     )
+
+
+def install_one(
+    attach: Callable[[Any, VendorConfig, InstallText, Shared], BatonHandle],
+    mcp: Any,
+    checked: CheckedConfig,
+    text: InstallText,
+) -> BatonHandle:
+    """For ``install_baton``, whose state no other server shares."""
+    shared = build_shared(checked.config)
+    handle = attach(mcp, checked.config, text, shared)
+    # After attach, so an install that fails reads no settings
+    # (test_a_failed_install_reads_no_settings).
+    shared.start()
+    return handle
 
 
 @dataclass
