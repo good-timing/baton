@@ -21,7 +21,8 @@ async def test_the_sink_keeps_its_promises(
     scenario: dict[str, Any], collector: int, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.WARNING, logger="baton")
-    settings, limits = _SPEC["settings"], _SPEC["limits"]
+    settings = {**_SPEC["settings"], **scenario.get("settings", {})}
+    limits = _SPEC["limits"]
     sink = http_sink(collector, settings)
     sent = range(1, scenario["events"] + 1)
     for n in sent:
@@ -39,10 +40,10 @@ async def test_the_sink_keeps_its_promises(
         time.monotonic() - started
         <= (settings["shutdown_budget_ms"] + limits["close_margin_ms"]) / 1000
     )
+    dropped = sum(PROCESS_DROPS.total().values())
 
     got = await received(collector, scenario["mode"])
     accepted = got["accepted"]
-    dropped = sum(PROCESS_DROPS.total().values())
     # A failure logged with a traceback is one that raised somewhere unseen.
     assert not [r.getMessage() for r in from_baton(caplog.records) if r.exc_info]
     assert scenario["mode"] == "down" or got["requests"] >= 1

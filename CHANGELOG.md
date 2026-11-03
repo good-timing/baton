@@ -36,6 +36,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   Baton's code returns, so before it sent a `tool_call_start` and nothing else.
   The error is the one the client gets: fastmcp's own `MCPError`, which Baton
   records from the request, or on the official server mcp's fixed message.
+- **A loss report waiting for another tenant no longer shrinks batches**
+  (SPEC §11.4.7). A due `client_report` holds a batch place only in a batch
+  it can ride: one whose events have its `tenant_id` and `vendor_id`. Before,
+  every batch kept a place for it, so batches of another tenant carried 99
+  events.
+- **A loss report goes first when the next event does not fit beside it**
+  (SPEC §11.4.7). The report is sent alone and the event goes in the next
+  batch. Before, the event went and the report waited, so a steady stream of
+  events near 1 MiB could hold the report back for good.
 
 ## 0.9.4: events are sent in batches
 

@@ -936,17 +936,20 @@ class _BatchSender:
     def _take_batch_locked(self) -> _Batch:
         """Moves the next batch from ``waiting`` to ``in_flight``: within SPEC
         §2.5's caps and with one ``tenant_id`` and ``vendor_id``, which §2.5
-        requires."""
+        requires. A due report keeps a place in each batch it can ride, or full
+        batches would starve it; when the head event does not fit beside it,
+        the report goes alone (SPEC §11.4.7)."""
         batch: _Batch = []
         count = body_bytes = 0
         owner: tuple[str, str] | None = None
-        # SPEC §11.4.7: a due report keeps a place, or full batches would starve it.
-        held, held_bytes = (1, len(self.report[1])) if self.report is not None else (0, 0)
+        held = held_bytes = 0
+        if self.report is not None and self._rides_head_locked(self.report[0]):
+            held, held_bytes = 1, len(self.report[1])
         for pending in itertools.islice(self.waiting, min(self.encoded, BATCH_MAX_EVENTS - held)):
             assert pending.body is not None
             event = pending.event
             size = _body_size(count + 1 + held, body_bytes + len(pending.body) + held_bytes)
-            if batch and ((event.tenant_id, event.vendor_id) != owner or size > BATCH_MAX_BYTES):
+            if (batch and (event.tenant_id, event.vendor_id) != owner) or size > BATCH_MAX_BYTES:
                 break
             owner = (event.tenant_id, event.vendor_id)
             count += 1
@@ -956,12 +959,16 @@ class _BatchSender:
             self.in_flight.append(self.waiting.popleft())
         self.encoded -= count
         self.encoded_bytes -= body_bytes
-        if self.report is not None:
+        if self.report is not None and (held or not batch):
             report, body, _ = self.report
-            fits = _body_size(count + 1, body_bytes + len(body)) <= BATCH_MAX_BYTES
-            if not batch or (fits and (report.tenant_id, report.vendor_id) == owner):
-                batch.append((report, body))
+            batch.append((report, body))
         return batch
+
+    def _rides_head_locked(self, report: ClientReportEvent) -> bool:
+        if not self.encoded:
+            return True
+        head = self.waiting[0].event
+        return (report.tenant_id, report.vendor_id) == (head.tenant_id, head.vendor_id)
 
     def _put_back_in_flight(self, batch: _Batch) -> None:
         """A kept batch goes back to the front; then the bound applies again.

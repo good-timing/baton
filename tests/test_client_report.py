@@ -411,6 +411,61 @@ async def test_a_report_goes_while_every_batch_is_full(
     await sink.aclose()
 
 
+async def _batches_after_a_report_is_due(first: Any, then: list[Any]) -> list[list[Any]]:
+    """Refuses ``first``, then holds the delivery of a second ``first`` while
+    ``then`` is written, so a report for ``first``'s tenant is due when
+    ``then`` is batched. Answers the requests that followed that delivery."""
+    in_delivery, gate = threading.Event(), threading.Event()
+    batches: list[list[Any]] = []
+
+    def answer(path: str, body: Any) -> int:
+        batches.append(events_in(path, body))
+        if len(batches) == 1:
+            return 400
+        if len(batches) == 2:
+            in_delivery.set()
+            gate.wait(5)
+        return 202
+
+    sink = fake_sink(answer)
+    await sink.write(first)
+    await sink.flush()
+    await sink.write(first)
+    flushing = asyncio.ensure_future(sink.flush())
+    assert await asyncio.to_thread(in_delivery.wait, 3)
+    for event in then:
+        await sink.write(event)
+    gate.set()
+    await flushing
+    await sink.aclose()
+    return batches[2:]
+
+
+async def test_a_report_holds_no_place_in_a_batch_it_cannot_ride() -> None:
+    other = make_event().model_copy(update={"tenant_id": "ten_other", "vendor_id": "ten_other"})
+    batches = await _batches_after_a_report_is_due(
+        other, [make_event() for _ in range(3 * BATCH_MAX_EVENTS)]
+    )
+    assert [len(b) for b in batches] == [BATCH_MAX_EVENTS] * 3 + [1]
+    assert batches[-1][0]["event_type"] == "client_report"
+
+
+async def test_a_report_goes_first_when_the_head_event_does_not_fit_beside_it() -> None:
+    event = make_event().model_copy(
+        update={"payload": ToolCallStartPayload(tool_name="t", params={"blob": ""})}
+    )
+    room = BATCH_MAX_BYTES - len(_BATCH_OPEN) - len(_BATCH_CLOSE) - len(_encode(event))
+    big = event.model_copy(
+        update={"payload": ToolCallStartPayload(tool_name="t", params={"blob": "x" * room})}
+    )
+    batches = await _batches_after_a_report_is_due(make_event(), [big])
+    assert [[e["event_type"] for e in b] for b in batches] == [
+        ["client_report"],
+        ["tool_call_start"],
+    ]
+    assert batches[1][0]["event_id"] == str(big.event_id)
+
+
 @pytest.mark.parametrize(
     ("whole_batch", "refused"), [(True, 2), (False, 1)], ids=["whole-batch-422", "per-event"]
 )
