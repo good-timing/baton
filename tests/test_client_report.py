@@ -517,7 +517,7 @@ async def test_a_report_waits_for_its_own_tenants_event_to_be_encoded() -> None:
         assert sender.report is not None
         report = sender.report[0]
         sender.waiting.append(_Pending(head, monotonic()))
-        assert [event for event, _ in sender._take_batch_locked()] != [report]
+        assert sender._take_batch_locked() == []
     sender._encode_head()
     with sender.cond:
         assert [event for event, _ in sender._take_batch_locked()] == [head, report]
