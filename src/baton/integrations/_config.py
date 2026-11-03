@@ -616,8 +616,6 @@ def resolve_config(config: VendorConfig) -> VendorConfig:
     that rewrites its argument would make the second one inherit the first's
     resolution.
     """
-    if config.report_mode is None:
-        config = replace(config, report_mode="on" if config.settings == "console" else "off")
     dsn_string = select_dsn(
         config.dsn,
         {
@@ -631,6 +629,10 @@ def resolve_config(config: VendorConfig) -> VendorConfig:
         },
         "VendorConfig",
     )
+    if config.report_mode is None:
+        # Off without a DSN, so console mode's missing DSN is the error reported.
+        on = config.settings == "console" and dsn_string is not None
+        config = replace(config, report_mode="on" if on else "off")
     if dsn_string is None:
         return config
 

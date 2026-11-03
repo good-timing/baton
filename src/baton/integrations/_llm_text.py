@@ -264,6 +264,7 @@ def drop_subagent_clause(mcp: Any, tool_name: str, write: Callable[[Any, str], N
     # Never raises: it runs inside tool registration and tool listing, which
     # must not fail over this.
     try:
+        setattr(mcp, _SUBAGENT_CLAUSE_REMOVED_ATTR, True)
         if not remove_subagent_clause(mcp, write):
             return
     except Exception:
@@ -288,8 +289,12 @@ def remove_subagent_clause(mcp: Any, write: Callable[[Any, str], None]) -> bool:
     return True
 
 
-def has_subagent_clause(instructions: Any) -> bool:
-    return isinstance(instructions, str) and INTENT_INSTRUCTIONS in instructions
+_SUBAGENT_CLAUSE_REMOVED_ATTR = "_baton_subagent_clause_removed"
+
+
+def subagent_clause_removed(mcp: Any) -> bool:
+    """Whether a tool of ``mcp`` declares its own ``user_goal`` (``drop_subagent_clause``)."""
+    return getattr(mcp, _SUBAGENT_CLAUSE_REMOVED_ATTR, False) is True
 
 
 def declares_user_goal(schema: Any) -> bool:

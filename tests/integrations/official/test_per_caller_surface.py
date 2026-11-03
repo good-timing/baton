@@ -22,12 +22,13 @@ from baton.integrations._llm_text import (
     INTENT_INSTRUCTIONS,
     build_server_instructions,
     build_user_goal_param_description,
-    remove_subagent_clause,
+    drop_subagent_clause,
     with_vendor_instructions,
 )
 from baton.integrations._per_caller import PerCallerSurface
 from baton.integrations.identity_adapter import ResolvedCaller
 from baton.integrations.official._compat import MCPServerClass as OfficialFastMCP
+from baton.integrations.official._compat import get_lowlevel_server
 from baton.sinks import FileSink
 from tests._mcp_session import connected_session
 
@@ -217,6 +218,22 @@ async def test_the_pointer_leaves_the_instructions_when_nobody_has_reports(
     assert instructions == INTENT_INSTRUCTIONS
 
 
+async def test_a_server_built_after_the_settings_arrive_starts_without_the_pointer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings, _ = _settings(NOBODY_REPORTS)
+    _use_settings(monkeypatch, settings)
+    baton = create_baton(_config(official, tmp_path))
+    try:
+        for _ in range(2):
+            mcp = _lookup_server(OfficialFastMCP)
+            baton.wrap(mcp)
+            served = get_lowlevel_server(mcp).create_initialization_options().instructions
+            assert served == INTENT_INSTRUCTIONS
+    finally:
+        await baton.aclose()
+
+
 async def test_a_caller_without_reports_can_still_file_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -288,8 +305,7 @@ class TestInstructions:
     def test_a_removed_subagent_sentence_stays_removed(self) -> None:
         settings, fetcher = _settings(NOBODY_REPORTS)
         server = _installed("Vendor text.")
-        # As a tool declaring its own user_goal does.
-        remove_subagent_clause(server, _write)
+        drop_subagent_clause(server, "lookup", _write)
         surface = _surface(server, settings, OURS)
 
         surface.follow_settings()
@@ -297,6 +313,18 @@ class TestInstructions:
         fetcher.document = None
         surface.follow_settings()
         assert server.instructions == f"Vendor text.\n\n{POINTER}"
+
+    def test_text_the_vendor_sets_later_keeps_the_subagent_sentence(self) -> None:
+        settings, fetcher = _settings(NOBODY_REPORTS)
+        server = _installed("Vendor text.")
+        surface = _surface(server, settings, OURS)
+        server.instructions = "Later."
+
+        surface.follow_settings()
+        assert server.instructions == f"Later.\n\n{INTENT_INSTRUCTIONS}"
+        fetcher.document = None
+        surface.follow_settings()
+        assert server.instructions == f"Later.\n\n{OURS}"
 
     def test_a_dropped_catch_all_leaves_the_codes_reports_reachable(self) -> None:
         body = _document(
@@ -328,6 +356,11 @@ def _caller(body: bytes, client: str) -> ResolvedCaller:
     document = parse_document(body)
     assert document is not None
     return ResolvedCaller(settings=document.settings_for(Caller(client_name=client), "srv"))
+
+
+def _listed(schema: dict[str, Any]) -> mcp_types.ListToolsResult:
+    tool = mcp_types.Tool.model_validate({"name": "lookup", "inputSchema": schema})
+    return mcp_types.ListToolsResult(tools=[tool])
 
 
 class TestToolsFor:
@@ -363,14 +396,13 @@ class TestToolsFor:
             "properties": {"user_goal": {"description": "the vendor's"}},
             "required": ["user_goal"],
         }
-        result = {"tools": [{"name": "lookup", "inputSchema": own}]}
-        out = self._surface().tools_for(result, _caller(BETA_QUIET, "claude-code"))
-        assert out["tools"][0]["inputSchema"] == own
+        out = self._surface().tools_for(_listed(own), _caller(BETA_QUIET, "claude-code"))
+        assert _schemas(out.tools)["lookup"] == own
 
     def test_a_schema_it_cannot_read_is_left_as_it_is(self) -> None:
-        result = {"tools": [{"name": "lookup", "inputSchema": {"properties": 3}}]}
-        out = self._surface().tools_for(result, _caller(BETA_QUIET, "claude-code"))
-        assert out["tools"] == result["tools"]
+        odd = {"properties": {"user_goal": 3}}
+        out = self._surface().tools_for(_listed(odd), _caller(BETA_QUIET, "claude-code"))
+        assert _schemas(out.tools)["lookup"] == odd
 
     def test_a_caller_on_the_codes_settings_gets_the_result_unchanged(self) -> None:
         result = object()

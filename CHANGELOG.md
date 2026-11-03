@@ -50,8 +50,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ### Changed
 
 - **`report_mode` is `"on"` by default with `settings="console"`.** It stays
-  `"off"` by default otherwise. Set `report_mode="off"` to have no report tool,
-  and the Console can then not turn reports on.
+  `"off"` by default otherwise. Set `report_mode="off"` for no report tool. The
+  Console then cannot turn reports on.
 
 ## 0.9.5: with no DSN, your server starts
 

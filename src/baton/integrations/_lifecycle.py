@@ -108,9 +108,9 @@ class CallSeam:
     """Whether the server has the tool; ``None`` when the adapter cannot say."""
 
 
+_TOOL_LIST = _Family("tools/list", "ListToolsRequest", "tool_list", count_key="tools")
 # SPEC §11.4.4 records that the two start payloads build ``params``
 # differently: a read sends every param, a prompt get sends ``arguments`` alone.
-_TOOL_LIST = _Family("tools/list", "ListToolsRequest", "tool_list", count_key="tools")
 _FAMILIES = (
     _TOOL_LIST,
     _Family("resources/list", "ListResourcesRequest", "resource_list", count_key="resources"),

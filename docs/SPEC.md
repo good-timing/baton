@@ -141,7 +141,7 @@ Each event records which settings it ran under in `capture` (§11.4).
 
 - Each `tools/list` is answered with the caller's `goal` and `reports`. A tool that declares its own `user_goal` keeps its own.
 - With `reports` off, the report tool is left out of that caller's list. It stays registered, so a report sent from an older list is still accepted.
-- The server instructions go out once per connection, in the `initialize` result, so they are the same for every caller. They carry the sentence that points to the report tool while some caller can get `reports` on: when no document is held, the code's value decides. A new document changes them for connections that start after the next request the server serves.
+- The server instructions go out once per connection, in the `initialize` result, so they are the same for every caller. They carry the sentence that points to the report tool while some caller can get `reports` on. When no document is held, the code's value decides. A new document changes them for connections that start after the next request the server serves.
 - A `surface_snapshot` describes the server, not a caller (§5.6 rule 7), so its `seam_augmentations` carry the code's values.
 - In `baton-sdk`, `report_mode` is `"on"` by default under `settings="console"`. A vendor who sets `report_mode="off"` gets no report tool, so `reports` can only take it away from some callers.
 

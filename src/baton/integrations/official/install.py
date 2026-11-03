@@ -60,7 +60,7 @@ from baton.integrations._lifecycle import (
     install_lifecycle_capture,
 )
 from baton.integrations._llm_text import with_vendor_instructions
-from baton.integrations._per_caller import PerCallerSurface
+from baton.integrations._per_caller import per_caller_surface
 from baton.integrations._shared import Shared, check_config, install_one, server_session
 from baton.integrations._surface import build_server_meta
 from baton.integrations.official import _auth
@@ -154,18 +154,8 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
     # writable backing differs across the rename (``_mcp_server`` →
     # ``_lowlevel_server``), so route through the compat helper.
     set_server_instructions(mcp, with_vendor_instructions(mcp, text.instructions, shared.warned))
-    per_caller = (
-        None
-        if shared.capture_settings is None
-        else PerCallerSurface(
-            mcp=mcp,
-            settings=shared.capture_settings,
-            intent_param_mode=config.intent_param_mode,
-            annotation_tool_name=annotation_tool_name,
-            instructions=text.instructions,
-            write_instructions=set_server_instructions,
-            warned=shared.warned,
-        )
+    per_caller = per_caller_surface(
+        mcp, config, text, shared.capture_settings, set_server_instructions, shared.warned
     )
 
     # Wrap currently-registered tools + patch add_tool for future ones.

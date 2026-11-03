@@ -7,20 +7,46 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from baton._capture_settings import CaptureSettings
+from baton.integrations._annotation_name import InstallText
+from baton.integrations._config import VendorConfig
 from baton.integrations._llm_text import (
     INTENT_INSTRUCTIONS,
     USER_GOAL_PARAM_NAME,
     build_user_goal_param_description,
-    has_subagent_clause,
+    inject_goal_params,
     remove_subagent_clause,
-    required_param_names,
+    subagent_clause_removed,
     with_vendor_instructions,
 )
 from baton.integrations.identity_adapter import ResolvedCaller
 
 logger = logging.getLogger("baton")
 
-_NOT_APPLIED = object()
+
+def per_caller_surface(
+    mcp: Any,
+    config: VendorConfig,
+    text: InstallText,
+    settings: CaptureSettings | None,
+    write_instructions: Callable[[Any, str], None],
+    warned: set[str],
+) -> PerCallerSurface | None:
+    """For an install whose instructions are already written; ``None`` with
+    no Console settings."""
+    if settings is None:
+        return None
+    surface = PerCallerSurface(
+        mcp=mcp,
+        settings=settings,
+        intent_param_mode=config.intent_param_mode,
+        annotation_tool_name=text.names.annotation_tool_name if text.names else None,
+        instructions=text.instructions,
+        write_instructions=write_instructions,
+        warned=warned,
+    )
+    # Now, not at the first request: ``initialize`` passes no seam of ours.
+    surface.follow_settings()
+    return surface
 
 
 class PerCallerSurface:
@@ -48,26 +74,20 @@ class PerCallerSurface:
         self._instructions = instructions
         self._write = write_instructions
         self._warned = warned
-        self._applied: object = _NOT_APPLIED
         self._pointer_on = True
 
     def follow_settings(self) -> None:
-        """Called on every request; does work only when the held document changed."""
+        """Called on every request; writes only when the report pointer should change."""
         if self._annotation_tool_name is None:
             return
         try:
             document = self._settings.document
-            if document is self._applied:
-                return
-            self._applied = document
             pointer_on = document is None or document.reports_on_for_anyone("on")
             if pointer_on == self._pointer_on:
                 return
-            clause_removed = not has_subagent_clause(self._mcp.instructions)
             ours = self._instructions if pointer_on else INTENT_INSTRUCTIONS
             self._write(self._mcp, with_vendor_instructions(self._mcp, ours, self._warned))
-            # A tool declaring its own user_goal removed the clause; it stays removed.
-            if clause_removed:
+            if subagent_clause_removed(self._mcp):
                 remove_subagent_clause(self._mcp, self._write)
             self._pointer_on = pointer_on
         except Exception:
@@ -111,15 +131,13 @@ def _injected_goal(schema: Any, served_description: str) -> bool:
 
 
 def _with_goal_mode(schema: Mapping[str, Any], goal: str) -> dict[str, Any]:
-    props = dict(schema["properties"])
-    props[USER_GOAL_PARAM_NAME] = {
-        **props[USER_GOAL_PARAM_NAME],
-        "description": build_user_goal_param_description(intent_param_mode=goal),
-    }
+    props = {k: v for k, v in schema["properties"].items() if k != USER_GOAL_PARAM_NAME}
+    rebuilt = {**schema, "properties": props}
     required = schema.get("required")
-    names = [n for n in required if n != USER_GOAL_PARAM_NAME] if isinstance(required, list) else []
-    names.extend(required_param_names(intent_param_mode=goal))
-    return {**schema, "properties": props, "required": names}
+    if isinstance(required, list):
+        rebuilt["required"] = [n for n in required if n != USER_GOAL_PARAM_NAME]
+    inject_goal_params(rebuilt, intent_param_mode=goal)
+    return rebuilt
 
 
 # mcp 2.x names the schema field ``input_schema``; ``inputSchema`` is its alias.
@@ -132,15 +150,11 @@ def _attribute(obj: Any, wire_name: str) -> str | None:
 
 
 def _field(obj: Any, wire_name: str) -> Any:
-    if isinstance(obj, Mapping):
-        return obj.get(wire_name)
     attribute = _attribute(obj, wire_name)
     return None if attribute is None else getattr(obj, attribute)
 
 
 def _replace(obj: Any, wire_name: str, value: Any) -> Any:
-    if isinstance(obj, Mapping):
-        return {**obj, wire_name: value}
     return obj.model_copy(update={_attribute(obj, wire_name): value})
 
 
@@ -148,7 +162,7 @@ def _with_tools(result: Any, rewrite: Callable[[list[Any]], list[Any]]) -> Any:
     """``result`` of the same type, its tools rewritten. mcp 1.x wraps the list
     result in a ``ServerResult``; mcp 2.x does not."""
     root = getattr(result, "root", None)
-    if root is not None and not isinstance(result, Mapping):
+    if root is not None:
         return result.model_copy(update={"root": _with_tools(root, rewrite)})
     tools = _field(result, "tools")
     if not isinstance(tools, list | tuple):
