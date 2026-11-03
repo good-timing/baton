@@ -35,6 +35,7 @@ from tests._http_fakes import (
     fake_sink,
     make_event,
     never_answers,
+    pool_of,
     until,
 )
 
@@ -372,14 +373,23 @@ async def test_a_batch_refused_whole_with_the_report_in_it_does_not_stop_reports
     await sink.aclose()
 
 
+def _event_of_size(size: int) -> Any:
+    """An event whose encoding is ``size`` bytes."""
+    event = make_event().model_copy(
+        update={"payload": ToolCallStartPayload(tool_name="t", params={"blob": ""})}
+    )
+    blob = "x" * (size - len(_encode(event)))
+    return event.model_copy(
+        update={"payload": ToolCallStartPayload(tool_name="t", params={"blob": blob})}
+    )
+
+
+_EVENT_ALONE_AT_THE_CAP = BATCH_MAX_BYTES - len(_BATCH_OPEN) - len(_BATCH_CLOSE)
+
+
 def _event_filling_half_a_batch() -> Any:
     """Two of these fill a batch's bytes to within a few bytes of the cap."""
-    event = make_event()
-    room = (BATCH_MAX_BYTES - len(_BATCH_OPEN) - len(_BATCH_CLOSE) - 1) // 2
-    blob = room - len(_encode(event)) - len(',"params":{"blob":""}') - 5
-    return event.model_copy(
-        update={"payload": ToolCallStartPayload(tool_name="t", params={"blob": "x" * blob})}
-    )
+    return _event_of_size((_EVENT_ALONE_AT_THE_CAP - 1) // 2 - 5)
 
 
 @pytest.mark.parametrize(
@@ -441,8 +451,12 @@ async def _batches_after_a_report_is_due(first: Any, then: list[Any]) -> list[li
     return batches[2:]
 
 
+def _event_of_another_tenant() -> Any:
+    return make_event().model_copy(update={"tenant_id": "ten_other", "vendor_id": "ten_other"})
+
+
 async def test_a_report_holds_no_place_in_a_batch_it_cannot_ride() -> None:
-    other = make_event().model_copy(update={"tenant_id": "ten_other", "vendor_id": "ten_other"})
+    other = _event_of_another_tenant()
     batches = await _batches_after_a_report_is_due(
         other, [make_event() for _ in range(3 * BATCH_MAX_EVENTS)]
     )
@@ -451,19 +465,30 @@ async def test_a_report_holds_no_place_in_a_batch_it_cannot_ride() -> None:
 
 
 async def test_a_report_goes_first_when_the_head_event_does_not_fit_beside_it() -> None:
-    event = make_event().model_copy(
-        update={"payload": ToolCallStartPayload(tool_name="t", params={"blob": ""})}
-    )
-    room = BATCH_MAX_BYTES - len(_BATCH_OPEN) - len(_BATCH_CLOSE) - len(_encode(event))
-    big = event.model_copy(
-        update={"payload": ToolCallStartPayload(tool_name="t", params={"blob": "x" * room})}
-    )
+    big = _event_of_size(_EVENT_ALONE_AT_THE_CAP)
     batches = await _batches_after_a_report_is_due(make_event(), [big])
     assert [[e["event_type"] for e in b] for b in batches] == [
         ["client_report"],
         ["tool_call_start"],
     ]
     assert batches[1][0]["event_id"] == str(big.event_id)
+
+
+async def test_a_report_that_cannot_ride_does_not_hurry_the_events_ahead_of_it() -> None:
+    sink = fake_sink(lambda path, body: 202, flush_interval_seconds=1.0)
+    sender = sink._sender
+    PROCESS_DROPS.add("refused")
+    with sender.cond:
+        sender._maybe_report_locked(_event_of_another_tenant())
+        sender.report_at -= 10
+    for _ in range(5):
+        await sink.write(make_event())
+        await asyncio.sleep(0.02)
+    await asyncio.sleep(0.3)
+    assert pool_of(sink).requests == []
+    await sink.flush()
+    assert [len(events_in(*r)) for r in pool_of(sink).requests] == [5, 1]
+    await sink.aclose()
 
 
 @pytest.mark.parametrize(

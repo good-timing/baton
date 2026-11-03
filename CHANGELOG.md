@@ -40,7 +40,9 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   (SPEC §11.4.7). A due `client_report` holds a batch place only in a batch
   it can ride: one whose events have its `tenant_id` and `vendor_id`. Before,
   every batch kept a place for it, so batches of another tenant carried 99
-  events.
+  events. Such a report also no longer makes those events go early: they
+  wait the usual 5 seconds, or for 100 events, instead of going one small
+  batch per round trip.
 - **A loss report goes first when the next event does not fit beside it**
   (SPEC §11.4.7). The report is sent alone and the event goes in the next
   batch. Before, the event went and the report waited, so a steady stream of

@@ -866,7 +866,7 @@ class _BatchSender:
         if _body_size(self.encoded, self.encoded_bytes) > BATCH_MAX_BYTES:
             return 0.0
         oldest = self.waiting[0].recorded_at if self.waiting else math.inf
-        if self.report is not None:
+        if self.report is not None and self._rides_head_locked(self.report[0]):
             oldest = min(oldest, self.report_at)
         return max(0.0, oldest + self.flush_interval - now)
 
@@ -959,7 +959,7 @@ class _BatchSender:
             self.in_flight.append(self.waiting.popleft())
         self.encoded -= count
         self.encoded_bytes -= body_bytes
-        if self.report is not None and (held or not batch):
+        if held and self.report is not None:
             report, body, _ = self.report
             batch.append((report, body))
         return batch
