@@ -42,7 +42,7 @@ def _ask() -> Any:
 
 def _register(mcp: Any, context_class: Any, pauses: int) -> None:
     """Each handler pauses ``pauses`` times, then answers."""
-    rounds = {"deploy": 0, "ask": 0}
+    rounds = {"deploy": 0, "ask": 0, "ship": 0}
 
     def answer(handler: str, done: Any) -> Any:
         rounds[handler] += 1
@@ -58,8 +58,14 @@ def _register(mcp: Any, context_class: Any, pauses: int) -> None:
     # `from __future__ import annotations` would leave as a string.
     deploy.__annotations__ = {"ctx": context_class, "return": Any}
     ask.__annotations__ = {"name": str, "ctx": context_class, "return": Any}
+
+    async def ship(ctx: Any) -> Any:
+        return answer("ship", "shipped")
+
+    ship.__annotations__ = {"ctx": context_class, "return": str}
     mcp.prompt(name="deploy")(deploy)
     mcp.resource("file:///ask/{name}")(ask)
+    mcp.tool(name="ship")(ship)
 
 
 @asynccontextmanager
@@ -160,6 +166,24 @@ async def test_a_pause_an_older_client_cannot_take_is_an_error(
     assert events[1]["payload"]["error_body"] == str(refused.value)
 
 
+@pytest.mark.parametrize("adapter", ["official", "standalone"])
+async def test_a_paused_tool_call_an_older_client_cannot_take_is_an_error(
+    adapter: str, tmp_path: Path
+) -> None:
+    events_path = tmp_path / "events.jsonl"
+    # mcp's official server refuses in its runner; fastmcp raises its own error.
+    says = {"official": "Handler returned an invalid result", "standalone": "2026-07-28"}[adapter]
+    async with _session(adapter, events_path, older_client=True) as session:
+        with pytest.raises(Exception, match=says) as refused:
+            result = await session.call_tool("ship", {})
+            if getattr(result, "is_error", False):
+                raise RuntimeError(result.content[0].text)
+    events = [ev for ev in read_events(events_path) if ev["event_type"].startswith("tool_call_")]
+    assert [ev["event_type"] for ev in events] == ["tool_call_start", "tool_call_error"]
+    assert events[1]["payload"]["error_type"] == "MCPError"
+    assert events[1]["payload"]["error_body"] == str(refused.value)
+
+
 def test_a_wire_shaped_pause_is_a_pause() -> None:
     assert paused({"resultType": "input_required"})
     assert not paused({"resultType": "complete"})
@@ -177,3 +201,5 @@ def test_only_mcps_own_pausing_protocols_can_resume() -> None:
         assert client_can_resume(_Context(version))
     assert not client_can_resume(_Context("2025-11-25"))
     assert not client_can_resume(_Context("DRAFT-2026-v1"))
+    assert not client_can_resume(_Context(None))
+    assert client_can_resume(object())

@@ -20,6 +20,11 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   speaks a protocol older than 2026-07-28 the pause fails: fastmcp raises,
   which Baton records as usual, and mcp's official server fails it after
   Baton's seam returns, so Baton sends the `*_error` with mcp's message.
+- **A tool call that pauses for a client older than 2026-07-28 now ends in
+  `tool_call_error`**, on both adapters. mcp or fastmcp fails such a pause after
+  Baton's code returns, so before it sent a `tool_call_start` and nothing else.
+  The error is the one the client gets: fastmcp's own `MCPError`, which Baton
+  records from the request, or on the official server mcp's fixed message.
 
 ## 0.9.4: events are sent in batches
 

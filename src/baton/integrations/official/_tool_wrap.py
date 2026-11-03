@@ -104,7 +104,7 @@ from baton.integrations._llm_text import (
     required_param_names,
     scrub_goals,
 )
-from baton.integrations._mrtr import resumes_a_pause
+from baton.integrations._mrtr import mcp_refusal, pause_refused, resumes_a_pause
 from baton.integrations._session import (
     ResolvedSession,
     end_of_ladder,
@@ -636,8 +636,8 @@ def _wrap_tool_run(
             raise
         # MRTR (mcp>=2.0): an InputRequiredResult means the call paused mid-flight
         # to ask the client for more input — it hasn't finished, so no
-        # tool_call_end. Whichever round eventually returns something else
-        # (or errors) is the one that gets the real end/error event.
+        # tool_call_end, unless the client cannot take a pause: mcp then fails
+        # the call after this wrapper returns, so the error is sent here.
         if not _is_mrtr_pause(result):
             # SPEC §11.4.3: a returned result carrying MCP's error flag is a
             # FAILURE — MCP files it as a 200, so it arrives here rather than
@@ -673,6 +673,21 @@ def _wrap_tool_run(
                     call_id,
                     call_transport,
                 )
+        elif pause_refused(lambda: context.request_context):
+            refused = mcp_refusal()
+            await emit_error(
+                call_session,
+                name,
+                type(refused).__name__,
+                monotonic() - called_at,
+                scrubbed_meta,
+                call_client,
+                caller,
+                call_id,
+                call_transport,
+                refused,
+                None,
+            )
         return result
 
     setattr(wrapper, _WRAPPED_SENTINEL, True)

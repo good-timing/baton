@@ -46,7 +46,7 @@ from baton.integrations._llm_text import (
     pop_goal_params,
     scrub_goals,
 )
-from baton.integrations._mrtr import client_can_resume, paused, resumes_a_pause
+from baton.integrations._mrtr import mcp_refusal, pause_refused, paused, resumes_a_pause
 from baton.integrations._session import ResolvedSession, next_sequence
 from baton.integrations.client_observed import clean_runtime_meta, observe_client
 from baton.integrations.identity_adapter import (
@@ -268,13 +268,14 @@ def install_lifecycle_capture(
             raise
         duration_ms = int((monotonic() - started_at) * 1000)
         if paused(result):
-            if _refused_pause(read_request_context):
-                # mcp fails the pause after this seam returns, with this message.
+            if pause_refused(read_request_context):
+                # mcp fails the pause after this seam returns.
+                refused = mcp_refusal()
                 await emit_leg(
                     "error",
                     lambda: {
-                        "error_type": "MCPError",
-                        "error_body": _PAUSE_REFUSED,
+                        "error_type": type(refused).__name__,
+                        "error_body": str(refused),
                         "duration_ms": duration_ms,
                     },
                 )
@@ -460,16 +461,6 @@ def _frames_to_the_vendor() -> int:
     while frame is not None and frame.f_globals.get("__name__", "").split(".")[0] == "baton":
         level, frame = level + 1, frame.f_back
     return level
-
-
-_PAUSE_REFUSED = "Handler returned an invalid result"
-
-
-def _refused_pause(read_request_context: Callable[[], Any]) -> bool:
-    try:
-        return not client_can_resume(read_request_context())
-    except Exception:
-        return False
 
 
 def _scrubbed(scrubber: Callable[[Any], Any], payload: dict[str, Any]) -> dict[str, Any]:

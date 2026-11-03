@@ -518,7 +518,8 @@ class BatonMiddleware(Middleware):
         # report the ask itself as the call's result — which is what this
         # adapter did before, so one paused-and-resumed call arrived as TWO
         # complete calls, the first carrying the ask as its outcome. The end
-        # rides the round that actually completes.
+        # rides the round that actually completes; a paused round sends only
+        # the error fastmcp raises when the client cannot take a pause.
         #
         # ⚠ fastmcp frames this differently on purpose: its own
         # ``InputRequiredToolResult`` docstring calls the ask "the legitimate
@@ -528,8 +529,7 @@ class BatonMiddleware(Middleware):
         # logical tool call, and the official adapter already treats the two
         # rounds as one. Two adapters disagreeing about what a call IS costs
         # more than either framing gains.
-        if _is_mrtr_pause(result):
-            return result
+        pausing = _is_mrtr_pause(result)
 
         duration_ms = int((monotonic() - called_at) * 1000)
 
@@ -617,6 +617,8 @@ class BatonMiddleware(Middleware):
             )
 
         async def finish(failure: Any) -> None:
+            if failure is None and pausing:
+                return
             seq = await next_sequence(self._counter, call_session)
             if failure is None:
                 await safe_emit(self._sink, lambda: build_end(seq), logger)
