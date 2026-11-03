@@ -10,6 +10,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+### Changed
+
+- **The session counter keeps at most 4096 sessions.** It forgets the least
+  recently used one, so a long-lived process with very many sessions no
+  longer grows without limit. A session named by the client's
+  `mcp-session-id` is now numbered by the clock in microseconds, so its
+  `sequence_number` keeps rising after it is forgotten; it no longer counts
+  from 1. Order within a session is unchanged. Sessions the SDK minted
+  still count from 1. (SPEC §11.2 rule 5.)
+- **At close, the loss count is best effort.** An event still being sent
+  when close runs out of time may be counted `unsent_at_close` even if it
+  arrives. (SPEC §11.2 rule 8.) No code change: this is what the SDK did.
+
 ### Added
 
 - **`baton.create_baton()` for servers built per request.** Create one at

@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+import baton._state
 from baton.events import Event
 from baton.integrations.official import VendorConfig, install_baton
 from baton.integrations.official._compat import MCPServerClass as FastMCP
@@ -981,10 +983,11 @@ class TestStatefulHttpSessionResolution:
         assert start["session_id"] == handle.session_id
 
     async def test_sequence_numbers_independent_per_resolved_session(
-        self, configured_mcp: tuple[Any, Any, str]
+        self, configured_mcp: tuple[Any, Any, str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Each session a header names gets its own events, numbered from the
-        clock because it is observed (SPEC §11.2 rule 5)."""
+        """Each session a header names has its own counter, keyed on the resolved
+        id. The clock is stopped, as an observed session is numbered by it too."""
+        monkeypatch.setattr(baton._state, "time", SimpleNamespace(time_ns=lambda: 0))
         mcp, handle, path = configured_mcp
 
         @mcp.tool()
@@ -1003,11 +1006,7 @@ class TestStatefulHttpSessionResolution:
         by_session: dict[str, list[int]] = {}
         for e in events:
             by_session.setdefault(e["session_id"], []).append(e["sequence_number"])
-        clock_floor = 10**15
-        assert len(by_session["user-a"]) == 4
-        assert len(by_session["user-b"]) == 2
-        for seqs in by_session.values():
-            assert seqs == sorted(set(seqs)) and seqs[0] > clock_floor, seqs
+        assert by_session == {"user-a": [1, 2, 3, 4], "user-b": [1, 2]}
 
 
 class TestTheRetiredMetaSessionRungs:
