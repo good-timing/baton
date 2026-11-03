@@ -25,6 +25,7 @@ from baton.integrations._llm_text import build_user_goal_param_description
 from baton.integrations.standalone import VendorConfig, install_baton
 from baton.sinks import FileSink, HttpSink
 from tests._event_helpers import read_events, without_surface_snapshots, without_tool_listings
+from tests._tools import list_tools
 
 
 @pytest.fixture
@@ -71,17 +72,9 @@ async def configured_mcp(
 
 
 async def _server_tools(mcp: FastMCP) -> list[Any]:
-    """The server's registered tools, across every supported fastmcp major.
-
-    2.x exposes ``get_tools()`` returning a name->Tool dict; 3.x/4.x expose
-    ``list_tools()`` returning a sequence. Reading the server directly (rather
-    than going through an in-process ``Client``) is deliberate here — these
-    tests assert what is REGISTERED, not what a client is served.
-    """
-    list_tools = getattr(mcp, "list_tools", None)
-    if list_tools is not None:
-        return list(await list_tools())
-    return list((await mcp.get_tools()).values())
+    """Read from the server, not a ``Client``: these tests assert what is
+    registered, not what a client is served."""
+    return await list_tools(mcp)
 
 
 class TestInstallation:

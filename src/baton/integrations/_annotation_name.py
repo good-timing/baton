@@ -32,7 +32,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from baton.integrations._llm_text import INTENT_INSTRUCTIONS, build_server_instructions
+from baton.integrations._llm_text import INTENT_INSTRUCTIONS, _first_time, build_server_instructions
 
 if TYPE_CHECKING:
     from baton.integrations._config import VendorConfig
@@ -196,21 +196,24 @@ def _tool_name_candidate(raw: str) -> str | None:
     return candidate
 
 
-def _tool_name_within_budget(raw: str, *, vendor_display_name: str) -> str | None:
+def _tool_name_within_budget(
+    raw: str, *, vendor_display_name: str, warned: set[str] | None = None
+) -> str | None:
     """``_tool_name_candidate``, or ``None`` if it would not render beside
     ``vendor_display_name``."""
     candidate = _tool_name_candidate(raw)
     if candidate is None:
         return None
     if not _fits_the_instructions_budget(candidate, vendor_display_name):
-        logger.warning(
-            "baton: the server-derived annotation tool name %r does not fit the "
-            "server-instructions budget alongside vendor_display_name (%d chars); "
-            "keeping %r. Shorten vendor_display_name to get the readable name.",
-            candidate,
-            len(vendor_display_name),
-            "{vendor_id}_annotate",
-        )
+        if _first_time(warned, "tool name over budget"):
+            logger.warning(
+                "baton: the server-derived annotation tool name %r does not fit the "
+                "server-instructions budget alongside vendor_display_name (%d chars); "
+                "keeping %r. Shorten vendor_display_name to get the readable name.",
+                candidate,
+                len(vendor_display_name),
+                "{vendor_id}_annotate",
+            )
         return None
     return candidate
 
@@ -247,7 +250,7 @@ class AnnotationNames(NamedTuple):
 
 
 def resolve_annotation_names(
-    server: Any, config: VendorConfig, *, display_name_given: bool
+    server: Any, config: VendorConfig, *, display_name_given: bool, warned: set[str] | None = None
 ) -> AnnotationNames:
     """Both names in one call: the display name FIRST, then the tool name.
 
@@ -301,7 +304,7 @@ def resolve_annotation_names(
         )
         if _fits_the_instructions_budget(proposed, server_name):
             vendor_display_name = server_name
-        else:
+        elif _first_time(warned, "server name over budget"):
             logger.warning(
                 "baton: the server name %r does not fit the server-instructions "
                 "budget as vendor_display_name beside the annotation tool %r; "
@@ -316,7 +319,9 @@ def resolve_annotation_names(
         config.vendor_id,
         config.annotation_tool_name
         or (
-            _tool_name_within_budget(server_name, vendor_display_name=vendor_display_name)
+            _tool_name_within_budget(
+                server_name, vendor_display_name=vendor_display_name, warned=warned
+            )
             if server_name is not None
             else None
         ),
@@ -345,18 +350,21 @@ class InstallText(NamedTuple):
 
 
 def resolve_install_text(
-    server: Any, config: VendorConfig, *, display_name_given: bool
+    server: Any, config: VendorConfig, *, display_name_given: bool, warned: set[str] | None = None
 ) -> InstallText:
-    """Baton's server instructions and the annotation tool's names, per ``report_mode``."""
+    """Baton's server instructions and the annotation tool's names, per ``report_mode``.
+    ``warned`` is shared by servers built per request, so each warning is said once."""
     if config.report_mode == "off":
-        if config.annotation_tool_name is not None:
+        if config.annotation_tool_name is not None and _first_time(warned, "unused tool name"):
             logger.warning(
                 "baton: annotation_tool_name=%r has no effect with report_mode='off', "
                 "because no annotation tool is registered",
                 config.annotation_tool_name,
             )
         return InstallText(INTENT_INSTRUCTIONS, None)
-    names = resolve_annotation_names(server, config, display_name_given=display_name_given)
+    names = resolve_annotation_names(
+        server, config, display_name_given=display_name_given, warned=warned
+    )
     instructions = build_server_instructions(
         vendor_display_name=names.vendor_display_name,
         annotation_tool_name=names.annotation_tool_name,

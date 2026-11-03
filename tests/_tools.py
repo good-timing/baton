@@ -7,8 +7,9 @@ from typing import Any
 
 async def list_tools(server: Any) -> list[Any]:
     """fastmcp 2.x lists with ``get_tools``, a mapping; later versions with ``list_tools``."""
-    if hasattr(server, "list_tools"):
-        return list(await server.list_tools())
+    list_tools = getattr(server, "list_tools", None)
+    if list_tools is not None:
+        return list(await list_tools())
     return list((await server.get_tools()).values())
 
 

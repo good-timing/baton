@@ -62,7 +62,7 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from baton._optout import capture_disabled
 from baton.integrations._handle import disabled_handle
@@ -137,23 +137,43 @@ def install_baton(
         # door returns before either adapter is reached.
         return disabled_handle(switch, "install_baton", config.sink if config else None)
 
-    adapter = _adapter_for(server)
-    return adapter.install_baton(server, config, dsn=dsn)  # type: ignore[no-any-return]
+    install, _ = _adapter_for(server)
+    return install(server, config, dsn=dsn)
 
 
-def _adapter_for(server: Any, door: str = "baton.install_baton") -> Any:
-    """The adapter package. fastmcp 2.x also has a tool registry, so the
-    middleware seam is tested first."""
+class _InstallBaton(Protocol):
+    def __call__(
+        self, mcp: Any, config: VendorConfig | None = ..., *, dsn: str | None = ...
+    ) -> BatonHandle: ...
+
+
+class _AdapterInstall(Protocol):
+    def require_server(self, mcp: Any) -> None: ...
+
+    def set_instructions(self, mcp: Any, instructions: str | None) -> None: ...
+
+    def attach(
+        self, mcp: Any, config: VendorConfig, text: InstallText, shared: Shared
+    ) -> BatonHandle: ...
+
+
+def _adapter_for(
+    server: Any, door: str = "baton.install_baton"
+) -> tuple[_InstallBaton, _AdapterInstall]:
+    """The adapter's ``install_baton`` and its ``install`` module. fastmcp 2.x
+    also has a tool registry, so the middleware seam is tested first."""
     if _has_fastmcp_middleware_seam(server):
         import baton.integrations.standalone as standalone
+        from baton.integrations.standalone import install as standalone_install
 
         logger.debug("baton: routing to the standalone fastmcp adapter")
-        return standalone
+        return standalone.install_baton, standalone_install
     if _has_official_tool_registry(server):
         import baton.integrations.official as official
+        from baton.integrations.official import install as official_install
 
         logger.debug("baton: routing to the official mcp SDK adapter")
-        return official
+        return official.install_baton, official_install
     raise _not_a_server(server, door)
 
 
@@ -206,7 +226,7 @@ class Baton:
         is not a server this SDK supports; the config was checked at create."""
         if self._checked is None:
             return
-        adapter = _adapter_for(server, "Baton.wrap").install
+        _, adapter = _adapter_for(server, "Baton.wrap")
         adapter.require_server(server)
         if self._closed:
             if not self._warned_closed:
@@ -250,6 +270,7 @@ class Baton:
                 _Named(key),
                 self._checked.config,
                 display_name_given=self._checked.display_name_given,
+                warned=self._shared.warned if self._shared is not None else None,
             )
             self._texts[key] = text
             if len(self._texts) > _TEXTS_CAP:

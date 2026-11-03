@@ -149,7 +149,7 @@ def _require_fastmcp_server(mcp: Any) -> None:
 require_server = _require_fastmcp_server
 
 
-def _set_instructions(mcp: Any, instructions: str) -> None:
+def _set_instructions(mcp: Any, instructions: str | None) -> None:
     # ``instructions`` is a read-only property on FastMCP >=1.10; the backing
     # MCPServer attribute is the fallback.
     try:

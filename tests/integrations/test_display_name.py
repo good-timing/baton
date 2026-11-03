@@ -35,6 +35,7 @@ from baton.integrations._llm_text import (
     build_server_instructions,
 )
 from baton.sinks import FileSink
+from tests._tools import list_tools
 
 WORKSPACE = "ten_655b084e118b43f88992ee6357fcc23c"
 KEY = "baton_pk_" + "z" * 43
@@ -96,13 +97,7 @@ async def _standalone(
 
     mcp = FastMCP() if name is None else FastMCP(name)
     handle = install_baton(mcp, config, dsn=dsn)
-    # 2.x exposes ``get_tools()`` (a name->Tool dict), 3.x/4.x ``list_tools()``.
-    list_tools = getattr(mcp, "list_tools", None)
-    tools = (
-        list(await list_tools())
-        if list_tools is not None
-        else list((await mcp.get_tools()).values())
-    )
+    tools = await list_tools(mcp)
     return _Served(handle, mcp.instructions or "", {t.name: t.description or "" for t in tools})
 
 

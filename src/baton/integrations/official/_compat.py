@@ -160,7 +160,7 @@ def get_lowlevel_server(mcp: Any) -> Any:
     return backing
 
 
-def set_server_instructions(mcp: Any, instructions: str) -> None:
+def set_server_instructions(mcp: Any, instructions: str | None) -> None:
     """Write server instructions across the mcp 1.x/2.0 backing rename.
 
     ``instructions`` is a **read-only** property on both versions; the writable

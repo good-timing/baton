@@ -10,7 +10,7 @@ import pytest
 
 import baton
 from tests._forced_reorder import CapturingSink
-from tests.functional._tools import list_tools, tool_schema
+from tests._tools import list_tools, tool_schema
 
 pytestmark = pytest.mark.functional
 
@@ -273,3 +273,18 @@ async def test_two_servers_number_one_client_session_in_order() -> None:
     assert [await first.next("client"), await second.next("client")] == [1, 2]
     assert [await first.next("own-1"), await second.next("own-2")] == [1, 1]
     assert [await first.next("client")] == [3]
+
+
+def test_a_shared_warned_set_says_each_install_text_warning_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from baton.integrations._annotation_name import resolve_install_text
+
+    config = baton.VendorConfig(vendor_id="v", annotation_tool_name="x_y")
+    warned: set[str] = set()
+    with caplog.at_level("WARNING", logger="baton"):
+        for name in ("a", "b", "c"):
+            from fastmcp import FastMCP
+
+            resolve_install_text(FastMCP(name), config, display_name_given=False, warned=warned)
+    assert caplog.text.count("has no effect with report_mode='off'") == 1

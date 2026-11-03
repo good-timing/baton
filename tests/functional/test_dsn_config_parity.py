@@ -30,7 +30,7 @@ from werkzeug.wrappers import Request, Response
 
 from baton.events import DEFAULT_CONSENT_TOKEN
 from baton.integrations._config import VendorConfig
-from tests.functional._tools import list_tools, tool_schema
+from tests._tools import list_tools, tool_schema
 
 pytestmark = pytest.mark.functional
 
