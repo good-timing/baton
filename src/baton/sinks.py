@@ -766,6 +766,7 @@ class _BatchSender:
     # ---- the sending thread --------------------------------------------
 
     def _run(self) -> None:
+        topped_up = False
         while True:
             self._encode_head()
             with self.cond:
@@ -778,9 +779,16 @@ class _BatchSender:
                 now = monotonic()
                 wait = self._seconds_until_due_locked(now)
                 if wait is None or wait > 0:
+                    topped_up = False
                     if not self._can_encode_locked(now):
                         self.cond.wait(wait)
                     continue
+                # One more pass covers every event written before the batch was due;
+                # only one (test_writes_that_keep_coming_do_not_hold_a_due_batch).
+                if not topped_up and self._can_encode_locked(now):
+                    topped_up = True
+                    continue
+                topped_up = False
                 batch = self._take_batch_locked()
             if batch:
                 self._send_guarded(batch, deadline=None)

@@ -17,6 +17,13 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   middleware. If it raises, its message is sent as it is, the same as for a
   failed resource or prompt request.
 
+### Fixed
+
+- **A batch that goes also takes the events written while the sending thread
+  was encoding the ones before it.** They were left for the next request, so a
+  flush right after a few writes could send two requests where one would do.
+  No event was lost.
+
 ## 0.9.6: create_baton, and capture settings from the Console
 
 ### Added

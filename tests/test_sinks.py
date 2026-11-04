@@ -1579,6 +1579,62 @@ async def test_a_bad_result_entry_does_not_hide_the_refusals_after_it() -> None:
     await sink.aclose()
 
 
+async def test_a_batch_takes_the_events_written_while_the_one_before_was_encoded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = make_event(sequence_number=1)
+    encoding, release = threading.Event(), threading.Event()
+    encode = sinks_module._encode
+
+    def held(event: Any) -> bytes:
+        if event is first:
+            encoding.set()
+            release.wait(2)
+        return encode(event)
+
+    monkeypatch.setattr(sinks_module, "_encode", held)
+    sink = fake_sink(lambda path, body: 200)
+    try:
+        await sink.write(first)
+        assert encoding.wait(2)
+        await sink.write(make_event(sequence_number=2))
+        flushed = sink._sender.request_flush()
+    finally:
+        release.set()
+    await asyncio.wrap_future(flushed)
+    requests = [
+        [e["sequence_number"] for e in body["events"]] for _, body in pool_of(sink).requests
+    ]
+    assert requests == [[1, 2]]
+    await sink.aclose()
+
+
+async def test_writes_that_keep_coming_do_not_hold_a_due_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sink = fake_sink(lambda path, body: 200)
+    sender = sink._sender
+    writing = True
+    encode = sinks_module._encode
+
+    def write_another(event: Any) -> bytes:
+        if writing and event.sequence_number < 50:
+            sender.enqueue(make_event(sequence_number=event.sequence_number + 1))
+        return encode(event)
+
+    sender.enqueue(make_event(sequence_number=1))
+    flushed = sender.request_flush()
+    monkeypatch.setattr(sinks_module, "_encode", write_another)
+    sender.ensure_running()
+    await asyncio.wrap_future(flushed)
+    writing = False
+    [first, *_] = [
+        [e["sequence_number"] for e in body["events"]] for _, body in pool_of(sink).requests
+    ]
+    assert first == [1, 2]
+    await sink.aclose()
+
+
 async def test_a_flush_interval_of_0_does_not_retry_in_a_tight_loop() -> None:
     sink = fake_sink(
         lambda path, body: 500,
