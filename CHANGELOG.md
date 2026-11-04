@@ -21,21 +21,27 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Changed
 
-- **Every sink is written off the tool call.** `StdoutSink`, `FileSink`,
-  `MultiSink` and your own `Sink` now sit behind a queue of 1000 events, which
-  Baton writes from its own thread and event loop. A slow or stuck sink no
-  longer slows a tool call or a traced call. When the queue is full, the
-  oldest event is dropped and counted `buffer_full`, with one `UserWarning`.
-  A write that raises drops its event, counted `write_failed`, and is logged
-  once. `flush()` and `aclose()` write what is queued first, within the same
-  3-second limit. A surface snapshot counts as sent once it is queued: if your
-  sink then fails to write it, it is not sent again. `BatonHandle.sink` is
-  still the sink you passed. **If your own sink holds a connection made on
-  your event loop**, such as an aiohttp session, open it inside `write`
-  instead, because `write` now runs on Baton's loop. `HttpSink` is unchanged.
-  Known gaps: `handle.sink.flush()` and `handle.sink.aclose()` skip the queue,
-  so call `handle.flush()` and `handle.aclose()`; a `MultiSink` holding an
-  `HttpSink` puts that sink behind two queues.
+- **Every sink is written off the tool call.**
+  - `StdoutSink`, `FileSink`, `MultiSink` and your own `Sink` now sit behind
+    a queue of 1000 events. Baton writes it from its own thread and event loop.
+  - A slow or stuck sink no longer slows a tool call or a traced call.
+  - When the queue is full, the oldest event is dropped and counted
+    `buffer_full`, with one `UserWarning`.
+  - A write that raises drops its event. It is counted `write_failed` and
+    logged once.
+  - `flush()` and `aclose()` write what is queued first, within SPEC §11.2
+    rule 7's limit (3 seconds by default). Close counts what is left
+    `unsent_at_close`.
+  - A surface snapshot counts as sent once it is handed to the queue. If your
+    sink then fails to write it, it is not sent again.
+  - `BatonHandle.sink` is still the sink you passed. `HttpSink` is unchanged.
+  - **If your own sink holds a connection made on your event loop**, such as
+    an aiohttp session, open it inside `write` instead. `write` now runs on
+    Baton's loop.
+  - Known gap: `handle.sink.flush()` and `handle.sink.aclose()` skip the
+    queue. Call `handle.flush()` and `handle.aclose()` instead.
+  - Known gap: a `MultiSink` holding an `HttpSink` puts that sink behind two
+    queues.
 - **What is public is written down** (README, "What is public"): the names in
   `__all__` of `baton`, `baton.client`, `baton.identity`, `baton.scrub`,
   `baton.sinks`, `baton.events` and the adapter packages. `baton.identity` and

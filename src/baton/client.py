@@ -1486,8 +1486,8 @@ class Client(_Sessions):
             self._snapshot_write_failed(event)
 
     def _deliver(self, write: Coroutine[Any, Any, Any]) -> concurrent.futures.Future[Any] | None:
-        """Hand a write to the bridge and wait for it only while the sink keeps
-        up. ``None`` when the bridge has stopped and the write did not run."""
+        """Hand a write to the bridge and wait for it only while the bridge
+        loop keeps up. ``None`` when the bridge has stopped and the write did not run."""
         assert self._bridge is not None
         try:
             future = self._bridge.submit(self._tracked(write))
@@ -1496,7 +1496,7 @@ class Client(_Sessions):
             return None
         if self._stalled is not None:
             if not self._stalled.done():
-                return future  # queued behind the slow write; not waited on
+                return future  # queued behind the stalled loop; not waited on
             self._stalled = None
         try:
             self._bridge.wait(future, _EMIT_WAIT_SECONDS)

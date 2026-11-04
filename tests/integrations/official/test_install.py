@@ -814,8 +814,8 @@ class TestSurfaceSnapshot:
     async def test_a_surface_the_sink_fails_to_write_is_counted_and_not_resent(
         self, events_path: str
     ) -> None:
-        """The write happens after the call returns, so the surface counts as
-        sent once queued; the sink's failure is counted."""
+        """The sink writes on Baton's thread, not in the call, so the surface
+        counts as sent once queued; the sink's failure is counted."""
         flaky = _FlakyOnceSink(FileSink(events_path))
         mcp = FastMCP("test-vendor-mcp")
         handle = install_baton(

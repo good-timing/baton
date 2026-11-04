@@ -271,8 +271,8 @@ class BatonMiddleware(Middleware):
                     seam_augmentations=seam,
                 ),
             )
-            # Marked only once queued, so a write that raises (the event was
-            # not queued) is tried again next time; a duplicate from two
+            # Marked once handed to the sink, so only a write that raises is
+            # tried again next time; a duplicate from two
             # racing lists is harmless, as the Console stores a surface by
             # surface_hash. ``write_unless_closed``, not ``safe_write``, to
             # see that raise.

@@ -115,8 +115,7 @@ async def safe_write(sink: Sink, event: Event, logger: logging.Logger) -> None:
 
     SDK middleware sits BEFORE the vendor's tool handler. A raise from
     ``sink.write`` (closed sink, transport error, ``warnings.filterwarnings
-    ("error")`` promoting an overflow ``UserWarning``, ``BrokenPipeError``
-    from ``StdoutSink``, etc.) would otherwise propagate up and break the
+    ("error")`` promoting an ``HttpSink`` overflow ``UserWarning``, etc.) would otherwise propagate up and break the
     vendor's tool call — making Baton instrumentation look like a vendor
     bug. SPEC §11.2 mandates fail-open at the capture boundary; this wrapper
     enforces it.
@@ -366,7 +365,8 @@ def _seconds_option(given: object, name: str, default: float) -> float:
 
 def shutdown_budget_seconds(sink: Sink) -> float:
     """How long a flush or close may take for ``sink``: an ``HttpSink``'s own
-    budget, the longest of a ``MultiSink``'s, else the default."""
+    budget, the longest of a ``MultiSink``'s, a queued sink's inner one, else
+    the default."""
     try:
         if isinstance(sink, HttpSink):
             return sink._shutdown_flush_timeout
@@ -1605,8 +1605,7 @@ class _QueueSender:
         self.lock = threading.Lock()
         self.loop: asyncio.AbstractEventLoop | None = None
         self.thread: threading.Thread | None = None
-        # Whether the drain has been woken for what is waiting.
-        self.signalled = False
+        self.drain_woken = False
         # The flush that ran out of budget; later flushes do not wait on it again.
         self.stalled: concurrent.futures.Future[None] | None = None
 
@@ -1622,8 +1621,6 @@ class _QueueSender:
 
     def started(self) -> bool:
         return self.thread is not None
-
-    # ---- called from the vendor's side ---------------------------------
 
     def enqueue(self, event: Event) -> None:
         _reset_if_forked()
@@ -1660,9 +1657,9 @@ class _QueueSender:
                 start_error: RuntimeError | None = exc
             else:
                 start_error = None
-            wake = loop is not None and not self.signalled
+            wake = loop is not None and not self.drain_woken
             if wake:
-                self.signalled = True
+                self.drain_woken = True
         if overflowed:
             try:
                 warnings.warn(
@@ -1784,8 +1781,8 @@ class _QueueSender:
             raise
         self.loop, self.thread = loop, thread
         # A restart from flush or close must still write what is waiting.
-        self.signalled = bool(self.waiting)
-        if self.signalled:
+        self.drain_woken = bool(self.waiting)
+        if self.drain_woken:
             loop.call_soon_threadsafe(self._wake.set)
         if not self.exit_hook_registered:
             self.exit_hook_registered = True
@@ -1826,7 +1823,7 @@ class _QueueSender:
     def _take(self) -> Event | None:
         with self.lock:
             if self.closing or not self.waiting:
-                self.signalled = False
+                self.drain_woken = False
                 return None
             self.in_flight = 1
             return self.waiting.popleft()
