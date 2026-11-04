@@ -36,12 +36,17 @@ grows (SPEC §13). The experimental items below may change in a minor.
   - `flush()` and `aclose()` write what is queued first, within SPEC §11.2
     rule 7's limit (3 seconds by default). Close counts what is left
     `unsent_at_close`.
+  - Each event is copied when it is queued, so your later changes to a
+    params or result object do not reach the sink. An event that cannot be
+    copied is dropped, counted `encode_failed` and logged once.
   - A surface snapshot counts as sent once it is handed to the queue. If your
     sink then fails to write it, it is not sent again.
   - `BatonHandle.sink` is still the sink you passed. `HttpSink` is unchanged.
   - **If your own sink holds a connection made on your event loop**, such as
     an aiohttp session, open it inside `write` instead. `write` now runs on
     Baton's loop.
+  - Known gap: the copy is made inside the tool call, so a large result
+    adds the time of one deep copy to its call.
   - Known gap: `handle.sink.flush()` and `handle.sink.aclose()` skip the
     queue. Call `handle.flush()` and `handle.aclose()` instead.
   - Known gap: a `MultiSink` holding an `HttpSink` puts that sink behind two

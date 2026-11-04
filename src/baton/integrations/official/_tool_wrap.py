@@ -457,11 +457,7 @@ def _wrap_tool_run(
         # this must never block the vendor's tool call. ``dirty`` is cleared
         # FIRST so a hashing/serialization error (deterministic — would just
         # re-throw identically every call) is one attempt per surface
-        # change, not a retry storm. A WRITE failure is different — sink
-        # health can recover — so that path re-sets ``dirty = True`` to
-        # retry on the next call, and ``sent_surfaces`` is only updated
-        # AFTER a successful write (a transient failure must not
-        # permanently drop this surface, unlike a genuine dedup skip).
+        # change, not a retry storm.
         if surface_state.dirty:
             surface_state.dirty = False
             try:

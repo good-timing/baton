@@ -91,7 +91,7 @@ The collector MUST reject any request without a valid bearer. The collector MUST
 
 *Experimental (§13): this endpoint and its document may change after 1.0.*
 
-A vendor can choose to manage some capture settings in the collector instead of in code. A producer reads them only when the vendor turned that on (in `baton-sdk`, `VendorConfig(settings="console")`). Otherwise it never calls this endpoint and uses the values in the vendor's code. The settings change what Baton records and what Baton adds to the tool list. They never change what the vendor's server does.
+A vendor can choose to manage some capture settings in the collector instead of in code. A producer reads them only when the vendor turned that on (`VendorConfig(settings="console")` in `baton-sdk`, `{ settings: "console" }` in `baton-ts`, `Config{Settings: baton.SettingsConsole}` in the Go SDK). Otherwise it never calls this endpoint and uses the values in the vendor's code. The settings change what Baton records and what Baton adds to the tool list. They never change what the vendor's server does.
 
 **The request.** `GET /v0/settings?server=<vendor_id>`, with the same `Authorization` bearer the producer sends events with (§2.3) and its `tenant_id` in the `X-Baton-Tenant-Id` header. A producer sends the last `ETag` it received as `If-None-Match`.
 
@@ -102,7 +102,7 @@ A vendor can choose to manage some capture settings in the collector instead of 
 | `204` | nothing is saved for this server: uses the values in the vendor's code, and drops any document it held |
 | anything else, a network error, or a body it cannot read | keeps the document it holds, or the code values if it has none |
 
-**When.** Once in the background when the server is wrapped, then on a fixed interval, 60 seconds by default and never less than 15. A call never waits on a read. Each process reads on its own.
+**When.** Once in the background when the SDK is installed or created, then on a fixed interval, 60 seconds by default and never less than 15. A call never waits on a read. Each process reads on its own.
 
 **The document.**
 
@@ -131,11 +131,11 @@ A document is valid when `version` is a positive integer, `audiences` is a non-e
 - **`share`.** The caller's key is `principal.id`, or `organization.id` when there is no principal. A caller with neither never matches `share`. The bucket is the first 8 bytes of SHA-256 over the UTF-8 bytes of `vendor_id`, a line feed (U+000A) and the key, read as an unsigned big-endian integer, modulo 10000. The caller matches when the bucket is less than `share` × 10000 rounded to the nearest integer, a half rounding up (`floor(share × 10000 + 0.5)`). So one caller stays in or out until the share changes, and raising it keeps everyone already in.
 - **`capture`** holds three settings. A value the producer does not know falls back to the vendor's code value for that setting alone.
 
-| key | values | vendor's code setting in `baton-sdk` | takes effect |
+| key | values | vendor's code setting (`baton-sdk` / `baton-ts` / Go) | takes effect |
 |---|---|---|---|
-| `goal` | `"required"`, `"optional"` | `intent_param_mode` | the next `tools/list` |
-| `reports` | `"on"`, `"off"` | `report_mode` | the next `tools/list` |
-| `results` | `"full"`, `"off"` | `result_capture_mode` | the next call |
+| `goal` | `"required"`, `"optional"` | `intent_param_mode` / `intentParamMode` / `IntentParamMode` | the next `tools/list` |
+| `reports` | `"on"`, `"off"` | `report_mode` / `reportMode` / `ReportMode` | the next `tools/list` |
+| `results` | `"full"`, `"off"` | `result_capture_mode` / `resultCaptureMode` / `ResultCaptureMode` | the next call |
 
 Each event records which settings it ran under in `capture` (§11.4).
 
