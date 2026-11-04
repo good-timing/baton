@@ -11,7 +11,7 @@ The release pipeline is **GitHub Actions + PyPI Trusted Publishing** — a `v*` 
 For any normal patch / minor release.
 
 1. **Bump version** in `pyproject.toml` (`version = "X.Y.Z"`). Follow semver (see "Versioning policy" below).
-2. **Add a CHANGELOG entry** under `## X.Y.Z — <one-line summary>`, above the previous release block. Wire-format changes also go in `docs/SPEC.md §13`.
+2. **Add a CHANGELOG entry** under `## X.Y.Z: <one-line summary>`, above the previous release block. Wire-format changes also go in `docs/SPEC.md §13`.
 3. **Commit + push to `main`:**
    ```sh
    git add pyproject.toml uv.lock CHANGELOG.md docs/SPEC.md   # SPEC only if step 2 touched it
