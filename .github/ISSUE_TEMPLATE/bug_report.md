@@ -39,7 +39,7 @@ Minimal code that reproduces the bug. Ideally:
 
 ## SPEC reference (if applicable)
 
-If this is a spec-conformance issue, link the relevant `docs/SPEC.md` section.
+If this is a spec-conformance issue, link the relevant section of [`SPEC.md`](https://github.com/good-timing/baton-spec/blob/main/SPEC.md).
 
 ## Logs / traceback
 

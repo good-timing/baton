@@ -1,6 +1,6 @@
 # Baton SDK
 
-**Stable from 1.0.** This package follows [semver](https://semver.org). [What is public](#what-is-public) lists the public API and what in it is experimental. The wire format only grows: nothing is removed or changes meaning, except what SPEC marks experimental ([SPEC §13](https://github.com/good-timing/baton/blob/main/docs/SPEC.md#stability-from-10)).
+**Stable from 1.0.** This package follows [semver](https://semver.org). [What is public](#what-is-public) lists the public API and what in it is experimental. The wire format only grows: nothing is removed or changes meaning, except what SPEC marks experimental ([SPEC §13](https://github.com/good-timing/baton-spec/blob/main/SPEC.md#stability-from-10)).
 
 MCP standardizes how agents discover and call your tools. It does not capture *why* a call happened or whether it helped the user. Baton instruments those interactions on the vendor side, either by wrapping your MCP server or through direct library calls in your own code. It captures intent, the tool calls, expected outcomes and observed outcomes, plus friction signals, and hands each one to a sink. Correlation, policy and routing all happen downstream of the sink, not in this package.
 
@@ -233,14 +233,14 @@ The switch belongs to whoever RUNS the server: your user for a server you distri
 
 The public API is the names in `__all__` of these modules: `baton`, `baton.client`, `baton.identity`, `baton.scrub`, `baton.sinks`, `baton.events`, and the adapters `baton.integrations.official` and `baton.integrations.standalone`. The old adapter paths `baton.integrations.mcp` and `baton.integrations.fastmcp` stay too. Anything else you can import is internal and may change in any release, even if its name has no underscore.
 
-These are **experimental** and may change in a minor release: `VendorConfig(settings=..., settings_refresh_s=...)`, the `labels` of `Principal` and `Organization`, the `labels` and `capture` fields on events with `CaptureObserved`, and `ClientReportEvent` with `ClientReportPayload`. [SPEC §13](https://github.com/good-timing/baton/blob/main/docs/SPEC.md#stability-from-10) lists what is experimental on the wire.
+These are **experimental** and may change in a minor release: `VendorConfig(settings=..., settings_refresh_s=...)`, the `labels` of `Principal` and `Organization`, the `labels` and `capture` fields on events with `CaptureObserved`, and `ClientReportEvent` with `ClientReportPayload`. [SPEC §13](https://github.com/good-timing/baton-spec/blob/main/SPEC.md#stability-from-10) lists what is experimental on the wire.
 
 ## More
 
 | | |
 |---|---|
 | [goodtiming.ai/docs.html](https://goodtiming.ai/docs.html) | The docs: both integration paths, sinks, `VendorConfig`, the proxy, the gateway, the Console |
-| [`docs/SPEC.md`](https://github.com/good-timing/baton/blob/main/docs/SPEC.md) | The wire protocol. The contract a collector consumes |
+| [`SPEC.md`](https://github.com/good-timing/baton-spec/blob/main/SPEC.md) | The wire protocol, in `baton-spec`. The contract a collector consumes |
 | [`docs/CHARTER.md`](https://github.com/good-timing/baton/blob/main/docs/CHARTER.md) | Why the SDK is thin, and what deliberately lives downstream of the sink |
 | [`examples/`](https://github.com/good-timing/baton/tree/main/examples) | The four-rung sink ladder. Start with `examples/01_stdout/demo.py`, which needs no key |
 | [`CONTRIBUTING.md`](https://github.com/good-timing/baton/blob/main/CONTRIBUTING.md) | Dev setup, the `make` targets, PR conventions |

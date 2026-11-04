@@ -7,7 +7,7 @@
 - [ ] Bug fix
 - [ ] New feature (opt-in / backwards-compatible)
 - [ ] Breaking change (requires deprecation cycle per CONTRIBUTING.md)
-- [ ] Spec change (also updates `docs/SPEC.md` + `docs/SPEC.md §13` changelog)
+- [ ] Spec change (update `baton-spec`'s `SPEC.md` and its §13, and push that first)
 - [ ] Documentation only
 - [ ] Refactor / no behavior change
 
@@ -26,7 +26,7 @@ make ci
 
 ## Spec-first checklist
 
-- [ ] If this changes the wire format, `docs/SPEC.md` and `docs/SPEC.md §13` are updated in this PR.
+- [ ] If this changes the wire format, `baton-spec`'s `SPEC.md` and its §13 are updated and pushed first.
 - [ ] If this changes a load-bearing decision, `docs/CHARTER.md` reflects the new posture.
 - [ ] Public API additions are exported from `src/baton/__init__.py` (or the appropriate `integrations/<name>/__init__.py`).
 - [ ] Failing test was written first; now passes.

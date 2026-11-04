@@ -11,8 +11,7 @@
 # Default owner for anything not otherwise matched
 # *                            @good-timing/maintainers
 
-# SPEC + CHARTER changes — load-bearing; require maintainer review
-# /docs/SPEC.md                @good-timing/maintainers
+# CHARTER changes (the spec is in baton-spec) — load-bearing; require maintainer review
 # /docs/CHARTER.md             @good-timing/maintainers
 
 # Wire format + event schema

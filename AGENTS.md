@@ -2,7 +2,7 @@
 
 *Follows the [AGENTS.md](https://agents.md) convention — discovered automatically by Claude Code, Cursor, OpenAI Codex CLI, and other AI coding agents.*
 
-This is the Baton SDK repo (stable from 1.0). The canonical strategic frame lives in `docs/CHARTER.md` and the wire protocol in `docs/SPEC.md`. Read those before suggesting architectural changes.
+This is the Baton SDK repo (stable from 1.0). The canonical strategic frame lives in `docs/CHARTER.md` and the wire protocol in `baton-spec`'s `SPEC.md`. Read those before suggesting architectural changes.
 
 ## Architectural posture (CHARTER ADR-4)
 
@@ -19,7 +19,7 @@ If you find yourself about to add state, a Channel, or policy logic to this code
 
 1. **No vendor-specific imports.** Not in source, not in tests. If the SDK imports from any vendor module, the architecture is broken.
 2. **Baton only sees what MCP transport carries.** No reaching into vendor app logs, request context, DB, or observability events.
-3. **The spec lives in `docs/SPEC.md`, never in a vendor repo.**
+3. **The spec lives in `baton-spec` (`SPEC.md`), never in a vendor repo.** "SPEC §N" anywhere in this repo means a section of that file.
 4. **Public API is the contract.** Anything exported from `src/baton/__init__.py` is what vendors integrate against; breaking changes require a SPEC §13 changelog entry.
 5. **Tests use fake-vendor fixtures only.** Tests prove the SDK works for any vendor.
 6. **Integration is ~5 lines or the SDK is failing.** If `install_baton(...)` grows past 5 lines in a vendor repo, refactor Baton, not the vendor.
@@ -38,7 +38,7 @@ Use `make ci` as the canonical gate (matches GitHub Actions).
 ## What lives where
 
 - `src/baton/` — the SDK package (Python). Core substrate at the top level (`sinks.py`, `events.py`, `scrub.py`, `_state.py`, `client.py`, `_dsn.py`, `_optout.py`). `_optout.py` is the off switch (`BATON_DISABLED`): checked FIRST at all five entry points, and "off" means install nothing AND never throw — a switch that can abort a vendor's boot is worse than no switch. `_dsn.py` is the only reader of the packed `dsn` a Console mints — the grammar's one implementation, shared by both adapters AND the library API so no door can resolve a customer's workspace differently from another, and the home of `VENDOR_ID_PATTERN` because a DSN's server segment IS a `vendor_id`. Integrations under `src/baton/integrations/*` — today: `mcp/` (adapts the official Anthropic `mcp` SDK's `mcp.server.fastmcp.FastMCP` via tool-handler wrapping) and `fastmcp/` (adapts the standalone `fastmcp` library's `fastmcp.FastMCP` via middleware). Both expose the same `install_baton`, `VendorConfig`, `BatonHandle` surface; vendors pick the adapter that matches their host library. Pattern: core SDK + opt-in integrations via pip extras.
-- `docs/` — canonical strategic and protocol docs: `CHARTER.md`, `SPEC.md`.
+- `docs/` — canonical strategic docs: `CHARTER.md`. `SPEC.md` is a stub pointing to `baton-spec`.
 - `examples/` — runnable usage examples (the four-rung sink ladder, the library-API skill demo, the e2e smoke test).
 - `tests/` — test suite. Integration tests live under `tests/integrations/<name>/` mirroring the source layout.
 

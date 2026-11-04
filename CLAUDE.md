@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Canonical guidance
 
-`AGENTS.md` is the canonical per-repo agent doc (follows the [agents.md](https://agents.md) convention). Read it first — it covers architectural posture, SDK boundary discipline, and the "what lives where" map. Strategic decisions live in `docs/CHARTER.md`; the wire protocol lives in `docs/SPEC.md`. **Read CHARTER before suggesting architectural changes.**
+`AGENTS.md` is the canonical per-repo agent doc (follows the [agents.md](https://agents.md) convention). Read it first — it covers architectural posture, SDK boundary discipline, and the "what lives where" map. Strategic decisions live in `docs/CHARTER.md`; the wire protocol lives in `baton-spec`'s `SPEC.md`. **Read CHARTER before suggesting architectural changes.**
 
 ## Commands
 
@@ -102,4 +102,4 @@ Exception: docstrings that something reads at runtime (MCP tool/resource/prompt 
 
 ## When in doubt
 
-`docs/CHARTER.md` is the North Star. `docs/SPEC.md` is the wire-format contract. Don't add state, policy, Channels, or vendor-specific code to this SDK without re-reading them first.
+`docs/CHARTER.md` is the North Star. `baton-spec`'s `SPEC.md` is the wire-format contract. Don't add state, policy, Channels, or vendor-specific code to this SDK without re-reading them first.

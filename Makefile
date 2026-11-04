@@ -1,5 +1,5 @@
 # Baton SDK — thin event capture
-# See docs/SPEC.md (the wire protocol) and docs/CHARTER.md (the load-bearing decisions).
+# See baton-spec's SPEC.md (the wire protocol) and docs/CHARTER.md (the load-bearing decisions).
 
 # PYTHON is gone: `uv sync` selects the interpreter from PYTHON_VERSION below,
 # so a second way to name one could only disagree with it.
@@ -7,7 +7,7 @@ PYTHON_VERSION ?= 3.14
 VENV ?= .venv
 BIN = $(VENV)/bin
 
-.PHONY: install test test-fast test-perf test-functional soak bench test-watch test-cov lint format format-check typecheck ci clean build spec-check
+.PHONY: install test test-fast test-perf test-functional soak bench test-watch test-cov lint format format-check typecheck ci clean build
 
 # `--locked` is the point: it FAILS if uv.lock and pyproject.toml disagree,
 # rather than quietly re-resolving. That is what makes this venv the same one
@@ -88,11 +88,6 @@ ci: lint format-check typecheck test
 # extra — uv supplies it for the one command that needs it.
 build:
 	uv run --with build python -m build
-
-# Validate SPEC.md cross-references and section numbering.
-# (Implementation lives in scripts/spec_check.py; placeholder until written.)
-spec-check:
-	@echo "spec-check not yet implemented; see scripts/spec_check.py"
 
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage build dist *.egg-info

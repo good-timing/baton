@@ -11,20 +11,13 @@ The release pipeline is **GitHub Actions + PyPI Trusted Publishing** — a `v*` 
 For any normal patch / minor release.
 
 1. **Bump version** in `pyproject.toml` (`version = "X.Y.Z"`). Follow semver (see "Versioning policy" below).
-2. **Add a CHANGELOG entry** under `## X.Y.Z: <one-line summary>`, above the previous release block. Wire-format changes also go in `docs/SPEC.md §13`.
+2. **Add a CHANGELOG entry** under `## X.Y.Z: <one-line summary>`, above the previous release block. A wire-format change also needs its `baton-spec` commit, with a `SPEC.md` §13 entry, pushed before this one. Move the `baton-spec` submodule pin to that commit in the release commit, so the conformance tests run against it.
 3. **Commit + push to `main`:**
    ```sh
-   git add pyproject.toml uv.lock CHANGELOG.md docs/SPEC.md   # SPEC only if step 2 touched it
+   git add pyproject.toml uv.lock CHANGELOG.md baton-spec   # baton-spec only if step 2 moved the pin
    git commit -m "release: X.Y.Z"
    git push
    ```
-
-   ⚠ **`docs/SPEC.md` belongs in that list.** Step 2 above and the pre-release
-   checklist below both require a §13 entry for a wire-format change, and this
-   line omitted the file until 2026-09-11 — so a maintainer following the
-   runbook literally tags a commit whose SPEC edit is still sitting unstaged.
-   `git add` is happy to leave it there. Sibling of the `uv.lock` omission
-   below, found the same way and fixed in the same release.
 
    ⚠ **`uv.lock` is not optional here.** It records this package's OWN version,
    and the release workflow's `ci` job installs with `uv sync --locked`, which
@@ -68,7 +61,7 @@ Run before tagging:
 
 - [ ] `make ci` is green locally
 - [ ] CHANGELOG entry drafted, factual, scoped to user-visible changes
-- [ ] Wire-format changes (if any) also entered in `docs/SPEC.md §13`
+- [ ] Wire-format changes (if any) entered in `baton-spec`'s `SPEC.md` §13, pushed first, and the submodule pin moved to it
 - [ ] Version bump committed and pushed (the tag must point at the bumped commit, not an earlier one)
 - [ ] No uncommitted changes in the working tree
 - [ ] After publish, the latest version on goodtiming.ai/docs.html (Install) is updated
@@ -141,4 +134,4 @@ keyring set https://upload.pypi.org/legacy/ __token__
 
 ## Versioning policy
 
-From 1.0, semver: a breaking change to the public API (README, "What is public") is a new major, a new feature a minor, a fix a patch. An experimental item may change in a minor. Wire-format changes also go in `docs/SPEC.md §13`, and the wire format only grows.
+From 1.0, semver: a breaking change to the public API (README, "What is public") is a new major, a new feature a minor, a fix a patch. An experimental item may change in a minor. Wire-format changes also go in `baton-spec`'s `SPEC.md` §13, and the wire format only grows.

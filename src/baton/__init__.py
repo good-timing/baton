@@ -1,6 +1,6 @@
 """Baton SDK — structured signal capture for agent-mediated tool use.
 
-Thin event capture surface with pluggable sinks. See ``docs/SPEC.md`` (the
+Thin event capture surface with pluggable sinks. See ``baton-spec``'s ``SPEC.md`` (the
 wire protocol) and ``docs/CHARTER.md`` (load-bearing decisions). The
 capture / interpretation / egress separation is documented in SPEC §11.
 

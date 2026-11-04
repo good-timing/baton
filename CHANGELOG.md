@@ -4,7 +4,7 @@ All notable changes to the Baton SDK will be documented in this file.
 
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) from 1.0.
 
-**Spec changes** (anything affecting the wire format) are also recorded in `docs/SPEC.md §13`. This file is for the SDK package's user-facing changelog; SPEC §13 is the canonical wire-format change log.
+**Spec changes** (anything affecting the wire format) are also recorded in `baton-spec`'s `SPEC.md` §13. This file is for the SDK package's user-facing changelog; SPEC §13 is the canonical wire-format change log.
 
 ---
 

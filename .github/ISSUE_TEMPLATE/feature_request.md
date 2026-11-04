@@ -21,7 +21,7 @@ assignees: ''
 ## SPEC / CHARTER implications
 
 <!--
-If this would change the wire format, please reference `docs/SPEC.md §13` discipline.
+If this would change the wire format, please follow [`SPEC.md` §13](https://github.com/good-timing/baton-spec/blob/main/SPEC.md#13-compatibility--versioning).
 If this would change a load-bearing decision, please reference `docs/CHARTER.md`'s relevant Open Decision.
 -->
 

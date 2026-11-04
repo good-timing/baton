@@ -5,7 +5,7 @@ Thanks for your interest in contributing. Baton is a thin, opinionated SDK; the 
 ## TL;DR
 
 - **Bug fix or small enhancement?** Open a PR. CI + reviewer feedback will guide it home.
-- **Architectural change, new public API, or anything touching the wire format?** **Open a SPEC or CHARTER discussion first** (see *Spec-first, failing-test-first*). Changes to `docs/SPEC.md` need a §13 changelog entry.
+- **Architectural change, new public API, or anything touching the wire format?** **Open a SPEC or CHARTER discussion first** (see *Spec-first, failing-test-first*). Changes to `baton-spec`'s `SPEC.md` need a §13 changelog entry there.
 - **Security disclosure?** See [SECURITY.md](SECURITY.md) — do not open a public issue.
 
 ## Project disciplines
@@ -13,7 +13,7 @@ Thanks for your interest in contributing. Baton is a thin, opinionated SDK; the 
 Before writing code, read:
 
 1. `docs/CHARTER.md` — load-bearing decisions and SDK boundary rules. **§4 is non-negotiable** — no vendor-specific imports in `src/baton/` or `tests/`; the SDK must work for any vendor.
-2. `docs/SPEC.md` — the canonical wire protocol. Changes here are coordinated and versioned; you cannot patch the schema in a hotfix.
+2. `baton-spec`'s `SPEC.md` — the canonical wire protocol. "SPEC §N" in this repo means a section of it. Changes to it are coordinated and versioned; you cannot patch the schema in a hotfix.
 3. `README.md` — the "Library API" section covers the `baton.Client` / `AsyncClient` surface alongside the MCP middleware path.
 
 ## Development setup
@@ -61,7 +61,7 @@ Anything exported from `src/baton/__init__.py` (or `src/baton/integrations/<name
 
 - One logical change per PR. Big PRs that mix refactoring + behavior change are hard to review; please split.
 - Reference the SPEC/CHARTER section your change relates to (e.g., "implements SPEC §11.4 envelope additions").
-- If your change updates `docs/SPEC.md`, also update `docs/SPEC.md §13` (changelog) in the same PR.
+- If your change needs a spec change, make it in `baton-spec` (`SPEC.md` and its §13) and push that first.
 - Tests are required for behavior changes; they're optional for pure refactors that don't change observable behavior.
 
 ## What we won't accept
