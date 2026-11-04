@@ -11,7 +11,12 @@ from typing import Any
 
 import pytest
 
-from tests._event_helpers import LIFECYCLE_EVENT_TYPES, TOOL_LIST_EVENT_TYPES, read_events
+from tests._event_helpers import (
+    LIFECYCLE_EVENT_TYPES,
+    TOOL_LIST_EVENT_TYPES,
+    queues_written,
+    read_events,
+)
 
 pytestmark = pytest.mark.functional
 
@@ -168,6 +173,7 @@ async def test_over_a_real_socket_the_origin_follows_the_rung(
                 await client.call_tool("work", {"caller": caller})
 
         await asyncio.gather(_call_twice("client-a"), _call_twice("client-b"))
+        await queues_written()
 
         events = [ev.model_dump() for ev in sink.events]
         snapshots = [ev for ev in events if ev["event_type"] == "surface_snapshot"]

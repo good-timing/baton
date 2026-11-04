@@ -45,6 +45,23 @@ def _config(sink: CapturingSink, overrides: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _flush(handles: list[Any]) -> None:
+    for handle in handles:
+        await handle.flush()
+
+
+def _flushing(call: Callable[..., Any], handles: list[Any]) -> Callable[..., Any]:
+    """The sinks are written off the call, so a test reads them after a flush."""
+
+    async def call_then_flush(name: str, arguments: dict[str, Any]) -> Any:
+        try:
+            return await call(name, arguments)
+        finally:
+            await _flush(handles)
+
+    return call_then_flush
+
+
 @asynccontextmanager
 async def _official(
     tools: list[Callable[..., Any]],
@@ -65,7 +82,10 @@ async def _official(
         async with connected_session(mcp) as session:
             listed = (await session.list_tools()).tools
             schemas = {t.name: getattr(t, "input_schema", None) or t.inputSchema for t in listed}
-            yield Served(mcp, handles[0], sinks[0], schemas, session.call_tool, sinks[1:])
+            await _flush(handles)
+            yield Served(
+                mcp, handles[0], sinks[0], schemas, _flushing(session.call_tool, handles), sinks[1:]
+            )
     finally:
         for handle in handles:
             await handle.aclose()
@@ -91,7 +111,10 @@ async def _standalone(
         async with Client(mcp) as client:
             listed = await client.list_tools()
             schemas = {t.name: getattr(t, "input_schema", None) or t.inputSchema for t in listed}
-            yield Served(mcp, handles[0], sinks[0], schemas, client.call_tool, sinks[1:])
+            await _flush(handles)
+            yield Served(
+                mcp, handles[0], sinks[0], schemas, _flushing(client.call_tool, handles), sinks[1:]
+            )
     finally:
         for handle in handles:
             await handle.aclose()

@@ -10,9 +10,13 @@ fixture) keeps it visible to any test that wants to assert on it directly.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
+from time import monotonic
 from typing import Any
+
+from baton.sinks import _LIVE_SENDERS, _QueueSender
 
 
 def without_surface_snapshots(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -78,3 +82,12 @@ def read_events(path: Path | str) -> list[dict[str, Any]]:
     # the only reason it is here.
     with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
+
+
+async def queues_written(timeout: float = 5.0) -> None:
+    """Sinks are written off the call, so a test that cannot reach the handle
+    (a server on its own thread) waits here before reading its sink."""
+    deadline = monotonic() + timeout
+    while any(isinstance(q, _QueueSender) and q.pending() for q in list(_LIVE_SENDERS)):
+        assert monotonic() < deadline, "a sink's queue was not written out in time"
+        await asyncio.sleep(0.005)

@@ -195,6 +195,7 @@ async def test_a_servers_own_session_never_enters_the_shared_counter(adapter: st
         server = _server(adapter)
         shared.wrap(server)
         await _call(adapter, server)
+    await shared.flush()
     assert shared._shared is not None
     assert shared._shared.counter._counters == {}
     assert len({e.session_id for e in sink.events if e.event_type == "tool_call_start"}) == 3

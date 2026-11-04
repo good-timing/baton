@@ -35,6 +35,7 @@ from fastmcp import Client, FastMCP
 from baton.events import Event
 from baton.integrations.standalone import VendorConfig, install_baton
 from baton.sinks import Sink
+from tests._event_helpers import queues_written
 
 # Same discriminator the fix gates on, for the same reason: mcp owns the
 # ``ServerSession`` whose lifetime decides whether fastmcp's cached id survives.
@@ -181,6 +182,7 @@ async def test_concurrent_clients_do_not_share_a_session_id(transport: str) -> N
                 await client.call_tool("work", {"caller": caller})
 
         await asyncio.gather(call_as("alice"), call_as("bob"))
+        await queues_written()
 
     starts = [e for e in sink.events if e.event_type == "tool_call_start"]
     assert len(starts) == 2, f"expected one start per client, got {len(starts)}"
@@ -212,6 +214,7 @@ async def test_stateless_http_clients_do_not_merge() -> None:
                 await client.call_tool("work", {"caller": caller})
 
         await asyncio.gather(call_as("alice"), call_as("bob"))
+        await queues_written()
 
     starts = [e for e in sink.events if e.event_type == "tool_call_start"]
     assert len(starts) == 2, f"expected one start per client, got {len(starts)}"
@@ -244,6 +247,7 @@ async def test_a_listing_shares_the_calls_session(transport: str) -> None:
                 await client.call_tool("work", {"caller": caller})
 
         await asyncio.gather(list_then_call_as("alice"), list_then_call_as("bob"))
+        await queues_written()
 
     def sessions_of(caller: str, event_type: str) -> set[str]:
         return {

@@ -51,7 +51,7 @@ async def _run_fastmcp(events_path: Path, **config_kwargs: Any) -> list[dict[str
         return text
 
     sink = FileSink(str(events_path))
-    install_baton(
+    handle = install_baton(
         mcp,
         VendorConfig(
             vendor_id=SERVER,
@@ -63,7 +63,7 @@ async def _run_fastmcp(events_path: Path, **config_kwargs: Any) -> list[dict[str
     )
     async with Client(mcp) as client:
         await client.call_tool("echo", {"text": "hi"})
-    await sink.aclose()
+    await handle.aclose()
     return _events(events_path)
 
 
@@ -79,7 +79,7 @@ async def _run_mcp(events_path: Path, **config_kwargs: Any) -> list[dict[str, An
         return text
 
     sink = FileSink(str(events_path))
-    install_baton(
+    handle = install_baton(
         mcp,
         VendorConfig(
             vendor_id=SERVER,
@@ -90,7 +90,7 @@ async def _run_mcp(events_path: Path, **config_kwargs: Any) -> list[dict[str, An
         ),
     )
     await mcp.call_tool("echo", {"text": "hi"})
-    await sink.aclose()
+    await handle.aclose()
     return _events(events_path)
 
 

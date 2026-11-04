@@ -43,7 +43,7 @@ from typing import Any
 
 import pytest
 
-from tests._event_helpers import without_surface_snapshots
+from tests._event_helpers import queues_written, without_surface_snapshots
 
 pytestmark = pytest.mark.functional
 
@@ -205,6 +205,7 @@ async def test_the_standalone_adapter_sees_a_real_socket_as_http(tmp_path: Path)
                 await client.call_tool("work", {"caller": caller})
 
         await asyncio.gather(_call("client-a"), _call("client-b"))
+        await queues_written()
 
         events = without_surface_snapshots([ev.model_dump() for ev in sink.events])
         assert events, "no events captured over the socket — the assertion would be vacuous"

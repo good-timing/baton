@@ -126,3 +126,23 @@ def collector(request: pytest.FixtureRequest) -> Iterator[int]:
     finally:
         process.kill()
         process.wait()
+
+
+@pytest.fixture(autouse=True)
+def _slow_queue_when_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``SLOW_SINK_QUEUE=1`` delays every queued write, so a test that
+    reads a sink without waiting for its queue fails every time, not only on
+    a loaded runner. ``test_queued_sink``'s timing tests fail under it."""
+    if os.environ.get("SLOW_SINK_QUEUE") != "1":
+        return
+    import asyncio
+
+    from baton.sinks import _QueueSender
+
+    write = _QueueSender._write
+
+    async def slow_write(self: _QueueSender, event: Any) -> None:
+        await asyncio.sleep(0.02)
+        await write(self, event)
+
+    monkeypatch.setattr(_QueueSender, "_write", slow_write)

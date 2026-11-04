@@ -17,7 +17,12 @@ from fastmcp.client.transports import StreamableHttpTransport
 
 from baton.integrations.standalone import VendorConfig, install_baton
 from baton.sinks import FileSink
-from tests._event_helpers import CALLER_EVENT_TYPES, read_events, without_surface_snapshots
+from tests._event_helpers import (
+    CALLER_EVENT_TYPES,
+    queues_written,
+    read_events,
+    without_surface_snapshots,
+)
 from tests.integrations.standalone.test_concurrent_sessions import _running_server
 from tests.integrations.standalone.test_iserror_reclassify import FLAG_IS_EXPRESSIBLE, ToolResult
 
@@ -113,6 +118,7 @@ async def test_a_user_agent_sent_over_http_is_observed_and_scrubbed() -> None:
                 )
 
         await asyncio.gather(call_as("client-a"), call_as("client-b"))
+        await queues_written()
 
     dumped = [ev.model_dump(mode="json") for ev in sink.events]
     callers = without_surface_snapshots(dumped)

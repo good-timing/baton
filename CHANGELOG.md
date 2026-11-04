@@ -42,6 +42,8 @@ grows (SPEC §13). The experimental items below may change in a minor.
   - A surface snapshot counts as sent once it is handed to the queue. If your
     sink then fails to write it, it is not sent again.
   - `BatonHandle.sink` is still the sink you passed. `HttpSink` is unchanged.
+  - Your own tests should call `handle.flush()` (or `client.flush()`) before
+    they read your sink, because events reach it after the call returns.
   - **If your own sink holds a connection made on your event loop**, such as
     an aiohttp session, open it inside `write` instead. `write` now runs on
     Baton's loop.

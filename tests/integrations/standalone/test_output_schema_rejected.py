@@ -46,7 +46,7 @@ async def _drive(events_path: Path, **config: Any) -> list[dict[str, Any]]:
     def matches(x: str) -> dict[str, int]:
         return {"a": 1}
 
-    install_baton(
+    handle = install_baton(
         mcp,
         VendorConfig(
             vendor_id="os",
@@ -62,6 +62,7 @@ async def _drive(events_path: Path, **config: Any) -> list[dict[str, Any]]:
                 await client.call_tool_mcp(name, {"x": "1"})
             except Exception:
                 pass  # mcp 2.x's client raises on the invalid result
+    await handle.flush()
 
     return without_surface_snapshots(read_events(events_path))
 
@@ -110,7 +111,7 @@ async def _drive_outer_middleware(
     def matches(x: str) -> dict[str, int]:
         return {"a": 1}
 
-    install_baton(
+    handle = install_baton(
         mcp,
         VendorConfig(
             vendor_id="os",
@@ -127,6 +128,7 @@ async def _drive_outer_middleware(
         else:
             result = await client.call_tool_mcp("matches", {"x": "1"})
             assert getattr(result, "is_error", None) or getattr(result, "isError", None)
+    await handle.flush()
     _, terminal = _pair(without_surface_snapshots(read_events(events_path)), "matches")
     return terminal
 
