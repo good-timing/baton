@@ -6,7 +6,7 @@ Baton is a structured-signal capture SDK for agent-mediated tool use. It runs in
 
 | Version | Supported |
 |---|---|
-| 0.1.x (initial public release line; pre-1.0 = no API stability promise) | ✅ |
+| The latest 1.x release | ✅ |
 
 ## Reporting a vulnerability
 

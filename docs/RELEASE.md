@@ -10,7 +10,7 @@ The release pipeline is **GitHub Actions + PyPI Trusted Publishing** — a `v*` 
 
 For any normal patch / minor release.
 
-1. **Bump version** in `pyproject.toml` (`version = "X.Y.Z"`). Follow [semver](https://semver.org); pre-1.0 means breaking changes are allowed at any minor bump.
+1. **Bump version** in `pyproject.toml` (`version = "X.Y.Z"`). Follow [semver](https://semver.org): a breaking change to the public API (README, "What is public") is a new major. An experimental item may change in a minor.
 2. **Add a CHANGELOG entry** under `## X.Y.Z — <one-line summary>`, above the previous release block. Wire-format changes also go in `docs/SPEC.md §13`.
 3. **Commit + push to `main`:**
    ```sh

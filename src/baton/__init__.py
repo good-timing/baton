@@ -38,7 +38,7 @@ Both expose ``install_baton``, ``VendorConfig``, ``BatonHandle`` and
 ``PrincipalResolutionContext``, and both
 refuse the other library's server up front, naming the right adapter.
 
-Pre-1.0 — public API not yet stable; breaking changes flagged in SPEC §13.
+Stable from 1.0: see "What is public" in the README, and SPEC §13.
 """
 
 from __future__ import annotations

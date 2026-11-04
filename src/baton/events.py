@@ -266,6 +266,7 @@ class SurfaceSnapshotPayload(BaseModel):
     seam_augmentations: dict[str, Any] = Field(default_factory=dict)
 
 
+# Experimental: may change in a minor release (README, "What is public").
 class ClientReportPayload(BaseModel):
     """This process's lost-event counts by reason, as running totals (SPEC §11.4.7)."""
 
@@ -452,6 +453,7 @@ class _EventEnvelope(BaseModel):
     organization: OrganizationWire | None = None
     """The company the caller belongs to, from the same resolver as
     ``principal`` and independent of it (SPEC §11.4). Never a person."""
+    # Experimental: may change in a minor release (README, "What is public").
     labels: list[Annotated[str, Field(min_length=1, max_length=64)]] | None = Field(
         default=None, min_length=1, max_length=20
     )
@@ -804,6 +806,7 @@ class SurfaceSnapshotEvent(_EventEnvelope):
     payload: SurfaceSnapshotPayload
 
 
+# Experimental: may change in a minor release (README, "What is public").
 class ClientReportEvent(_EventEnvelope):
     event_type: Literal["client_report"] = "client_report"
     payload: ClientReportPayload
