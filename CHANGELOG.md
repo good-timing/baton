@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 0.9.7: the off warning names tool_list_error, and a batch takes events encoded meanwhile
 
 ### Changed
 
