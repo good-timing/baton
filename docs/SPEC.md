@@ -2,7 +2,7 @@
 
 *The wire protocol for structured **event** handoff and **response** return between Baton-instrumented capture surfaces (today: vendor MCP middleware and the library API) and a collector.*
 
-*Stability: **exploratory**. Breaking changes are expected until v1.0. Read `CHARTER.md` for project disciplines and open decisions.*
+*Stability: **stable from 1.0**. §13 lists what is experimental. Read `CHARTER.md` for project disciplines and open decisions.*
 
 *Vocabulary: a **report** is what an agent files, in its own words, when a tool call goes wrong or no tool fits (§5.1). A **signal** is what the worker builds from a report or from a failure it detected (§3). How a collector sorts reports into kinds is its own business and is not part of this spec (§11.5.5). The eight `signal_type` values (§3.1) are words an agent used to pick; from `baton-sdk` 0.8.15 no agent picks one and the worker does not fill one in.*
 
@@ -14,8 +14,8 @@
 
 | Field | Value |
 |---|---|
-| Spec version | 0.1 |
-| Date | 2026-05-13 |
+| Spec version | 1.0 |
+| Date | 2026-11-04 |
 | Wire format | JSON over HTTPS |
 | Wire encoding | UTF-8 |
 | Auth | Bearer token (vendor API key) + per-signal consent token |
@@ -938,7 +938,7 @@ A conforming Console MUST:
 
 ### 11.4 Event schema (normative)
 
-Additive-only after v1.0; pre-1.0, required-field additions are permitted per §13 (see the `vendor_id` change in the §13 changelog).
+Additive-only from 1.0 (§13, "Stability from 1.0").
 
 Every event has these fields:
 
@@ -1832,7 +1832,7 @@ Richer policies are explicitly future work and are NOT normative until then:
 - **Time-series anomaly detection** — escalate when a signal class spikes vs trailing baseline.
 - **Cohort-aware escalation** — different policies for enterprise-tier vs free-tier customers.
 
-All four are Console-worker-side; SDK doesn't change. The action vocabulary is additive-only until v1.0; new actions may be introduced (e.g., `quarantine`, `await_human_review`) but existing actions retain their semantics.
+All four are Console-worker-side; SDK doesn't change. The action vocabulary is additive-only; new actions may be introduced (e.g., `quarantine`, `await_human_review`) but existing actions retain their semantics.
 
 ---
 
@@ -1881,7 +1881,6 @@ already learn.
 
 - The wire format is **semver** via the SDK's `sdk_version` field. Breaking changes bump the major. Additive fields bump the minor.
 - **`sdk_version` also names the producer, by its prefix.** `baton-sdk` sends the bare version (`0.9.1`), `baton-ts` sends `ts-` and the version (`ts-0.6.1`), `baton-proxy` sends `baton-proxy/` and the version, and the Go SDK MUST send `go-` and the version. A new producer MUST pick a prefix no other producer uses. There is no separate field for the producer's name.
-- Until v1.0 is declared, all bumps are minor and breakage is allowed. We're pre-stable; consumers should pin to a known-good SDK range.
 
 ### Stability from 1.0
 
@@ -1902,8 +1901,11 @@ From 1.0, the wire format is additive-only: no event type, field or value is rem
 
 > ⚠ **Thirteen entries dated 2026-09-13 or earlier still read "Unreleased" and are not.** They shipped across 0.4.0–0.8.x; which release carried each is not established, and is not guessed here. An entry labelled "Unreleased" with a later date is pending, and the next release numbers it.
 
-- **Unreleased (2026-11-04) — every sink is written off the tool call (§11.2 rules 3, 7 and 8).** No envelope field, event type or shape changes. `baton-sdk` and `baton-ts` now put every sink but the HTTP sink behind one bounded queue (1000 events, oldest dropped first) that the SDK writes in the background, as the Go SDK has since go 0.2.0. Before, a stderr, file or vendor sink was written inside the tool call, so a slow one slowed the call. An event the queue pushes out is `buffer_full`; one the sink fails to write is `write_failed`; flush and close write the queue first, within rule 7's limit, and close counts what is left `unsent_at_close`. A surface snapshot counts as sent once it is queued, so a sink that then fails to write it does not get it again. **Consumer consequence:** a producer with a local or vendor sink can now lose events to `buffer_full`.
-- **Unreleased (2026-11-03) — the library path exposes the annotation tool as data (§5.6).** No envelope field, event type or shape changes. A library producer SHOULD expose the annotation tool's name, description, input schema, refusal text and instructions, as an adapter registers them, and a mapping from its arguments to `annotate()` that returns nothing for a call with no `what_happened`. `baton-sdk` adds `report_tool()`. `baton-ts` and the Go SDK do not have it yet. **Consumer consequence:** none.
+- **1.0.0, ts 1.0.0, go 1.0.0 (2026-11-04) — 1.0: the wire format and each SDK's public API are stable ("Stability from 1.0" above).** No envelope field, event type or shape changes. The experimental members listed above may still change. **Breaking (TS API):** `baton-ts` no longer exports 44 zod schemas (`EventSchema` stays, experimental) and seven internal constants and helpers. **Breaking (Go API):** `Config.ResultCapture` and `Config.IntentParam` are `ResultCaptureMode` and `IntentParamMode`. `baton-sdk`'s internal modules `client_observed` and `identity_adapter` are now `_client_observed` and `_identity_adapter`. The Go SDK's 1.0 covers the MCP path only; it has no library API (§5.6) and no settings fetch (§2.6) yet. **Consumer consequence:** none.
+
+- **1.0.0, ts 1.0.0 (2026-11-04) — every sink is written off the tool call (§11.2 rules 3, 7 and 8).** No envelope field, event type or shape changes. `baton-sdk` and `baton-ts` now put every sink but the HTTP sink behind one bounded queue (1000 events, oldest dropped first) that the SDK writes in the background, as the Go SDK has since go 0.2.0. Before, a stderr, file or vendor sink was written inside the tool call, so a slow one slowed the call. An event the queue pushes out is `buffer_full`; one the sink fails to write is `write_failed`; flush and close write the queue first, within rule 7's limit, and close counts what is left `unsent_at_close`. A surface snapshot counts as sent once it is queued, so a sink that then fails to write it does not get it again. **Consumer consequence:** a producer with a local or vendor sink can now lose events to `buffer_full`.
+
+- **1.0.0 (2026-11-03) — the library path exposes the annotation tool as data (§5.6).** No envelope field, event type or shape changes. A library producer SHOULD expose the annotation tool's name, description, input schema, refusal text and instructions, as an adapter registers them, and a mapping from its arguments to `annotate()` that returns nothing for a call with no `what_happened`. `baton-sdk` adds `report_tool()`. `baton-ts` and the Go SDK do not have it yet. **Consumer consequence:** none.
 
 - **go 0.3.0 (2026-11-03) — the Go SDK never calls the vendor's server; `Install` and `New` take `impl` and `opts` (§5.1.1, §11.4.2).** No envelope field or event type changes. Before, `Install` and `Wrap` sent the server a setup call of their own, through any middleware the vendor had added. Now the server name, version and instructions come from the `mcp.Implementation` and `mcp.ServerOptions` the vendor passes, and capabilities from the first `initialize` or `server/discover` a client sends. **Breaking (Go API):** `Install(server, impl, opts, cfg)` and `New(impl, opts, cfg)` replace `Install(server, cfg)` and `New(cfg)`; a nil `impl` or empty `impl.Name` is a config error. **Consumer consequence:** when a tool call comes before any `initialize`, as in stateless HTTP, the first `surface_snapshot` has no capabilities and a second one with them follows.
 
@@ -1967,7 +1969,7 @@ From 1.0, the wire format is additive-only: no event type, field or value is rem
 
   **Fixed: the Go SDK records the retired names.** It removed `expected_result` and `overall_task` from a call's arguments but dropped their values. It now records them as `call_expected` and `call_workflow`, with `intent_source: "injected_param"`, as `baton-sdk` and `baton-ts` do.
 
-- **Unreleased (spec only, 2026-11-01) — how the scrubber lowercases a key (§7).** Plain lowercasing, as Python's `str.lower()`, not case folding. This writes down what `baton-sdk` and `baton-ts` already do; `baton-spec`'s `scrub/cases.json` pins it. A Go producer using `strings.ToLower` differs on `U+0130`; the Go SDK maps it first, from 0.1.1. No envelope field, event type or shape changes.
+- **1.0 (spec only, 2026-11-01) — how the scrubber lowercases a key (§7).** Plain lowercasing, as Python's `str.lower()`, not case folding. This writes down what `baton-sdk` and `baton-ts` already do; `baton-spec`'s `scrub/cases.json` pins it. A Go producer using `strings.ToLower` differs on `U+0130`; the Go SDK maps it first, from 0.1.1. No envelope field, event type or shape changes.
 
 - **0.9.2, ts 0.6.2, go 0.1.1 (2026-11-01) — NEW event type `client_report` (§11.4.7), and the rule it reports on (§11.2 rule 8).** Additive. `baton-sdk`, `baton-ts` and the Go SDK already count by these reasons. An event left unsent when the process exits without close is warned about, not counted. `baton-sdk`, `baton-ts` and the Go SDK send the event from their next releases.
 
@@ -1977,7 +1979,7 @@ From 1.0, the wire format is additive-only: no event type, field or value is rem
 
 - **0.9.2 (SDK, 2026-10-30) — `runtime_meta` carries only the `_meta` keys the client sent (§11.4.1).** On mcp 1.x, `baton-sdk` 0.9.1 and earlier added `"progressToken": null` to every request that had none. A null the client really sent is still kept. No envelope field or event type changes. **Consumer consequence:** a null `progressToken` from those versions is not the client's.
 
-- **Unreleased (spec only, 2026-10-30) — four rules a third SDK needs, written before the Go SDK.** No envelope field, event type or shape changes.
+- **1.0 (spec only, 2026-10-30) — four rules a third SDK needs, written before the Go SDK.** No envelope field, event type or shape changes.
 
   **(1) Where `user_goal` is removed (§5.1.2).** In the outer `tools/call` seam, before any vendor code or host input check sees it, for every tool whose schema the producer changed. `baton-sdk` 0.9.1 already does this; for a tool its registry does not hold, it leaves the names to its handler wrap. `baton-ts` 0.6.5 removes `user_goal` there too, so a 1.x task-based tool, which it does not wrap, no longer receives it; through 0.6.4 it removed `user_goal` only in its handler wrap. The Go SDK's typed tools reject any argument their schema does not declare, so there the rule is what keeps calls working.
 
@@ -1989,7 +1991,7 @@ From 1.0, the wire format is additive-only: no event type, field or value is rem
 
   **Consumer consequence:** `refused` does not prove that vendor code turned the call away. A consumer reads it as "stopped before the tool ran".
 
-- **Unreleased (spec only, 2026-10-30) — more rules for a third SDK, and stale text fixed.** No envelope field, event type or shape changes.
+- **1.0 (spec only, 2026-10-30) — more rules for a third SDK, and stale text fixed.** No envelope field, event type or shape changes.
 
   **(1) Scrubber digits, word boundaries and whitespace are fixed sets (§7).** Digits are `0`–`9`, boundaries are ASCII, and whitespace is space, tab, LF, CR, FF and `U+00A0`. `baton-sdk` 0.9.1 and `baton-proxy` 0.7.1 use Unicode digits and boundaries, so they also scrub, for example, a card number in Arabic-Indic digits. Python's and JavaScript's `\s` match more spaces than this set, and Go's matches fewer (no `U+00A0`). `baton-sdk`, `baton-ts` and `baton-proxy` on `main` use the set, as the Go SDK always has.
 
