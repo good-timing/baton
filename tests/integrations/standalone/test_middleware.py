@@ -504,7 +504,7 @@ class TestExtractHeaders:
         """Register A8, at the seam a vendor actually touches.
 
         ``extract_headers`` itself returns the case-SENSITIVE dict ASGI built —
-        the fold happens once, in ``SessionResolutionContext``. So the assertion
+        the fold happens once, in ``PrincipalResolutionContext``. So the assertion
         is on the composition, because that is what reaches a hook: this
         adapter's real extractor, in the real context object.
 
@@ -512,13 +512,15 @@ class TestExtractHeaders:
         header is called in every document describing it — never the lowercased
         form the wire happens to carry.
         """
-        from baton.integrations._config import SessionResolutionContext
+        from baton.integrations._config import PrincipalResolutionContext
 
         with set_http_request(_fake_http_request({"X-Forwarded-User": "employee-4417"})):
             headers = extract_headers()
 
         assert headers is not None
-        ctx = SessionResolutionContext(headers=headers, meta=None, tool_name="lookup", arguments={})
+        ctx = PrincipalResolutionContext(
+            headers=headers, meta=None, tool_name="lookup", arguments={}
+        )
         assert ctx.headers is not None
         assert ctx.headers["X-Forwarded-User"] == "employee-4417"
         assert ctx.headers.get("X-FORWARDED-USER") == "employee-4417"

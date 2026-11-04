@@ -10,13 +10,13 @@ from typing import Any
 
 from baton._uuid import uuid7
 from baton.events import ClientObserved, OrganizationWire, PrincipalWire
-from baton.integrations._session import SessionOrigin, clean_session_id
-from baton.integrations.client_observed import (
+from baton.integrations._client_observed import (
     clean_runtime_meta,
     meta_to_dict,
     observe_client,
 )
-from baton.integrations.identity_adapter import wire_vendor_caller
+from baton.integrations._identity_adapter import wire_vendor_caller
+from baton.integrations._session import SessionOrigin, clean_session_id
 
 logger = logging.getLogger(__name__)
 

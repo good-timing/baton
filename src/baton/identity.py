@@ -13,6 +13,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
+__all__ = ["Organization", "Principal"]
+
 PRINCIPAL_FORM_RAW = "raw"
 PRINCIPAL_FORM_HASHED = "hashed"
 PRINCIPAL_FORMS = frozenset({PRINCIPAL_FORM_RAW, PRINCIPAL_FORM_HASHED})
@@ -30,7 +32,9 @@ class Organization:
     display_name: str | None = None
     form: Literal["raw", "hashed"] = "raw"
     labels: Sequence[str] = ()
-    """Your names for the groups this caller is in, for capture settings to
+    """**Experimental:** may change in a minor release.
+
+    Your names for the groups this caller is in, for capture settings to
     match (SPEC §11.4). Baton sees them, so use group names or keys you keep,
     never raw ids."""
 
@@ -57,7 +61,9 @@ class Principal:
     hashed the value."""
     organization: Organization | None = None
     labels: Sequence[str] = ()
-    """As ``Organization.labels``. A principal's labels and its organization's
+    """**Experimental:** may change in a minor release.
+
+    As ``Organization.labels``. A principal's labels and its organization's
     are sent together."""
 
 
@@ -69,11 +75,11 @@ class IdentityResolver(Protocol):
 
     ⚠ **This is NOT the shape a vendor implements.** The vendor-facing seam is
     ``VendorConfig.resolve_principal`` — a plain callable taking the adapter-neutral
-    ``SessionResolutionContext``, which is the hook vendors write. A
+    ``PrincipalResolutionContext``, which is the hook vendors write. A
     method-on-an-object Protocol taking an
     untyped ``carrier`` would be a second convention for the same job, and the
     ``carrier`` would have to be one of the two libraries' incompatible
-    ``Context`` types — the precise coupling ``SessionResolutionContext`` was
+    ``Context`` types — the precise coupling ``PrincipalResolutionContext`` was
     introduced to avoid.
 
     It stays because ``baton_proxy.identity`` carries this Protocol verbatim

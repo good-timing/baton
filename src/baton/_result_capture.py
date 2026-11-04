@@ -15,7 +15,7 @@ modules and needs this vocabulary too. The RETURN-failure projection lives in
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple, cast, get_args
 
 __all__ = [
     "WITHHELD",
@@ -34,18 +34,11 @@ ladder's partial rung — which is why nothing here tests `!= "off"` to mean
 "capture", and why the member is a string rather than a boolean.
 """
 
-ResultCaptureMode = str
-"""What a vendor may set: `"full"` or `WITHHELD`.
+ResultCaptureMode = Literal["full", "off"]
+"""What a vendor may set: `"full"` or `WITHHELD`. Still validated where it
+enters, because untyped callers and the settings document can send any string."""
 
-An alias rather than a `Literal`, matching `intent_param_mode`, which is a
-plain `str` validated where it enters: the config door and the settings
-document.
-⚠ If the partial rung lands and a third value has to be threaded, narrowing
-this to a `Literal` and letting mypy-strict enforce it at the adapter-internal
-seams is the stronger move than re-validating at each one.
-"""
-
-_MODES: frozenset[str] = frozenset({"full", WITHHELD})
+_MODES: frozenset[str] = frozenset(get_args(ResultCaptureMode))
 
 
 def is_registered_mode(mode: object) -> bool:
@@ -91,8 +84,8 @@ def validate_mode(mode: str, *, field: str) -> ResultCaptureMode:
     `withholding()` answers False, and every result body is captured. The
     behaviour is deliberate and pinned by
     `test_the_mode_is_validated_at_the_DOORS_and_not_re_checked_inside`; what
-    is NOT true is that anything prevents it. Narrowing the alias to a
-    `Literal` (see this module's ⚠ above) is what would.
+    is NOT true is that anything prevents it at runtime; the `Literal` type
+    catches it only for a typed caller.
 
     ⚠ It is the ENABLED resolver that calls this, never the disabled one.
     `baton._optout` promises a disabled Baton never throws, and both doors
@@ -100,7 +93,7 @@ def validate_mode(mode: str, *, field: str) -> ResultCaptureMode:
     """
     if mode not in _MODES:
         raise ValueError(f"{field} {mode!r} must be one of {sorted(_MODES)}.")
-    return mode
+    return cast(ResultCaptureMode, mode)
 
 
 class ResultFields(NamedTuple):

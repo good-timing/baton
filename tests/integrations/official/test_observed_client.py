@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from baton.integrations.client_observed import CLIENT_INFO_META_KEY
+from baton.integrations._client_observed import CLIENT_INFO_META_KEY
 from baton.integrations.official import VendorConfig, _tool_wrap, annotation, install_baton
 from baton.integrations.official._compat import MCPServerClass as FastMCP
 from baton.scrub import identity_scrub

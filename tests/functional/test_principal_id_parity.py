@@ -7,7 +7,7 @@ one test pins that a token with NO hook yields nothing on either adapter.
 
 The companion to ``test_client_observed_parity.py``, and it exists for the same
 reason: each adapter's own suite asserts only about itself, so a signal one
-adapter silently never resolves is invisible to both. ``identity_adapter.py``
+adapter silently never resolves is invisible to both. ``_identity_adapter.py``
 is shared so that cannot happen, and this file is what pins it.
 
 It follows the same two rules as that parity test:
@@ -253,7 +253,7 @@ async def test_a_verified_token_with_NO_hook_yields_no_principal_on_either_adapt
 async def test_the_email_hook_reads_the_token_on_both_adapters_and_both_emit_paths(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``SessionResolutionContext.claims`` is filled by four call sites
+    """``PrincipalResolutionContext.claims`` is filled by four call sites
     (two adapters x tool call and annotation). ``_one_principal`` collapses
     every event of a run to one value, so a site that forgot the token yields
     a second, ``None``, entry and fails here."""
@@ -475,7 +475,7 @@ async def test_source_stays_asserted_in_every_form(
 # Register A8 — the parity this file exists for, on the one field that did not
 # have it.
 #
-# ``SessionResolutionContext``'s docstring promises a vendor "one hook works
+# ``PrincipalResolutionContext``'s docstring promises a vendor "one hook works
 # unmodified regardless of which adapter a vendor is on". For ``headers`` that
 # was false from the day it was written: official delivered a case-insensitive
 # Starlette ``Headers``, standalone a lowercased plain ``dict``, and the same
@@ -535,8 +535,8 @@ async def test_one_vendor_hook_resolves_the_same_principal_on_both_adapters() ->
     import logging
 
     from baton.identity import Principal
-    from baton.integrations._config import SessionResolutionContext
-    from baton.integrations.identity_adapter import resolve_principal_via_hook
+    from baton.integrations._config import PrincipalResolutionContext
+    from baton.integrations._identity_adapter import resolve_principal_via_hook
 
     expected = Principal(principal_id="employee-4417")
     resolved: dict[str, Any] = {}
@@ -546,7 +546,9 @@ async def test_one_vendor_hook_resolves_the_same_principal_on_both_adapters() ->
         assert headers is not None, f"{adapter} extracted no headers — the check would be vacuous"
         resolved[adapter] = await resolve_principal_via_hook(
             _vendor_hook,
-            SessionResolutionContext(headers=headers, meta=None, tool_name="lookup", arguments={}),
+            PrincipalResolutionContext(
+                headers=headers, meta=None, tool_name="lookup", arguments={}
+            ),
             logger=logging.getLogger("parity"),
         )
 

@@ -85,8 +85,10 @@ from baton.events import (
     ToolCallStartPayload,
 )
 from baton.integrations._call_slot import claim_call
+from baton.integrations._client_observed import clean_runtime_meta, meta_to_dict, observe_client
 from baton.integrations._config import (
-    SessionResolutionContext,
+    PrincipalResolutionContext,
+    ResolvePrincipalHook,
 )
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
@@ -94,6 +96,11 @@ from baton.integrations._error_result import (
     raised_error_fields,
     returned_error_fields,
     vendor_exception,
+)
+from baton.integrations._identity_adapter import (
+    ResolvedCaller,
+    resolve_caller,
+    token_claims,
 )
 from baton.integrations._llm_text import (
     USER_GOAL_PARAM_NAME,
@@ -117,13 +124,6 @@ from baton.integrations._surface import (
     assemble_surface,
     build_seam_augmentations,
     surface_hash,
-)
-from baton.integrations.client_observed import clean_runtime_meta, meta_to_dict, observe_client
-from baton.integrations.identity_adapter import (
-    ResolvedCaller,
-    ResolvePrincipalHook,
-    resolve_caller,
-    token_claims,
 )
 from baton.integrations.official import _auth
 from baton.integrations.official._compat import ToolErrorClass, set_server_instructions
@@ -544,7 +544,7 @@ def _wrap_tool_run(
         # to keep those apart. See ``observe_transport``.
         call_transport = observe_transport(context)
         identity_hook_context = (
-            SessionResolutionContext(
+            PrincipalResolutionContext(
                 headers=call_headers,
                 meta=meta_dict,
                 tool_name=name,
@@ -761,7 +761,7 @@ def observe_transport(context: Any) -> str | None:
 
 def _extract_headers_from_context(context: Any) -> Mapping[str, str] | None:
     """Best-effort HTTP header extraction, shared by rung 0 (the vendor hook's
-    ``SessionResolutionContext.headers``) and rung 4 below. ``None`` on stdio,
+    ``PrincipalResolutionContext.headers``) and rung 4 below. ``None`` on stdio,
     outside a live request, or any attribute miss; never raises."""
     if context is None:
         return None

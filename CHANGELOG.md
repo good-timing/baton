@@ -19,6 +19,31 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   `client.annotate(...)`, and returns `None` when the call is not a report.
   See "Agent reports on your own API" in the README (SPEC §5.6).
 
+### Changed
+
+- **What is public is written down** (README, "What is public"): the names in
+  `__all__` of `baton`, `baton.client`, `baton.identity`, `baton.scrub`,
+  `baton.sinks`, `baton.events` and the adapter packages. `baton.identity` and
+  `baton.scrub` now have an `__all__`. Everything else is internal.
+- **`baton` exports `BatonHandle`, `PrincipalResolutionContext`,
+  `ResolvePrincipalHook` and `ResultCaptureMode`**, so a typed hook or a
+  handle needs no adapter path.
+- **`SessionResolutionContext` is now `PrincipalResolutionContext`**, the name
+  `baton-ts` uses: it is what `resolve_principal` receives. The old name stays,
+  as the same class, on the adapter paths.
+- **`ResultCaptureMode`, `VendorConfig.intent_param_mode` and `report_mode`
+  are typed as `Literal`s** of the values they already accepted, and so is
+  `Client(result_capture_mode=...)`.
+- **Experimental:** `VendorConfig(settings=..., settings_refresh_s=...)`,
+  `Principal.labels`, `Organization.labels`, and the events' `capture` with
+  `CaptureObserved`. They may change in a minor release.
+
+### Removed
+
+- **`baton.integrations.client_observed` and
+  `baton.integrations.identity_adapter` are now `_client_observed` and
+  `_identity_adapter`.** They were internal; nothing documented imported them.
+
 ## 0.9.7: the off warning names tool_list_error, and a batch takes events encoded meanwhile
 
 ### Changed

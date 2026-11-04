@@ -27,16 +27,16 @@ from baton.events import PrincipalWire
 from baton.identity import Organization, Principal
 from baton.integrations._config import (
     CaseInsensitiveHeaders,
-    SessionResolutionContext,
+    PrincipalResolutionContext,
     _validate_vendor_config,
 )
-from baton.integrations.identity_adapter import (
+from baton.integrations._identity_adapter import (
     ResolvedCaller,
     resolve_caller,
     resolve_principal_via_hook,
 )
 
-CTX = SessionResolutionContext(headers=None, meta=None, tool_name="lookup", arguments={})
+CTX = PrincipalResolutionContext(headers=None, meta=None, tool_name="lookup", arguments={})
 
 
 @dataclass
@@ -56,7 +56,7 @@ class _Token:
 #: The context every miss below runs under: it CARRIES a usable token's
 #: claims, so a miss that came back non-``None`` would mean something read
 #: them behind the hook's back — the deleted fallback returning.
-CTX_WITH_TOKEN = SessionResolutionContext(
+CTX_WITH_TOKEN = PrincipalResolutionContext(
     headers=None, meta=None, tool_name="lookup", arguments={}, claims=_Token().claims
 )
 
@@ -112,7 +112,7 @@ async def test_attested_is_never_emitted() -> None:
     got = await _resolve(principal_from_oauth_sub)
     assert got is not None
     assert got.source == "asserted"
-    import baton.integrations.identity_adapter as adapter
+    import baton.integrations._identity_adapter as adapter
 
     assert not hasattr(adapter, "PRINCIPAL_SOURCE_ATTESTED")
     assert not hasattr(adapter, "resolve_attested_principal")
@@ -299,9 +299,9 @@ async def test_an_id_that_cannot_be_sent_emits_no_principal(unsendable: str) -> 
 
 
 async def test_the_hook_receives_the_context_it_was_given() -> None:
-    seen: list[SessionResolutionContext] = []
+    seen: list[PrincipalResolutionContext] = []
 
-    def hook(c: SessionResolutionContext) -> Principal:
+    def hook(c: PrincipalResolutionContext) -> Principal:
         seen.append(c)
         return Principal(principal_id="employee-1")
 
@@ -463,7 +463,7 @@ async def test_a_hand_built_context_folds_case_the_way_production_does() -> None
 
     resolved = await resolve_principal_via_hook(
         vendor_hook,
-        SessionResolutionContext(
+        PrincipalResolutionContext(
             headers={"x-forwarded-user": "employee-4417"},
             meta=None,
             tool_name="lookup",
@@ -484,7 +484,7 @@ def test_any_other_mapping_is_folded_not_just_a_dict() -> None:
     """
     from types import MappingProxyType
 
-    ctx = SessionResolutionContext(
+    ctx = PrincipalResolutionContext(
         headers=MappingProxyType({"x-forwarded-user": "employee-4417"}),
         meta=None,
         tool_name="lookup",
@@ -506,7 +506,7 @@ def test_a_starlette_headers_is_passed_through_untouched() -> None:
     from tests._asgi import starlette_headers
 
     original = starlette_headers({"X-Forwarded-User": "employee-4417"})
-    ctx = SessionResolutionContext(headers=original, meta=None, tool_name="lookup", arguments={})
+    ctx = PrincipalResolutionContext(headers=original, meta=None, tool_name="lookup", arguments={})
 
     assert ctx.headers is original
     assert ctx.headers.getlist("x-forwarded-user") == ["employee-4417"]  # type: ignore[union-attr]

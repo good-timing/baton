@@ -32,12 +32,18 @@ from baton._state import SessionCounter
 from baton._uuid import uuid7
 from baton.events import Event
 from baton.integrations._call_slot import CallSlot, current_slot
-from baton.integrations._config import SessionResolutionContext
+from baton.integrations._client_observed import clean_runtime_meta, observe_client
+from baton.integrations._config import PrincipalResolutionContext, ResolvePrincipalHook
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
     is_error_result,
     raised_error_fields,
     returned_error_fields,
+)
+from baton.integrations._identity_adapter import (
+    ResolvedCaller,
+    resolve_caller,
+    token_claims,
 )
 from baton.integrations._llm_text import (
     RETIRED_PARAM_NAMES,
@@ -50,13 +56,6 @@ from baton.integrations._llm_text import (
 from baton.integrations._mrtr import mcp_refusal, pause_refused, paused, resumes_a_pause
 from baton.integrations._per_caller import PerCallerSurface
 from baton.integrations._session import ResolvedSession, next_sequence
-from baton.integrations.client_observed import clean_runtime_meta, observe_client
-from baton.integrations.identity_adapter import (
-    ResolvedCaller,
-    ResolvePrincipalHook,
-    resolve_caller,
-    token_claims,
-)
 from baton.scrub import scrub_or_none
 from baton.sinks import Sink, safe_emit
 
@@ -181,7 +180,7 @@ def install_lifecycle_capture(
             caller = await resolve_caller(
                 hook=resolve_principal_hook,
                 hook_context=(
-                    SessionResolutionContext(
+                    PrincipalResolutionContext(
                         headers=request.headers,
                         meta=request.meta,
                         tool_name=tool_name,

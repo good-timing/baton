@@ -37,12 +37,17 @@ handle = install_baton(mcp, VendorConfig(
 
 from __future__ import annotations
 
-from baton.integrations._config import SessionResolutionContext, VendorConfig
+from baton.integrations._config import (
+    PrincipalResolutionContext,
+    SessionResolutionContext,
+    VendorConfig,
+)
 from baton.integrations._handle import BatonHandle
 from baton.integrations.standalone.install import install_baton
 
 __all__ = [
     "BatonHandle",
+    "PrincipalResolutionContext",
     "SessionResolutionContext",
     "VendorConfig",
     "install_baton",

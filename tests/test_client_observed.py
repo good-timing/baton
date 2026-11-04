@@ -1,4 +1,4 @@
-"""Unit tests for ``baton.integrations.client_observed``.
+"""Unit tests for ``baton.integrations._client_observed``.
 
 The adapter-level pairs are ``tests/functional/test_client_observed_parity.py``
 and each adapter's own ``test_observed_client.py``.
@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from baton.integrations.client_observed import (
+from baton.integrations._client_observed import (
     CLIENT_INFO_META_KEY,
     meta_to_dict,
     observe_client,

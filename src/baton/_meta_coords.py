@@ -12,7 +12,7 @@ That is why this is not a Scrubber rule: the Scrubber walks params and results
 too.
 
 **Before the vendor's scrubber, regardless of it.**
-``client_observed.clean_runtime_meta`` rounds before
+``_client_observed.clean_runtime_meta`` rounds before
 ``VendorConfig(scrubber=...)`` runs, so a vendor who supplies their own
 scrubber, or opts out with ``identity_scrub``, still gets the rounding.
 """

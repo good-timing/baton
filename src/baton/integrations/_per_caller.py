@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from baton._capture_settings import CaptureSettings
 from baton.integrations._annotation_name import InstallText
 from baton.integrations._config import VendorConfig
+from baton.integrations._identity_adapter import ResolvedCaller
 from baton.integrations._llm_text import (
     INTENT_INSTRUCTIONS,
     USER_GOAL_PARAM_NAME,
@@ -18,7 +19,6 @@ from baton.integrations._llm_text import (
     remove_subagent_clause,
     with_vendor_instructions,
 )
-from baton.integrations.identity_adapter import ResolvedCaller
 
 if TYPE_CHECKING:
     from baton.integrations._shared import Shared

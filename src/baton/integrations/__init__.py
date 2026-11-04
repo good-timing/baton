@@ -25,8 +25,8 @@ PyPI distribution (``mcp``, ``fastmcp``) and a folder names our adapter for
 it. The folders used to carry the distribution names too, which is exactly
 what made the mixup easy — the official SDK's server class is also called
 ``FastMCP``, so a class-name match sent people to the wrong one. The old
-paths ``baton.integrations.mcp`` and ``baton.integrations.fastmcp`` survive
-as silent aliases for one release.
+paths ``baton.integrations.mcp`` and ``baton.integrations.fastmcp`` stay as
+silent aliases.
 
 Not yet built, no extra published: Anthropic Managed Agents, A2A.
 

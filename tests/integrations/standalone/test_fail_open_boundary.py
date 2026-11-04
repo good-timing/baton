@@ -44,7 +44,7 @@ def test_a_real_detached_context_costs_only_the_declaration() -> None:
     tool call, whose entry point differs between fastmcp 2.14 and 3+."""
     from fastmcp import Context
 
-    from baton.integrations.client_observed import observe_client
+    from baton.integrations._client_observed import observe_client
 
     ctx = Context(FastMCP("detached"))
     with pytest.raises(RuntimeError):

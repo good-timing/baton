@@ -46,13 +46,18 @@ from baton.events import (
 )
 from baton.integrations._annotation_payload import with_tool_name_required
 from baton.integrations._call_slot import claim_call
-from baton.integrations._config import SessionResolutionContext
+from baton.integrations._client_observed import clean_runtime_meta, meta_to_dict, observe_client
+from baton.integrations._config import PrincipalResolutionContext, ResolvePrincipalHook
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
     is_error_result,
     raised_error_fields,
     returned_error_fields,
     vendor_exception,
+)
+from baton.integrations._identity_adapter import (
+    resolve_caller,
+    token_claims,
 )
 from baton.integrations._llm_text import (
     USER_GOAL_PARAM_NAME,
@@ -70,12 +75,6 @@ from baton.integrations._surface import (
     assemble_surface,
     build_seam_augmentations,
     surface_hash,
-)
-from baton.integrations.client_observed import clean_runtime_meta, meta_to_dict, observe_client
-from baton.integrations.identity_adapter import (
-    ResolvePrincipalHook,
-    resolve_caller,
-    token_claims,
 )
 from baton.integrations.standalone import _auth
 from baton.integrations.standalone._session import (
@@ -396,7 +395,7 @@ class BatonMiddleware(Middleware):
         # The context is built only when a hook exists: the token read is not
         # free on every call of every server that will never set the field.
         identity_hook_context = (
-            SessionResolutionContext(
+            PrincipalResolutionContext(
                 headers=call_headers,
                 meta=meta_dict,
                 tool_name=tool_name,

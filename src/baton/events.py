@@ -328,9 +328,10 @@ class ClientObserved(_OmitsUnset):
     info: ClientInfoObserved | None = None
     headers: dict[str, str] | None = None
     """Request header name, lower-cased, to the value sent. Only the headers
-    SPEC registers: ``integrations/client_observed.py`` holds the list."""
+    SPEC registers: ``integrations/_client_observed.py`` holds the list."""
 
 
+# Experimental: may change in a minor release (README, "What is public").
 class CaptureObserved(_OmitsUnset):
     """Which collector settings a call ran under (SPEC §11.4, §2.6)."""
 
@@ -456,6 +457,7 @@ class _EventEnvelope(BaseModel):
     )
     """The vendor's names for the caller's groups, from the same resolver
     (SPEC §11.4). ``None``, never ``[]``, when there are none."""
+    # Experimental: may change in a minor release (README, "What is public").
     capture: CaptureObserved | None = None
     """Set only when a collector settings document was applied (SPEC §2.6)."""
     call_id: str | None = None

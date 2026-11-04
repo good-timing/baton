@@ -122,7 +122,7 @@ def extract_headers() -> Mapping[str, str] | None:
     ⚠ **The ``dict`` this returns is case-SENSITIVE and that is deliberate.**
     ASGI has already lowercased its keys, so a vendor hook reading the canonical
     ``"X-Forwarded-User"`` would miss. The fold happens once, in
-    ``SessionResolutionContext.__post_init__``, rather than here: this function
+    ``PrincipalResolutionContext.__post_init__``, rather than here: this function
     also feeds rung 4, which looks up an already-lowercase constant, and putting
     the guarantee in the class means a future adapter inherits it instead of
     having to remember. See ``CaseInsensitiveHeaders`` for the whole story."""

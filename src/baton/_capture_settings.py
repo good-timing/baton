@@ -11,7 +11,7 @@ import threading
 import urllib.parse
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, get_args
 
 from baton._result_capture import is_registered_mode
 from baton._white_space import usable_text
@@ -31,8 +31,10 @@ LABELS_MAX = 20
 LABEL_MAX_LENGTH = 64
 
 _MATCH_KEYS = frozenset({"label", "client", "share"})
-_GOAL_VALUES = frozenset({"required", "optional"})
-_REPORTS_VALUES = frozenset({"on", "off"})
+IntentParamMode = Literal["optional", "required"]
+ReportMode = Literal["on", "off"]
+INTENT_PARAM_MODES: frozenset[str] = frozenset(get_args(IntentParamMode))
+REPORT_MODES: frozenset[str] = frozenset(get_args(ReportMode))
 
 
 def clean_labels(values: Iterable[Any]) -> tuple[str, ...]:
@@ -155,8 +157,8 @@ def _audience(
     settings = CallSettings(
         CaptureObserved(settings_version=version, audience=audience_id),
         result_capture_mode=results if is_registered_mode(results) else None,
-        intent_param_mode=goal if _known(goal, _GOAL_VALUES) else None,
-        report_mode=reports if _known(reports, _REPORTS_VALUES) else None,
+        intent_param_mode=goal if _known(goal, INTENT_PARAM_MODES) else None,
+        report_mode=reports if _known(reports, REPORT_MODES) else None,
     )
     return Audience(settings, labels, clients, threshold)
 

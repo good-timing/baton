@@ -26,7 +26,7 @@ def current_access_token() -> Any | None:
     ends in an explicit ``raise TypeError`` on its conversion path, reachable
     when a vendor's ``TokenVerifier`` returns a non-fastmcp ``AccessToken``
     whose ``model_dump()`` is missing a key it wants. It is called while
-    building the hook's ``SessionResolutionContext``, OUTSIDE the hook runner's
+    building the hook's ``PrincipalResolutionContext``, OUTSIDE the hook runner's
     never-raise boundary, where a raise would reach the vendor's tool call.
     """
     if get_access_token_or_none is None:

@@ -372,7 +372,7 @@ class _ClientConfig:
 
 
 def _disabled_client_config(
-    switch: str, surface: str, sink: Sink | None, result_capture_mode: str
+    switch: str, surface: str, sink: Sink | None, result_capture_mode: ResultCaptureMode
 ) -> _ClientConfig:
     """What a client resolves to when the off switch is set.
 
@@ -455,7 +455,7 @@ def _resolve_client_config(
     vendor_id: str | None,
     tenant_id: str | None,
     consent_token: str | None,
-    result_capture_mode: str,
+    result_capture_mode: ResultCaptureMode,
 ) -> _ClientConfig:
     """The library API's config resolution — the twin of ``install_baton``'s.
 
@@ -1161,7 +1161,7 @@ class Client(_Sessions):
         tenant_id: str | None = None,
         consent_token: str | None = None,
         scrubber: Any = None,
-        result_capture_mode: str = "full",
+        result_capture_mode: ResultCaptureMode = "full",
     ) -> None:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
@@ -1830,7 +1830,7 @@ class AsyncClient(_Sessions):
         tenant_id: str | None = None,
         consent_token: str | None = None,
         scrubber: Any = None,
-        result_capture_mode: str = "full",
+        result_capture_mode: ResultCaptureMode = "full",
     ) -> None:
         switch = capture_disabled()
         self._disabled: bool = switch is not None

@@ -28,18 +28,17 @@ from baton.integrations._annotation_payload import (
     is_report,
     with_tool_name_required,
 )
-from baton.integrations._config import SessionResolutionContext
+from baton.integrations._client_observed import clean_runtime_meta, observe_client
+from baton.integrations._config import PrincipalResolutionContext, ResolvePrincipalHook
+from baton.integrations._identity_adapter import (
+    resolve_caller,
+    token_claims,
+)
 from baton.integrations._llm_text import (
     build_annotation_tool_description,
     build_refusal_text,
 )
 from baton.integrations._session import next_sequence
-from baton.integrations.client_observed import clean_runtime_meta, observe_client
-from baton.integrations.identity_adapter import (
-    ResolvePrincipalHook,
-    resolve_caller,
-    token_claims,
-)
 from baton.integrations.official import _auth
 from baton.integrations.official._compat import ContextClass as Context
 from baton.integrations.official._compat import MCPServerClass as FastMCP
@@ -155,7 +154,7 @@ def register_annotation_tool(
         # consult it: the split this field exists to prevent, arriving through
         # the door built to fix it.
         identity_hook_context = (
-            SessionResolutionContext(
+            PrincipalResolutionContext(
                 headers=call_headers,
                 meta=meta_dict,
                 tool_name=name,
@@ -184,7 +183,7 @@ def register_annotation_tool(
         #
         # ⚠ NOT "every scrubber application here is inside the thunk" —
         # `observe_client` above applies the vendor's scrubber as a plain
-        # statement. It is safe for a DIFFERENT reason (`client_observed._clean`
+        # statement. It is safe for a DIFFERENT reason (`_client_observed._clean`
         # wraps it in `scrub_or_none` internally), and the distinction decides
         # whether a newly added statement needs guarding: a scrubber call out
         # here is only safe if something downstream guards it.

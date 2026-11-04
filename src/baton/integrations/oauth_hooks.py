@@ -1,7 +1,7 @@
 """Ready-made ``resolve_principal`` hooks for a vendor whose server runs OAuth.
 
 Pass one as ``VendorConfig(resolve_principal=...)``. Each reads a claim from
-``SessionResolutionContext.claims`` — the verified access token's claims — and
+``PrincipalResolutionContext.claims`` — the verified access token's claims — and
 returns a ``Principal``, or ``None`` when the claim is not there — so a vendor
 can also call them from a hook of their own and fall back to something else::
 
@@ -28,7 +28,7 @@ across the whole fastmcp 2.x/3.x band and is DROPPED by fastmcp 3.4.2's own
 
 ⚠ **Nothing on ``mcp < 1.27``**, whose ``AccessToken`` has no ``claims``:
 ``context.claims`` is ``None`` there and both hooks return ``None``. See
-``identity_adapter.token_claims`` for the vendor-subclass escape hatch.
+``_identity_adapter.token_claims`` for the vendor-subclass escape hatch.
 
 Both run inline rather than on a worker thread (``_hooks.runs_inline``): they
 are a dict lookup, and cannot block.
@@ -43,11 +43,11 @@ from baton.identity import Principal
 from baton.integrations._hooks import runs_inline
 
 if TYPE_CHECKING:
-    from baton.integrations._config import SessionResolutionContext
+    from baton.integrations._config import PrincipalResolutionContext
 
 
 @runs_inline
-def principal_from_oauth_sub(context: SessionResolutionContext) -> Principal | None:
+def principal_from_oauth_sub(context: PrincipalResolutionContext) -> Principal | None:
     """The token's ``sub``.
 
     ``sub`` is unique only per issuer: a vendor running two identity providers
@@ -63,7 +63,7 @@ def principal_from_oauth_sub(context: SessionResolutionContext) -> Principal | N
 
 
 @runs_inline
-def principal_from_oauth_email(context: SessionResolutionContext) -> Principal | None:
+def principal_from_oauth_email(context: PrincipalResolutionContext) -> Principal | None:
     """The token's ``email`` claim, as the WHOLE address.
 
     The local part alone is not an id — ``alice@acme.com`` and

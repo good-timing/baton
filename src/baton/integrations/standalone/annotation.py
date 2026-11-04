@@ -27,18 +27,17 @@ from baton._state import SessionCounter
 from baton.events import AnnotationEvent
 from baton.integrations._annotation_name import derive_annotation_tool_name
 from baton.integrations._annotation_payload import build_annotation_payload, is_report
-from baton.integrations._config import SessionResolutionContext
+from baton.integrations._client_observed import clean_runtime_meta, meta_to_dict, observe_client
+from baton.integrations._config import PrincipalResolutionContext, ResolvePrincipalHook
+from baton.integrations._identity_adapter import (
+    resolve_caller,
+    token_claims,
+)
 from baton.integrations._llm_text import (
     build_annotation_tool_description,
     build_refusal_text,
 )
 from baton.integrations._session import next_sequence
-from baton.integrations.client_observed import clean_runtime_meta, meta_to_dict, observe_client
-from baton.integrations.identity_adapter import (
-    ResolvePrincipalHook,
-    resolve_caller,
-    token_claims,
-)
 from baton.integrations.standalone import _auth
 from baton.integrations.standalone._session import (
     extract_headers,
@@ -128,7 +127,7 @@ def register_annotation_tool(
         # included; see ``official/annotation.py`` for why the annotation path
         # must consult it too.
         identity_hook_context = (
-            SessionResolutionContext(
+            PrincipalResolutionContext(
                 headers=call_headers,
                 meta=meta_dict,
                 tool_name=name,

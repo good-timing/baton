@@ -203,6 +203,12 @@ If you know only the company, for example from an org-wide API key, return `Orga
 
 The switch belongs to whoever RUNS the server: your user for a server you distribute, you for one you host. **If you pass this on to your users, say where the variable goes.** For a server started by an MCP client it belongs in that client's config file, **not in their shell**, which never reaches the process. [The long version](https://goodtiming.ai/docs.html#off-switch).
 
+## What is public
+
+The public API is the names in `__all__` of these modules: `baton`, `baton.client`, `baton.identity`, `baton.scrub`, `baton.sinks`, `baton.events`, and the adapters `baton.integrations.official` and `baton.integrations.standalone`. The old adapter paths `baton.integrations.mcp` and `baton.integrations.fastmcp` stay too. Anything else you can import is internal and may change in any release, even if its name has no underscore.
+
+These are **experimental** and may change in a minor release: `VendorConfig(settings=..., settings_refresh_s=...)`, the `labels` of `Principal` and `Organization`, and the `capture` field on events with `CaptureObserved`.
+
 ## More
 
 | | |

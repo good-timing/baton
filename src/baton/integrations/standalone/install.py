@@ -57,6 +57,7 @@ from fastmcp.server.context import Context
 
 from baton._optout import capture_disabled
 from baton.integrations._annotation_name import InstallText, resolve_install_text
+from baton.integrations._client_observed import meta_to_dict
 from baton.integrations._config import (
     VendorConfig,
 )
@@ -70,7 +71,6 @@ from baton.integrations._llm_text import drop_subagent_clause, with_vendor_instr
 from baton.integrations._per_caller import per_caller_surface
 from baton.integrations._shared import Shared, check_config, install_one, server_session
 from baton.integrations._surface import build_server_meta
-from baton.integrations.client_observed import meta_to_dict
 from baton.integrations.official._registry import get_tool_manager
 from baton.integrations.standalone import _auth
 from baton.integrations.standalone._session import (

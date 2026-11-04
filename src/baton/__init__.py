@@ -20,6 +20,8 @@ Core (always installed):
 - ``principal_from_oauth_sub``, ``principal_from_oauth_email`` — ready-made
   ``resolve_principal`` hooks reading the verified OAuth token's ``sub`` or
   ``email`` claim. Nothing resolves a principal unless a hook is configured.
+- ``PrincipalResolutionContext``, ``ResolvePrincipalHook``, ``BatonHandle``,
+  ``ResultCaptureMode`` — the types a typed hook, handle or config names.
 
 Integrations (optional, opt-in via pip extras):
 
@@ -32,7 +34,8 @@ Two MCP adapters ship, one per library. Both libraries call their server class
 - ``baton.integrations.standalone`` — the standalone ``fastmcp`` library, a
   different project. ``pip install baton-sdk[fastmcp]``.
 
-Both expose ``install_baton``, ``VendorConfig``, ``BatonHandle``, and both
+Both expose ``install_baton``, ``VendorConfig``, ``BatonHandle`` and
+``PrincipalResolutionContext``, and both
 refuse the other library's server up front, naming the right adapter.
 
 Pre-1.0 — public API not yet stable; breaking changes flagged in SPEC §13.
@@ -61,11 +64,15 @@ __all__ = [
     "AsyncClient",
     "AsyncTrace",
     "Baton",
+    "BatonHandle",
     "Client",
     "IntentParam",
     "Organization",
     "Principal",
+    "PrincipalResolutionContext",
     "ReportTool",
+    "ResolvePrincipalHook",
+    "ResultCaptureMode",
     "Trace",
     "VendorConfig",
     "__version__",
@@ -82,6 +89,7 @@ __all__ = [
 # Trace + AsyncTrace are re-exported so typed callers can write
 # ``def f(t: baton.Trace) -> ...`` without reaching into ``baton.client``.
 from baton._report_tool import ReportTool, report_tool
+from baton._result_capture import ResultCaptureMode
 from baton.client import AsyncClient, AsyncTrace, Client, Trace
 from baton.identity import Organization, Principal
 
@@ -89,6 +97,11 @@ from baton.identity import Organization, Principal
 # ``baton.install``. Imported last: it pulls in ``integrations`` lazily inside
 # the call, so neither optional extra is required to import ``baton``.
 from baton.install import Baton, create_baton, install_baton
-from baton.integrations._config import VendorConfig
+from baton.integrations._config import (
+    PrincipalResolutionContext,
+    ResolvePrincipalHook,
+    VendorConfig,
+)
+from baton.integrations._handle import BatonHandle
 from baton.integrations._llm_text import INTENT_INSTRUCTIONS, INTENT_PARAMS, IntentParam
 from baton.integrations.oauth_hooks import principal_from_oauth_email, principal_from_oauth_sub

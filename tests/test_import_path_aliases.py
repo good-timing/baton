@@ -34,13 +34,6 @@ ALIASES = [
     ("baton.integrations.fastmcp", "baton.integrations.standalone"),
 ]
 
-PUBLIC_NAMES = [
-    "BatonHandle",
-    "SessionResolutionContext",
-    "VendorConfig",
-    "install_baton",
-]
-
 
 def _fresh_import(name: str) -> ModuleType:
     """Import ``name`` with its cache entry dropped, so import-time side
@@ -54,7 +47,7 @@ def _fresh_import(name: str) -> ModuleType:
 def test_old_path_exports_the_same_objects(old: str, new: str) -> None:
     old_mod = importlib.import_module(old)
     new_mod = importlib.import_module(new)
-    for attr in PUBLIC_NAMES:
+    for attr in new_mod.__all__:
         assert getattr(old_mod, attr) is getattr(new_mod, attr), (
             f"{old}.{attr} is not {new}.{attr} — an alias that re-implements "
             f"instead of re-exporting lets the two drift"
@@ -80,7 +73,7 @@ def test_old_path_exports_exactly_the_package_api(old: str, new: str) -> None:
     the alias would make the old path quietly poorer than the new one."""
     old_mod = importlib.import_module(old)
     new_mod = importlib.import_module(new)
-    assert sorted(old_mod.__all__) == sorted(new_mod.__all__) == sorted(PUBLIC_NAMES)
+    assert sorted(old_mod.__all__) == sorted(new_mod.__all__)
 
 
 @pytest.mark.parametrize(("old", "new"), ALIASES)

@@ -29,8 +29,8 @@ import pytest
 from baton import principal_from_oauth_email, principal_from_oauth_sub
 from baton.events import PrincipalWire
 from baton.identity import Principal
-from baton.integrations._config import SessionResolutionContext
-from baton.integrations.identity_adapter import (
+from baton.integrations._config import PrincipalResolutionContext
+from baton.integrations._identity_adapter import (
     PRINCIPAL_ID_MAX_LEN,
     resolve_caller,
     token_claims,
@@ -58,10 +58,10 @@ class _OldBandToken:
     scopes: list[str] = field(default_factory=list)
 
 
-def _ctx(token: Any) -> SessionResolutionContext:
+def _ctx(token: Any) -> PrincipalResolutionContext:
     """Built as the adapters build it: the token's claims via ``token_claims``,
     so every token-shape trap below runs through the real extraction."""
-    return SessionResolutionContext(
+    return PrincipalResolutionContext(
         headers=None, meta=None, tool_name="lookup", arguments={}, claims=token_claims(token)
     )
 
@@ -388,7 +388,7 @@ def test_the_context_repr_carries_neither_the_claims_nor_the_bearer() -> None:
     """A hook that logs its context must not write out the email or a live
     credential — the standalone adapter delivers ``Authorization`` among the
     headers."""
-    ctx = SessionResolutionContext(
+    ctx = PrincipalResolutionContext(
         headers={"authorization": "Bearer eyJSECRET"},
         meta=None,
         tool_name="lookup",

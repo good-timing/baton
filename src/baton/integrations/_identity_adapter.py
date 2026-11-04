@@ -2,7 +2,7 @@
 and labels and put them on the wire as the hook stated them, with the capture
 settings the caller matches.
 
-Shared by BOTH adapters, beside ``client_observed.py`` and for the same reason:
+Shared by BOTH adapters, beside ``_client_observed.py`` and for the same reason:
 a capture signal that lives under one adapter's package is one the other
 adapter can silently never call.
 
@@ -21,22 +21,18 @@ is read only to match capture settings (SPEC §2.6).
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from itertools import islice
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import Any, TypeVar
 
 from baton._capture_settings import Caller, CallSettings, CaptureSettings, clean_labels
 from baton._white_space import UNSENDABLE, is_blank, usable_text
 from baton.events import ClientObserved, OrganizationWire, PrincipalWire
 from baton.identity import PRINCIPAL_FORM_RAW, PRINCIPAL_FORMS, Organization, Principal
+from baton.integrations._config import PrincipalResolutionContext, ResolvePrincipalHook
 from baton.integrations._hooks import run_vendor_hook
-
-if TYPE_CHECKING:
-    # Type-only: ``_config`` imports ``ResolvePrincipalHook`` from this module
-    # at runtime, so a runtime import back would be a cycle.
-    from baton.integrations._config import SessionResolutionContext
 
 #: ``principal.source`` — a vendor's own per-request resolver. The vendor
 #: states who this is and nothing in the protocol checked the claim, including
@@ -64,18 +60,6 @@ def wire_display_name(value: object) -> str | None:
     because a bad display name is no reason to lose a good id.
     """
     return value if usable_text(value, DISPLAY_NAME_MAX_LEN) else None
-
-
-#: A vendor's per-request identity resolver. Takes the adapter-neutral
-#: ``SessionResolutionContext`` — headers, meta, tool name, arguments and the
-#: verified token's claims — so
-#: it is not coupled to either library's ``Context`` type. The shape and its
-#: name are inherited from ``resolve_session_id``, which shared it until that
-#: hook was removed 2026-09-12; this is now its only caller.
-ResolvePrincipalHook = Callable[
-    ["SessionResolutionContext"],
-    "Awaitable[Principal | Organization | None] | Principal | Organization | None",
-]
 
 
 @dataclass(frozen=True)
@@ -118,7 +102,7 @@ _LABELS_READ_MAX = 1000
 
 async def resolve_principal_via_hook(
     hook: ResolvePrincipalHook,
-    context: SessionResolutionContext,
+    context: PrincipalResolutionContext,
     *,
     logger: logging.Logger,
 ) -> Principal | Organization | None:
@@ -312,7 +296,7 @@ def _labels_of(*sources: object, logger: logging.Logger) -> tuple[str, ...]:
 async def resolve_caller(
     *,
     hook: ResolvePrincipalHook | None,
-    hook_context: SessionResolutionContext | None,
+    hook_context: PrincipalResolutionContext | None,
     logger: logging.Logger,
     settings: CaptureSettings | None = None,
     client: ClientObserved | None = None,

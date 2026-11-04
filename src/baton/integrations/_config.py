@@ -5,22 +5,26 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
 from baton._capture_settings import (
     DEFAULT_REFRESH_S,
+    INTENT_PARAM_MODES,
     MIN_REFRESH_S,
+    REPORT_MODES,
     SETTINGS_MODES,
     CaptureSettings,
+    IntentParamMode,
+    ReportMode,
     SettingsFetcher,
 )
 from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
 from baton._dsn import parse_dsn, resolve_dsn, select_dsn
 from baton._result_capture import ResultCaptureMode, validate_mode
 from baton.events import DEFAULT_CONSENT_TOKEN
-from baton.integrations.identity_adapter import ResolvePrincipalHook
+from baton.identity import Organization, Principal
 from baton.sinks import HttpSink, Sink, StdoutSink
 
 # ``_VENDOR_ID_PATTERN`` is imported, not defined here, because a DSN's server
@@ -30,15 +34,11 @@ from baton.sinks import HttpSink, Sink, StdoutSink
 
 logger = logging.getLogger(__name__)
 
-# Per-tool intent-param injection modes (mirrors baton-proxy's BATON_INTENT_PARAM).
-_INTENT_PARAM_MODES: frozenset[str] = frozenset({"optional", "required"})
-_REPORT_MODES: frozenset[str] = frozenset({"on", "off"})
-
 
 class CaseInsensitiveHeaders(dict[str, str]):
     """The standalone adapter's header dict, with case-folded lookups.
 
-    Exists so ``SessionResolutionContext.headers`` resolves the same key on both
+    Exists so ``PrincipalResolutionContext.headers`` resolves the same key on both
     adapters. The official ``mcp`` adapter reads Starlette ``Headers``, which is
     already case-insensitive; the standalone ``fastmcp`` adapter reads
     ``get_http_headers()``, a plain ``dict`` whose keys ASGI has already
@@ -147,7 +147,7 @@ class CaseInsensitiveHeaders(dict[str, str]):
 
 
 @dataclass(frozen=True)
-class SessionResolutionContext:
+class PrincipalResolutionContext:
     """Normalized input to ``VendorConfig.resolve_principal``.
 
     Deliberately does not carry the raw SDK ``Context`` object — the
@@ -251,6 +251,17 @@ class SessionResolutionContext:
         if hasattr(self.headers, "getlist"):
             return
         object.__setattr__(self, "headers", CaseInsensitiveHeaders(self.headers))
+
+
+# The old name, kept so existing imports work.
+SessionResolutionContext = PrincipalResolutionContext
+
+#: A vendor's per-request identity resolver: ``VendorConfig.resolve_principal``.
+#: Real types, not strings, so ``typing.get_type_hints`` resolves it anywhere.
+ResolvePrincipalHook = Callable[
+    [PrincipalResolutionContext],
+    Awaitable[Principal | Organization | None] | Principal | Organization | None,
+]
 
 
 def _resolve_tenant_id(explicit: str | None, vendor_id: str) -> str:
@@ -395,7 +406,7 @@ class VendorConfig:
     can no longer be detected. Those calls leave the denominator of body-level
     analysis rather than counting as passes or failures."""
 
-    intent_param_mode: str = "required"
+    intent_param_mode: IntentParamMode = "required"
     """Per-tool intent-param injection (mirrors baton-extmcp's vendor-neutral
     naming). Both modes inject a ``user_goal`` string param into
     each wrapped tool's input schema and strip it before the vendor handler
@@ -412,7 +423,7 @@ class VendorConfig:
     ``required`` entry. A tool that already declares ``user_goal`` keeps its
     own."""
 
-    report_mode: str | None = None
+    report_mode: ReportMode | None = None
     """Whether the agent is given a tool to report problems with yours.
     Unset, it is ``"on"`` with ``settings="console"`` and ``"off"`` otherwise.
 
@@ -427,7 +438,9 @@ class VendorConfig:
     request's input."""
 
     settings: str = "local"
-    """Where capture settings come from. ``"local"`` (default): the values in
+    """**Experimental:** may change in a minor release.
+
+    Where capture settings come from. ``"local"`` (default): the values in
     this config, and Baton is never asked. ``"console"``: the settings saved on
     the Console's Capture page, read from the collector every
     ``settings_refresh_s`` seconds, so they can differ by label, client or a
@@ -441,7 +454,9 @@ class VendorConfig:
     they are on here."""
 
     settings_refresh_s: float = DEFAULT_REFRESH_S
-    """How often ``settings="console"`` reads the saved settings, in seconds. At
+    """**Experimental:** may change in a minor release.
+
+    How often ``settings="console"`` reads the saved settings, in seconds. At
     least 15."""
 
     resolve_principal: ResolvePrincipalHook | None = None
@@ -449,7 +464,7 @@ class VendorConfig:
     ``principal``, ``organization`` and ``labels`` (SPEC §11.4). Unset, no
     event carries any of them.
 
-    Takes a ``SessionResolutionContext`` — headers, meta, tool name, arguments
+    Takes a ``PrincipalResolutionContext`` — headers, meta, tool name, arguments
     and the verified token's ``claims`` — and returns ``Principal | Organization
     | None``. Return ``Principal(..., organization=Organization(...))`` for a
     person and their company, or ``Organization(...)`` alone when only the
@@ -712,15 +727,17 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             f"the wrong thing."
         )
     validate_mode(config.result_capture_mode, field="VendorConfig.result_capture_mode")
-    if config.intent_param_mode == "off":
+    # Typed as a Literal, but untyped callers can pass any string.
+    intent_param_mode: str = config.intent_param_mode
+    if intent_param_mode == "off":
         raise ValueError(
             "VendorConfig.intent_param_mode='off' would leave nothing capturing what "
             "the user is trying to do. Use 'required' (the default) or 'optional'."
         )
-    if config.intent_param_mode not in _INTENT_PARAM_MODES:
+    if intent_param_mode not in INTENT_PARAM_MODES:
         raise ValueError(
-            f"VendorConfig.intent_param_mode {config.intent_param_mode!r} must be "
-            f"one of {sorted(_INTENT_PARAM_MODES)}."
+            f"VendorConfig.intent_param_mode {intent_param_mode!r} must be "
+            f"one of {sorted(INTENT_PARAM_MODES)}."
         )
     if config.settings not in SETTINGS_MODES:
         raise ValueError(
@@ -740,8 +757,8 @@ def _validate_vendor_config(config: VendorConfig) -> None:
         raise ValueError(
             f"VendorConfig.settings_refresh_s must be at least {MIN_REFRESH_S:g} seconds."
         )
-    if config.report_mode is not None and config.report_mode not in _REPORT_MODES:
+    if config.report_mode is not None and config.report_mode not in REPORT_MODES:
         raise ValueError(
             f"VendorConfig.report_mode {config.report_mode!r} must be "
-            f"one of {sorted(_REPORT_MODES)}."
+            f"one of {sorted(REPORT_MODES)}."
         )

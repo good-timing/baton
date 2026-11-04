@@ -41,6 +41,8 @@ from collections import Counter
 from collections.abc import Callable
 from typing import Any, TypeVar, cast
 
+__all__ = ["Scrubber", "identity_scrub"]
+
 _T = TypeVar("_T")
 
 # Cap on recursive walk depth. Matches LangSmith's default; protects

@@ -66,6 +66,7 @@ import sys
 from baton.integrations import official as _target
 from baton.integrations.official import (
     BatonHandle,
+    PrincipalResolutionContext,
     SessionResolutionContext,
     VendorConfig,
     install_baton,
@@ -90,6 +91,7 @@ for _sub in pkgutil.iter_modules(_target.__path__):
 
 __all__ = [
     "BatonHandle",
+    "PrincipalResolutionContext",
     "SessionResolutionContext",
     "VendorConfig",
     "install_baton",

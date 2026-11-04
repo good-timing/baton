@@ -18,6 +18,7 @@ from baton import create_baton
 from baton._capture_settings import CaptureSettings, parse_document
 from baton.integrations import official
 from baton.integrations._config import _validate_vendor_config, build_config
+from baton.integrations._identity_adapter import ResolvedCaller
 from baton.integrations._llm_text import (
     INTENT_INSTRUCTIONS,
     build_server_instructions,
@@ -26,7 +27,6 @@ from baton.integrations._llm_text import (
     with_vendor_instructions,
 )
 from baton.integrations._per_caller import PerCallerSurface
-from baton.integrations.identity_adapter import ResolvedCaller
 from baton.integrations.official._compat import MCPServerClass as OfficialFastMCP
 from baton.integrations.official._compat import get_lowlevel_server
 from baton.sinks import FileSink

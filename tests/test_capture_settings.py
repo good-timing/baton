@@ -29,7 +29,7 @@ from baton.events import CaptureObserved
 from baton.integrations import _config as config_module
 from baton.integrations import official, standalone
 from baton.integrations._config import build_capture_settings
-from baton.integrations.identity_adapter import _wire_caller
+from baton.integrations._identity_adapter import _wire_caller
 from baton.integrations.official._compat import MCPServerClass as OfficialFastMCP
 from baton.sinks import FileSink
 from tests._event_helpers import read_events, without_surface_snapshots
