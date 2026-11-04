@@ -419,10 +419,10 @@ class TestWhatTheDsnDoesNotTakeOver:
         still sees their events on stderr, which is the first thing that proves
         an install works at all."""
         from baton.integrations._config import VendorConfig, resolve_sink
-        from baton.sinks import StdoutSink
+        from baton.sinks import StdoutSink, vendor_sink
 
         assert isinstance(
-            resolve_sink(VendorConfig(vendor_id="v", vendor_display_name="V")),
+            vendor_sink(resolve_sink(VendorConfig(vendor_id="v", vendor_display_name="V"))),
             StdoutSink,
         )
 

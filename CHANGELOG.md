@@ -21,6 +21,18 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Changed
 
+- **Every sink is written off the tool call.** `StdoutSink`, `FileSink`,
+  `MultiSink` and your own `Sink` now sit behind a queue of 1000 events, which
+  Baton writes from its own thread and event loop. A slow or stuck sink no
+  longer slows a tool call or a traced call. When the queue is full, the
+  oldest event is dropped and counted `buffer_full`, with one `UserWarning`.
+  A write that raises drops its event, counted `write_failed`, and is logged
+  once. `flush()` and `aclose()` write what is queued first, within the same
+  3-second limit. A surface snapshot counts as sent once it is queued: if your
+  sink then fails to write it, it is not sent again. `BatonHandle.sink` is
+  still the sink you passed. **If your own sink holds a connection made on
+  your event loop**, such as an aiohttp session, open it inside `write`
+  instead, because `write` now runs on Baton's loop. `HttpSink` is unchanged.
 - **What is public is written down** (README, "What is public"): the names in
   `__all__` of `baton`, `baton.client`, `baton.identity`, `baton.scrub`,
   `baton.sinks`, `baton.events` and the adapter packages. `baton.identity` and

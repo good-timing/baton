@@ -68,15 +68,19 @@ def _async(sink: CollectingSink, scrubber: Any) -> AsyncClient:
 def test_an_identity_scrubber_files_both_legs(sink: CollectingSink) -> None:
     """Without this, a rig that never reached Baton would satisfy every
     assertion below vacuously."""
-    with _sync(sink, lambda v: v).trace(tool_name="fetch_row", params={"id": "row-42"}) as t:
+    client = _sync(sink, lambda v: v)
+    with client.trace(tool_name="fetch_row", params={"id": "row-42"}) as t:
         t.observed(result={"row": "row-42"})
+    client.flush()
     assert _types(sink) == ["tool_call_start", "tool_call_end"]
 
 
 def test_the_vendor_s_own_exception_reaches_them_normally(sink: CollectingSink) -> None:
+    client = _sync(sink, lambda v: v)
     with pytest.raises(ValueError, match=VENDOR_MSG):
-        with _sync(sink, lambda v: v).trace(tool_name="fetch_row"):
+        with client.trace(tool_name="fetch_row"):
             raise ValueError(VENDOR_MSG)
+    client.flush()
     assert _types(sink) == ["tool_call_start", "tool_call_error"]
 
 
@@ -102,8 +106,10 @@ def test_the_END_event_is_DROPPED_rather_than_sent_with_a_null_result(
     scrub publishes a fabricated "the tool returned nothing". Dropping the
     event is the only outcome that asserts nothing.
     """
-    with _sync(sink, SelectiveThrower("row-42")).trace(tool_name="fetch_row") as t:
+    client = _sync(sink, SelectiveThrower("row-42"))
+    with client.trace(tool_name="fetch_row") as t:
         t.observed(result={"row": "row-42"})
+    client.flush()
     assert _types(sink) == ["tool_call_start"]
 
 
@@ -124,8 +130,10 @@ def test_a_throwing_scrubber_does_not_REPLACE_the_vendor_s_exception(
 
 async def test_async_holds_both_shapes_too(sink: CollectingSink) -> None:
     thrower = SelectiveThrower("row-42")
-    async with _async(sink, thrower).trace(tool_name="fetch_row") as t:
+    client = _async(sink, thrower)
+    async with client.trace(tool_name="fetch_row") as t:
         t.observed(result={"row": "row-42"})
+    await client.flush()
     assert _types(sink) == ["tool_call_start"]
     assert thrower.tripped
 
@@ -157,10 +165,12 @@ def test_the_recorded_result_is_a_SNAPSHOT_not_the_vendor_s_live_object(
     identity one — an identity scrubber aliases and cannot see the bug.
     """
     rows: dict[str, Any] = {"rows": ["alice"]}
-    with Client(tenant_id="ten_abc", vendor_id="v1", sink=sink).trace(tool_name="fetch_rows") as t:
+    client = Client(tenant_id="ten_abc", vendor_id="v1", sink=sink)
+    with client.trace(tool_name="fetch_rows") as t:
         t.observed(result=rows)
         rows["rows"].append("LATE-MUTATION")
         rows["added_after"] = "observed()"
+    client.flush()
 
     end = next(e for e in sink.events if e.event_type == "tool_call_end")
     assert end.payload.result == {"rows": ["alice"]}, (

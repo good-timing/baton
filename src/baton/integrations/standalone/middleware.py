@@ -271,15 +271,11 @@ class BatonMiddleware(Middleware):
                     seam_augmentations=seam,
                 ),
             )
-            # Mark seen only AFTER a successful write — the Console's
-            # vendor_surfaces upsert is idempotent on surface_hash, so an
-            # occasional duplicate send (e.g. two concurrent tools/list
-            # calls racing before either marks it) is harmless; marking
-            # seen before the write, by contrast, would permanently drop
-            # this surface on a single transient sink failure with no retry
-            # (unlike every other event type, which gets a fresh attempt
-            # next time). ``write_unless_closed``, not ``safe_write`` — this
-            # block needs to observe success/failure, not swallow it.
+            # Marked only once queued, so a write that raises (the event was
+            # not queued) is tried again next time; a duplicate from two
+            # racing lists is harmless, as the Console stores a surface by
+            # surface_hash. ``write_unless_closed``, not ``safe_write``, to
+            # see that raise.
             try:
                 # A closed sink counts it once and is marked too, so it is not rebuilt.
                 await write_unless_closed(self._sink, event, logger)

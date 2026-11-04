@@ -409,9 +409,9 @@ def test_the_sync_client_close_waits_for_writes_within_the_budget_not_on_top(
 
 
 def test_the_sync_client_close_delivers_a_slow_write_and_closes_the_sink(
-    short_budget: float, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(sinks_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 1.0)
 
     class _Slow(Sink):
         def __init__(self) -> None:

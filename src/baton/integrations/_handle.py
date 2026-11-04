@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from baton.sinks import Sink, bounded_sink_call
+from baton.sinks import Sink, bounded_sink_call, vendor_sink
 
 if TYPE_CHECKING:
     from baton.integrations._shared import Shared
@@ -35,7 +35,8 @@ class BatonHandle:
         session_id: str,
         shared: Shared | None = None,
     ) -> None:
-        self.sink = sink
+        self.sink = vendor_sink(sink)
+        self._sink = sink
         self._shared = shared
         self.annotation_tool_name = annotation_tool_name
         self.vendor_id = vendor_id
@@ -44,7 +45,7 @@ class BatonHandle:
     async def flush(self) -> None:
         """Flush any pending events held by the sink. Returns within the sink's
         shutdown budget plus a quarter second, and never raises (SPEC §11.2 rule 7)."""
-        await bounded_sink_call(self.sink, "flush")
+        await bounded_sink_call(self._sink, "flush")
 
     async def aclose(self) -> None:
         """Stop reading capture settings, then flush and release sink resources.
@@ -52,7 +53,7 @@ class BatonHandle:
         never raises (SPEC §11.2 rule 7)."""
         if self._shared is not None:
             self._shared.stop()
-        await bounded_sink_call(self.sink, "aclose")
+        await bounded_sink_call(self._sink, "aclose")
 
 
 def disabled_handle(switch: str, surface: str, supplied_sink: Sink | None = None) -> BatonHandle:

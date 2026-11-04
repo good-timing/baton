@@ -150,6 +150,7 @@ from baton.sinks import (
     aclose_within,
     bounded_sink_call,
     build_or_none,
+    queued,
     safe_emit,
     safe_write,
     shutdown_budget_seconds,
@@ -525,7 +526,7 @@ def _resolve_client_config(
         tenant_id, "BATON_TENANT_ID", required=False, name="tenant_id"
     )
     return _ClientConfig(
-        sink=sink,
+        sink=queued(sink),
         vendor_id=vendor_id_resolved,
         tenant_id=tenant_id_resolved or vendor_id_resolved,
         consent_token=_resolve_consent_token(consent_token),

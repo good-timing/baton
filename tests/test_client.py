@@ -1203,7 +1203,7 @@ class TestBridgeNeverHangs:
         assert time.monotonic() - started < 1.0
         bridge._loop.close()
 
-    def test_a_write_in_flight_when_close_starts_is_delivered(self) -> None:
+    def test_events_queued_when_close_starts_are_delivered(self) -> None:
         sink = _RecordingSink(write_delay=0.3)
         client = Client(sink=sink, vendor_id="v")
         sender = threading.Thread(target=_send_one, args=(client,))
@@ -1212,8 +1212,7 @@ class TestBridgeNeverHangs:
         client.close()
         sender.join(timeout=3.0)
         assert not sender.is_alive()
-        # The start was mid-write when close began; the end came after close.
-        assert [e.event_type for e in sink.events] == ["tool_call_start"]
+        assert [e.event_type for e in sink.events] == ["tool_call_start", "tool_call_end"]
 
     def test_a_write_that_never_finishes_holds_neither_close_nor_its_sender(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1230,19 +1229,13 @@ class TestBridgeNeverHangs:
         assert time.monotonic() - started < 2.0
         assert not sender.is_alive()
 
-    def test_a_slow_sink_costs_one_wait_and_still_gets_every_event(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.1)
-        sink = _RecordingSink(write_delay=0.3)
+    def test_a_slow_sink_costs_the_caller_nothing_and_still_gets_every_event(self) -> None:
+        sink = _RecordingSink(write_delay=0.1)
         client = Client(sink=sink, vendor_id="v")
         started = time.monotonic()
-        with caplog.at_level(logging.WARNING, logger="baton.client"):
-            for _ in range(3):
-                _send_one(client)
-        # One 0.1 s wait, not one per event (six events).
-        assert time.monotonic() - started < 0.4
-        assert sum("queued" in r.getMessage() for r in caplog.records) == 1
+        for _ in range(3):
+            _send_one(client)
+        assert time.monotonic() - started < 0.1
         client.close()
         assert len(sink.events) == 6
 
@@ -1270,28 +1263,6 @@ class TestBridgeNeverHangs:
         client.list_tools([{"name": "fetch", "inputSchema": {"type": "object"}}])
         assert time.monotonic() - started < 0.1
         client.close()
-
-    def test_a_snapshot_write_that_fails_late_is_sent_again(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.05)
-
-        class _FailsOnceLateSink(_RecordingSink):
-            async def write(self, event: Any) -> None:
-                if not self.events:
-                    self.events.append(None)
-                    await asyncio.sleep(0.15)
-                    raise OSError("collector gone")
-                self.events.append(event)
-
-        sink = _FailsOnceLateSink()
-        client = Client(sink=sink, vendor_id="v")
-        tools = [{"name": "fetch", "inputSchema": {"type": "object"}}]
-        client.list_tools(tools)  # the caller stops waiting before the write fails
-        time.sleep(0.3)
-        client.list_tools(tools)
-        client.close()
-        assert [e.event_type for e in sink.events if e is not None] == ["surface_snapshot"]
 
     def test_close_and_flush_never_raise_a_sink_error(self) -> None:
         client = Client(sink=_RecordingSink(close_error=OSError("collector gone")), vendor_id="v")

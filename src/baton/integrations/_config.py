@@ -25,7 +25,7 @@ from baton._dsn import parse_dsn, resolve_dsn, select_dsn
 from baton._result_capture import ResultCaptureMode, validate_mode
 from baton.events import DEFAULT_CONSENT_TOKEN
 from baton.identity import Organization, Principal
-from baton.sinks import HttpSink, Sink, StdoutSink
+from baton.sinks import HttpSink, Sink, StdoutSink, queued
 
 # ``_VENDOR_ID_PATTERN`` is imported, not defined here, because a DSN's server
 # segment IS a vendor_id and both rules have to be one object. Restating the
@@ -610,7 +610,7 @@ def resolve_sink(config: VendorConfig) -> Sink:
     ``vendor_id`` and no destination: their events print as JSON Lines on
     stderr. Naming nothing at all installs nothing (SPEC §11.2 rule 10).
     """
-    return config.sink if config.sink is not None else StdoutSink()
+    return queued(config.sink if config.sink is not None else StdoutSink())
 
 
 def resolve_config(config: VendorConfig) -> VendorConfig:

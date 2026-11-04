@@ -208,6 +208,7 @@ async def test_a_library_snapshot_to_a_closed_sink_is_counted_once_and_not_retri
         aclient = AsyncClient(sink=sink, vendor_id="v")
         for _ in range(2):
             await aclient.list_tools(tools)
+        await aclient.flush()
     else:
         client = Client(sink=sink, vendor_id="v")
         for _ in range(2):

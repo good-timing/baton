@@ -1031,11 +1031,9 @@ def _make_emitters(
     async def emit_surface(session_id: str, digest: str, snapshot: dict[str, Any]) -> None:
         # No ``client_observed``: a surface snapshot describes the SERVER, not
         # whoever happened to trigger the first capture.
-        # NOT safe_write — this deliberately lets a write failure propagate so
-        # the caller (_wrap_tool_run) can tell success from failure and retry
-        # on the next call rather than silently treating the surface as
-        # emitted. The caller still fails open overall (SPEC §11.2): it
-        # catches this and never lets it reach the vendor's tool call.
+        # NOT safe_write: a write that raises (the event was not queued)
+        # propagates, so the caller tries this surface again on the next call
+        # and never lets the raise reach the vendor's tool call (SPEC §11.2).
         await write_unless_closed(
             sink,
             SurfaceSnapshotEvent(

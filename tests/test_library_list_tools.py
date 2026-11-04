@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from baton import INTENT_INSTRUCTIONS, AsyncClient, Client, Principal
+from baton._state import PROCESS_DROPS
 from baton.events import Event
 from baton.integrations._llm_text import build_server_instructions
 from baton.sinks import FileSink, Sink
@@ -180,17 +181,17 @@ def test_the_snapshot_takes_no_session_principal_or_client_from_a_block() -> Non
     assert snapshot.get("transport_observed") is None
 
 
-def test_a_failed_write_never_raises_and_is_sent_on_the_next_list() -> None:
+def test_a_failed_write_never_raises_and_is_counted_not_resent() -> None:
     sink = _CollectingSink()
     sink.fail_next = 1
     client = _client(sink)
     served = client.list_tools(TOOLS)
     assert "user_goal" in served[0]["inputSchema"]["properties"]
-    assert _snapshots(sink) == []
 
     client.list_tools(TOOLS)
     client.close()
-    assert len(_snapshots(sink)) == 1
+    assert _snapshots(sink) == []
+    assert PROCESS_DROPS.total() == {"write_failed": 1}
 
 
 def test_a_list_it_cannot_read_is_returned_as_it_came() -> None:
@@ -223,7 +224,6 @@ def test_list_tools_after_close_serves_the_list_and_sends_nothing() -> None:
 
 async def test_the_async_client_serves_and_snapshots_the_same_way() -> None:
     sink = _CollectingSink()
-    sink.fail_next = 1
     client = AsyncClient(vendor_id="srv-1", tenant_id="ten_abc", sink=sink)
     served = await client.list_tools(TOOLS, server_info=SERVER_INFO)
     await client.list_tools(TOOLS, server_info=SERVER_INFO)
@@ -341,7 +341,7 @@ def test_the_sent_surfaces_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(_snapshots(sink)) == 4
 
 
-async def test_a_cancelled_write_leaves_the_surface_unsent() -> None:
+async def test_a_sink_write_that_raises_cancelled_is_counted_and_later_events_still_go() -> None:
     import asyncio
 
     class _CancelOnce(_CollectingSink):
@@ -355,8 +355,10 @@ async def test_a_cancelled_write_leaves_the_surface_unsent() -> None:
 
     sink = _CancelOnce()
     client = AsyncClient(vendor_id="srv-1", tenant_id="ten_abc", sink=sink)
-    with pytest.raises(asyncio.CancelledError):
-        await client.list_tools(TOOLS)
     await client.list_tools(TOOLS)
+    async with client.trace(tool_name="fetch"):
+        pass
     await client.aclose()
-    assert len(_snapshots(sink)) == 1
+    assert _snapshots(sink) == []
+    assert [e.event_type for e in sink.events] == ["tool_call_start", "tool_call_end"]
+    assert PROCESS_DROPS.total() == {"write_failed": 1}

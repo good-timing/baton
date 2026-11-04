@@ -15,9 +15,9 @@ Four sinks ship in core:
 - ``MultiSink`` — fan out to a list of sinks.
 
 The Sink protocol is intentionally small (``write`` + ``flush`` + ``aclose``).
-Backpressure, retry, and durability are sink-specific concerns: ``HttpSink``
-buffers and retries because networks fail; ``StdoutSink`` and ``FileSink``
-either succeed synchronously or raise.
+Baton writes to every sink but ``HttpSink`` from its own thread and event loop,
+behind a bounded queue, never from a tool call. ``HttpSink`` has its own queue
+and sending thread, and retries because networks fail.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ import warnings
 import weakref
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -181,9 +181,9 @@ class Sink(ABC):
 
     @abstractmethod
     async def write(self, event: Event) -> None:
-        """Hand one event to the sink. Returns when the sink has accepted it
-        (which may mean buffered, not yet shipped). MUST NOT block the
-        producer on slow downstream destinations."""
+        """Hand one event to the sink. Baton calls it from its own thread and
+        event loop, one event at a time, never from a tool call; a raise drops
+        the event and counts it ``write_failed``."""
 
     @abstractmethod
     async def flush(self) -> None:
@@ -365,6 +365,8 @@ def shutdown_budget_seconds(sink: Sink) -> float:
     try:
         if isinstance(sink, HttpSink):
             return sink._shutdown_flush_timeout
+        if isinstance(sink, _QueuedSink):
+            return sink._budget
         if isinstance(sink, MultiSink):
             return max(
                 (shutdown_budget_seconds(inner) for inner in sink._sinks),
@@ -382,6 +384,8 @@ def aclose_within(sink: Sink, seconds: float) -> Awaitable[None]:
         return cast(HttpSink, sink)._aclose_within(seconds)
     if type(sink).aclose is MultiSink.aclose:
         return cast(MultiSink, sink)._aclose_within(seconds)
+    if isinstance(sink, _QueuedSink):
+        return sink._aclose_within(seconds)
     return sink.aclose()
 
 
@@ -1464,6 +1468,312 @@ class MultiSink(Sink):
             if len(errors) == 1 or all(isinstance(e, SinkClosedError) for e in errors):
                 raise errors[0]
             raise ExceptionGroup("MultiSink fan-out failures", errors)
+
+
+# =============================================================================
+# Every other sink: written from Baton's own thread
+# =============================================================================
+
+#: SPEC §11.2 rule 3's default bound.
+QUEUE_BOUND = 1000
+_CANCEL_WAIT_SECONDS = 0.5
+#: Kept from close's budget for the sink's own close, which may still send.
+_CLOSE_GRACE_SECONDS = 1.0
+
+
+def queued(sink: Sink) -> Sink:
+    """``sink`` behind Baton's queue, unless its own ``write`` already only queues."""
+    if isinstance(sink, _QueuedSink) or type(sink).write is HttpSink.write:
+        return sink
+    return _QueuedSink(sink)
+
+
+def vendor_sink(sink: Sink) -> Sink:
+    """The sink the vendor configured, without Baton's queue."""
+    return sink.inner if isinstance(sink, _QueuedSink) else sink
+
+
+class _QueuedSink(Sink):
+    """Writes events to ``inner`` from Baton's own thread and event loop, so a
+    slow or failing sink never slows a tool call (SPEC §11.2 rules 3 and 7)."""
+
+    def __init__(self, inner: Sink) -> None:
+        self.inner = inner
+        self._budget = shutdown_budget_seconds(inner)
+        self._sender = _QueueSender(inner, self._budget)
+        finalizer = weakref.finalize(self, self._sender.retire)
+        finalizer.atexit = False  # type: ignore[misc]
+        self._closing: asyncio.Future[None] | None = None
+        self._closed = False
+
+    async def write(self, event: Event) -> None:
+        if self._closed:
+            raise SinkClosedError("the sink is closed")
+        self._sender.enqueue(event)
+
+    async def flush(self) -> None:
+        if self._closed:
+            return
+        done = self._sender.submit(self._sender.flush_inner(self._sender.recorded))
+        if not await _wait_for_thread(done, self._budget):
+            _log_left_unfinished("flush()", self._budget)
+
+    async def aclose(self) -> None:
+        """A second call waits for the first (SPEC §11.2 rule 7)."""
+        await self._aclose_within(self._budget)
+
+    async def _aclose_within(self, seconds: float) -> None:
+        # A close cancelled from outside (loop teardown) is started again.
+        if self._closing is None or self._closing.cancelled():
+            self._closing = asyncio.ensure_future(self._close(min(seconds, self._budget)))
+        await asyncio.shield(self._closing)
+
+    async def _close(self, seconds: float) -> None:
+        self._closed = True
+        done = self._sender.submit(self._sender.close_inner(monotonic() + seconds))
+        if not await _wait_for_thread(done, seconds):
+            _log_left_unfinished("aclose()", seconds)
+        unsent = self._sender.stop()
+        if unsent:
+            PROCESS_DROPS.add("unsent_at_close", unsent)
+            logging.getLogger("baton").warning(
+                "baton: the sink closed with %d event(s) unsent.", unsent
+            )
+
+
+def _log_left_unfinished(what: str, seconds: float) -> None:
+    logging.getLogger("baton").warning(
+        "baton: %s took over %.2fs and was left unfinished.", what, seconds
+    )
+
+
+async def _call_sink(sink: Sink, method: Literal["flush", "aclose"], seconds: float = 0) -> None:
+    """A sink's ``flush`` or ``aclose``, which a vendor's sink may have written
+    as a plain method; logs, never raises."""
+    try:
+        result = aclose_within(sink, seconds) if method == "aclose" else sink.flush()
+        if inspect.isawaitable(result):
+            await result
+    except Exception:
+        logging.getLogger("baton").warning("baton: %s() failed", method, exc_info=True)
+
+
+class _QueueSender:
+    """The part of ``_QueuedSink`` its thread runs. It holds no reference to
+    the queued sink, so a sink nobody closes can still be garbage collected."""
+
+    def __init__(self, inner: Sink, budget: float) -> None:
+        self.inner = inner
+        self.budget = budget
+        self.waiting: deque[Event] = deque()
+        self.in_flight = 0
+        self.recorded = 0
+        self.closing = False
+        self.stopping = False
+        self.overflow_warned = False
+        self.fail_warned = False
+        self.exit_hook_registered = False
+        self._new_state()
+        _LIVE_SENDERS.add(self)
+
+    def _new_state(self) -> None:
+        self.lock = threading.Lock()
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.wake = asyncio.Event()
+        self.progress = asyncio.Condition()
+
+    def reset_in_child(self) -> None:
+        """In a forked child: the parent's thread is gone, and the events it
+        held are the parent's to write or count."""
+        self._new_state()
+        self.waiting.clear()
+        self.in_flight = 0
+
+    def pending(self) -> int:
+        return len(self.waiting) + self.in_flight
+
+    def _written(self) -> int:
+        return self.recorded - self.pending()
+
+    # ---- called from the vendor's side ---------------------------------
+
+    def enqueue(self, event: Event) -> None:
+        _reset_if_forked()
+        with self.lock:
+            if len(self.waiting) >= QUEUE_BOUND:
+                if not self.overflow_warned:
+                    self.overflow_warned = True
+                    warnings.warn(
+                        f"Baton sink buffer full ({QUEUE_BOUND}); "
+                        "oldest events dropped. Further overflows will be silent.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+                # After the warning: one promoted to an error drops this event
+                # instead, and safe_write counts that.
+                PROCESS_DROPS.add("buffer_full")
+                self.waiting.popleft()
+            self.waiting.append(event)
+            self.recorded += 1
+            loop = self._loop_locked()
+        if not self.wake.is_set():
+            try:
+                loop.call_soon_threadsafe(self.wake.set)
+            except RuntimeError:
+                pass  # the loop has stopped
+
+    def submit(self, work: Coroutine[Any, Any, None]) -> concurrent.futures.Future[None]:
+        _reset_if_forked()
+        with self.lock:
+            loop = None if self.stopping else self._loop_locked()
+        if loop is not None:
+            try:
+                return asyncio.run_coroutine_threadsafe(work, loop)
+            except RuntimeError:
+                pass  # the loop has stopped
+        work.close()
+        done: concurrent.futures.Future[None] = concurrent.futures.Future()
+        done.set_result(None)
+        return done
+
+    def stop(self) -> int:
+        """Ends the thread; answers how many events it leaves unwritten."""
+        with self.lock:
+            self.stopping = True
+            left = self.pending()
+            self.waiting.clear()
+            self.in_flight = 0
+            loop = self.loop
+        self._unregister_exit_hook()
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                pass
+        return left
+
+    def retire(self) -> None:
+        """The queued sink was garbage collected: write what is left, then end the thread."""
+        with self.lock:
+            loop = None if self.stopping else self.loop
+        if loop is None:
+            self._unregister_exit_hook()
+            return
+        retiring = self._retire()
+        try:
+            asyncio.run_coroutine_threadsafe(retiring, loop)
+        except RuntimeError:
+            retiring.close()  # the loop has stopped
+
+    def flush_at_exit(self) -> None:
+        """Daemon threads still run while atexit hooks do, so the thread is
+        given the budget. Events left then are warned about, not counted
+        (SPEC §11.2 rule 8)."""
+        with self.lock:
+            if self.stopping or self.loop is None or not self.pending():
+                return
+            target, loop = self.recorded, self.loop
+        try:
+            asyncio.run_coroutine_threadsafe(self.flush_inner(target), loop).result(
+                timeout=self.budget
+            )
+        except Exception:
+            pass
+        if self.pending():
+            logging.getLogger("baton").warning(
+                "baton: process exiting without aclose(); %d event(s) not written.",
+                self.pending(),
+            )
+
+    def _loop_locked(self) -> asyncio.AbstractEventLoop:
+        if self.loop is None:
+            self.loop = asyncio.new_event_loop()
+            threading.Thread(
+                target=self._run, args=(self.loop,), name="baton-sink", daemon=True
+            ).start()
+            if not self.exit_hook_registered:
+                self.exit_hook_registered = True
+                atexit.register(self.flush_at_exit)
+        return self.loop
+
+    def _unregister_exit_hook(self) -> None:
+        if self.exit_hook_registered:
+            self.exit_hook_registered = False
+            atexit.unregister(self.flush_at_exit)
+
+    # ---- the thread ----------------------------------------------------
+
+    def _run(self, loop: asyncio.AbstractEventLoop) -> None:
+        asyncio.set_event_loop(loop)
+        loop.create_task(self._drain())
+        try:
+            loop.run_forever()
+        finally:
+            tasks = asyncio.all_tasks(loop)
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                loop.run_until_complete(asyncio.wait(tasks, timeout=_CANCEL_WAIT_SECONDS))
+            loop.close()
+
+    async def _drain(self) -> None:
+        while True:
+            await self.wake.wait()
+            self.wake.clear()
+            while (event := self._take()) is not None:
+                await self._write(event)
+                with self.lock:
+                    self.in_flight = 0
+                async with self.progress:
+                    self.progress.notify_all()
+
+    def _take(self) -> Event | None:
+        with self.lock:
+            if self.closing or not self.waiting:
+                return None
+            self.in_flight = 1
+            return self.waiting.popleft()
+
+    async def _write(self, event: Event) -> None:
+        log = logging.getLogger("baton")
+        try:
+            await write_unless_closed(self.inner, event, log)
+        except (Exception, asyncio.CancelledError):
+            # A sink that raises CancelledError itself must not end the drain.
+            if cast(asyncio.Task[None], asyncio.current_task()).cancelling():
+                raise
+            PROCESS_DROPS.add("write_failed")
+            if not self.fail_warned:
+                self.fail_warned = True
+                log.exception(
+                    "baton: the sink failed to write an event; it was dropped. "
+                    "Later failures are not logged."
+                )
+
+    async def _written_up_to(self, target: int) -> None:
+        async with self.progress:
+            await self.progress.wait_for(lambda: self._written() >= target)
+
+    async def flush_inner(self, target: int) -> None:
+        await self._written_up_to(target)
+        await _call_sink(self.inner, "flush")
+
+    async def close_inner(self, deadline: float) -> None:
+        left = deadline - monotonic()
+        try:
+            await asyncio.wait_for(
+                self._written_up_to(self.recorded), left - min(_CLOSE_GRACE_SECONDS, left / 2)
+            )
+        except TimeoutError:
+            pass
+        with self.lock:
+            self.closing = True
+        await _call_sink(self.inner, "aclose", max(0.0, deadline - monotonic()))
+
+    async def _retire(self) -> None:
+        await self._written_up_to(self.recorded)
+        self._unregister_exit_hook()
+        asyncio.get_running_loop().stop()
 
 
 __all__ = [

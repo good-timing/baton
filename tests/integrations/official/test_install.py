@@ -811,12 +811,11 @@ class TestSurfaceSnapshot:
         assert sorted(t["name"] for t in snapshots[0]["payload"]["tools"]) == ["add", "echo"]
         assert [t["name"] for t in snapshots[1]["payload"]["tools"]] == ["echo"]
 
-    async def test_write_failure_retries_on_next_call_not_dropped_forever(
+    async def test_a_surface_the_sink_fails_to_write_is_counted_and_not_resent(
         self, events_path: str
     ) -> None:
-        """A sink-write failure on the surface_snapshot attempt must retry on
-        the next tool call, not permanently drop the surface the way a
-        genuine dedup skip (already-delivered, unchanged) does."""
+        """The write happens after the call returns, so the surface counts as
+        sent once queued; the sink's failure is counted."""
         flaky = _FlakyOnceSink(FileSink(events_path))
         mcp = FastMCP("test-vendor-mcp")
         handle = install_baton(
@@ -833,16 +832,18 @@ class TestSurfaceSnapshot:
         def echo(text: str) -> str:
             return text
 
-        result1 = await mcp.call_tool("echo", {"text": "x"})  # write #1: raises
-        result2 = await mcp.call_tool("echo", {"text": "y"})  # write #2: same digest, retried
+        result1 = await mcp.call_tool("echo", {"text": "x"})
+        result2 = await mcp.call_tool("echo", {"text": "y"})
         await handle.flush()
         await handle.aclose()
 
         assert result1 is not None
         assert result2 is not None
-        assert flaky.write_attempts == 2
-        snapshots = [e for e in _read_events(events_path) if e["event_type"] == "surface_snapshot"]
-        assert len(snapshots) == 1
+        assert flaky.write_attempts == 1
+        events = _read_events(events_path)
+        assert [e for e in events if e["event_type"] == "surface_snapshot"] == []
+        assert len(events) == 4
+        assert baton._state.PROCESS_DROPS.total() == {"write_failed": 1}
 
     async def test_tools_are_vendor_true_pre_injection(
         self, configured_mcp: tuple[Any, Any, str]
