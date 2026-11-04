@@ -154,6 +154,32 @@ Only what crosses the MCP call. The SDK never reads your logs, your database or 
 install_baton(mcp, VendorConfig(dsn="https://baton_pk_...", result_capture_mode="off"))
 ```
 
+## Settings from the Console
+
+**Change what is captured without a redeploy.** With `settings="console"`, the SDK reads the settings saved on the Console's Capture page, and each caller gets the settings of the first audience that matches it. An audience can match on the caller's labels, the app it runs in (such as `claude-code`), a share of your callers, or several of these, and then all of them must match.
+
+```python
+install_baton(mcp, VendorConfig(dsn="https://baton_pk_...", settings="console"))
+```
+
+On a hosted server, `BATON_DSN` in the environment works here too. Pass `VendorConfig(settings="console")` without a `dsn`. There is no environment variable for `settings` itself, so turning it on is a change to your code.
+
+Three things can differ by audience.
+
+| Setting | What it changes | When it applies |
+|---|---|---|
+| `results` | Whether results and error messages are sent, as `result_capture_mode` does | The next call |
+| `goal` | Whether the `user_goal` Baton adds is required or optional. A tool that declares its own `user_goal` keeps it as it is. | The next `tools/list` |
+| `reports` | Whether the caller sees the report tool | The next `tools/list` |
+
+The SDK reads the settings every 60 seconds. Set `settings_refresh_s` to change that, down to 15. Until the first read succeeds, and while nothing is saved, the values in your `VendorConfig` apply. Once settings are read, each event says which ones it ran under, in `capture`.
+
+`report_mode` is `"on"` by default here, so the Console decides who sees the report tool. Set `report_mode="off"` to keep it off for everyone. The report sentence in your server's instructions stays while any audience has reports on. A client reads the instructions when it connects, so a change reaches new connections only.
+
+Labels come from your `resolve_principal` hook, as `Principal(labels=[...])` or `Organization(labels=[...])`. Up to 20 per caller, sent on every event, so send only names you are happy for Baton to see. A share of callers is picked by the principal's id, or the company's when there is no principal, so the same person always lands in the same group. A caller with neither is never in a share.
+
+These settings, `labels` and `capture` are **experimental** and may change in a minor release ([What is public](#what-is-public)).
+
 ## PII scrubbing
 
 **On by default.** `baton.scrub.Scrubber` walks every event payload and redacts email / `Bearer …` / `sk-*` / `AKIA*` / JWT / Luhn-validated card / NA-format phone, plus a list of sensitive field names. Opt out by passing a config instead of a bare DSN:
