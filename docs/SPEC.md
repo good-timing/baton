@@ -89,6 +89,8 @@ The collector MUST reject any request without a valid bearer. The collector MUST
 
 ### 2.6 Capture settings
 
+*Experimental (§13): this endpoint and its document may change after 1.0.*
+
 A vendor can choose to manage some capture settings in the collector instead of in code. A producer reads them only when the vendor turned that on (in `baton-sdk`, `VendorConfig(settings="console")`). Otherwise it never calls this endpoint and uses the values in the vendor's code. The settings change what Baton records and what Baton adds to the tool list. They never change what the vendor's server does.
 
 **The request.** `GET /v0/settings?server=<vendor_id>`, with the same `Authorization` bearer the producer sends events with (§2.3) and its `tenant_id` in the `X-Baton-Tenant-Id` header. A producer sends the last `ETag` it received as `If-None-Match`.
@@ -234,7 +236,7 @@ This is the canonical signal schema the collector worker produces by stitching e
 | `agent_runtime` | string | yes | e.g., `"claude-code"`, `"cursor"`, `"cowork"`, `"chatgpt-desktop"`, `"unknown"`. |
 | `mcp_transport` | enum: `stdio` \| `sse` \| `http` | yes | The transport the SDK is hosted on. |
 | `mcp_protocol_revision` | string \| null | no | MCP spec revision detected from `_meta` or transport handshake (e.g., `"2025-11-25"`, `"2026-07-28"`). Null if undetermined. |
-| `trace_context` | TraceContext \| null | no | **Reserved.** No SDK sends a trace context and no event schema defines one, so a worker has nothing to fill it from. W3C trace context from request `_meta`. |
+| `trace_context` | TraceContext \| null | no | **Reserved; experimental (§13).** No SDK sends a trace context and no event schema defines one, so a worker has nothing to fill it from. W3C trace context from request `_meta`. |
 | `vendor_app_version` | string \| null | no | Vendor's own app version if they want to attach it. |
 
 ### 3.3 Sample payload
@@ -952,7 +954,7 @@ Every event has these fields:
   "captured_at": "2026-05-19T16:42:03Z",     // SDK timestamp at emission
   "consent_token": "...",                    // from VendorConfig; see §9
   "sdk_version": "0.1.0",                    // also names the producer; see §13
-  "agent_runtime": "unknown",                // LEGACY: a producer that sends `client_observed` sends "unknown" here; see below
+  "agent_runtime": "unknown",                // LEGACY: a producer that sends `client_observed` sends "unknown" here; a consumer SHOULD NOT rely on it; see below
   "principal": {                             // optional; who the vendor resolved behind the call — absent as a WHOLE when nobody was; see below
     "id": "jane@example.com",                //   the value, exactly as the vendor's resolver returned it — UNTAGGED
     "source": "asserted",                    //   WHERE it came from — see the registry below
@@ -1088,11 +1090,12 @@ Keep all of it apart from `agent_runtime`. `agent_runtime` is what the client *s
 
 **`call_id` — the minted per-call correlation key (REQUIRED on `tool_call_start`, `tool_call_end` and `tool_call_error`; absent or null on every other type).** The SAME non-empty value on a tool call's start and its end or error. It is the only key a worker pairs the two legs on (§11.5.4), so a collector MAY reject a tool-call leg that carries none, and a leg stored without one stays unpaired.
 
-Four rules, each of them a mistake this project has already made or nearly made:
+Five rules, each of them a mistake this project has already made or nearly made:
 
 - **The producer MUST mint it in a local variable inside the function that emits both legs.** That makes it per-call by construction and correct across processes. It MUST NOT be derived from the JSON-RPC request id (`ctx.request_id` in both Python MCP server libraries), which restarts at 1 per connection and therefore collides under exactly the merged-session conditions where pairing already hurts.
 - **It MUST be opaque** — a bare UUID. No tenant, user, session or tool name encoded, or the join key becomes a data-handling concern in its own right.
 - **It goes in its own envelope field, never inside `runtime_meta`.** That dict is the client's `_meta` forwarded verbatim (§11.4.1). An id the producer minted MUST stay separable from ids it merely observed.
+- **A call that pauses has one `call_id` per round.** On protocol 2026-07-28 a call can return an input-required result, and the client resumes it in a new request. Each request is a round, and each round mints its own id: the start leg comes from the first round and the end or error leg from the last, so the two legs carry different `call_id`s and stay unpaired (§11.5.4). A consumer MUST NOT expect them to share one. The producer keeps no state between requests, so it cannot carry the id across rounds. A field linking the rounds may be added later; `call_id`'s meaning will not change.
 - **It says WHICH CALL, never WHO.** The principal is `principal.id`, a different field on a different condition. Keep the two claims apart.
 
 **`transport_observed` — what the SDK observed beneath this call (OPTIONAL, nullable).** A record of an OBSERVATION, deliberately not of a conclusion. Registered values:
@@ -1162,14 +1165,14 @@ Four rules, each of them a mistake this project has already made or nearly made:
 
 **It goes in its own envelope field, never inside `runtime_meta`.** That dict is the client's `_meta` forwarded verbatim (§11.4.1); a header is not `_meta`, and `info` may come from the handshake.
 
-**`labels` — the vendor's names for the caller's groups (OPTIONAL list of strings).** The vendor's resolver returns them beside the principal or organization: `beta`, `enterprise`, or one unguessable key per customer that the vendor keeps (`org_7f3k9q2`). A `label` rule matches on them (§2.6), and a consumer can offer the labels it has seen. **Absent or `null` when there are none**, and never an empty list.
+**`labels` — the vendor's names for the caller's groups (OPTIONAL list of strings; experimental, §13).** The vendor's resolver returns them beside the principal or organization: `beta`, `enterprise`, or one unguessable key per customer that the vendor keeps (`org_7f3k9q2`). A `label` rule matches on them (§2.6), and a consumer can offer the labels it has seen. **Absent or `null` when there are none**, and never an empty list.
 
 - A producer sends every usable label, in the order the resolver gave them, without repeats, and at most 20. A label is usable when it is a string of at most 64 Unicode code points, is not empty after removing Unicode `White_Space`, is well-formed Unicode and holds no U+0000. An unusable label is dropped alone.
 - Labels are sent as given, without the scrubber (§7): the vendor chose them as names it is happy for Baton to see.
 - **They are not identity.** A consumer MUST NOT read them as a principal or use them for authorization.
 - **Which events carry them.** Every event that carries `principal` or `organization` can carry them, including when the resolver returned labels alone.
 
-**`capture` — which collector settings the call ran under (OPTIONAL object).** Present only when the producer applied a settings document (§2.6). Absent when the vendor manages settings in code, and before the first document is read. Members, each omitted when it has no value:
+**`capture` — which collector settings the call ran under (OPTIONAL object; experimental, §13).** Present only when the producer applied a settings document (§2.6). Absent when the vendor manages settings in code, and before the first document is read. Members, each omitted when it has no value:
 
 | member | holds |
 |---|---|
@@ -1675,6 +1678,8 @@ A producer sends these when a client asks for the server's tools (`tools/list`).
 
 #### 11.4.7 `client_report` — how many events this process lost
 
+*Experimental (§13): this event's members and counting may change after 1.0.*
+
 A producer that sends over HTTP reports the counts from §11.2 rule 8, so the Console can show how many events an install lost and why.
 
 ```json
@@ -1878,13 +1883,24 @@ already learn.
 - **`sdk_version` also names the producer, by its prefix.** `baton-sdk` sends the bare version (`0.9.1`), `baton-ts` sends `ts-` and the version (`ts-0.6.1`), `baton-proxy` sends `baton-proxy/` and the version, and the Go SDK MUST send `go-` and the version. A new producer MUST pick a prefix no other producer uses. There is no separate field for the producer's name.
 - Until v1.0 is declared, all bumps are minor and breakage is allowed. We're pre-stable; consumers should pin to a known-good SDK range.
 
+### Stability from 1.0
+
+From 1.0, the wire format is additive-only: no event type, field or value is removed or changes meaning without a 2.0. A producer MAY add an optional field, a new event type or a new value where this spec says new values may be registered, so a consumer MUST ignore what it does not know. Everything this spec puts on the wire (§2, §3, §4 and §11.4) is stable except:
+
+| Experimental (may change after 1.0) | Where |
+|---|---|
+| `labels` and `capture`, including `capture.overlay` | §11.4 |
+| `GET /v0/settings` and its document | §2.6 |
+| `client_report` | §11.4.7 |
+| `trace_context` (reserved, not sent) | §3.1 |
+
+`agent_runtime` is stable but LEGACY: producers that send `client_observed` send `"unknown"`, and a consumer SHOULD NOT rely on it (§5.2).
+
+**Each SDK's public API follows semver from 1.0** too: a breaking change to it is a new major. Each SDK's README says what is public. `baton-sdk`'s pre-rename import paths (`baton.integrations.mcp`, `baton.integrations.fastmcp`) are permanent aliases (`tests/test_import_path_aliases.py`). A Go SDK major after 1 also changes its module path (`/v2`). `baton-proxy` stays at 0.x and sends 1.0 events.
+
 ### Wire-format changes
 
-> ⚠ **Entries below dated before 2026-09-09 still read "Unreleased" and are not.** They shipped across **0.4.0–0.7.2** — the undated one at the bottom of this list is the intent-param entry, and `call_intent` / `intent_source` shipped in 0.4.0 — and the version stamp this list used through `0.2.8` stopped being applied after it. Restamping means mapping **ten** entries to the releases that actually carried them: archaeology, easy to get wrong, and not a thing to do inside a release. (This note said "fifteen" and "0.5.x–0.7.2" until 2026-09-11; both were wrong, in a note whose whole job is to stop a later reader mis-reading the list.) Recorded here so the word "Unreleased" below is read as a stale label rather than a claim.
->
-> ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
->
-> **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+> ⚠ **Thirteen entries dated 2026-09-13 or earlier still read "Unreleased" and are not.** They shipped across 0.4.0–0.8.x; which release carried each is not established, and is not guessed here. An entry labelled "Unreleased" with a later date is pending, and the next release numbers it.
 
 - **Unreleased (2026-11-03) — the library path exposes the annotation tool as data (§5.6).** No envelope field, event type or shape changes. A library producer SHOULD expose the annotation tool's name, description, input schema, refusal text and instructions, as an adapter registers them, and a mapping from its arguments to `annotate()` that returns nothing for a call with no `what_happened`. `baton-sdk` adds `report_tool()`. `baton-ts` and the Go SDK do not have it yet. **Consumer consequence:** none.
 
