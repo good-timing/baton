@@ -197,7 +197,10 @@ async def test_a_second_close_waits_for_the_first_and_the_sink_closes_once() -> 
     assert sink.calls == ["write", "aclose"]
 
 
-async def test_at_exit_the_queue_is_written_out() -> None:
+async def test_at_exit_the_queue_is_written_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    import baton.sinks as sinks_module
+
+    monkeypatch.setattr(sinks_module, "_exit_deadline", None)
     gate = threading.Event()
     sink = _Recording(gate=gate)
     q = queued(sink)
@@ -303,11 +306,6 @@ async def test_a_flush_after_the_drain_died_writes_what_waits() -> None:
     await q.aclose()
 
 
-def test_a_sink_given_to_two_installs_gets_one_queue() -> None:
-    sink = _Recording()
-    assert queued(sink) is queued(sink)
-
-
 async def test_an_overflow_warning_made_an_error_still_drops_the_oldest() -> None:
     gate = threading.Event()
     sink = _Recording(gate=gate)
@@ -324,3 +322,24 @@ async def test_an_overflow_warning_made_an_error_still_drops_the_oldest() -> Non
     await q.aclose()
     assert PROCESS_DROPS.total() == {"buffer_full": 2}
     assert [e.sequence_number for e in sink.events][:2] == [0, 3]
+
+
+async def test_queues_share_one_limit_at_exit(
+    short_budget: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import baton.sinks as sinks_module
+
+    monkeypatch.setattr(sinks_module, "_exit_deadline", None)
+    gate = threading.Event()
+    queues = [queued(_Recording(gate=gate)) for _ in range(3)]
+    try:
+        for q in queues:
+            await q.write(make_event())
+        started = time.monotonic()
+        for q in queues:
+            q._sender.flush_at_exit()  # type: ignore[attr-defined]
+        assert time.monotonic() - started < short_budget + 0.2
+    finally:
+        gate.set()
+    for q in queues:
+        await q.aclose()

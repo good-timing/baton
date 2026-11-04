@@ -182,8 +182,9 @@ class Sink(ABC):
     @abstractmethod
     async def write(self, event: Event) -> None:
         """Hand one event to the sink. Baton calls it from its own thread and
-        event loop, one event at a time, never from a tool call; a raise drops
-        the event and counts it ``write_failed``."""
+        event loop, never from a tool call, one event at a time for each
+        install or client the sink is given to; a raise drops the event and
+        counts it ``write_failed``."""
 
     @abstractmethod
     async def flush(self) -> None:
@@ -1480,24 +1481,15 @@ class MultiSink(Sink):
 
 #: Kept from close's budget for the sink's own close, which may still send.
 _CLOSE_GRACE_SECONDS = 1.0
-
-
-#: By id(), since a vendor's sink may be unhashable; a queue holds its sink, so
-#: the id is not reused while the entry lives.
-_QUEUES: weakref.WeakValueDictionary[int, _QueuedSink] = weakref.WeakValueDictionary()
+#: One limit for every queue's exit flush together, not one each.
+_exit_deadline: float | None = None
 
 
 def queued(sink: Sink) -> Sink:
-    """``sink`` behind Baton's queue, unless its own ``write`` already only
-    queues. A sink given to several installs gets one queue, so it is written
-    one event at a time."""
+    """``sink`` behind Baton's queue, unless its own ``write`` already only queues."""
     if isinstance(sink, _QueuedSink) or type(sink).write is HttpSink.write:
         return sink
-    existing = _QUEUES.get(id(sink))
-    if existing is not None and not existing._closed:
-        return existing
-    _QUEUES[id(sink)] = made = _QueuedSink(sink)
-    return made
+    return _QueuedSink(sink)
 
 
 def vendor_sink(sink: Sink) -> Sink:
@@ -1747,11 +1739,14 @@ class _QueueSender:
         """Daemon threads still run while atexit hooks do, so the thread is
         given the budget. Events left then are warned about, not counted
         (SPEC §11.2 rule 8)."""
+        global _exit_deadline
         _reset_if_forked()
         with self.lock:
             if self.stopping or not self.pending():
                 return
             target, loop, thread = self.recorded, self.loop, self.thread
+        if _exit_deadline is None:
+            _exit_deadline = monotonic() + self.budget
         if loop is not None and thread is not None and thread.is_alive():
             flushing = self.flush_inner(target)
             try:
@@ -1760,7 +1755,7 @@ class _QueueSender:
                 flushing.close()  # the loop has stopped
             else:
                 try:
-                    done.result(timeout=self.budget)
+                    done.result(timeout=max(0.0, _exit_deadline - monotonic()))
                 except Exception:
                     pass
         if self.pending():
