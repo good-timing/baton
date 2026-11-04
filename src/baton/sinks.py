@@ -324,6 +324,10 @@ class _CircuitBreaker:
 #: SPEC §11.2 rule 7's default budget for a flush at shutdown, or an explicit
 #: close or flush; an ``HttpSink`` may set its own.
 SHUTDOWN_FLUSH_TIMEOUT_SECONDS = 3.0
+#: SPEC §11.2 rule 3's default bound.
+QUEUE_BOUND = 1000
+#: How long cancelled work gets to unwind when a background loop stops.
+_CANCEL_WAIT_SECONDS = 0.5
 
 #: Added to the outer limit, so an ``HttpSink``'s own warning, which counts
 #: what was left, is the one shown.
@@ -409,7 +413,7 @@ async def bounded_sink_call(sink: Sink, method: Literal["flush", "aclose"]) -> N
     task.add_done_callback(lambda t: _log_late_failure(t, what))
     done, _ = await asyncio.wait({task}, timeout=timeout)
     if not done:
-        log.warning("baton: %s took over %.2fs and was left unfinished.", what, timeout)
+        _log_left_unfinished(what, timeout)
 
 
 def _log_late_failure(task: asyncio.Future[Any], what: str) -> None:
@@ -1262,7 +1266,7 @@ class HttpSink(Sink):
         url: str,
         *,
         api_key: str,
-        buffer_size: int = 1000,
+        buffer_size: int = QUEUE_BOUND,
         request_timeout_seconds: float = 1.0,
         max_retries: int = 3,
         backoff_base_seconds: float = 0.1,
@@ -1474,9 +1478,6 @@ class MultiSink(Sink):
 # Every other sink: written from Baton's own thread
 # =============================================================================
 
-#: SPEC §11.2 rule 3's default bound.
-QUEUE_BOUND = 1000
-_CANCEL_WAIT_SECONDS = 0.5
 #: Kept from close's budget for the sink's own close, which may still send.
 _CLOSE_GRACE_SECONDS = 1.0
 
@@ -1491,54 +1492,6 @@ def queued(sink: Sink) -> Sink:
 def vendor_sink(sink: Sink) -> Sink:
     """The sink the vendor configured, without Baton's queue."""
     return sink.inner if isinstance(sink, _QueuedSink) else sink
-
-
-class _QueuedSink(Sink):
-    """Writes events to ``inner`` from Baton's own thread and event loop, so a
-    slow or failing sink never slows a tool call (SPEC §11.2 rules 3 and 7)."""
-
-    def __init__(self, inner: Sink) -> None:
-        self.inner = inner
-        self._budget = shutdown_budget_seconds(inner)
-        self._sender = _QueueSender(inner, self._budget)
-        finalizer = weakref.finalize(self, self._sender.retire)
-        finalizer.atexit = False  # type: ignore[misc]
-        self._closing: asyncio.Future[None] | None = None
-        self._closed = False
-
-    async def write(self, event: Event) -> None:
-        if self._closed:
-            raise SinkClosedError("the sink is closed")
-        self._sender.enqueue(event)
-
-    async def flush(self) -> None:
-        if self._closed:
-            return
-        done = self._sender.submit(self._sender.flush_inner(self._sender.recorded))
-        if not await _wait_for_thread(done, self._budget):
-            _log_left_unfinished("flush()", self._budget)
-
-    async def aclose(self) -> None:
-        """A second call waits for the first (SPEC §11.2 rule 7)."""
-        await self._aclose_within(self._budget)
-
-    async def _aclose_within(self, seconds: float) -> None:
-        # A close cancelled from outside (loop teardown) is started again.
-        if self._closing is None or self._closing.cancelled():
-            self._closing = asyncio.ensure_future(self._close(min(seconds, self._budget)))
-        await asyncio.shield(self._closing)
-
-    async def _close(self, seconds: float) -> None:
-        self._closed = True
-        done = self._sender.submit(self._sender.close_inner(monotonic() + seconds))
-        if not await _wait_for_thread(done, seconds):
-            _log_left_unfinished("aclose()", seconds)
-        unsent = self._sender.stop()
-        if unsent:
-            PROCESS_DROPS.add("unsent_at_close", unsent)
-            logging.getLogger("baton").warning(
-                "baton: the sink closed with %d event(s) unsent.", unsent
-            )
 
 
 def _log_left_unfinished(what: str, seconds: float) -> None:
@@ -1558,6 +1511,72 @@ async def _call_sink(sink: Sink, method: Literal["flush", "aclose"], seconds: fl
         logging.getLogger("baton").warning("baton: %s() failed", method, exc_info=True)
 
 
+async def _call_sink_within(sink: Sink, method: Literal["flush", "aclose"], seconds: float) -> None:
+    """``_call_sink`` on the caller's loop, for a sink Baton never wrote to."""
+    try:
+        await asyncio.wait_for(_call_sink(sink, method, seconds), seconds)
+    except TimeoutError:
+        _log_left_unfinished(f"{method}()", seconds)
+
+
+class _QueuedSink(Sink):
+    """Writes events to ``inner`` from Baton's own thread and event loop, so a
+    slow or failing sink never slows a tool call (SPEC §11.2 rules 3 and 7)."""
+
+    def __init__(self, inner: Sink) -> None:
+        self.inner = inner
+        self._budget = shutdown_budget_seconds(inner)
+        self._sender = _QueueSender(inner, self._budget)
+        finalizer = weakref.finalize(self, self._sender.retire)
+        finalizer.atexit = False  # type: ignore[misc]
+        self._closing: asyncio.Future[None] | None = None
+        self._closed = False
+        # The flush that ran out of budget; later flushes do not wait on it again.
+        self._stalled: concurrent.futures.Future[None] | None = None
+
+    async def write(self, event: Event) -> None:
+        if self._closed:
+            raise SinkClosedError("the sink is closed")
+        self._sender.enqueue(event)
+
+    async def flush(self) -> None:
+        if self._closed or (self._stalled is not None and not self._stalled.done()):
+            return
+        if not self._sender.started():
+            await _call_sink_within(self.inner, "flush", self._budget)
+            return
+        done = self._sender.submit(self._sender.flush_inner(self._sender.recorded))
+        if not await _wait_for_thread(done, self._budget):
+            self._stalled = done
+            _log_left_unfinished("flush()", self._budget)
+
+    async def aclose(self) -> None:
+        """A second call waits for the first (SPEC §11.2 rule 7)."""
+        await self._aclose_within(self._budget)
+
+    async def _aclose_within(self, seconds: float) -> None:
+        # A close cancelled from outside (loop teardown) is started again.
+        if self._closing is None or self._closing.cancelled():
+            self._closing = asyncio.ensure_future(self._close(min(seconds, self._budget)))
+        await asyncio.shield(self._closing)
+
+    async def _close(self, seconds: float) -> None:
+        if self._sender.started():
+            done = self._sender.submit(self._sender.close_inner(monotonic() + seconds))
+            if not await _wait_for_thread(done, seconds):
+                _log_left_unfinished("aclose()", seconds)
+        else:
+            self._sender.closing = True
+            await _call_sink_within(self.inner, "aclose", seconds)
+        self._closed = True
+        unsent = self._sender.stop()
+        if unsent:
+            PROCESS_DROPS.add("unsent_at_close", unsent)
+            logging.getLogger("baton").warning(
+                "baton: the sink closed with %d event(s) unsent.", unsent
+            )
+
+
 class _QueueSender:
     """The part of ``_QueuedSink`` its thread runs. It holds no reference to
     the queued sink, so a sink nobody closes can still be garbage collected."""
@@ -1571,6 +1590,8 @@ class _QueueSender:
         self.closing = False
         self.stopping = False
         self.overflow_warned = False
+        self.copy_warned = False
+        self.start_warned = False
         self.fail_warned = False
         self.exit_hook_registered = False
         self._new_state()
@@ -1579,8 +1600,9 @@ class _QueueSender:
     def _new_state(self) -> None:
         self.lock = threading.Lock()
         self.loop: asyncio.AbstractEventLoop | None = None
-        self.wake = asyncio.Event()
-        self.progress = asyncio.Condition()
+        self.thread: threading.Thread | None = None
+        # Whether the drain has been woken for what is waiting.
+        self.signalled = False
 
     def reset_in_child(self) -> None:
         """In a forked child: the parent's thread is gone, and the events it
@@ -1592,40 +1614,70 @@ class _QueueSender:
     def pending(self) -> int:
         return len(self.waiting) + self.in_flight
 
-    def _written(self) -> int:
-        return self.recorded - self.pending()
+    def started(self) -> bool:
+        return self.thread is not None
 
     # ---- called from the vendor's side ---------------------------------
 
     def enqueue(self, event: Event) -> None:
         _reset_if_forked()
+        try:
+            # The sink writes later, so it must not see the vendor's later changes
+            # to a params or result object a scrubber passed through.
+            event = event.model_copy(deep=True)
+        except Exception:
+            PROCESS_DROPS.add("encode_failed")
+            if not self.copy_warned:
+                self.copy_warned = True
+                logging.getLogger("baton").warning(
+                    "baton: an event could not be copied and was dropped.", exc_info=True
+                )
+            return
         with self.lock:
+            if self.closing or self.stopping:
+                raise SinkClosedError("the sink is closed")
             if len(self.waiting) >= QUEUE_BOUND:
                 if not self.overflow_warned:
-                    self.overflow_warned = True
                     warnings.warn(
                         f"Baton sink buffer full ({QUEUE_BOUND}); "
                         "oldest events dropped. Further overflows will be silent.",
                         UserWarning,
                         stacklevel=3,
                     )
+                    self.overflow_warned = True
                 # After the warning: one promoted to an error drops this event
                 # instead, and safe_write counts that.
                 PROCESS_DROPS.add("buffer_full")
                 self.waiting.popleft()
             self.waiting.append(event)
             self.recorded += 1
-            loop = self._loop_locked()
-        if not self.wake.is_set():
             try:
-                loop.call_soon_threadsafe(self.wake.set)
+                loop = self._loop_locked()
+            except RuntimeError:
+                # Tried again on the next event; this one waits in the queue.
+                if not self.start_warned:
+                    self.start_warned = True
+                    logging.getLogger("baton").warning(
+                        "baton: could not start the thread that writes events.", exc_info=True
+                    )
+                return
+            wake = not self.signalled
+            self.signalled = True
+        if wake:
+            try:
+                loop.call_soon_threadsafe(self._wake.set)
             except RuntimeError:
                 pass  # the loop has stopped
 
     def submit(self, work: Coroutine[Any, Any, None]) -> concurrent.futures.Future[None]:
         _reset_if_forked()
+        loop = None
         with self.lock:
-            loop = None if self.stopping else self._loop_locked()
+            if not self.stopping:
+                try:
+                    loop = self._loop_locked()
+                except RuntimeError:
+                    pass
         if loop is not None:
             try:
                 return asyncio.run_coroutine_threadsafe(work, loop)
@@ -1654,6 +1706,7 @@ class _QueueSender:
 
     def retire(self) -> None:
         """The queued sink was garbage collected: write what is left, then end the thread."""
+        _reset_if_forked()
         with self.lock:
             loop = None if self.stopping else self.loop
         if loop is None:
@@ -1669,6 +1722,7 @@ class _QueueSender:
         """Daemon threads still run while atexit hooks do, so the thread is
         given the budget. Events left then are warned about, not counted
         (SPEC §11.2 rule 8)."""
+        _reset_if_forked()
         with self.lock:
             if self.stopping or self.loop is None or not self.pending():
                 return
@@ -1686,15 +1740,28 @@ class _QueueSender:
             )
 
     def _loop_locked(self) -> asyncio.AbstractEventLoop:
-        if self.loop is None:
-            self.loop = asyncio.new_event_loop()
-            threading.Thread(
-                target=self._run, args=(self.loop,), name="baton-sink", daemon=True
-            ).start()
-            if not self.exit_hook_registered:
-                self.exit_hook_registered = True
-                atexit.register(self.flush_at_exit)
-        return self.loop
+        """The running loop, started again if its thread has ended."""
+        if self.loop is not None and self.thread is not None and self.thread.is_alive():
+            return self.loop
+        if self.in_flight:
+            # The event the ended thread was writing.
+            PROCESS_DROPS.add("write_failed", self.in_flight)
+            self.in_flight = 0
+        loop = asyncio.new_event_loop()
+        # Created per loop: an asyncio primitive binds to the first loop that waits on it.
+        self._wake = asyncio.Event()
+        self._progress = asyncio.Condition()
+        thread = threading.Thread(target=self._run, args=(loop,), name="baton-sink", daemon=True)
+        try:
+            thread.start()
+        except BaseException:
+            loop.close()
+            raise
+        self.loop, self.thread, self.signalled = loop, thread, False
+        if not self.exit_hook_registered:
+            self.exit_hook_registered = True
+            atexit.register(self.flush_at_exit)
+        return loop
 
     def _unregister_exit_hook(self) -> None:
         if self.exit_hook_registered:
@@ -1718,18 +1785,19 @@ class _QueueSender:
 
     async def _drain(self) -> None:
         while True:
-            await self.wake.wait()
-            self.wake.clear()
+            await self._wake.wait()
+            self._wake.clear()
             while (event := self._take()) is not None:
                 await self._write(event)
                 with self.lock:
                     self.in_flight = 0
-                async with self.progress:
-                    self.progress.notify_all()
+                async with self._progress:
+                    self._progress.notify_all()
 
     def _take(self) -> Event | None:
         with self.lock:
             if self.closing or not self.waiting:
+                self.signalled = False
                 return None
             self.in_flight = 1
             return self.waiting.popleft()
@@ -1750,19 +1818,20 @@ class _QueueSender:
                     "Later failures are not logged."
                 )
 
-    async def _written_up_to(self, target: int) -> None:
-        async with self.progress:
-            await self.progress.wait_for(lambda: self._written() >= target)
+    async def _until(self, done: Callable[[], bool]) -> None:
+        async with self._progress:
+            await self._progress.wait_for(done)
 
     async def flush_inner(self, target: int) -> None:
-        await self._written_up_to(target)
+        await self._until(lambda: self.recorded - self.pending() >= target)
         await _call_sink(self.inner, "flush")
 
     async def close_inner(self, deadline: float) -> None:
         left = deadline - monotonic()
         try:
             await asyncio.wait_for(
-                self._written_up_to(self.recorded), left - min(_CLOSE_GRACE_SECONDS, left / 2)
+                self._until(lambda: not self.pending()),
+                left - min(_CLOSE_GRACE_SECONDS, left / 2),
             )
         except TimeoutError:
             pass
@@ -1771,7 +1840,7 @@ class _QueueSender:
         await _call_sink(self.inner, "aclose", max(0.0, deadline - monotonic()))
 
     async def _retire(self) -> None:
-        await self._written_up_to(self.recorded)
+        await self._until(lambda: not self.pending())
         self._unregister_exit_hook()
         asyncio.get_running_loop().stop()
 

@@ -206,3 +206,74 @@ async def test_at_exit_the_queue_is_written_out() -> None:
     q._sender.flush_at_exit()  # type: ignore[attr-defined]
     assert sink.calls == ["write", "flush"]
     await q.aclose()
+
+
+async def test_the_sink_gets_the_event_as_it_was_when_recorded() -> None:
+    from baton.scrub import identity_scrub
+
+    sink = _Recording(write_delay=0.1)
+    client = AsyncClient(sink=sink, vendor_id="v", scrubber=identity_scrub)
+    rows = {"rows": ["alice"]}
+    async with client.trace(tool_name="fetch", params={"q": rows}) as t:
+        t.observed(result=rows)
+    rows["rows"].append("LATE")
+    await client.aclose()
+    end = next(e for e in sink.events if e.event_type == "tool_call_end")
+    assert end.payload.result == {"rows": ["alice"]}
+
+
+async def test_an_event_recorded_while_close_drains_is_written(short_budget: float) -> None:
+    sink = _Recording(write_delay=0.1)
+    q = queued(sink)
+    await q.write(make_event(0))
+    closing = asyncio.ensure_future(q.aclose())
+    await asyncio.sleep(0.02)
+    await q.write(make_event(1))
+    await closing
+    assert [e.sequence_number for e in sink.events] == [0, 1]
+    assert PROCESS_DROPS.total() == {}
+
+
+async def test_a_flush_on_a_stuck_sink_waits_its_budget_once(short_budget: float) -> None:
+    gate = threading.Event()
+    q = queued(_Recording(gate=gate))
+    try:
+        await q.write(make_event())
+        await q.flush()
+        started = time.monotonic()
+        await q.flush()
+        assert time.monotonic() - started < 0.05
+    finally:
+        gate.set()
+    await q.aclose()
+
+
+async def test_a_sink_never_written_to_is_closed_without_a_thread() -> None:
+    sink = _Recording()
+    q = queued(sink)
+    await q.flush()
+    await q.aclose()
+    assert sink.calls == ["flush", "aclose"]
+    assert not q._sender.started()  # type: ignore[attr-defined]
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+async def test_a_drain_that_died_is_started_again() -> None:
+    class _ExitsOnce(_Recording):
+        async def write(self, event: Event) -> None:
+            if not self.calls:
+                self.calls.append("exit")
+                raise SystemExit
+            await super().write(event)
+
+    sink = _ExitsOnce()
+    q = queued(sink)
+    await q.write(make_event(0))
+    sender = q._sender  # type: ignore[attr-defined]
+    await _until(lambda: not sender.thread.is_alive())
+    await q.write(make_event(1))
+    started = time.monotonic()
+    await q.aclose()
+    assert time.monotonic() - started < 0.5
+    assert [e.sequence_number for e in sink.events] == [1]
+    assert PROCESS_DROPS.total() == {"write_failed": 1}

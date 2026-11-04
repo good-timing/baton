@@ -145,6 +145,7 @@ from baton.scrub import (  # noqa: F401  identity_scrub kept exported
     scrub_or_none,
 )
 from baton.sinks import (
+    _CANCEL_WAIT_SECONDS,
     HttpSink,
     Sink,
     aclose_within,
@@ -560,13 +561,10 @@ def _resolve_consent_token(explicit: str | None) -> str:
 # =============================================================================
 
 
-#: What close() may take past the sink's budget: the close of a vendor's sink
-#: after a write that never finished used the budget, or a blocked loop thread.
+#: What close() may take past the sink's budget: a blocked loop thread.
 _CLOSE_MARGIN_SECONDS = 0.5
 #: The longest one event may hold the vendor's thread.
 _EMIT_WAIT_SECONDS = 1.0
-#: How long cancelled work gets to unwind when the bridge stops.
-_CANCEL_WAIT_SECONDS = 0.5
 #: How often a waiting caller checks that the bridge is still running.
 _BRIDGE_POLL_SECONDS = 0.05
 
@@ -1503,12 +1501,12 @@ class Client(_Sessions):
         try:
             self._bridge.wait(future, _EMIT_WAIT_SECONDS)
         except TimeoutError:
-            # A sink of the vendor's own that never answers grows the loop's
-            # queue from here on; the shipped sinks only append to a buffer.
+            # Every sink write only queues, so only a blocked loop thread
+            # (a slow log or warnings handler on it) gets here.
             self._stalled = future
             logger.warning(
-                "baton: the sink took over %.1fs on one event; events are queued "
-                "without waiting until it answers.",
+                "baton: the background event loop took over %.1fs on one event; "
+                "events are queued without waiting until it answers.",
                 _EMIT_WAIT_SECONDS,
             )
         except _BridgeStopped:

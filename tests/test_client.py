@@ -36,7 +36,6 @@ import pytest
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Request, Response
 
-import baton.client as client_module
 import baton.sinks as sinks_module
 from baton import AsyncClient, Client
 from baton.client import _SyncBridge
@@ -1217,7 +1216,6 @@ class TestBridgeNeverHangs:
     def test_a_write_that_never_finishes_holds_neither_close_nor_its_sender(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.1)
         monkeypatch.setattr(sinks_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 0.3)
         client = Client(sink=_RecordingSink(write_delay=30), vendor_id="v")
         sender = threading.Thread(target=_send_one, args=(client,))
@@ -1252,17 +1250,6 @@ class TestBridgeNeverHangs:
         started = time.monotonic()
         client.close()
         assert time.monotonic() - started < 1.5
-
-    def test_snapshots_do_not_wait_while_the_sink_is_stalled(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.1)
-        client = Client(sink=_RecordingSink(write_delay=0.2), vendor_id="v")
-        _send_one(client)  # one 0.1 s wait; the sink is now stalled
-        started = time.monotonic()
-        client.list_tools([{"name": "fetch", "inputSchema": {"type": "object"}}])
-        assert time.monotonic() - started < 0.1
-        client.close()
 
     def test_close_and_flush_never_raise_a_sink_error(self) -> None:
         client = Client(sink=_RecordingSink(close_error=OSError("collector gone")), vendor_id="v")

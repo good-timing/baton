@@ -33,6 +33,9 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   still the sink you passed. **If your own sink holds a connection made on
   your event loop**, such as an aiohttp session, open it inside `write`
   instead, because `write` now runs on Baton's loop. `HttpSink` is unchanged.
+  Known gaps: `handle.sink.flush()` and `handle.sink.aclose()` skip the queue,
+  so call `handle.flush()` and `handle.aclose()`; a `MultiSink` holding an
+  `HttpSink` puts that sink behind two queues.
 - **What is public is written down** (README, "What is public"): the names in
   `__all__` of `baton`, `baton.client`, `baton.identity`, `baton.scrub`,
   `baton.sinks`, `baton.events` and the adapter packages. `baton.identity` and

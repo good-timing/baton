@@ -12,7 +12,6 @@ from typing import Any
 
 import pytest
 
-import baton.client as client_module
 import baton.sinks as sinks_module
 from baton import AsyncClient, Client
 from baton._state import PROCESS_DROPS
@@ -398,7 +397,6 @@ async def test_aclose_within_calls_a_subclass_aclose_without_the_time_left() -> 
 def test_the_sync_client_close_waits_for_writes_within_the_budget_not_on_top(
     short_budget: float, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.05)
 
     client = Client(sink=_NothingAnswers(), vendor_id="v")
     with client.trace(tool_name="t") as trace:
@@ -490,7 +488,6 @@ def test_a_stuck_write_leaves_our_http_sink_the_time_left_and_its_count(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(sinks_module, "SHUTDOWN_FLUSH_TIMEOUT_SECONDS", 0.1)
-    monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.05)
     # Over the 0.5s margin, so a fresh budget on top of the wait would not fit.
     http = _stuck_http_sink(budget=0.6, sink_type=http_type)
     client = Client(sink=MultiSink([_OnlyWriteHangs(), http]), vendor_id="v")
