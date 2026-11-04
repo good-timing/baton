@@ -1,0 +1,68 @@
+{
+  "sdk": "python",
+  "version": "1.0.0",
+  "source": "checkout",
+  "runtime": "CPython 3.12.13",
+  "max_rss_bytes": 84783104,
+  "measures": {
+    "overhead": {
+      "plain_p50_ms": 0.34075200005645456,
+      "plain_p99_ms": 0.3789979999737625,
+      "baton_p50_ms": 0.6466900000532405,
+      "baton_p99_ms": 1.0955470000908463,
+      "added_p50_ms": 0.30593799999678595,
+      "added_p99_ms": 0.7165490001170838
+    },
+    "burst": {
+      "emitted": 20000,
+      "delivered": 20000,
+      "lost": 0,
+      "wall_ms": 6133.9191590000155,
+      "call_p50_ms": 5.947657999968214,
+      "call_p99_ms": 9.879650000016227,
+      "close_ms": 1.7773859999579145
+    },
+    "outage_hang": {
+      "emitted": 4000,
+      "delivered": 0,
+      "lost": 4000,
+      "wall_ms": 1096.190330000013,
+      "call_p50_ms": 5.124055999999655,
+      "call_p99_ms": 10.106887999995706,
+      "close_ms": 3005.0124130000313
+    },
+    "outage_down": {
+      "emitted": 4000,
+      "delivered": 0,
+      "lost": 4000,
+      "wall_ms": 1073.745219999978,
+      "call_p50_ms": 5.180598999913855,
+      "call_p99_ms": 9.101462999979049,
+      "close_ms": 705.7859530000314
+    },
+    "memory": {
+      "heap_after_warmup_bytes": 528163,
+      "heap_at_half_bytes": 653081,
+      "heap_at_end_bytes": 576922,
+      "growth_per_call_bytes": -7.6159
+    },
+    "memory_outage": {
+      "heap_after_warmup_bytes": 1498491,
+      "heap_at_half_bytes": 3545052,
+      "heap_at_end_bytes": 3546083,
+      "growth_per_call_bytes": 0.1031
+    },
+    "large_result": {
+      "plain_p50_ms": 0.29109699994478433,
+      "plain_p99_ms": 0.3233540001019719,
+      "baton_p50_ms": 0.6601119999913863,
+      "baton_p99_ms": 1.8706310000879967,
+      "added_p50_ms": 0.3690150000466019,
+      "added_p99_ms": 1.5472769999860247,
+      "emitted": 2200,
+      "delivered": 2200,
+      "lost": 0,
+      "heap_growth_bytes": 2150606
+    }
+  }
+}
