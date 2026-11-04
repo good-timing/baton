@@ -11,7 +11,12 @@ from typing import Any
 import pytest
 
 from baton import Principal
-from tests._event_helpers import LIFECYCLE_EVENT_TYPES, principal_of, read_events
+from tests._event_helpers import (
+    LIFECYCLE_EVENT_TYPES,
+    TOOL_LIST_EVENT_TYPES,
+    principal_of,
+    read_events,
+)
 from tests._mcp_session import DECLARED_VERSION
 
 pytestmark = pytest.mark.functional
@@ -391,7 +396,7 @@ def _install(adapter: str, events_path: Path, result_capture_mode: str) -> Any:
 async def test_withholding_results_warns_that_a_failed_requests_message_is_kept(
     adapter: str, tmp_path: Path
 ) -> None:
-    """SPEC §11.4.4: the four error events carry the exception's text under
+    """SPEC §11.4.4 and §11.4.5: the five error events carry the exception's text under
     every capture mode, and a producer with a withholding mode says so when the
     mode is set."""
     with pytest.warns(UserWarning) as caught:
@@ -400,13 +405,9 @@ async def test_withholding_results_warns_that_a_failed_requests_message_is_kept(
 
     (warning,) = [w for w in caught if "result_capture_mode" in str(w.message)]
     assert warning.filename == __file__
-    for leg in (
-        "resource_list_error",
-        "resource_read_error",
-        "prompt_list_error",
-        "prompt_get_error",
-    ):
-        assert leg in str(warning.message)
+    for leg in LIFECYCLE_EVENT_TYPES | TOOL_LIST_EVENT_TYPES:
+        if leg.endswith("_error"):
+            assert leg in str(warning.message)
 
 
 @pytest.mark.parametrize("adapter", ["official", "standalone"])

@@ -127,7 +127,7 @@ Only what crosses the MCP call. The SDK never reads your logs, your database or 
 | With `report_mode="on"` | The reports the agent files, in its own words. |
 | Never | Anything that did not cross the MCP call. |
 
-**`result_capture_mode="off"` turns off responses, not requests.** Arguments are always sent, so the scrubber below is what protects them. Two things are still sent under `"off"`: a `ToolError`'s message, unless it was raised `from` another exception, and the message of a failed resource or prompt request.
+**`result_capture_mode="off"` turns off responses, not requests.** Arguments are always sent, so the scrubber below is what protects them. Under `"off"` two things are still sent. One is a `ToolError`'s message, unless it was raised `from` another exception. The other is the message of a failed tool list, resource or prompt request.
 
 ```python
 install_baton(mcp, VendorConfig(dsn="https://baton_pk_...", result_capture_mode="off"))

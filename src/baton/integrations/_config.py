@@ -376,8 +376,8 @@ class VendorConfig:
     the two cannot be told apart. Write ``raise ToolError(...) from None`` to
     have the message sent. ``error_type``, ``tool_name`` and
     ``duration_ms`` stay in both modes, so failure counts, pairing and timing
-    still work. A failed resource or prompt request still carries its
-    message in both modes, and installing with ``"off"`` warns once to say so.
+    still work. A failed tool list, resource or prompt request still carries
+    its message in both modes, and installing with ``"off"`` warns once to say so.
 
     **A mode string, not a boolean**, matching ``intent_param_mode`` and
     ``report_mode``, and leaving room for the

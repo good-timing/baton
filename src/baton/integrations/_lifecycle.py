@@ -460,15 +460,15 @@ def install_lifecycle_capture(
 
 
 def warn_if_results_are_withheld(result_capture_mode: ResultCaptureMode) -> None:
-    """SPEC §11.4.4: a failed resource or prompt request sends its message
-    under every capture mode, and a vendor who withholds results is told."""
+    """SPEC §11.4.4: a failed tool list, resource or prompt request sends its
+    message under every capture mode, and a vendor who withholds results is told."""
     if result_capture_mode == "off":
+        *legs, last = (f"{family.event_stem}_error" for family in _FAMILIES)
         warnings.warn(
             "result_capture_mode='off' does not withhold the message of a failed "
-            "resource or prompt request. resource_list_error, resource_read_error, "
-            "prompt_list_error and prompt_get_error carry that message, which can "
-            "include text your handler raised. Raise a message that names the "
-            "resource, not its contents.",
+            f"tool list, resource or prompt request. {', '.join(legs)} and {last} "
+            "carry that message, which can include text your handler or middleware "
+            "raised. Raise a message that does not quote what your code fetched.",
             UserWarning,
             stacklevel=_frames_to_the_vendor(),
         )

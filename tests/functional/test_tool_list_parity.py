@@ -30,7 +30,12 @@ SENT_META = {"progressToken": "p1", "io.example/trace": "abc"}
 
 
 def _config(
-    config_class: Any, events_path: Path, hook: Hook | None, mode: str, scrubber: Any = None
+    config_class: Any,
+    events_path: Path,
+    hook: Hook | None,
+    mode: str,
+    scrubber: Any = None,
+    capture: str = "full",
 ) -> Any:
     from baton.sinks import FileSink
 
@@ -43,6 +48,7 @@ def _config(
         sink=FileSink(str(events_path)),
         resolve_principal=hook,
         intent_param_mode=mode,
+        result_capture_mode=capture,
     )
 
 
@@ -69,6 +75,7 @@ async def _list_official(
     hook: Hook | None = None,
     mode: str = "required",
     break_listing: bool = False,
+    capture: str = "full",
     scrubber: Any = None,
     installs: int = 1,
     instead: Action | None = None,
@@ -88,7 +95,7 @@ async def _list_official(
         return {"found": True, "name": name}
 
     handles = [
-        install_baton(mcp, _config(VendorConfig, events_path, hook, mode, scrubber))
+        install_baton(mcp, _config(VendorConfig, events_path, hook, mode, scrubber, capture))
         for _ in range(installs)
     ]
     if break_listing:
@@ -117,6 +124,7 @@ async def _list_standalone(
     hook: Hook | None = None,
     mode: str = "required",
     break_listing: bool = False,
+    capture: str = "full",
     scrubber: Any = None,
     installs: int = 1,
     instead: Action | None = None,
@@ -135,7 +143,7 @@ async def _list_standalone(
         return {"found": True, "name": name}
 
     handles = [
-        install_baton(mcp, _config(VendorConfig, events_path, hook, mode, scrubber))
+        install_baton(mcp, _config(VendorConfig, events_path, hook, mode, scrubber, capture))
         for _ in range(installs)
     ]
     if break_listing:
@@ -255,6 +263,21 @@ async def test_a_failed_listing_sends_an_error_with_the_principal(
     assert error["payload"]["duration_ms"] >= 0
     assert principal_of(error) == principal_of(start)
     assert principal_of(error) is not None
+
+
+@pytest.mark.parametrize("list_once", ADAPTERS)
+async def test_withholding_results_keeps_a_failed_listings_message(
+    list_once: Driver, tmp_path: Path
+) -> None:
+    """SPEC §11.4.5: code inside ``tools/list`` can be the vendor's, so the
+    "off" warning names this leg."""
+    events_path = tmp_path / "events.jsonl"
+
+    with pytest.warns(UserWarning, match="tool_list_error"):
+        await list_once(events_path, break_listing=True, capture="off")
+
+    _, error = _listing_events(events_path)
+    assert error["payload"]["error_body"] == "the registry is down"
 
 
 @pytest.mark.parametrize("list_once", ADAPTERS)

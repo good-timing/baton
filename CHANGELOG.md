@@ -8,6 +8,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Changed
+
+- **The `result_capture_mode="off"` warning names `tool_list_error`.** Your
+  own code can run when a client lists tools, as a list handler or as fastmcp
+  middleware. If it raises, its message is sent as it is, the same as for a
+  failed resource or prompt request.
+
 ## 0.9.6: create_baton, and capture settings from the Console
 
 ### Added
