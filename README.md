@@ -213,7 +213,7 @@ install_baton(mcp, VendorConfig(
 
 The id is sent exactly as your hook returns it, so your dashboard shows who it is: the hook decides what is safe to send. To send a pseudonym instead, hash the id in your hook and return `Principal(principal_id=..., form="hashed")`.
 
-If your users belong to your customers' companies, return the company too, so you can filter by it:
+If your users belong to your customers' companies, return the company too. Each event then carries it:
 
 ```python
 from baton import Organization, Principal
