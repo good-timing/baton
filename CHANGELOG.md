@@ -8,6 +8,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Added
+
+- **`baton.report_tool()` for agent reports on your own API.** It returns the
+  report tool the MCP adapters register, as data, with its name, description,
+  input schema, refusal text and server instructions.
+  `annotate_kwargs(arguments)` turns an agent's call into the arguments for
+  `client.annotate(...)`, and returns `None` when the call is not a report.
+  See "Agent reports on your own API" in the README (SPEC §5.6).
+
 ## 0.9.7: the off warning names tool_list_error, and a batch takes events encoded meanwhile
 
 ### Changed

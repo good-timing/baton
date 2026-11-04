@@ -116,6 +116,27 @@ await baton.aclose()                                              # at shutdown
 
 `list_tools` adds the `user_goal` param to each tool, as the MCP adapters do, and sends a snapshot of your own tool list once for each distinct list. A tool that already has its own `user_goal` argument keeps it: don't pop `user_goal` for that tool, and leave `INTENT_INSTRUCTIONS` out, or the agent writes Baton's turn number into your argument. `meta` is the request's `_meta`: the client's conversation and turn ids ride along, scrubbed. On a stateless server each request is its own session; pass `principal` so one person's calls group together.
 
+### Agent reports on your own API
+
+The MCP adapters give agents a report tool, so an agent can tell you when a call went wrong or no tool covers what the user asked. On your own API, offer the same tool with `report_tool`. It has the name, description and input schema an adapter registers on a server with that name, so an agent reads the same words.
+
+```python
+from baton import report_tool
+
+tool = report_tool(vendor_display_name="Acme")
+# Offer tool.name, tool.description and tool.input_schema to the agent.
+# Serving MCP yourself? Send tool.instructions in place of INTENT_INSTRUCTIONS.
+
+# When the agent calls it:
+kwargs = tool.annotate_kwargs(arguments)
+if kwargs is None:
+    return {"ok": False, "error": tool.refusal}
+await baton.annotate(**kwargs)
+return {"ok": True}
+```
+
+`annotate_kwargs` returns `None` when the agent sent no `what_happened`. Send `tool.refusal` back and nothing to Baton, because a call with no account is not a report. Call it inside the same `session(...)` block as the calls it is about, or use `await trace.annotate(**kwargs)` for one traced call.
+
 ## What leaves your server
 
 Only what crosses the MCP call. The SDK never reads your logs, your database or anything else in your process.

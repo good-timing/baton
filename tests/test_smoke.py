@@ -64,6 +64,7 @@ def test_import_baton_needs_nothing_from_an_EXTRA() -> None:
         assert baton.Client is not None
         assert baton.AsyncClient is not None
         assert baton.Trace is not None
+        assert baton.report_tool(vendor_display_name="Acme").name == "acme_annotate"
         leaked = [m for m in BLOCKED if m in sys.modules]
         assert not leaked, f"an extra was imported anyway: {{leaked}}"
         print("OK")

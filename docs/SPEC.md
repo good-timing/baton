@@ -734,7 +734,9 @@ A library producer SHOULD expose the injected params' names and descriptions (§
 
 **Agent reports** (`trace.annotate(...)` for a traced call, or `client.annotate(...)` inside the block) carry what the vendor's code relays from its caller, in the block's or the trace's session.
 
-**Out of scope on this path:** the tool list events, and the annotation tool. A vendor serving MCP itself that wants agent reports registers its own tool and calls `client.annotate(...)`. `trace_context` is reserved and not sent (§3.1).
+**The annotation tool as data.** A library producer SHOULD expose the annotation tool as data. That means the name, description, input schema, refusal text and `report_mode="on"` instructions an adapter registers on a server named `vendor_display_name`, and a mapping from the tool's arguments to `annotate()`'s. The mapping MUST return nothing for a call with no `what_happened`, so the vendor sends the refusal and no annotation (rule 1). `baton-sdk` names these `report_tool(vendor_display_name=)`, a `ReportTool` and its `annotate_kwargs(arguments)`.
+
+**Out of scope on this path:** the tool list events. `trace_context` is reserved and not sent (§3.1).
 
 **`agent_runtime` is `"unknown"`.** The library cannot see the client any more than the middleware can name it, so it sends what the vendor passes as `client_observed` and leaves the name to the consumer (§11.4). `sdk_version` already names the producer.
 
@@ -1883,6 +1885,8 @@ already learn.
 > ⚠ **Re-counted 2026-09-29: THIRTEEN entries carry the label, and the note above covers only ten of them.** The three it does not are dated **2026-09-11, 09-12 and 09-13** — after its own cut-off, so a reader following it would take them for genuinely pending. They are not: all three predate `v0.8.10` and shipped somewhere in the `0.8.x` run, but **which release carried which is not established here** and guessing it is how the "fifteen / 0.5.x–0.7.2" error above got written. Stated as an open gap rather than filled in.
 >
 > **What the label DOES mean, from 2026-09-29 on:** an entry is numbered by the release that ships it (the four `ts 0.5.0` entries above, and the entries labelled `0.8.11` below — find those by the label, not by position: a pointer to them by position went stale three times on 2026-10-02 as six pending entries landed above them, and a third `0.8.11` entry sits much further down), per the convention `2bb06e1` set — the release numbers the entries it carries. So an entry added from here on is either numbered or genuinely pending, and only the thirteen listed lower down are stale.
+
+- **Unreleased (2026-11-03) — the library path exposes the annotation tool as data (§5.6).** No envelope field, event type or shape changes. A library producer SHOULD expose the annotation tool's name, description, input schema, refusal text and instructions, as an adapter registers them, and a mapping from its arguments to `annotate()` that returns nothing for a call with no `what_happened`. `baton-sdk` adds `report_tool()`. `baton-ts` and the Go SDK do not have it yet. **Consumer consequence:** none.
 
 - **go 0.3.0 (2026-11-03) — the Go SDK never calls the vendor's server; `Install` and `New` take `impl` and `opts` (§5.1.1, §11.4.2).** No envelope field or event type changes. Before, `Install` and `Wrap` sent the server a setup call of their own, through any middleware the vendor had added. Now the server name, version and instructions come from the `mcp.Implementation` and `mcp.ServerOptions` the vendor passes, and capabilities from the first `initialize` or `server/discover` a client sends. **Breaking (Go API):** `Install(server, impl, opts, cfg)` and `New(impl, opts, cfg)` replace `Install(server, cfg)` and `New(cfg)`; a nil `impl` or empty `impl.Name` is a config error. **Consumer consequence:** when a tool call comes before any `initialize`, as in stateless HTTP, the first `surface_snapshot` has no capabilities and a second one with them follows.
 

@@ -13,6 +13,8 @@ Core (always installed):
   text an agent reads, for a vendor adding it to its own API (SPEC §5.6)
 - ``INTENT_INSTRUCTIONS`` — the server instructions that go with
   ``user_goal``, for a vendor serving MCP itself (SPEC §5.6)
+- ``report_tool`` / ``ReportTool`` — the report tool's name, text and schema,
+  for a vendor offering agents reports through its own API (SPEC §5.6)
 - ``Principal``, ``Organization`` — what a ``VendorConfig.resolve_principal``
   hook returns. Exported because that hook cannot be written without them.
 - ``principal_from_oauth_sub``, ``principal_from_oauth_email`` — ready-made
@@ -63,6 +65,7 @@ __all__ = [
     "IntentParam",
     "Organization",
     "Principal",
+    "ReportTool",
     "Trace",
     "VendorConfig",
     "__version__",
@@ -70,6 +73,7 @@ __all__ = [
     "install_baton",
     "principal_from_oauth_email",
     "principal_from_oauth_sub",
+    "report_tool",
 ]
 
 
@@ -77,6 +81,7 @@ __all__ = [
 # to events.py (which imports it via ``from baton import __version__``).
 # Trace + AsyncTrace are re-exported so typed callers can write
 # ``def f(t: baton.Trace) -> ...`` without reaching into ``baton.client``.
+from baton._report_tool import ReportTool, report_tool
 from baton.client import AsyncClient, AsyncTrace, Client, Trace
 from baton.identity import Organization, Principal
 

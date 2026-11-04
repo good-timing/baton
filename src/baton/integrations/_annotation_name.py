@@ -228,11 +228,12 @@ def derive_annotation_tool_name(vendor_id: str, override: str | None = None) -> 
     and the pre-rename shims cite that path in their docstrings.
 
     Raises ``ValueError`` if the resulting name violates the strict
-    cross-runtime client pattern. This is the ONE raise site, and it is
-    reached with a vendor's explicit name or with an already-validated derived
-    one — never with a guess.
+    cross-runtime client pattern, from ``validate_annotation_tool_name``.
     """
-    name = override or f"{vendor_id}{_SUFFIX}"
+    return validate_annotation_tool_name(override or f"{vendor_id}{_SUFFIX}")
+
+
+def validate_annotation_tool_name(name: str) -> str:
     if not TOOL_NAME_PATTERN.fullmatch(name):
         raise ValueError(
             f"Annotation tool name {name!r} violates the cross-runtime "
@@ -240,6 +241,17 @@ def derive_annotation_tool_name(vendor_id: str, override: str | None = None) -> 
             f"reject names with dots or other separators)."
         )
     return name
+
+
+def tool_name_for_display_name(vendor_display_name: str) -> str | None:
+    """The name an adapter makes from a server named ``vendor_display_name``,
+    or ``None`` where it would fall back to ``{vendor_id}_annotate``."""
+    if vendor_display_name.strip().lower() in _PLACEHOLDER_LITERALS:
+        return None
+    candidate = _tool_name_candidate(vendor_display_name)
+    if candidate is None or not _fits_the_instructions_budget(candidate, vendor_display_name):
+        return None
+    return candidate
 
 
 class AnnotationNames(NamedTuple):
