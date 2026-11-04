@@ -61,6 +61,13 @@ def collector(mode: str) -> Iterator[int]:
         process.wait()
 
 
+def losses(port: int, m: dict[str, Any]) -> dict[str, float]:
+    """Emitted, delivered and lost for ``m``'s calls, TOOL_EVENTS each."""
+    emitted = len(TOOL_EVENTS) * (m["warmup"] + m["calls"])
+    got = delivered(port, m["collector"])
+    return {"emitted": emitted, "delivered": got, "lost": emitted - got}
+
+
 def delivered(port: int, mode: str) -> int:
     if mode == "down":
         return 0
@@ -71,13 +78,22 @@ def delivered(port: int, mode: str) -> int:
     return sum(counts.get(t, 0) for t in TOOL_EVENTS)
 
 
-def echo_server(port: int | None) -> tuple[Any, Any]:
-    """The bench server, with Baton sending to ``port`` unless it is None."""
+def echo_server(port: int | None, result_bytes: int = 0) -> tuple[Any, Any]:
+    """The bench server, with Baton sending to ``port`` unless it is None,
+    and the large tool when ``result_bytes`` is set."""
     server = Server("bench")
 
     @server.tool()
     def echo(text: str) -> str:
         return text
+
+    if result_bytes:
+        large_text = ("hello " * (result_bytes // 6 + 1))[:result_bytes]
+
+        # Without structured_output=False the SDK sends the text a second time.
+        @server.tool(structured_output=False)
+        def large() -> str:
+            return large_text
 
     if port is None:
         return server, None
@@ -105,7 +121,13 @@ async def client(server: Any) -> AsyncIterator[ClientSession]:
             tasks.cancel_scope.cancel()
 
 
-async def timed_calls(session: ClientSession, calls: int, concurrency: int) -> list[float]:
+ECHO = ("echo", {"text": "hello"})
+LARGE: tuple[str, dict[str, Any]] = ("large", {})
+
+
+async def timed_calls(
+    session: ClientSession, calls: int, concurrency: int, call: tuple[str, dict[str, Any]] = ECHO
+) -> list[float]:
     """Each call's seconds, with ``concurrency`` calls in flight at once."""
     times: list[float] = []
     left = iter(range(calls))
@@ -113,10 +135,10 @@ async def timed_calls(session: ClientSession, calls: int, concurrency: int) -> l
     async def worker() -> None:
         for _ in left:
             started = time.perf_counter()
-            result = await session.call_tool("echo", {"text": "hello"})
+            result = await session.call_tool(*call)
             times.append(time.perf_counter() - started)
             if getattr(result, "is_error", None) or getattr(result, "isError", None):
-                raise RuntimeError(f"echo failed: {result.content}")
+                raise RuntimeError(f"{call[0]} failed: {result.content}")
 
     async with anyio.create_task_group() as tasks:
         for _ in range(concurrency):
@@ -133,19 +155,45 @@ def pct(samples: list[float], p: float) -> float:
     return ordered[min(len(ordered) - 1, int(p / 100 * len(ordered)))]
 
 
-async def overhead(m: dict[str, Any]) -> dict[str, float]:
+async def added(m: dict[str, Any], port: int, call: tuple[str, dict[str, Any]]) -> dict[str, float]:
+    """The call times on a server without Baton, then on one with it, and
+    what Baton adds to them."""
     figures: dict[str, list[float]] = {}
-    with collector(m["collector"]) as port:
-        for name, to in (("plain", None), ("baton", port)):
-            server, handle = echo_server(to)
-            async with client(server) as session:
-                await timed_calls(session, m["warmup"], 1)
-                figures[name] = await timed_calls(session, m["calls"], m["concurrency"])
-            if handle is not None:
-                await handle.aclose()
+    for name, to in (("plain", None), ("baton", port)):
+        server, handle = echo_server(to, m.get("result_bytes", 0))
+        async with client(server) as session:
+            await timed_calls(session, m["warmup"], 1, call)
+            figures[name] = await timed_calls(session, m["calls"], m["concurrency"], call)
+        if handle is not None:
+            await handle.aclose()
     out = {f"{n}_p{p}_ms": ms(pct(figures[n], p)) for n in ("plain", "baton") for p in (50, 99)}
     for p in (50, 99):
         out[f"added_p{p}_ms"] = out[f"baton_p{p}_ms"] - out[f"plain_p{p}_ms"]
+    return out
+
+
+async def overhead(m: dict[str, Any]) -> dict[str, float]:
+    with collector(m["collector"]) as port:
+        return await added(m, port, ECHO)
+
+
+async def large_result(m: dict[str, Any]) -> dict[str, float]:
+    with collector(m["collector"]) as port:
+        out = await added(m, port, LARGE) | losses(port, m)
+        # Read on a second Baton server, untimed: tracemalloc slows every
+        # allocation, and Baton's side allocates more than the plain one.
+        # Its events come after the count above.
+        server, handle = echo_server(port, m["result_bytes"])
+        async with client(server) as session:
+            await timed_calls(session, m["warmup"], 1, LARGE)
+            tracemalloc.start()
+            try:
+                before = live_heap()
+                await timed_calls(session, m["calls"], m["concurrency"], LARGE)
+                out["heap_growth_bytes"] = live_heap() - before
+            finally:
+                tracemalloc.stop()
+        await handle.aclose()
     return out
 
 
@@ -160,17 +208,12 @@ async def load(m: dict[str, Any]) -> dict[str, float]:
         started = time.perf_counter()
         await handle.aclose()
         closing = time.perf_counter() - started
-        emitted = 2 * (m["warmup"] + m["calls"])
-        got = delivered(port, m["collector"])
-    return {
-        "wall_ms": ms(wall),
-        "call_p50_ms": ms(pct(times, 50)),
-        "call_p99_ms": ms(pct(times, 99)),
-        "close_ms": ms(closing),
-        "emitted": emitted,
-        "delivered": got,
-        "lost": emitted - got,
-    }
+        return losses(port, m) | {
+            "wall_ms": ms(wall),
+            "call_p50_ms": ms(pct(times, 50)),
+            "call_p99_ms": ms(pct(times, 99)),
+            "close_ms": ms(closing),
+        }
 
 
 def live_heap() -> int:
@@ -203,6 +246,7 @@ async def memory(m: dict[str, Any]) -> dict[str, float]:
 
 RUNNERS = {
     "overhead": overhead,
+    "large_result": large_result,
     "burst": load,
     "outage_hang": load,
     "outage_down": load,
