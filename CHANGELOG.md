@@ -42,6 +42,9 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
     queue. Call `handle.flush()` and `handle.aclose()` instead.
   - Known gap: a `MultiSink` holding an `HttpSink` puts that sink behind two
     queues.
+  - Known gap: a sink given to several installs or clients gets one queue for
+    each. Closing one closes the sink, and the others' queued events are then
+    dropped as `after_close`.
 - **What is public is written down** (README, "What is public"): the names in
   `__all__` of `baton`, `baton.client`, `baton.identity`, `baton.scrub`,
   `baton.sinks`, `baton.events` and the adapter packages. `baton.identity` and

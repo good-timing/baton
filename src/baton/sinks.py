@@ -115,9 +115,9 @@ async def safe_write(sink: Sink, event: Event, logger: logging.Logger) -> None:
 
     SDK middleware sits BEFORE the vendor's tool handler. A raise from
     ``sink.write`` (closed sink, transport error, ``warnings.filterwarnings
-    ("error")`` promoting an ``HttpSink`` overflow ``UserWarning``, etc.) would otherwise propagate up and break the
-    vendor's tool call — making Baton instrumentation look like a vendor
-    bug. SPEC §11.2 mandates fail-open at the capture boundary; this wrapper
+    ("error")`` promoting an ``HttpSink`` overflow ``UserWarning``, etc.)
+    would otherwise propagate up and break the vendor's tool call — making
+    Baton instrumentation look like a vendor bug. SPEC §11.2 mandates fail-open at the capture boundary; this wrapper
     enforces it.
 
     Catches ``Exception``, NOT ``BaseException`` — ``KeyboardInterrupt``
@@ -1481,8 +1481,6 @@ class MultiSink(Sink):
 
 #: Kept from close's budget for the sink's own close, which may still send.
 _CLOSE_GRACE_SECONDS = 1.0
-#: One limit for every queue's exit flush together, not one each.
-_exit_deadline: float | None = None
 
 
 def queued(sink: Sink) -> Sink:
@@ -1736,14 +1734,11 @@ class _QueueSender:
         """Daemon threads still run while atexit hooks do, so the thread is
         given the budget. Events left then are warned about, not counted
         (SPEC §11.2 rule 8)."""
-        global _exit_deadline
         _reset_if_forked()
         with self.lock:
             if self.stopping or not self.pending():
                 return
             target, loop, thread = self.recorded, self.loop, self.thread
-        if _exit_deadline is None:
-            _exit_deadline = monotonic() + self.budget
         if loop is not None and thread is not None and thread.is_alive():
             flushing = self.flush_inner(target)
             try:
@@ -1752,7 +1747,7 @@ class _QueueSender:
                 flushing.close()  # the loop has stopped
             else:
                 try:
-                    done.result(timeout=max(0.0, _exit_deadline - monotonic()))
+                    done.result(timeout=self.budget)
                 except Exception:
                     pass
         if self.pending():
