@@ -1482,11 +1482,22 @@ class MultiSink(Sink):
 _CLOSE_GRACE_SECONDS = 1.0
 
 
+#: By id(), since a vendor's sink may be unhashable; a queue holds its sink, so
+#: the id is not reused while the entry lives.
+_QUEUES: weakref.WeakValueDictionary[int, _QueuedSink] = weakref.WeakValueDictionary()
+
+
 def queued(sink: Sink) -> Sink:
-    """``sink`` behind Baton's queue, unless its own ``write`` already only queues."""
+    """``sink`` behind Baton's queue, unless its own ``write`` already only
+    queues. A sink given to several installs gets one queue, so it is written
+    one event at a time."""
     if isinstance(sink, _QueuedSink) or type(sink).write is HttpSink.write:
         return sink
-    return _QueuedSink(sink)
+    existing = _QUEUES.get(id(sink))
+    if existing is not None and not existing._closed:
+        return existing
+    _QUEUES[id(sink)] = made = _QueuedSink(sink)
+    return made
 
 
 def vendor_sink(sink: Sink) -> Sink:
@@ -1513,9 +1524,11 @@ async def _call_sink(sink: Sink, method: Literal["flush", "aclose"], seconds: fl
 
 async def _call_sink_within(sink: Sink, method: Literal["flush", "aclose"], seconds: float) -> None:
     """``_call_sink`` on the caller's loop, for a sink Baton never wrote to."""
-    try:
-        await asyncio.wait_for(_call_sink(sink, method, seconds), seconds)
-    except TimeoutError:
+    task = asyncio.ensure_future(_call_sink(sink, method, seconds))
+    _left_running.add(task)
+    task.add_done_callback(_left_running.discard)
+    done, _ = await asyncio.wait({task}, timeout=seconds)
+    if not done:
         _log_left_unfinished(f"{method}()", seconds)
 
 
@@ -1531,8 +1544,6 @@ class _QueuedSink(Sink):
         finalizer.atexit = False  # type: ignore[misc]
         self._closing: asyncio.Future[None] | None = None
         self._closed = False
-        # The flush that ran out of budget; later flushes do not wait on it again.
-        self._stalled: concurrent.futures.Future[None] | None = None
 
     async def write(self, event: Event) -> None:
         if self._closed:
@@ -1540,14 +1551,15 @@ class _QueuedSink(Sink):
         self._sender.enqueue(event)
 
     async def flush(self) -> None:
-        if self._closed or (self._stalled is not None and not self._stalled.done()):
+        stalled = self._sender.stalled
+        if self._closed or (stalled is not None and not stalled.done()):
             return
         if not self._sender.started():
             await _call_sink_within(self.inner, "flush", self._budget)
             return
         done = self._sender.submit(self._sender.flush_inner(self._sender.recorded))
         if not await _wait_for_thread(done, self._budget):
-            self._stalled = done
+            self._sender.stalled = done
             _log_left_unfinished("flush()", self._budget)
 
     async def aclose(self) -> None:
@@ -1603,6 +1615,8 @@ class _QueueSender:
         self.thread: threading.Thread | None = None
         # Whether the drain has been woken for what is waiting.
         self.signalled = False
+        # The flush that ran out of budget; later flushes do not wait on it again.
+        self.stalled: concurrent.futures.Future[None] | None = None
 
     def reset_in_child(self) -> None:
         """In a forked child: the parent's thread is gone, and the events it
@@ -1621,6 +1635,8 @@ class _QueueSender:
 
     def enqueue(self, event: Event) -> None:
         _reset_if_forked()
+        if self.closing or self.stopping:
+            raise SinkClosedError("the sink is closed")
         try:
             # The sink writes later, so it must not see the vendor's later changes
             # to a params or result object a scrubber passed through.
@@ -1633,37 +1649,45 @@ class _QueueSender:
                     "baton: an event could not be copied and was dropped.", exc_info=True
                 )
             return
+        overflowed = loop = None
+        # Warned and logged after the lock is released: a vendor handler runs
+        # then, and may itself record an event.
         with self.lock:
             if self.closing or self.stopping:
                 raise SinkClosedError("the sink is closed")
             if len(self.waiting) >= QUEUE_BOUND:
-                if not self.overflow_warned:
-                    warnings.warn(
-                        f"Baton sink buffer full ({QUEUE_BOUND}); "
-                        "oldest events dropped. Further overflows will be silent.",
-                        UserWarning,
-                        stacklevel=3,
-                    )
-                    self.overflow_warned = True
-                # After the warning: one promoted to an error drops this event
-                # instead, and safe_write counts that.
                 PROCESS_DROPS.add("buffer_full")
                 self.waiting.popleft()
+                overflowed = not self.overflow_warned
+                self.overflow_warned = True
             self.waiting.append(event)
             self.recorded += 1
             try:
                 loop = self._loop_locked()
-            except RuntimeError:
-                # Tried again on the next event; this one waits in the queue.
-                if not self.start_warned:
-                    self.start_warned = True
-                    logging.getLogger("baton").warning(
-                        "baton: could not start the thread that writes events.", exc_info=True
-                    )
-                return
-            wake = not self.signalled
-            self.signalled = True
-        if wake:
+            except RuntimeError as exc:
+                start_error: RuntimeError | None = exc
+            else:
+                start_error = None
+            wake = loop is not None and not self.signalled
+            if wake:
+                self.signalled = True
+        if overflowed:
+            try:
+                warnings.warn(
+                    f"Baton sink buffer full ({QUEUE_BOUND}); "
+                    "oldest events dropped. Further overflows will be silent.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+            except Exception:
+                pass  # the event is queued; a warning made an error must not drop it
+        if start_error is not None and not self.start_warned:
+            # Tried again on the next event; this one waits in the queue.
+            self.start_warned = True
+            logging.getLogger("baton").warning(
+                "baton: could not start the thread that writes events.", exc_info=start_error
+            )
+        if wake and loop is not None:
             try:
                 loop.call_soon_threadsafe(self._wake.set)
             except RuntimeError:
@@ -1717,6 +1741,7 @@ class _QueueSender:
             asyncio.run_coroutine_threadsafe(retiring, loop)
         except RuntimeError:
             retiring.close()  # the loop has stopped
+            self._unregister_exit_hook()
 
     def flush_at_exit(self) -> None:
         """Daemon threads still run while atexit hooks do, so the thread is
@@ -1724,15 +1749,20 @@ class _QueueSender:
         (SPEC §11.2 rule 8)."""
         _reset_if_forked()
         with self.lock:
-            if self.stopping or self.loop is None or not self.pending():
+            if self.stopping or not self.pending():
                 return
-            target, loop = self.recorded, self.loop
-        try:
-            asyncio.run_coroutine_threadsafe(self.flush_inner(target), loop).result(
-                timeout=self.budget
-            )
-        except Exception:
-            pass
+            target, loop, thread = self.recorded, self.loop, self.thread
+        if loop is not None and thread is not None and thread.is_alive():
+            flushing = self.flush_inner(target)
+            try:
+                done = asyncio.run_coroutine_threadsafe(flushing, loop)
+            except RuntimeError:
+                flushing.close()  # the loop has stopped
+            else:
+                try:
+                    done.result(timeout=self.budget)
+                except Exception:
+                    pass
         if self.pending():
             logging.getLogger("baton").warning(
                 "baton: process exiting without aclose(); %d event(s) not written.",
@@ -1757,7 +1787,11 @@ class _QueueSender:
         except BaseException:
             loop.close()
             raise
-        self.loop, self.thread, self.signalled = loop, thread, False
+        self.loop, self.thread = loop, thread
+        # A restart from flush or close must still write what is waiting.
+        self.signalled = bool(self.waiting)
+        if self.signalled:
+            loop.call_soon_threadsafe(self._wake.set)
         if not self.exit_hook_registered:
             self.exit_hook_registered = True
             atexit.register(self.flush_at_exit)

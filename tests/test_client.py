@@ -36,6 +36,7 @@ import pytest
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Request, Response
 
+import baton.client as client_module
 import baton.sinks as sinks_module
 from baton import AsyncClient, Client
 from baton.client import _SyncBridge
@@ -1234,6 +1235,26 @@ class TestBridgeNeverHangs:
         for _ in range(3):
             _send_one(client)
         assert time.monotonic() - started < 0.1
+        client.close()
+        assert len(sink.events) == 6
+
+    def test_a_blocked_loop_thread_costs_one_wait_and_still_gets_every_event(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(client_module, "_EMIT_WAIT_SECONDS", 0.1)
+        sink = _RecordingSink()
+        client = Client(sink=sink, vendor_id="v")
+
+        async def block() -> None:
+            time.sleep(0.5)
+
+        assert client._bridge is not None
+        client._bridge.submit(block())
+        started = time.monotonic()
+        for _ in range(3):
+            _send_one(client)
+        # One 0.1 s wait, not one per event (six events).
+        assert time.monotonic() - started < 0.3
         client.close()
         assert len(sink.events) == 6
 

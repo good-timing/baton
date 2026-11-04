@@ -223,11 +223,11 @@ async def test_the_sink_gets_the_event_as_it_was_when_recorded() -> None:
 
 
 async def test_an_event_recorded_while_close_drains_is_written(short_budget: float) -> None:
-    sink = _Recording(write_delay=0.1)
+    sink = _Recording(write_delay=0.02)
     q = queued(sink)
     await q.write(make_event(0))
     closing = asyncio.ensure_future(q.aclose())
-    await asyncio.sleep(0.02)
+    await asyncio.sleep(0.005)
     await q.write(make_event(1))
     await closing
     assert [e.sequence_number for e in sink.events] == [0, 1]
@@ -277,3 +277,50 @@ async def test_a_drain_that_died_is_started_again() -> None:
     assert time.monotonic() - started < 0.5
     assert [e.sequence_number for e in sink.events] == [1]
     assert PROCESS_DROPS.total() == {"write_failed": 1}
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+async def test_a_flush_after_the_drain_died_writes_what_waits() -> None:
+    gate = threading.Event()
+
+    class _ExitsOnce(_Recording):
+        async def write(self, event: Event) -> None:
+            if not self.calls:
+                self.calls.append("exit")
+                await asyncio.to_thread(gate.wait)
+                raise SystemExit
+            await super().write(event)
+
+    sink = _ExitsOnce()
+    q = queued(sink)
+    for n in range(3):
+        await q.write(make_event(n))
+    sender = q._sender  # type: ignore[attr-defined]
+    gate.set()
+    await _until(lambda: not sender.thread.is_alive())
+    await q.flush()
+    assert [e.sequence_number for e in sink.events] == [1, 2]
+    await q.aclose()
+
+
+def test_a_sink_given_to_two_installs_gets_one_queue() -> None:
+    sink = _Recording()
+    assert queued(sink) is queued(sink)
+
+
+async def test_an_overflow_warning_made_an_error_still_drops_the_oldest() -> None:
+    gate = threading.Event()
+    sink = _Recording(gate=gate)
+    q = queued(sink)
+    try:
+        await q.write(make_event(0))
+        await _until(lambda: q._sender.in_flight == 1)  # type: ignore[attr-defined]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            for n in range(1, QUEUE_BOUND + 3):
+                await q.write(make_event(n))
+    finally:
+        gate.set()
+    await q.aclose()
+    assert PROCESS_DROPS.total() == {"buffer_full": 2}
+    assert [e.sequence_number for e in sink.events][:2] == [0, 3]
