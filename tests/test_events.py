@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
+import baton
 from baton.events import (
     AnnotationEvent,
     AnnotationPayload,
@@ -80,7 +81,7 @@ class TestToolCallStartEvent:
 
     def test_sdk_version_default(self) -> None:
         event = ToolCallStartEvent(**_envelope(), payload=ToolCallStartPayload(tool_name="t"))
-        assert event.sdk_version.startswith("1.")
+        assert event.sdk_version == baton.__version__
 
 
 # =============================================================================

@@ -17,6 +17,7 @@ from fastmcp.server.http import set_http_request
 from pytest_httpserver import HTTPServer
 from werkzeug.wrappers import Response
 
+import baton
 from baton.events import Event
 from baton.integrations.standalone import VendorConfig, install_baton
 from baton.integrations.standalone._session import extract_headers
@@ -400,7 +401,7 @@ class TestEnvelopeFields:
 
         await sink.flush()
         for ev in captured:
-            assert ev["sdk_version"].startswith("1.")
+            assert ev["sdk_version"] == baton.__version__
 
     async def test_nothing_a_caller_or_vendor_passes_changes_agent_runtime(
         self, sink: Sink, captured: list[dict[str, Any]]

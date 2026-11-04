@@ -1,6 +1,6 @@
 # Baton SDK
 
-**Stable from 1.0.** This package follows [semver](https://semver.org). [What is public](#what-is-public) lists the public API and what in it is experimental. The wire format only grows: nothing is removed or changes meaning ([SPEC §13](https://github.com/good-timing/baton/blob/main/docs/SPEC.md#stability-from-10)).
+**Stable from 1.0.** This package follows [semver](https://semver.org). [What is public](#what-is-public) lists the public API and what in it is experimental. The wire format only grows: nothing is removed or changes meaning, except what SPEC marks experimental ([SPEC §13](https://github.com/good-timing/baton/blob/main/docs/SPEC.md#stability-from-10)).
 
 MCP standardizes how agents discover and call your tools. It does not capture *why* a call happened or whether it helped the user. Baton instruments those interactions on the vendor side, either by wrapping your MCP server or through direct library calls in your own code. It captures intent, the tool calls, expected outcomes and observed outcomes, plus friction signals, and hands each one to a sink. Correlation, policy and routing all happen downstream of the sink, not in this package.
 

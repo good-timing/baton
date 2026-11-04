@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## 1.0.0: stable from 1.0, and agent reports on your own API
+## 1.0.0: agent reports on your own API
 
 **Stable from 1.0.** This package follows semver: a breaking change to the
 public API (README, "What is public") is a new major. The wire format only

@@ -13,7 +13,8 @@ import baton
 
 
 def test_version_present() -> None:
-    assert baton.__version__.startswith("1.")
+    pyproject = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
+    assert baton.__version__ == tomllib.loads(pyproject.read_text())["project"]["version"]
 
 
 def test_the_http_sinks_dependencies_are_core() -> None:
