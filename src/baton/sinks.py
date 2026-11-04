@@ -117,8 +117,8 @@ async def safe_write(sink: Sink, event: Event, logger: logging.Logger) -> None:
     ``sink.write`` (closed sink, transport error, ``warnings.filterwarnings
     ("error")`` promoting an ``HttpSink`` overflow ``UserWarning``, etc.)
     would otherwise propagate up and break the vendor's tool call — making
-    Baton instrumentation look like a vendor bug. SPEC §11.2 mandates fail-open at the capture boundary; this wrapper
-    enforces it.
+    Baton instrumentation look like a vendor bug. SPEC §11.2 mandates
+    fail-open at the capture boundary; this wrapper enforces it.
 
     Catches ``Exception``, NOT ``BaseException`` — ``KeyboardInterrupt``
     and ``SystemExit`` must still propagate for clean shutdown.

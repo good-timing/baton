@@ -271,11 +271,11 @@ class BatonMiddleware(Middleware):
                     seam_augmentations=seam,
                 ),
             )
-            # Marked once handed to the sink; only an HttpSink write that raises
-            # (an overflow warning made an error) is tried again next time; a duplicate from two
-            # racing lists is harmless, as the Console stores a surface by
-            # surface_hash. ``write_unless_closed``, not ``safe_write``, to
-            # see that raise.
+            # Marked once handed to the sink; only an HttpSink write that
+            # raises (an overflow warning made an error) is tried again next
+            # time. A duplicate from two racing lists is harmless, as the
+            # Console stores a surface by surface_hash. ``write_unless_closed``,
+            # not ``safe_write``, to see that raise.
             try:
                 # A closed sink counts it once and is marked too, so it is not rebuilt.
                 await write_unless_closed(self._sink, event, logger)

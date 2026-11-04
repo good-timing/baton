@@ -319,3 +319,20 @@ async def test_an_overflow_warning_made_an_error_still_drops_the_oldest() -> Non
     await q.aclose()
     assert PROCESS_DROPS.total() == {"buffer_full": 2}
     assert [e.sequence_number for e in sink.events][:2] == [0, 3]
+
+
+async def test_at_exit_a_stuck_sink_holds_exit_for_its_budget_only(
+    short_budget: float, caplog: pytest.LogCaptureFixture
+) -> None:
+    gate = threading.Event()
+    q = queued(_Recording(gate=gate))
+    try:
+        await q.write(make_event())
+        started = time.monotonic()
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            q._sender.flush_at_exit()  # type: ignore[attr-defined]
+        assert time.monotonic() - started < short_budget + 0.2
+        assert any("not written" in r.getMessage() for r in caplog.records)
+    finally:
+        gate.set()
+    await q.aclose()
