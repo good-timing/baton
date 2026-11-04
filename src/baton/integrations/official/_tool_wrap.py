@@ -487,6 +487,7 @@ def _wrap_tool_run(
                         )
                     except Exception:
                         logger.exception("baton: surface snapshot capture failed")
+                        # Not queued, unlike a failed build: the next call tries again.
                         surface_state.dirty = True
                     else:
                         # Also when the sink is closed: counted once, not on every call.
