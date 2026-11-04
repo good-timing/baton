@@ -85,9 +85,18 @@ def read_events(path: Path | str) -> list[dict[str, Any]]:
 
 
 async def queues_written(timeout: float = 5.0) -> None:
-    """Sinks are written off the call, so a test that cannot reach the handle
-    (a server on its own thread) waits here before reading its sink."""
-    deadline = monotonic() + timeout
-    while any(isinstance(q, _QueueSender) and q.pending() for q in list(_LIVE_SENDERS)):
-        assert monotonic() < deadline, "a sink's queue was not written out in time"
-        await asyncio.sleep(0.005)
+    """Waits until every Baton write queue in this process is written out, for
+    a test whose server runs on its own thread, out of reach of its handle.
+    Not HttpSink's own batch queue."""
+    queues = [q for q in list(_LIVE_SENDERS) if isinstance(q, _QueueSender)]
+    for queue in queues:
+        queue.released = True  # type: ignore[attr-defined]
+    try:
+        deadline = monotonic() + timeout
+        while any(q.pending() for q in queues):
+            if monotonic() >= deadline:
+                raise AssertionError("a sink's queue was not written out in time")
+            await asyncio.sleep(0.005)
+    finally:
+        for queue in queues:
+            queue.released = False  # type: ignore[attr-defined]

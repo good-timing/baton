@@ -34,6 +34,7 @@ will rely on.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -44,7 +45,7 @@ import pytest
 from pytest_httpserver import HTTPServer
 
 from baton._state import PROCESS_DROPS
-from baton.sinks import _LIVE_SENDERS
+from baton.sinks import _LIVE_SENDERS, _QueueSender
 from tests._fake_collector import COLLECTOR_DIR
 from tests._http_fakes import RELEASE
 
@@ -129,20 +130,32 @@ def collector(request: pytest.FixtureRequest) -> Iterator[int]:
 
 
 @pytest.fixture(autouse=True)
-def _slow_queue_when_asked(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``SLOW_SINK_QUEUE=1`` delays every queued write, so a test that
-    reads a sink without waiting for its queue fails every time, not only on
-    a loaded runner. ``test_queued_sink``'s timing tests fail under it."""
-    if os.environ.get("SLOW_SINK_QUEUE") != "1":
+def _held_queue_when_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``HOLD_SINK_QUEUE=1`` holds every queued write until a flush, a close,
+    or ``queues_written()`` lets it through, so a test that reads a sink
+    without waiting sees nothing, however long its teardown takes. Under it,
+    ``test_queued_sink``'s two drain-died tests fail: they need a write to run
+    before any flush."""
+    if os.environ.get("HOLD_SINK_QUEUE") != "1":
         return
-    import asyncio
-
-    from baton.sinks import _QueueSender
-
     write = _QueueSender._write
 
-    async def slow_write(self: _QueueSender, event: Any) -> None:
-        await asyncio.sleep(0.02)
+    async def held_write(self: _QueueSender, event: Any) -> None:
+        while not getattr(self, "released", False):
+            await asyncio.sleep(0.001)
         await write(self, event)
 
-    monkeypatch.setattr(_QueueSender, "_write", slow_write)
+    def releasing(wait: Any) -> Any:
+        async def run(self: _QueueSender, *args: Any) -> None:
+            self.released = True  # type: ignore[attr-defined]
+            try:
+                await wait(self, *args)
+            finally:
+                self.released = False  # type: ignore[attr-defined]
+
+        return run
+
+    monkeypatch.setattr(_QueueSender, "_write", held_write)
+    monkeypatch.setattr(_QueueSender, "flush_inner", releasing(_QueueSender.flush_inner))
+    monkeypatch.setattr(_QueueSender, "close_inner", releasing(_QueueSender.close_inner))
+    monkeypatch.setattr(_QueueSender, "_retire", releasing(_QueueSender._retire))

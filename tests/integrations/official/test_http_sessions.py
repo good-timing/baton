@@ -111,6 +111,7 @@ async def _two_concurrent_callers(transport: str) -> tuple[list[Event], Any]:
             _call_as(transport, url, "org-a-client"),
             _call_as(transport, url, "org-b-client"),
         )
+        await handle.flush()
     calls = [e for e in sink.events if e.event_type in {"tool_call_start", "tool_call_end"}]
     assert len(calls) == 4, [e.event_type for e in sink.events]
     return calls, handle
