@@ -2,13 +2,17 @@
 
 All notable changes to the Baton SDK will be documented in this file.
 
-The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it leaves pre-release.
+The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) from 1.0.
 
 **Spec changes** (anything affecting the wire format) are also recorded in `docs/SPEC.md §13`. This file is for the SDK package's user-facing changelog; SPEC §13 is the canonical wire-format change log.
 
 ---
 
-## Unreleased
+## 1.0.0: stable from 1.0, and agent reports on your own API
+
+**Stable from 1.0.** This package follows semver: a breaking change to the
+public API (README, "What is public") is a new major. The wire format only
+grows (SPEC §13). The experimental items below may change in a minor.
 
 ### Added
 
@@ -59,8 +63,9 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   are typed as `Literal`s** of the values they already accepted, and so is
   `Client(result_capture_mode=...)`.
 - **Experimental:** `VendorConfig(settings=..., settings_refresh_s=...)`,
-  `Principal.labels`, `Organization.labels`, and the events' `capture` with
-  `CaptureObserved`. They may change in a minor release.
+  `Principal.labels`, `Organization.labels`, the events' `labels` and
+  `capture` with `CaptureObserved`, and `ClientReportEvent` with
+  `ClientReportPayload`. They may change in a minor release.
 
 ### Removed
 

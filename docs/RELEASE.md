@@ -141,6 +141,4 @@ keyring set https://upload.pypi.org/legacy/ __token__
 
 ## Versioning policy
 
-Pre-1.0 (`0.x.y`): no API stability promise. Breaking changes can land at any minor bump. CHANGELOG entries should call out breaking changes prominently; wire-format breaks also go in `docs/SPEC.md §13`.
-
-Once we cut `1.0.0`: standard semver — breaking changes require a major bump, new features minor, fixes patch.
+From 1.0, semver: a breaking change to the public API (README, "What is public") is a new major, a new feature a minor, a fix a patch. An experimental item may change in a minor. Wire-format changes also go in `docs/SPEC.md §13`, and the wire format only grows.

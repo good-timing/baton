@@ -80,7 +80,7 @@ class TestToolCallStartEvent:
 
     def test_sdk_version_default(self) -> None:
         event = ToolCallStartEvent(**_envelope(), payload=ToolCallStartPayload(tool_name="t"))
-        assert event.sdk_version.startswith("0.")
+        assert event.sdk_version.startswith("1.")
 
 
 # =============================================================================

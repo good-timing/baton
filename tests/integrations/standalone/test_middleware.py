@@ -400,7 +400,7 @@ class TestEnvelopeFields:
 
         await sink.flush()
         for ev in captured:
-            assert ev["sdk_version"].startswith("0.")
+            assert ev["sdk_version"].startswith("1.")
 
     async def test_nothing_a_caller_or_vendor_passes_changes_agent_runtime(
         self, sink: Sink, captured: list[dict[str, Any]]

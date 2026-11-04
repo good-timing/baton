@@ -13,7 +13,7 @@ import baton
 
 
 def test_version_present() -> None:
-    assert baton.__version__.startswith("0.")
+    assert baton.__version__.startswith("1.")
 
 
 def test_the_http_sinks_dependencies_are_core() -> None:

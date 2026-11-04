@@ -2,7 +2,7 @@
 
 *Follows the [AGENTS.md](https://agents.md) convention — discovered automatically by Claude Code, Cursor, OpenAI Codex CLI, and other AI coding agents.*
 
-This is the Baton SDK repo (pre-1.0, `0.1.x`). The canonical strategic frame lives in `docs/CHARTER.md` and the wire protocol in `docs/SPEC.md`. Read those before suggesting architectural changes.
+This is the Baton SDK repo (stable from 1.0). The canonical strategic frame lives in `docs/CHARTER.md` and the wire protocol in `docs/SPEC.md`. Read those before suggesting architectural changes.
 
 ## Architectural posture (CHARTER ADR-4)
 
