@@ -46,6 +46,7 @@ from pytest_httpserver import HTTPServer
 
 from baton._state import PROCESS_DROPS
 from baton.sinks import _LIVE_SENDERS, _QueueSender
+from tests._event_helpers import holding_sink_queue
 from tests._fake_collector import COLLECTOR_DIR
 from tests._http_fakes import RELEASE
 
@@ -133,9 +134,8 @@ def collector(request: pytest.FixtureRequest) -> Iterator[int]:
 def _held_queue_when_asked(monkeypatch: pytest.MonkeyPatch) -> None:
     """``HOLD_SINK_QUEUE=1`` holds every queued write until a flush, a close,
     or ``queues_written()`` lets it through, so a test that reads a sink
-    without waiting sees nothing, however long its teardown takes. CI's
-    ``held-queue`` job runs the suite with it."""
-    if os.environ.get("HOLD_SINK_QUEUE") != "1":
+    without waiting sees nothing, however long its teardown takes."""
+    if not holding_sink_queue():
         return
     write = _QueueSender._write
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -82,6 +83,11 @@ def read_events(path: Path | str) -> list[dict[str, Any]]:
     # the only reason it is here.
     with open(path, encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
+
+
+def holding_sink_queue() -> bool:
+    """``HOLD_SINK_QUEUE=1``: every queued sink write waits for a flush (conftest)."""
+    return os.environ.get("HOLD_SINK_QUEUE") == "1"
 
 
 async def queues_written(timeout: float = 5.0) -> None:

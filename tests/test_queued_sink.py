@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import threading
 import time
 import warnings
@@ -19,10 +18,11 @@ from baton.events import Event
 from baton.integrations.official import VendorConfig, install_baton
 from baton.integrations.official._compat import MCPServerClass as FastMCP
 from baton.sinks import QUEUE_BOUND, HttpSink, Sink, StdoutSink, queued, vendor_sink
+from tests._event_helpers import holding_sink_queue
 from tests._http_fakes import make_event
 
 needs_a_write_before_any_flush = pytest.mark.skipif(
-    os.environ.get("HOLD_SINK_QUEUE") == "1",
+    holding_sink_queue(),
     reason="HOLD_SINK_QUEUE holds every write until a flush",
 )
 
