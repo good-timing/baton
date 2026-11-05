@@ -2,20 +2,22 @@
 
 *Follows the [AGENTS.md](https://agents.md) convention — discovered automatically by Claude Code, Cursor, OpenAI Codex CLI, and other AI coding agents.*
 
-This is the Baton SDK repo (stable from 1.0). The canonical strategic frame lives in `docs/CHARTER.md` and the wire protocol in `baton-spec`'s `SPEC.md`. Read those before suggesting architectural changes.
+This is the Baton SDK repo (stable from 1.0). The wire protocol is `baton-spec`'s `SPEC.md`. Read it, and the design rules below, before suggesting architectural changes.
 
-## Architectural posture (CHARTER ADR-4)
+## Design rules
+
+### A thin event emitter
 
 The SDK is a **thin event emitter**. It captures events at the MCP transport boundary (tool_call_start / tool_call_end / tool_call_error / annotation) and ships them to the Console worker via HTTPS. **The SDK does NOT:**
 - Maintain session state beyond a bounded local event buffer
 - Implement detection rules that require multi-event correlation (retry_loop, dead_end pattern matching)
 - Implement a policy layer
 - Implement egress Channels (Pylon, Slack, Notion — those live Console-side in `baton-console/`)
-- Block the vendor's hot path on Console availability
+- Block the vendor's hot path on Console availability, or fail the vendor's call because capture failed
 
 If you find yourself about to add state, a Channel, or policy logic to this codebase — stop. It belongs in `baton-console/`. See SPEC §11 for the capture/interpretation/egress separation.
 
-## SDK boundary discipline (CHARTER §3)
+### Boundary rules
 
 1. **No vendor-specific imports.** Not in source, not in tests. If the SDK imports from any vendor module, the architecture is broken.
 2. **Baton only sees what MCP transport carries.** No reaching into vendor app logs, request context, DB, or observability events.
@@ -24,6 +26,8 @@ If you find yourself about to add state, a Channel, or policy logic to this code
 5. **Tests use fake-vendor fixtures only.** Tests prove the SDK works for any vendor.
 6. **Integration is ~5 lines or the SDK is failing.** If `install_baton(...)` grows past 5 lines in a vendor repo, refactor Baton, not the vendor.
 7. **No Baton-brand string leaks** to the calling agent or end user (whitelabel obligation per SPEC §5.4).
+8. **The Console does not bleed across.** The SDK and the Console talk only through the wire format over HTTP. No code is shared between them.
+9. **PII scrubbing is on by default, and the SDK never logs unscrubbed payloads.** Not to stderr, stdout, files or exception messages.
 
 ## Tooling
 
@@ -38,7 +42,7 @@ Use `make ci` as the canonical gate (matches GitHub Actions).
 ## What lives where
 
 - `src/baton/` — the SDK package (Python). Core substrate at the top level (`sinks.py`, `events.py`, `scrub.py`, `_state.py`, `client.py`, `_dsn.py`, `_optout.py`). `_optout.py` is the off switch (`BATON_DISABLED`): checked FIRST at all five entry points, and "off" means install nothing AND never throw — a switch that can abort a vendor's boot is worse than no switch. `_dsn.py` is the only reader of the packed `dsn` a Console mints — the grammar's one implementation, shared by both adapters AND the library API so no door can resolve a customer's workspace differently from another, and the home of `VENDOR_ID_PATTERN` because a DSN's server segment IS a `vendor_id`. Integrations under `src/baton/integrations/*` — today: `mcp/` (adapts the official Anthropic `mcp` SDK's `mcp.server.fastmcp.FastMCP` via tool-handler wrapping) and `fastmcp/` (adapts the standalone `fastmcp` library's `fastmcp.FastMCP` via middleware). Both expose the same `install_baton`, `VendorConfig`, `BatonHandle` surface; vendors pick the adapter that matches their host library. Pattern: core SDK + opt-in integrations via pip extras.
-- `docs/` — canonical strategic docs: `CHARTER.md`. `SPEC.md` is a stub pointing to `baton-spec`.
+- `docs/` — `SPEC.md`, a stub pointing to `baton-spec`, and `RELEASE.md`, the release runbook.
 - `examples/` — runnable usage examples (the four-rung sink ladder, the library-API skill demo, the e2e smoke test).
 - `tests/` — test suite. Integration tests live under `tests/integrations/<name>/` mirroring the source layout.
 
@@ -46,4 +50,4 @@ Use `make ci` as the canonical gate (matches GitHub Actions).
 
 ## When in doubt
 
-Read `docs/CHARTER.md` first. It's the North Star.
+Read the design rules above first.

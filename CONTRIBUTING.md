@@ -5,14 +5,14 @@ Thanks for your interest in contributing. Baton is a thin, opinionated SDK; the 
 ## TL;DR
 
 - **Bug fix or small enhancement?** Open a PR. CI + reviewer feedback will guide it home.
-- **Architectural change, new public API, or anything touching the wire format?** **Open a SPEC or CHARTER discussion first** (see *Spec-first, failing-test-first*). Changes to `baton-spec`'s `SPEC.md` need a §13 changelog entry there.
+- **Architectural change, new public API, or anything touching the wire format?** **Open a SPEC or design discussion first** (see *Spec-first, failing-test-first*). Changes to `baton-spec`'s `SPEC.md` need a §13 changelog entry there.
 - **Security disclosure?** See [SECURITY.md](SECURITY.md) — do not open a public issue.
 
 ## Project disciplines
 
 Before writing code, read:
 
-1. `docs/CHARTER.md` — load-bearing decisions and SDK boundary rules. **§4 is non-negotiable** — no vendor-specific imports in `src/baton/` or `tests/`; the SDK must work for any vendor.
+1. `AGENTS.md` — the design rules. **Boundary rule 1 is non-negotiable** — no vendor-specific imports in `src/baton/` or `tests/`; the SDK must work for any vendor.
 2. `baton-spec`'s `SPEC.md` — the canonical wire protocol. "SPEC §N" in this repo means a section of it. Changes to it are coordinated and versioned; you cannot patch the schema in a hotfix.
 3. `README.md` — the "Library API" section covers the `baton.Client` / `AsyncClient` surface alongside the MCP middleware path.
 
@@ -45,7 +45,7 @@ make test           # pytest -q
 
 ## Tests
 
-- **Fake-vendor fixtures only.** The test suite uses synthetic vendor stubs. If a test imports a real vendor module, it's wrong (per CHARTER §3 rule 5).
+- **Fake-vendor fixtures only.** The test suite uses synthetic vendor stubs. If a test imports a real vendor module, it's wrong (boundary rule 5 in `AGENTS.md`).
 - **`pytest` + `pytest-asyncio` + `pytest-httpserver`.** Async tests use `asyncio_mode = "auto"`.
 - **Coverage is a guideline, not a gate.** We don't enforce a coverage percentage; we do require that load-bearing behaviors have tests.
 
@@ -60,14 +60,14 @@ Anything exported from `src/baton/__init__.py` (or `src/baton/integrations/<name
 ## PRs
 
 - One logical change per PR. Big PRs that mix refactoring + behavior change are hard to review; please split.
-- Reference the SPEC/CHARTER section your change relates to (e.g., "implements SPEC §11.4 envelope additions").
+- Reference the SPEC section or design rule your change relates to (e.g., "implements SPEC §11.4 envelope additions").
 - If your change needs a spec change, make it in `baton-spec` (`SPEC.md` and its §13) and push that first.
 - Tests are required for behavior changes; they're optional for pure refactors that don't change observable behavior.
 
 ## What we won't accept
 
-- Vendor-specific code in `src/baton/` or `tests/`. The SDK is vendor-agnostic by charter.
-- Changes that introduce stateful logic in the SDK beyond the bounded event buffer. Per CHARTER ADR-4, the SDK is thin-emit-only; correlation, policy, and dispatch live in the Console worker.
+- Vendor-specific code in `src/baton/` or `tests/`. The SDK is vendor-agnostic by design.
+- Changes that introduce stateful logic in the SDK beyond the bounded event buffer. Per the design rules in `AGENTS.md`, the SDK is thin-emit-only; correlation, policy, and dispatch live in the Console worker.
 - Backward-compatibility shims for code paths that don't exist yet. We don't speculatively shim.
 - Features that require breaking the public API without a deprecation cycle.
 

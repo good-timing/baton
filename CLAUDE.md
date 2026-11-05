@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Canonical guidance
 
-`AGENTS.md` is the canonical per-repo agent doc (follows the [agents.md](https://agents.md) convention). Read it first — it covers architectural posture, SDK boundary discipline, and the "what lives where" map. Strategic decisions live in `docs/CHARTER.md`; the wire protocol lives in `baton-spec`'s `SPEC.md`. **Read CHARTER before suggesting architectural changes.**
+`AGENTS.md` is the canonical per-repo agent doc (follows the [agents.md](https://agents.md) convention). Read it first — it covers architectural posture, SDK boundary discipline, and the "what lives where" map. The wire protocol lives in `baton-spec`'s `SPEC.md`. **Read the design rules in `AGENTS.md` before suggesting architectural changes.**
 
 ## Commands
 
@@ -34,7 +34,7 @@ CI uses `make ci`; if it's green locally it should be green on PR.
 
 ## Architecture in one screen
 
-The SDK is a **thin event emitter** (CHARTER ADR-4). Three integration paths emit the same event envelope (`SPEC §11.4`) through a pluggable `Sink`:
+The SDK is a **thin event emitter** (`AGENTS.md`, Design rules). Three integration paths emit the same event envelope (`SPEC §11.4`) through a pluggable `Sink`:
 
 ```
 Capture surface                                  Sink layer (baton/sinks.py)
@@ -72,7 +72,7 @@ The SDK does NOT keep session state beyond a bounded in-memory buffer, does NOT 
 - `src/baton/integrations/_client_observed.py` — **the envelope's `client_observed` (SPEC §11.4), shared by BOTH adapters.** `observe_client` copies what the client declared (`clientInfo` on the request's `_meta`, else the handshake) and the two registered headers, uninterpreted. The SDK does not name the client: adapters send `agent_runtime: "unknown"` and the consumer resolves the name. Every value passes `VendorConfig(scrubber=...)` and a length cap; a scrubber returning a non-string loses that value rather than stringifying onto the wire. `meta_to_dict` (the `_meta` model-to-dict normaliser) and `clean_runtime_meta` (the envelope's `runtime_meta`: coordinates rounded, then the vendor's scrubber) live here too.
 - `src/baton/integrations/{mcp,fastmcp}.py` — **temporary silent aliases** at the pre-rename import paths. They exist because `baton-console` depends on `baton-sdk` by floor, not by pin. **Do not delete them on any event** — the console switching was the original trigger and it was wrong, and a hand-written replacement list was wrong too. The shim docstrings carry the precondition as a runnable grep across the sibling repos; run it, don't restate it here. Pinned by `tests/test_import_path_aliases.py`.
 
-## Boundary rules that fail review (from CHARTER §3)
+## Boundary rules that fail review (from `AGENTS.md`)
 
 1. **No vendor-specific imports** in `src/baton/` or `tests/`. If a test imports a real vendor module, it's wrong.
 2. **The SDK only sees what crosses MCP transport** (tool name, params, result, error). No reaching into vendor logs / request context / DB.
@@ -102,4 +102,4 @@ Exception: docstrings that something reads at runtime (MCP tool/resource/prompt 
 
 ## When in doubt
 
-`docs/CHARTER.md` is the North Star. `baton-spec`'s `SPEC.md` is the wire-format contract. Don't add state, policy, Channels, or vendor-specific code to this SDK without re-reading them first.
+The design rules in `AGENTS.md` are the North Star. `baton-spec`'s `SPEC.md` is the wire-format contract. Don't add state, policy, Channels, or vendor-specific code to this SDK without re-reading them first.

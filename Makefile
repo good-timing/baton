@@ -1,5 +1,5 @@
 # Baton SDK — thin event capture
-# See baton-spec's SPEC.md (the wire protocol) and docs/CHARTER.md (the load-bearing decisions).
+# See baton-spec's SPEC.md (the wire protocol) and AGENTS.md (the design rules).
 
 # PYTHON is gone: `uv sync` selects the interpreter from PYTHON_VERSION below,
 # so a second way to name one could only disagree with it.

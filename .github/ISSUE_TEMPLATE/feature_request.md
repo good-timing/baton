@@ -18,11 +18,11 @@ assignees: ''
 
 <!-- What workarounds exist today? Why aren't they sufficient? -->
 
-## SPEC / CHARTER implications
+## SPEC and design-rule implications
 
 <!--
 If this would change the wire format, please follow [`SPEC.md` §13](https://github.com/good-timing/baton-spec/blob/main/SPEC.md#13-compatibility--versioning).
-If this would change a load-bearing decision, please reference `docs/CHARTER.md`'s relevant Open Decision.
+If this would change a design rule in `AGENTS.md`, say which one.
 -->
 
 ## Scope

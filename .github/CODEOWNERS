@@ -11,9 +11,6 @@
 # Default owner for anything not otherwise matched
 # *                            @good-timing/maintainers
 
-# CHARTER changes (the spec is in baton-spec) — load-bearing; require maintainer review
-# /docs/CHARTER.md             @good-timing/maintainers
-
 # Wire format + event schema
 # /src/baton/events.py         @good-timing/maintainers
 # /src/baton/sinks.py          @good-timing/maintainers

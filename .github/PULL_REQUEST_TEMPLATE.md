@@ -27,7 +27,7 @@ make ci
 ## Spec-first checklist
 
 - [ ] If this changes the wire format, `baton-spec`'s `SPEC.md` and its §13 are updated and pushed first.
-- [ ] If this changes a load-bearing decision, `docs/CHARTER.md` reflects the new posture.
+- [ ] If this changes a design rule, `AGENTS.md` says so.
 - [ ] Public API additions are exported from `src/baton/__init__.py` (or the appropriate `integrations/<name>/__init__.py`).
 - [ ] Failing test was written first; now passes.
 

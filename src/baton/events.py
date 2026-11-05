@@ -5,7 +5,7 @@ from direct library calls (``baton.Client`` / ``AsyncClient``). The collector
 worker ingests them, stitches them into SignalPayloads per SPEC §11.5,
 applies policy per SPEC §11.6, and dispatches.
 
-Per CHARTER ADR-4 the event schema is the canonical wire format. Worker reads
+The event schema is the canonical wire format. Worker reads
 JSON; concrete event class is selected via the ``event_type`` discriminator.
 
 All concrete event classes share the same envelope (``_EventEnvelope``) and
@@ -300,7 +300,7 @@ envelope field later is precisely the change that stops being free once anyone
 is installed. "No customers" is the argument for keeping it.
 
 **This is not the consent surface.** What a server's users are told is a README
-paragraph and an opt-out switch, not a constant nobody reads. CHARTER ADR-1's
+paragraph and an opt-out switch, not a constant nobody reads. A planned
 per-end-user token lands on this field when it is due; the deployment model
 this default describes is a builder instrumenting their own server.
 """
@@ -413,7 +413,7 @@ class _EventEnvelope(BaseModel):
 
     ``consent_token`` is REQUIRED per SPEC §2.3 + §3.1 — the Console MUST
     reject any event missing it. v0 form: a single UUID granted at SDK init;
-    v0.x will extend to per-end-user OAuth-scoped tokens (CHARTER ADR-1).
+    v0.x will extend to per-end-user OAuth-scoped tokens.
 
     ``vendor_id`` is REQUIRED — the wrapped vendor identifier (matches the
     SDK's ``VendorConfig.vendor_id`` / ``Client(vendor_id=...)``). For

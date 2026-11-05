@@ -1,15 +1,15 @@
 """BatonMiddleware — FastMCP middleware that emits Baton events at the MCP
 transport boundary.
 
-Per SPEC §11.2 SDK conformance + CHARTER ADR-4 (thin-emit; never block
-vendor's hot path): the middleware wraps every ``on_call_tool`` invocation,
+Per SPEC §11.2 SDK conformance and the thin-emitter design rule (never block
+the vendor's hot path): the middleware wraps every ``on_call_tool`` invocation,
 emits ``tool_call_start`` before the vendor handler runs, then either
 ``tool_call_end`` on success or ``tool_call_error`` on FAILURE — which MCP
 expresses two ways (SPEC §11.4.3): the handler raises, or it returns a result
 carrying MCP's error flag on a 200.
 
 State managed here is minimal — a per-session sequence-number counter. No
-correlation, no detection, no policy (all worker-side per ADR-4). The
+correlation, no detection, no policy (all worker-side). The
 middleware is dumb about what events mean; it just emits them faithfully
 and lets the Console worker assemble signals downstream.
 """

@@ -23,7 +23,7 @@ The same scenario, the same SDK, the same event envelopes — only the **sink** 
 
 ## What's NOT here
 
-- Vendor-specific examples. Baton is vendor-agnostic by charter (see [`docs/CHARTER.md`](../docs/CHARTER.md)); examples use generic stubs.
+- Vendor-specific examples. Baton is vendor-agnostic by design (see the design rules in [`AGENTS.md`](../AGENTS.md)); examples use generic stubs.
 
 ## Prerequisites
 

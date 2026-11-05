@@ -55,7 +55,7 @@ Out of scope:
 
 - Reports requiring physical access to the developer's machine.
 - Reports requiring an attacker to already control the vendor's MCP server config (e.g., "I can change the `ingest_url`!").
-- Reports that the SDK doesn't enforce a feature it documents as out-of-scope for the SDK (e.g., signing — explicitly deferred per SPEC §0 / CHARTER §5).
-- DoS via excessive event volume — the SDK ships a bounded buffer with documented drop policy (SPEC §11.2, CHARTER §4 ADR-4); intentional overflow is expected behavior, not a vulnerability.
+- Reports that the SDK doesn't enforce a feature it documents as out-of-scope for the SDK (e.g., signing — explicitly deferred per SPEC §0).
+- DoS via excessive event volume — the SDK ships a bounded buffer with documented drop policy (SPEC §11.2); intentional overflow is expected behavior, not a vulnerability.
 
 Thank you for helping keep Baton and its users safe.

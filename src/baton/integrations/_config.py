@@ -336,7 +336,7 @@ class VendorConfig:
     ``baton.events.DEFAULT_CONSENT_TOKEN`` for why the field is kept on the
     wire regardless. Passing ``""`` explicitly still raises: a value the vendor
     deliberately emptied is a mistake, not a request for the default.
-    CHARTER ADR-1's per-end-user OAuth-scoped tokens land on this field."""
+    Planned per-end-user OAuth-scoped tokens land on this field."""
 
     sink: Sink | None = None
     """Where events go. ``None`` (the default) means the SDK picks: an
