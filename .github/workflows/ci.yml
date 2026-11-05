@@ -21,6 +21,10 @@
 #                     `perf`/`perf-timing`'s continue-on-error — a prior
 #                     version of this workflow did exactly that and let a
 #                     real regression to any of them merge silently.
+#   - `held-queue`  — the suite once more with HOLD_SINK_QUEUE=1, which holds
+#                     every queued sink write until a flush, so a test that
+#                     reads a sink without waiting fails here every time
+#                     instead of now and then on a loaded runner.
 #   - `mcp-matrix`  — tests-only against multiple `mcp` package versions,
 #                     since `baton.integrations.official` reaches into private
 #                     internals (`_tool_manager._tools`, `Tool.fn`,
@@ -160,6 +164,28 @@ jobs:
         run: uv run --no-sync mypy src/baton
 
       - name: Test
+        run: uv run --no-sync pytest -q -m "not perf"
+
+  held-queue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.19"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies (from the LOCK)
+        run: uv sync --locked --extra dev --python 3.14
+
+      - name: Test with every queued sink write held until a flush
+        env:
+          HOLD_SINK_QUEUE: "1"
         run: uv run --no-sync pytest -q -m "not perf"
 
   perf-timing:

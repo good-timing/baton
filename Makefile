@@ -7,7 +7,7 @@ PYTHON_VERSION ?= 3.14
 VENV ?= .venv
 BIN = $(VENV)/bin
 
-.PHONY: install test test-fast test-perf test-functional soak bench test-watch test-cov lint format format-check typecheck ci clean build
+.PHONY: install test test-held test-fast test-perf test-functional soak bench test-watch test-cov lint format format-check typecheck ci clean build
 
 # `--locked` is the point: it FAILS if uv.lock and pyproject.toml disagree,
 # rather than quietly re-resolving. That is what makes this venv the same one
@@ -30,6 +30,11 @@ install:
 # in the regular merge-blocking run like any other test.
 test:
 	$(BIN)/pytest -q -m "not perf"
+
+# Holds every queued sink write until a flush, so a test that reads a sink
+# without waiting fails every time (tests/conftest.py).
+test-held:
+	HOLD_SINK_QUEUE=1 $(BIN)/pytest -q -m "not perf"
 
 # Fast subset for tight iteration loops — skips tests marked `slow`,
 # `integration`, or `perf` (see pyproject.toml's [tool.pytest.ini_options]

@@ -133,9 +133,8 @@ def collector(request: pytest.FixtureRequest) -> Iterator[int]:
 def _held_queue_when_asked(monkeypatch: pytest.MonkeyPatch) -> None:
     """``HOLD_SINK_QUEUE=1`` holds every queued write until a flush, a close,
     or ``queues_written()`` lets it through, so a test that reads a sink
-    without waiting sees nothing, however long its teardown takes. Under it,
-    ``test_queued_sink``'s two drain-died tests fail: they need a write to run
-    before any flush."""
+    without waiting sees nothing, however long its teardown takes. CI's
+    ``held-queue`` job runs the suite with it."""
     if os.environ.get("HOLD_SINK_QUEUE") != "1":
         return
     write = _QueueSender._write

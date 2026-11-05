@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import time
 import warnings
@@ -19,6 +20,11 @@ from baton.integrations.official import VendorConfig, install_baton
 from baton.integrations.official._compat import MCPServerClass as FastMCP
 from baton.sinks import QUEUE_BOUND, HttpSink, Sink, StdoutSink, queued, vendor_sink
 from tests._http_fakes import make_event
+
+needs_a_write_before_any_flush = pytest.mark.skipif(
+    os.environ.get("HOLD_SINK_QUEUE") == "1",
+    reason="HOLD_SINK_QUEUE holds every write until a flush",
+)
 
 
 class _Recording(Sink):
@@ -257,6 +263,7 @@ async def test_a_sink_never_written_to_is_closed_without_a_thread() -> None:
     assert not q._sender.started()  # type: ignore[attr-defined]
 
 
+@needs_a_write_before_any_flush
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 async def test_a_drain_that_died_is_started_again() -> None:
     class _ExitsOnce(_Recording):
@@ -279,6 +286,7 @@ async def test_a_drain_that_died_is_started_again() -> None:
     assert PROCESS_DROPS.total() == {"write_failed": 1}
 
 
+@needs_a_write_before_any_flush
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 async def test_a_flush_after_the_drain_died_writes_what_waits() -> None:
     gate = threading.Event()
