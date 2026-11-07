@@ -43,7 +43,7 @@ Out of scope:
 
 ## What we consider a vulnerability
 
-- A way to make Baton ship events without a valid `consent_token` (SPEC §2.3, §3.1).
+- A way to make Baton ship events without a valid `consent_token` (SPEC §2.3, §9).
 - A way to make Baton emit events from one tenant under another tenant's `tenant_id`.
 - A way to make Baton's PII scrubber produce unscrubbed output for content that the configured scrub rules should redact.
 - A way to leak a vendor's `api_key` to logs, stderr, or any non-target HTTPS endpoint.

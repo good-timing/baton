@@ -59,9 +59,8 @@ def assert_envelope_shape(events: list[dict[str, Any]]) -> None:
 
 
 def assert_sequence_monotonic_per_session(events: list[dict[str, Any]]) -> None:
-    """``sequence_number`` is monotonic within each ``session_id`` — the
-    invariant the Console worker's correlation logic (SPEC §11.5) depends
-    on to order a session's events regardless of ``event_type``."""
+    """``sequence_number`` is monotonic within each ``session_id``
+    (SPEC §11.2 rule 5), whatever the ``event_type``."""
     by_session: dict[str, list[int]] = {}
     for e in events:
         by_session.setdefault(e["session_id"], []).append(e["sequence_number"])

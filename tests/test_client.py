@@ -153,7 +153,7 @@ class TestConfigLoading:
     def test_consent_token_defaults_when_omitted(self, capture_server: HTTPServer) -> None:
         """Omitting it takes the SDK's default rather than raising.
 
-        This REPLACES a test asserting the opposite. Per SPEC §2.3 + §3.1 every
+        This REPLACES a test asserting the opposite. Per SPEC §2.3 every
         event MUST carry a consent_token, and every event still does — what
         changed is who supplies it. The customer used to thread a constant
         through an environment variable to a field that reads to nobody; the

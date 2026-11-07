@@ -37,7 +37,7 @@ make test           # pytest -q
 
 ## Code style
 
-- **Python 3.14+.** We use `uuid.uuid7()` from stdlib (per SPEC §3 + §11.4).
+- **Python 3.14+.** We use `uuid.uuid7()` from stdlib (per SPEC §2.4 + §11.4).
 - **`ruff` for lint + format.** Configured in `pyproject.toml`; CI fails on any violation.
 - **`mypy --strict` for typing.** Every public function has type annotations.
 - **No `print()` in `src/`.** The `T20` ruff rule guards this; logging goes through Python's `logging` module.

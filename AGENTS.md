@@ -31,7 +31,7 @@ If you find yourself about to add state, a Channel, or policy logic to this code
 
 ## Tooling
 
-- Python 3.14+ (uses stdlib `uuid.uuid7()` per SPEC §3 + §11.4; 3.14 is current stable as of 2026)
+- Python 3.14+ (uses stdlib `uuid.uuid7()` per SPEC §2.4 + §11.4; 3.14 is current stable as of 2026)
 - `uv` or `pip` for env management (Makefile uses `pip` for portability)
 - `ruff` for lint + format
 - `mypy --strict` for typing

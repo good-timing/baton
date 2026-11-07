@@ -33,7 +33,7 @@ _INSTRUCTIONS_REPORT_POINTER = (
     "that went wrong, or a request no tool covers; its description says when and how."
 )
 
-# The Console splits user_goal on "; success is" (SPEC §11.5.1 rule 2).
+# The format SPEC §5.1.1 gives for user_goal.
 _USER_GOAL_FORMAT = "'<n>: <what this call is for>; success is <what its result should show>'"
 
 # Keep the key list: without it, agents leave context empty.
@@ -153,9 +153,7 @@ def _pop_text(arguments: dict[str, Any], name: str) -> str | None:
 INTENT_SOURCE_PARAM = "injected_param"
 INTENT_SOURCE_LIBRARY = "library_arg"
 
-# The leading number says which user message the call answers, and the
-# Console cuts a turn where it changes (SPEC §11.5.1 rule 2). The Console
-# splits the rest on "; success is".
+# The leading number says which user message the call answers (SPEC §5.1.1).
 #
 # Do not reword without scoring the result on live agents. Only the leading
 # "OPTIONAL." / "REQUIRED." label tracks ``intent_param_mode``, so it agrees

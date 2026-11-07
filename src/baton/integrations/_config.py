@@ -329,8 +329,8 @@ class VendorConfig:
     own still returns the DSN segment."""
 
     consent_token: str = DEFAULT_CONSENT_TOKEN
-    """End-user consent token attached to every emitted event per SPEC §2.3 +
-    §3.1 (the consumer of the events MUST reject events missing it).
+    """End-user consent token attached to every emitted event per SPEC §2.3
+    (the consumer of the events MUST reject events missing it).
 
     **Defaulted, so the customer never has to carry it** — see
     ``baton.events.DEFAULT_CONSENT_TOKEN`` for why the field is kept on the

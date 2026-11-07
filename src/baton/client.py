@@ -1085,7 +1085,7 @@ class _Sessions:
 
     def _snapshot_event(self, surface: dict[str, Any], digest: str) -> SurfaceSnapshotEvent:
         # A snapshot describes the server, so it takes no block's session,
-        # principal or client: SPEC §11.5.1's join must not count it.
+        # principal or client (SPEC §5.6 rule 7).
         return SurfaceSnapshotEvent(
             tenant_id=self._tenant_id,
             vendor_id=self._vendor_id,
@@ -1116,8 +1116,8 @@ class _Sessions:
         one, the block mints an id. ``principal`` is who the vendor says is
         calling: a ``Principal``, which may carry its ``Organization``, or an
         ``Organization`` alone when only the company is known. A block with
-        only a company and no ``session_id`` is never joined to another (SPEC
-        §11.5.1), so pass your own ``session_id`` then.
+        only a company and no ``session_id`` gets a session of its own, so pass
+        your own ``session_id`` to keep a conversation's blocks together.
 
         ``client_info`` (``{"name": ..., "version": ...}``) and
         ``headers`` are what the calling client sent; only registered headers
