@@ -280,7 +280,6 @@ def install_wraps(
                 capture_settings=capture_settings,
                 surface_state=surface_state,
                 emit_surface=emit_surface,
-                annotation_tool_name=annotation_tool_name,
                 names=names,
             ),
         )
@@ -435,7 +434,6 @@ def _wrap_tool_run(
     capture_settings: CaptureSettings | None,
     surface_state: _SurfaceState,
     emit_surface: _EmitSurface,
-    annotation_tool_name: str | None,
     names: AnnotationNames | None,
 ) -> Callable[..., Awaitable[Any]]:
     """Build an async wrapper around ``tool.run`` that strips the injected
