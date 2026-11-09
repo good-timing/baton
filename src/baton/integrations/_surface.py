@@ -20,7 +20,17 @@ import hashlib
 import json
 from collections import OrderedDict
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from baton.integrations._llm_text import (
+    USER_GOAL_PARAM_NAME,
+    instructions_suffix,
+    required_param_names,
+    served_agent_text,
+)
+
+if TYPE_CHECKING:
+    from baton.integrations._annotation_name import AnnotationNames
 
 SENT_SURFACES_CAP = 256
 
@@ -115,13 +125,11 @@ def build_seam_augmentations(
     intent_param_names: list[str],
     intent_param_mode: str,
     required_names: list[str],
-    instructions_suffix: bool | None = True,
     agent_text: dict[str, Any],
 ) -> dict[str, Any]:
     """The as-served delta Baton added on top of the vendor-true surface —
     mirrors proxy's ``seam_augmentations`` so a consumer can render both
-    layers. ``instructions_suffix`` is whether Baton's text reached the served
-    instructions, and ``None`` when the producer cannot tell.
+    layers.
 
     ``required_names`` is which of ``names`` the mode advertises as required.
     It is per surface, not per tool: a tool that declares one of the names
@@ -134,6 +142,21 @@ def build_seam_augmentations(
             "required_names": sorted(required_names),
             "mode": intent_param_mode,
         },
-        "instructions_suffix": instructions_suffix,
+        "instructions_suffix": instructions_suffix(agent_text),
         "agent_text": agent_text,
     }
+
+
+def adapter_seam_augmentations(
+    *, names: AnnotationNames | None, intent_param_mode: str, surface_tools: list[Any]
+) -> dict[str, Any]:
+    """``build_seam_augmentations`` for an MCP adapter, which serves the instructions."""
+    return build_seam_augmentations(
+        injected_tool_names=[names.annotation_tool_name] if names else [],
+        intent_param_names=[USER_GOAL_PARAM_NAME],
+        intent_param_mode=intent_param_mode,
+        required_names=list(required_param_names(intent_param_mode=intent_param_mode)),
+        agent_text=served_agent_text(
+            names=names, intent_param_mode=intent_param_mode, surface_tools=surface_tools
+        ),
+    )

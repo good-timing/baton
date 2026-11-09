@@ -167,7 +167,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
         fallback_session_id=fallback_session_id,
         scrubber=scrubber,
         annotation_tool_name=annotation_tool_name,
-        vendor_display_name=text.names.vendor_display_name if text.names else None,
+        names=text.names,
         intent_param_mode=config.intent_param_mode,
         result_capture_mode=config.result_capture_mode,
         resolve_principal_hook=config.resolve_principal,

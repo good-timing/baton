@@ -138,6 +138,8 @@ def test_the_snapshot_is_the_vendors_own_surface() -> None:
         "agent_text": {
             "instructions.subagent": None,
             "instructions.report_pointer": None,
+            "report_tool.description": None,
+            "report_tool.refusal": None,
             "goal_param.description": {
                 "text": build_user_goal_param_description(intent_param_mode="required"),
                 "source": "default",

@@ -73,18 +73,12 @@ def snapshot_payload(surface: dict[str, Any], digest: str) -> SurfaceSnapshotPay
             intent_param_names=[USER_GOAL_PARAM_NAME],
             intent_param_mode=INTENT_PARAM_MODE,
             required_names=list(required_param_names(intent_param_mode=INTENT_PARAM_MODE)),
-            instructions_suffix=None,
-            agent_text={
-                **served_agent_text(
-                    vendor_display_name=None,
-                    annotation_tool_name=None,
-                    intent_param_mode=INTENT_PARAM_MODE,
-                    surface_tools=surface["tools"],
-                ),
-                # The vendor serves the instructions itself.
-                "instructions.subagent": None,
-                "instructions.report_pointer": None,
-            },
+            agent_text=served_agent_text(
+                names=None,
+                intent_param_mode=INTENT_PARAM_MODE,
+                surface_tools=surface["tools"],
+                vendor_serves_text=True,
+            ),
         ),
     )
 

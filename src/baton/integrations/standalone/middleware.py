@@ -44,6 +44,7 @@ from baton.events import (
     ToolCallStartEvent,
     ToolCallStartPayload,
 )
+from baton.integrations._annotation_name import AnnotationNames
 from baton.integrations._annotation_payload import with_tool_name_required
 from baton.integrations._call_slot import claim_call
 from baton.integrations._client_observed import clean_runtime_meta, meta_to_dict, observe_client
@@ -63,18 +64,15 @@ from baton.integrations._llm_text import (
     USER_GOAL_PARAM_NAME,
     drop_retired_params,
     inject_goal_params,
-    instructions_suffix_served,
     intent_source,
     pop_goal_params,
-    required_param_names,
     scrub_goals,
-    served_agent_text,
 )
 from baton.integrations._session import next_sequence
 from baton.integrations._surface import (
     SentSurfaces,
+    adapter_seam_augmentations,
     assemble_surface,
-    build_seam_augmentations,
     surface_hash,
 )
 from baton.integrations.standalone import _auth
@@ -116,7 +114,7 @@ class BatonMiddleware(Middleware):
         counter: SessionCounter | None = None,
         fallback_session_id: str | None = None,
         annotation_tool_name: str | None = None,
-        vendor_display_name: str | None = None,
+        names: AnnotationNames | None = None,
         intent_param_mode: str = "required",
         result_capture_mode: ResultCaptureMode = "full",
         server_meta: dict[str, Any] | None = None,
@@ -133,7 +131,7 @@ class BatonMiddleware(Middleware):
         self._counter = counter or SessionCounter()
         self._fallback_session_id = fallback_session_id or f"sdk-{uuid7()}"
         self._annotation_tool_name = annotation_tool_name
-        self._vendor_display_name = vendor_display_name
+        self._names = names
         self._intent_param_mode = intent_param_mode
         self._result_capture_mode = result_capture_mode
         self._server_meta = server_meta or {}
@@ -243,24 +241,10 @@ class BatonMiddleware(Middleware):
             if self._sent_surfaces.was_sent(digest):
                 return
 
-            seam = build_seam_augmentations(
-                injected_tool_names=(
-                    [self._annotation_tool_name] if self._annotation_tool_name else []
-                ),
-                intent_param_names=[USER_GOAL_PARAM_NAME],
+            seam = adapter_seam_augmentations(
+                names=self._names,
                 intent_param_mode=self._intent_param_mode,
-                required_names=list(
-                    required_param_names(intent_param_mode=self._intent_param_mode)
-                ),
-                instructions_suffix=instructions_suffix_served(
-                    annotation_tool_name=self._annotation_tool_name, surface_tools=surface_tools
-                ),
-                agent_text=served_agent_text(
-                    vendor_display_name=self._vendor_display_name,
-                    annotation_tool_name=self._annotation_tool_name,
-                    intent_param_mode=self._intent_param_mode,
-                    surface_tools=surface_tools,
-                ),
+                surface_tools=surface_tools,
             )
             seq = await self._counter.next(self._fallback_session_id)
             event = SurfaceSnapshotEvent(

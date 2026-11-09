@@ -84,6 +84,7 @@ from baton.events import (
     ToolCallStartEvent,
     ToolCallStartPayload,
 )
+from baton.integrations._annotation_name import AnnotationNames
 from baton.integrations._call_slot import claim_call
 from baton.integrations._client_observed import clean_runtime_meta, meta_to_dict, observe_client
 from baton.integrations._config import (
@@ -106,12 +107,9 @@ from baton.integrations._llm_text import (
     USER_GOAL_PARAM_NAME,
     drop_subagent_clause,
     inject_goal_params,
-    instructions_suffix_served,
     intent_source,
     pop_goal_params,
-    required_param_names,
     scrub_goals,
-    served_agent_text,
 )
 from baton.integrations._mrtr import mcp_refusal, pause_refused, resumes_a_pause
 from baton.integrations._session import (
@@ -122,8 +120,8 @@ from baton.integrations._session import (
 )
 from baton.integrations._surface import (
     SentSurfaces,
+    adapter_seam_augmentations,
     assemble_surface,
-    build_seam_augmentations,
     surface_hash,
 )
 from baton.integrations.official import _auth
@@ -193,7 +191,7 @@ def install_wraps(
     fallback_session_id: str,
     scrubber: Callable[[Any], Any] = identity_scrub,
     annotation_tool_name: str | None = None,
-    vendor_display_name: str | None = None,
+    names: AnnotationNames | None = None,
     intent_param_mode: str = "required",
     result_capture_mode: ResultCaptureMode = "full",
     server_meta: dict[str, Any] | None = None,
@@ -283,7 +281,7 @@ def install_wraps(
                 surface_state=surface_state,
                 emit_surface=emit_surface,
                 annotation_tool_name=annotation_tool_name,
-                vendor_display_name=vendor_display_name,
+                names=names,
             ),
         )
 
@@ -438,7 +436,7 @@ def _wrap_tool_run(
     surface_state: _SurfaceState,
     emit_surface: _EmitSurface,
     annotation_tool_name: str | None,
-    vendor_display_name: str | None,
+    names: AnnotationNames | None,
 ) -> Callable[..., Awaitable[Any]]:
     """Build an async wrapper around ``tool.run`` that strips the injected
     intent param and emits Baton events.
@@ -471,25 +469,10 @@ def _wrap_tool_run(
                 logger.exception("baton: surface snapshot capture failed")
             else:
                 if not surface_state.sent_surfaces.was_sent(digest):
-                    seam = build_seam_augmentations(
-                        injected_tool_names=(
-                            [annotation_tool_name] if annotation_tool_name else []
-                        ),
-                        intent_param_names=[USER_GOAL_PARAM_NAME],
+                    seam = adapter_seam_augmentations(
+                        names=names,
                         intent_param_mode=intent_param_mode,
-                        required_names=list(
-                            required_param_names(intent_param_mode=intent_param_mode)
-                        ),
-                        instructions_suffix=instructions_suffix_served(
-                            annotation_tool_name=annotation_tool_name,
-                            surface_tools=snapshot["tools"],
-                        ),
-                        agent_text=served_agent_text(
-                            vendor_display_name=vendor_display_name,
-                            annotation_tool_name=annotation_tool_name,
-                            intent_param_mode=intent_param_mode,
-                            surface_tools=snapshot["tools"],
-                        ),
+                        surface_tools=snapshot["tools"],
                     )
                     try:
                         await emit_surface(

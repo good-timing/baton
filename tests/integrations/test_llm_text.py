@@ -13,6 +13,7 @@ Load-bearing properties tied to Claude Code's empirically observed
 from __future__ import annotations
 
 import types
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -27,6 +28,7 @@ from baton.integrations._llm_text import (
     build_user_goal_param_description,
     pop_goal_params,
     required_param_names,
+    served_agent_text,
     with_vendor_instructions,
 )
 
@@ -342,3 +344,18 @@ def test_retired_names_are_popped_only_where_the_schema_is_known() -> None:
     blank = {"user_goal": " ", "expected_result": "  ", "overall_task": 3}
     assert pop_goal_params("echo", blank, {}) == (None, None, None)
     assert blank == {}
+
+
+def test_agent_text_claims_the_goal_description_only_where_it_could_be_added() -> None:
+    agent_text = served_agent_text(
+        names=None, intent_param_mode="required", surface_tools=[{"name": "bare"}]
+    )
+    assert "goal_param.description" not in agent_text
+
+
+def test_agent_text_sees_a_user_goal_declared_in_any_mapping() -> None:
+    schema = MappingProxyType({"properties": MappingProxyType({"user_goal": {}})})
+    agent_text = served_agent_text(
+        names=None, intent_param_mode="required", surface_tools=[{"inputSchema": schema}]
+    )
+    assert agent_text == {}

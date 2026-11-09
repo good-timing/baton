@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from baton._white_space import is_blank
 from baton.scrub import scrub_or_none
+
+if TYPE_CHECKING:
+    from baton.integrations._annotation_name import AnnotationNames
 
 logger = logging.getLogger(__name__)
 
@@ -296,52 +299,67 @@ def a_tool_declares_user_goal(mcp: Any) -> bool:
 
 def declares_user_goal(schema: Any) -> bool:
     """Whether a tool's input ``schema`` declares ``user_goal`` itself."""
-    props = schema.get("properties") if isinstance(schema, dict) else None
-    return isinstance(props, dict) and USER_GOAL_PARAM_NAME in props
+    props = schema.get("properties") if isinstance(schema, Mapping) else None
+    return isinstance(props, Mapping) and USER_GOAL_PARAM_NAME in props
 
 
-def instructions_suffix_served(
-    *, annotation_tool_name: str | None, surface_tools: list[dict[str, Any]]
-) -> bool:
-    """Whether Baton's text is in the served instructions, given the
-    vendor-true tools. Without the annotation tool it is only the subagent
-    sentence, which a tool declaring its own ``user_goal`` removes."""
-    if annotation_tool_name:
-        return True
-    return not any(declares_user_goal(tool.get("inputSchema")) for tool in surface_tools)
+_INSTRUCTIONS_PIECES = ("instructions.subagent", "instructions.report_pointer")
+_VENDOR_SERVED_PIECES = (*_INSTRUCTIONS_PIECES, "report_tool.description", "report_tool.refusal")
 
 
 def served_agent_text(
     *,
-    vendor_display_name: str | None,
-    annotation_tool_name: str | None,
+    names: AnnotationNames | None,
     intent_param_mode: str,
-    surface_tools: list[dict[str, Any]],
-) -> dict[str, dict[str, str]]:
+    surface_tools: list[Any],
+    vendor_serves_text: bool = False,
+) -> dict[str, dict[str, str] | None]:
     """``seam_augmentations.agent_text`` (SPEC §11.4.2): Baton's own text as
-    served to the vendor-true ``surface_tools``. A piece not served is absent."""
-    declared = [
-        isinstance(tool, dict) and declares_user_goal(tool.get("inputSchema"))
-        for tool in surface_tools
+    served to the vendor-true ``surface_tools``. A piece not served is absent.
+    With ``vendor_serves_text`` the instructions and report tool are the
+    vendor's to serve, so their pieces are null."""
+    schemas = [
+        tool.get("inputSchema") if isinstance(tool, Mapping) else None for tool in surface_tools
     ]
+    native = [declares_user_goal(schema) for schema in schemas]
     served: dict[str, str] = {}
-    if not any(declared):
+    if not any(native):
         served["instructions.subagent"] = INTENT_INSTRUCTIONS
-    if not all(declared):
+    if any(
+        isinstance(schema, Mapping) and not n for schema, n in zip(schemas, native, strict=True)
+    ):
         served["goal_param.description"] = build_user_goal_param_description(
             intent_param_mode=intent_param_mode
         )
-    if vendor_display_name and annotation_tool_name:
-        served["instructions.report_pointer"] = _INSTRUCTIONS_REPORT_POINTER.format(
-            vendor_display_name=vendor_display_name, annotation_tool_name=annotation_tool_name
+    if names is not None:
+        served["instructions.report_pointer"] = build_report_pointer(
+            vendor_display_name=names.vendor_display_name,
+            annotation_tool_name=names.annotation_tool_name,
         )
         served["report_tool.description"] = build_annotation_tool_description(
-            vendor_display_name=vendor_display_name
+            vendor_display_name=names.vendor_display_name
         )
         served["report_tool.refusal"] = build_refusal_text(
-            annotation_tool_name=annotation_tool_name
+            annotation_tool_name=names.annotation_tool_name
         )
-    return {piece: {"text": text, "source": "default"} for piece, text in served.items()}
+    pieces: dict[str, dict[str, str] | None] = {
+        piece: {"text": text, "source": "default"} for piece, text in served.items()
+    }
+    if vendor_serves_text:
+        pieces.update(dict.fromkeys(_VENDOR_SERVED_PIECES))
+    return pieces
+
+
+def instructions_suffix(agent_text: Mapping[str, Any]) -> bool | None:
+    """Whether Baton's text is in the served instructions; ``None`` when unknown."""
+    pieces = [agent_text[piece] for piece in _INSTRUCTIONS_PIECES if piece in agent_text]
+    return None if None in pieces else bool(pieces)
+
+
+def build_report_pointer(*, vendor_display_name: str, annotation_tool_name: str) -> str:
+    return _INSTRUCTIONS_REPORT_POINTER.format(
+        vendor_display_name=vendor_display_name, annotation_tool_name=annotation_tool_name
+    )
 
 
 def build_server_instructions(
@@ -350,7 +368,7 @@ def build_server_instructions(
     annotation_tool_name: str,
 ) -> str:
     """Build the server-instructions text for the MCP ``instructions`` field."""
-    rendered = _INSTRUCTIONS_REPORT_POINTER.format(
+    rendered = build_report_pointer(
         vendor_display_name=vendor_display_name, annotation_tool_name=annotation_tool_name
     )
     if len(rendered) > _INSTRUCTIONS_LENGTH_CAP:
