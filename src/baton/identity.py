@@ -32,9 +32,7 @@ class Organization:
     display_name: str | None = None
     form: Literal["raw", "hashed"] = "raw"
     labels: Sequence[str] = ()
-    """**Experimental:** may change in a minor release.
-
-    Your names for the groups this caller is in, for capture settings to
+    """Your names for the groups this caller is in, for capture settings to
     match (SPEC §11.4). Baton sees them, so use group names or keys you keep,
     never raw ids."""
 
@@ -61,9 +59,7 @@ class Principal:
     hashed the value."""
     organization: Organization | None = None
     labels: Sequence[str] = ()
-    """**Experimental:** may change in a minor release.
-
-    As ``Organization.labels``. A principal's labels and its organization's
+    """As ``Organization.labels``. A principal's labels and its organization's
     are sent together."""
 
 

@@ -8,6 +8,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Changed
+
+- **Console settings and labels are stable.** `VendorConfig(settings=...,
+  settings_refresh_s=...)`, the `labels` of `Principal` and `Organization`,
+  and the `labels` and `capture` fields on events (with `CaptureObserved`)
+  now follow semver. `ClientReportEvent` stays experimental.
+
 ## 1.0.0: agent reports on your own API, and every sink written off the tool call
 
 **Stable from 1.0.** This package follows semver: a breaking change to the

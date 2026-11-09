@@ -438,9 +438,7 @@ class VendorConfig:
     request's input."""
 
     settings: str = "local"
-    """**Experimental:** may change in a minor release.
-
-    Where capture settings come from. ``"local"`` (default): the values in
+    """Where capture settings come from. ``"local"`` (default): the values in
     this config, and Baton is never asked. ``"console"``: the settings saved on
     the Console's Capture page, read from the collector every
     ``settings_refresh_s`` seconds, so they can differ by label, client or a
@@ -454,9 +452,7 @@ class VendorConfig:
     they are on here."""
 
     settings_refresh_s: float = DEFAULT_REFRESH_S
-    """**Experimental:** may change in a minor release.
-
-    How often ``settings="console"`` reads the saved settings, in seconds. At
+    """How often ``settings="console"`` reads the saved settings, in seconds. At
     least 15."""
 
     resolve_principal: ResolvePrincipalHook | None = None

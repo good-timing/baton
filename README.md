@@ -178,8 +178,6 @@ The SDK reads the settings every 60 seconds. Set `settings_refresh_s` to change 
 
 Labels come from your `resolve_principal` hook, as `Principal(labels=[...])` or `Organization(labels=[...])`. Up to 20 per caller, sent on every event, so send only names you are happy for Baton to see. A share of callers is picked by the principal's id, or the company's when there is no principal, so the same person always lands in the same group. A caller with neither is never in a share.
 
-These settings, `labels` and `capture` are **experimental** and may change in a minor release ([What is public](#what-is-public)).
-
 ## PII scrubbing
 
 **On by default.** `baton.scrub.Scrubber` walks every event payload and redacts email / `Bearer …` / `sk-*` / `AKIA*` / JWT / Luhn-validated card / NA-format phone, plus a list of sensitive field names. Opt out by passing a config instead of a bare DSN:
@@ -233,7 +231,7 @@ The switch belongs to whoever RUNS the server: your user for a server you distri
 
 The public API is the names in `__all__` of these modules: `baton`, `baton.client`, `baton.identity`, `baton.scrub`, `baton.sinks`, `baton.events`, and the adapters `baton.integrations.official` and `baton.integrations.standalone`. The old adapter paths `baton.integrations.mcp` and `baton.integrations.fastmcp` stay too. Anything else you can import is internal and may change in any release, even if its name has no underscore.
 
-These are **experimental** and may change in a minor release: `VendorConfig(settings=..., settings_refresh_s=...)`, the `labels` of `Principal` and `Organization`, the `labels` and `capture` fields on events with `CaptureObserved`, and `ClientReportEvent` with `ClientReportPayload`. [SPEC §13](https://github.com/good-timing/baton-spec/blob/main/SPEC.md#stability-from-10) lists what is experimental on the wire.
+These are **experimental** and may change in a minor release: `ClientReportEvent` with `ClientReportPayload`. [SPEC §13](https://github.com/good-timing/baton-spec/blob/main/SPEC.md#stability-from-10) lists what is experimental on the wire.
 
 ## More
 
