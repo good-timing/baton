@@ -8,14 +8,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 1.0.1: the snapshot names the text Baton showed the agent, and Console settings are stable
 
 ### Added
 
 - **`surface_snapshot` says what Baton's own text was** (experimental, SPEC
   §11.4.2). `seam_augmentations.agent_text` holds each piece the agent was
   shown: the instructions' sentences, the `user_goal` description, and the
-  report tool's description and refusal. A piece not shown is left out.
+  report tool's description and refusal. A piece not shown is left out. On
+  the library path, the pieces the vendor serves itself are null.
 
 ### Changed
 
