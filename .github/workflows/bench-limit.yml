@@ -1,0 +1,28 @@
+# bench.json's limits hold the 1.0 promise. Red on main: don't tag until it is green.
+name: Bench limit
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  limits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.19"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --locked --no-dev --extra mcp
+      - run: python3 baton-spec/scripts/check_bench_limit.py .venv/bin/python scripts/bench.py --source checkout --only '{measure}' --out '{out}'

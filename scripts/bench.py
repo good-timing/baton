@@ -2,7 +2,7 @@
 """Runs baton-spec's bench/bench.json against the installed baton-sdk and
 writes one result file.
 
-    python scripts/bench.py --source published|checkout --out RESULT.json
+    python scripts/bench.py --source published|checkout --out RESULT.json [--only MEASURE]
 
 Only the public API is used, so the same script measures the last release
 and the checkout. `make bench` runs both and prints the comparison.
@@ -255,11 +255,14 @@ RUNNERS = {
 }
 
 
-async def run() -> tuple[dict[str, dict[str, float]], int]:
-    """Each measure's metrics, and the peak memory before the first memory measure."""
+async def run(only: str | None) -> tuple[dict[str, dict[str, float]], int]:
+    """Each measure's metrics, and the peak memory before the first memory measure
+    (at the end when none ran)."""
     measures: dict[str, dict[str, float]] = {}
     peak = 0
     for m in BENCH["measures"]:
+        if only not in (None, m["name"]):
+            continue
         if m["name"].startswith("memory") and not peak:
             peak = max_rss_bytes()
         measures[m["name"]] = await RUNNERS[m["name"]](m)
@@ -271,17 +274,37 @@ def max_rss_bytes() -> int:
     return peak if sys.platform == "darwin" else peak * 1024
 
 
+def cpu_model() -> str:
+    if sys.platform == "darwin":
+        command = ["sysctl", "-n", "machdep.cpu.brand_string"]
+        return subprocess.run(command, capture_output=True, text=True).stdout.strip() or "unknown"
+    try:
+        lines = Path("/proc/cpuinfo").read_text().splitlines()
+    except OSError:
+        lines = []
+    model = next(
+        (line.partition(":")[2].strip() for line in lines if line.startswith("model name")), ""
+    )
+    return model or "unknown"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", choices=("published", "checkout"), required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--only",
+        choices=[m["name"] for m in BENCH["measures"]],
+        help="run this measure alone",
+    )
     args = parser.parse_args()
-    measures, peak = anyio.run(run)
+    measures, peak = anyio.run(run, args.only)
     result = {
         "sdk": "python",
         "version": version("baton-sdk"),
         "source": args.source,
         "runtime": f"{platform.python_implementation()} {platform.python_version()}",
+        "cpu": cpu_model(),
         "max_rss_bytes": peak,
         "measures": measures,
     }

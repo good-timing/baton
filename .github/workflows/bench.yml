@@ -1,5 +1,5 @@
 # baton-spec's speed and load measures, the last release against this commit
-# (scripts/bench.sh). Reports only: nothing here gates a release. A tag's
+# (scripts/bench.sh). Reports only; bench-limit.yml checks the limits. A tag's
 # results are also kept on the bench-results branch.
 name: Bench
 
