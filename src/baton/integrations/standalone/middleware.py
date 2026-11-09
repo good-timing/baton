@@ -68,6 +68,7 @@ from baton.integrations._llm_text import (
     pop_goal_params,
     required_param_names,
     scrub_goals,
+    served_agent_text,
 )
 from baton.integrations._session import next_sequence
 from baton.integrations._surface import (
@@ -115,6 +116,7 @@ class BatonMiddleware(Middleware):
         counter: SessionCounter | None = None,
         fallback_session_id: str | None = None,
         annotation_tool_name: str | None = None,
+        vendor_display_name: str | None = None,
         intent_param_mode: str = "required",
         result_capture_mode: ResultCaptureMode = "full",
         server_meta: dict[str, Any] | None = None,
@@ -131,6 +133,7 @@ class BatonMiddleware(Middleware):
         self._counter = counter or SessionCounter()
         self._fallback_session_id = fallback_session_id or f"sdk-{uuid7()}"
         self._annotation_tool_name = annotation_tool_name
+        self._vendor_display_name = vendor_display_name
         self._intent_param_mode = intent_param_mode
         self._result_capture_mode = result_capture_mode
         self._server_meta = server_meta or {}
@@ -251,6 +254,12 @@ class BatonMiddleware(Middleware):
                 ),
                 instructions_suffix=instructions_suffix_served(
                     annotation_tool_name=self._annotation_tool_name, surface_tools=surface_tools
+                ),
+                agent_text=served_agent_text(
+                    vendor_display_name=self._vendor_display_name,
+                    annotation_tool_name=self._annotation_tool_name,
+                    intent_param_mode=self._intent_param_mode,
+                    surface_tools=surface_tools,
                 ),
             )
             seq = await self._counter.next(self._fallback_session_id)

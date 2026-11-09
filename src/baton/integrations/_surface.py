@@ -116,6 +116,7 @@ def build_seam_augmentations(
     intent_param_mode: str,
     required_names: list[str],
     instructions_suffix: bool | None = True,
+    agent_text: dict[str, Any],
 ) -> dict[str, Any]:
     """The as-served delta Baton added on top of the vendor-true surface —
     mirrors proxy's ``seam_augmentations`` so a consumer can render both
@@ -134,4 +135,5 @@ def build_seam_augmentations(
             "mode": intent_param_mode,
         },
         "instructions_suffix": instructions_suffix,
+        "agent_text": agent_text,
     }

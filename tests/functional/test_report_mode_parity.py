@@ -29,6 +29,7 @@ class Served:
     schemas: dict[str, dict[str, Any]]
     call: Callable[[str, dict[str, Any]], Any]
     later_sinks: list[CapturingSink]
+    descriptions: dict[str, str | None]
 
     @property
     def instructions(self) -> str:
@@ -82,9 +83,16 @@ async def _official(
         async with connected_session(mcp) as session:
             listed = (await session.list_tools()).tools
             schemas = {t.name: getattr(t, "input_schema", None) or t.inputSchema for t in listed}
+            descriptions = {t.name: t.description for t in listed}
             await _flush(handles)
             yield Served(
-                mcp, handles[0], sinks[0], schemas, _flushing(session.call_tool, handles), sinks[1:]
+                mcp,
+                handles[0],
+                sinks[0],
+                schemas,
+                _flushing(session.call_tool, handles),
+                sinks[1:],
+                descriptions,
             )
     finally:
         for handle in handles:
@@ -111,9 +119,16 @@ async def _standalone(
         async with Client(mcp) as client:
             listed = await client.list_tools()
             schemas = {t.name: getattr(t, "input_schema", None) or t.inputSchema for t in listed}
+            descriptions = {t.name: t.description for t in listed}
             await _flush(handles)
             yield Served(
-                mcp, handles[0], sinks[0], schemas, _flushing(client.call_tool, handles), sinks[1:]
+                mcp,
+                handles[0],
+                sinks[0],
+                schemas,
+                _flushing(client.call_tool, handles),
+                sinks[1:],
+                descriptions,
             )
     finally:
         for handle in handles:
@@ -245,6 +260,33 @@ async def test_reports_on_keep_the_sentence_beside_a_native_user_goal(serve: Any
         await served.call("approve", {"doc": "d"})
         assert "subagent" not in served.instructions
         assert _seam(served)["instructions_suffix"] is True
+
+
+@both_adapters
+@pytest.mark.parametrize("report_mode", ["off", "on"])
+async def test_the_snapshots_agent_text_is_the_text_served(serve: Any, report_mode: str) -> None:
+    async with serve([lookup], report_mode=report_mode) as served:
+        if report_mode == "on":
+            refused = await served.call("toybox_annotate", {"user_goal": "1: look"})
+        await served.call("lookup", {"name": "a"})
+        agent_text = _seam(served)["agent_text"]
+    assert {value["source"] for value in agent_text.values()} == {"default"}
+    text = {piece: value["text"] for piece, value in agent_text.items()}
+    goal = served.schemas["lookup"]["properties"]["user_goal"]["description"]
+    assert text.pop("goal_param.description") == goal
+    assert text.pop("instructions.subagent") in served.instructions
+    if report_mode == "on":
+        assert text.pop("instructions.report_pointer") in served.instructions
+        assert text.pop("report_tool.description") == served.descriptions["toybox_annotate"]
+        assert text.pop("report_tool.refusal") in refused.content[0].text
+    assert text == {}
+
+
+@both_adapters
+async def test_agent_text_leaves_out_what_a_native_user_goal_removes(serve: Any) -> None:
+    async with serve([approve]) as served:
+        await served.call("approve", {"doc": "d"})
+        assert _seam(served)["agent_text"] == {}
 
 
 def _seam(served: Served) -> dict[str, Any]:

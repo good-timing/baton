@@ -311,6 +311,39 @@ def instructions_suffix_served(
     return not any(declares_user_goal(tool.get("inputSchema")) for tool in surface_tools)
 
 
+def served_agent_text(
+    *,
+    vendor_display_name: str | None,
+    annotation_tool_name: str | None,
+    intent_param_mode: str,
+    surface_tools: list[dict[str, Any]],
+) -> dict[str, dict[str, str]]:
+    """``seam_augmentations.agent_text`` (SPEC §11.4.2): Baton's own text as
+    served to the vendor-true ``surface_tools``. A piece not served is absent."""
+    declared = [
+        isinstance(tool, dict) and declares_user_goal(tool.get("inputSchema"))
+        for tool in surface_tools
+    ]
+    served: dict[str, str] = {}
+    if not any(declared):
+        served["instructions.subagent"] = INTENT_INSTRUCTIONS
+    if not all(declared):
+        served["goal_param.description"] = build_user_goal_param_description(
+            intent_param_mode=intent_param_mode
+        )
+    if vendor_display_name and annotation_tool_name:
+        served["instructions.report_pointer"] = _INSTRUCTIONS_REPORT_POINTER.format(
+            vendor_display_name=vendor_display_name, annotation_tool_name=annotation_tool_name
+        )
+        served["report_tool.description"] = build_annotation_tool_description(
+            vendor_display_name=vendor_display_name
+        )
+        served["report_tool.refusal"] = build_refusal_text(
+            annotation_tool_name=annotation_tool_name
+        )
+    return {piece: {"text": text, "source": "default"} for piece, text in served.items()}
+
+
 def build_server_instructions(
     *,
     vendor_display_name: str,

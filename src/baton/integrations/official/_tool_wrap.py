@@ -111,6 +111,7 @@ from baton.integrations._llm_text import (
     pop_goal_params,
     required_param_names,
     scrub_goals,
+    served_agent_text,
 )
 from baton.integrations._mrtr import mcp_refusal, pause_refused, resumes_a_pause
 from baton.integrations._session import (
@@ -192,6 +193,7 @@ def install_wraps(
     fallback_session_id: str,
     scrubber: Callable[[Any], Any] = identity_scrub,
     annotation_tool_name: str | None = None,
+    vendor_display_name: str | None = None,
     intent_param_mode: str = "required",
     result_capture_mode: ResultCaptureMode = "full",
     server_meta: dict[str, Any] | None = None,
@@ -281,6 +283,7 @@ def install_wraps(
                 surface_state=surface_state,
                 emit_surface=emit_surface,
                 annotation_tool_name=annotation_tool_name,
+                vendor_display_name=vendor_display_name,
             ),
         )
 
@@ -435,6 +438,7 @@ def _wrap_tool_run(
     surface_state: _SurfaceState,
     emit_surface: _EmitSurface,
     annotation_tool_name: str | None,
+    vendor_display_name: str | None,
 ) -> Callable[..., Awaitable[Any]]:
     """Build an async wrapper around ``tool.run`` that strips the injected
     intent param and emits Baton events.
@@ -478,6 +482,12 @@ def _wrap_tool_run(
                         ),
                         instructions_suffix=instructions_suffix_served(
                             annotation_tool_name=annotation_tool_name,
+                            surface_tools=snapshot["tools"],
+                        ),
+                        agent_text=served_agent_text(
+                            vendor_display_name=vendor_display_name,
+                            annotation_tool_name=annotation_tool_name,
+                            intent_param_mode=intent_param_mode,
                             surface_tools=snapshot["tools"],
                         ),
                     )

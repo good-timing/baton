@@ -14,6 +14,7 @@ from baton.integrations._llm_text import (
     USER_GOAL_PARAM_NAME,
     inject_goal_params,
     required_param_names,
+    served_agent_text,
 )
 from baton.integrations._surface import assemble_surface, build_seam_augmentations, surface_hash
 
@@ -73,6 +74,17 @@ def snapshot_payload(surface: dict[str, Any], digest: str) -> SurfaceSnapshotPay
             intent_param_mode=INTENT_PARAM_MODE,
             required_names=list(required_param_names(intent_param_mode=INTENT_PARAM_MODE)),
             instructions_suffix=None,
+            agent_text={
+                **served_agent_text(
+                    vendor_display_name=None,
+                    annotation_tool_name=None,
+                    intent_param_mode=INTENT_PARAM_MODE,
+                    surface_tools=surface["tools"],
+                ),
+                # The vendor serves the instructions itself.
+                "instructions.subagent": None,
+                "instructions.report_pointer": None,
+            },
         ),
     )
 

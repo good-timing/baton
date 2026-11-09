@@ -12,7 +12,10 @@ import pytest
 from baton import INTENT_INSTRUCTIONS, AsyncClient, Client, Principal
 from baton._state import PROCESS_DROPS
 from baton.events import Event
-from baton.integrations._llm_text import build_server_instructions
+from baton.integrations._llm_text import (
+    build_server_instructions,
+    build_user_goal_param_description,
+)
 from baton.sinks import FileSink, Sink
 
 TOOLS: list[dict[str, Any]] = [
@@ -132,6 +135,14 @@ def test_the_snapshot_is_the_vendors_own_surface() -> None:
             "mode": "required",
         },
         "instructions_suffix": None,
+        "agent_text": {
+            "instructions.subagent": None,
+            "instructions.report_pointer": None,
+            "goal_param.description": {
+                "text": build_user_goal_param_description(intent_param_mode="required"),
+                "source": "default",
+            },
+        },
     }
 
 
