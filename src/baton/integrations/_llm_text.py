@@ -286,7 +286,7 @@ def remove_subagent_clause(mcp: Any, write: Callable[[Any, str], None]) -> bool:
     if not isinstance(ours, str) or not subagent or mcp.instructions != _joined(vendor, ours):
         return False
     kept = ours.removesuffix(subagent).removesuffix("\n\n")
-    write(mcp, with_vendor_instructions(mcp, kept, subagent=None))
+    write_ours(mcp, kept, write, subagent=None)
     return True
 
 
@@ -396,30 +396,41 @@ def _joined(vendor: Any, ours: str) -> str:
     return f"{vendor}\n\n{ours}" if ours else vendor
 
 
-def with_vendor_instructions(
+def write_ours(
     mcp: Any,
     ours: str,
+    write: Callable[[Any, str], None],
     warned: set[str] | None = None,
     *,
     subagent: str | None = INTENT_INSTRUCTIONS,
-) -> str:
-    """SPEC §5.1.2: the vendor's own instructions first, ours below them.
+) -> None:
+    """Write ``ours`` below the vendor's instructions (SPEC §5.1.2).
     ``subagent`` is the subagent sentence ``ours`` ends with, if it does.
 
-    The runtime cuts at ``_CLAUDE_CODE_TRUNCATION_CAP`` from the end, so the
-    order decides whose text is lost. The vendor's text and ours are
-    remembered on the server, so a second install replaces our paragraph
-    rather than appending another; text the vendor set in between replaces
-    what was remembered.
+    What was written is remembered on the server once the write succeeds, so a
+    second install or a new setting replaces our paragraph rather than
+    appending another; text the vendor set in between replaces what was
+    remembered.
     """
-    current = mcp.instructions
-    vendor = getattr(mcp, _VENDOR_INSTRUCTIONS_ATTR, current)
-    written = getattr(mcp, _OURS_ATTR, None)
-    if not isinstance(written, str) or current != _joined(vendor, written):
-        vendor = current
-        setattr(mcp, _VENDOR_INSTRUCTIONS_ATTR, vendor)
+    vendor = _vendor_text(mcp)
+    write(mcp, with_vendor_instructions(mcp, ours, warned))
+    setattr(mcp, _VENDOR_INSTRUCTIONS_ATTR, vendor)
     setattr(mcp, _OURS_ATTR, ours)
     setattr(mcp, _SUBAGENT_ATTR, subagent if subagent and ours.endswith(subagent) else None)
+
+
+def _vendor_text(mcp: Any) -> Any:
+    current = mcp.instructions
+    written = getattr(mcp, _OURS_ATTR, None)
+    vendor = getattr(mcp, _VENDOR_INSTRUCTIONS_ATTR, current)
+    return vendor if isinstance(written, str) and current == _joined(vendor, written) else current
+
+
+def with_vendor_instructions(mcp: Any, ours: str, warned: set[str] | None = None) -> str:
+    """The instructions ``write_ours`` writes: the vendor's first, ours below.
+    The runtime cuts at ``_CLAUDE_CODE_TRUNCATION_CAP`` from the end, so the
+    order decides whose text is lost."""
+    vendor = _vendor_text(mcp)
     combined = _joined(vendor, ours)
     if combined == ours:
         return ours

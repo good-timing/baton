@@ -24,7 +24,7 @@ from baton.integrations._llm_text import (
     build_server_instructions,
     build_user_goal_param_description,
     drop_subagent_clause,
-    with_vendor_instructions,
+    write_ours,
 )
 from baton.integrations._per_caller import PerCallerSurface
 from baton.integrations.official._compat import MCPServerClass as OfficialFastMCP
@@ -281,7 +281,7 @@ POINTER = OURS.removesuffix(f"\n\n{INTENT_INSTRUCTIONS}")
 
 def _installed(vendor: str) -> _Server:
     server = _Server(vendor)
-    server.instructions = with_vendor_instructions(server, OURS)
+    write_ours(server, OURS, _assign)
     return server
 
 
@@ -433,3 +433,7 @@ class TestReportModeDefault:
 
     def test_local_mode_keeps_reports_off(self) -> None:
         assert build_config(official.VendorConfig(dsn=DSN), None).report_mode == "off"
+
+
+def _assign(mcp: Any, text: str) -> None:
+    mcp.instructions = text

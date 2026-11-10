@@ -29,6 +29,7 @@ from baton.integrations._llm_text import (
     required_param_names,
     served_agent_text,
     with_vendor_instructions,
+    write_ours,
 )
 
 
@@ -275,18 +276,18 @@ class TestWithVendorInstructions:
 
     def test_a_second_install_replaces_our_paragraph(self) -> None:
         mcp = self._server("Vendor v1.")
-        mcp.instructions = with_vendor_instructions(mcp, self.OURS)
+        write_ours(mcp, self.OURS, _assign)
         assert with_vendor_instructions(mcp, self.OURS) == f"Vendor v1.\n\n{self.OURS}"
 
     def test_text_the_vendor_set_between_installs_is_kept(self) -> None:
         mcp = self._server("Vendor v1.")
-        mcp.instructions = with_vendor_instructions(mcp, self.OURS)
+        write_ours(mcp, self.OURS, _assign)
         mcp.instructions = "Vendor v2."
         assert with_vendor_instructions(mcp, self.OURS) == f"Vendor v2.\n\n{self.OURS}"
 
     def test_vendor_text_added_after_an_install_with_none_is_kept(self) -> None:
         mcp = self._server(None)
-        mcp.instructions = with_vendor_instructions(mcp, self.OURS)
+        write_ours(mcp, self.OURS, _assign)
         mcp.instructions = "Vendor v2."
         assert with_vendor_instructions(mcp, self.OURS) == f"Vendor v2.\n\n{self.OURS}"
 
@@ -301,13 +302,13 @@ class TestAVendorParagraphLikeTheReportPointer:
 
     def test_vendor_text_set_after_an_install_with_none_is_kept(self) -> None:
         mcp = types.SimpleNamespace(instructions=None)
-        mcp.instructions = with_vendor_instructions(mcp, self.OURS)
+        write_ours(mcp, self.OURS, _assign)
         mcp.instructions = self.VENDOR
         assert with_vendor_instructions(mcp, self.OURS) == f"{self.VENDOR}\n\n{self.OURS}"
 
     def test_a_vendor_paragraph_added_below_its_text_is_kept(self) -> None:
         mcp = types.SimpleNamespace(instructions="Base.")
-        mcp.instructions = with_vendor_instructions(mcp, self.OURS)
+        write_ours(mcp, self.OURS, _assign)
         mcp.instructions = f"Base.\n\n{self.VENDOR}"
         assert with_vendor_instructions(mcp, self.OURS) == (
             f"Base.\n\n{self.VENDOR}\n\n{self.OURS}"
@@ -315,7 +316,7 @@ class TestAVendorParagraphLikeTheReportPointer:
 
     def test_our_pointer_is_still_replaced(self) -> None:
         mcp = types.SimpleNamespace(instructions="Base.")
-        mcp.instructions = with_vendor_instructions(mcp, self.OURS)
+        write_ours(mcp, self.OURS, _assign)
         assert with_vendor_instructions(mcp, self.OURS) == f"Base.\n\n{self.OURS}"
 
 
@@ -351,3 +352,7 @@ def test_agent_text_sees_a_user_goal_declared_in_any_mapping() -> None:
         names=None, intent_param_mode="required", surface_tools=[{"inputSchema": schema}]
     )
     assert agent_text == {}
+
+
+def _assign(mcp: Any, text: str) -> None:
+    mcp.instructions = text

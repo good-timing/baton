@@ -59,7 +59,7 @@ from baton.integrations._lifecycle import (
     CapturedRequest,
     install_lifecycle_capture,
 )
-from baton.integrations._llm_text import with_vendor_instructions
+from baton.integrations._llm_text import write_ours
 from baton.integrations._per_caller import per_caller_surface
 from baton.integrations._shared import Shared, check_config, install_one, server_session
 from baton.integrations._surface import build_server_meta
@@ -153,7 +153,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
     # ``instructions`` property is read-only on both mcp 1.x and 2.0; the
     # writable backing differs across the rename (``_mcp_server`` →
     # ``_lowlevel_server``), so route through the compat helper.
-    set_server_instructions(mcp, with_vendor_instructions(mcp, text.instructions, shared.warned))
+    write_ours(mcp, text.instructions, set_server_instructions, shared.warned)
     per_caller = per_caller_surface(mcp, config, text, shared, set_server_instructions)
 
     # Wrap currently-registered tools + patch add_tool for future ones.

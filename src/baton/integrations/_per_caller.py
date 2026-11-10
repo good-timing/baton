@@ -19,7 +19,7 @@ from baton.integrations._llm_text import (
     build_report_pointer,
     build_user_goal_param_description,
     inject_goal_params,
-    with_vendor_instructions,
+    write_ours,
 )
 
 if TYPE_CHECKING:
@@ -107,10 +107,7 @@ class PerCallerSurface:
             served = (pointer_on, overlay.id if overlay is not None else None)
             if served != self._served:
                 ours, subagent = self._instructions(pointer_on, overlay)
-                self._write(
-                    self._mcp,
-                    with_vendor_instructions(self._mcp, ours, self._warned, subagent=subagent),
-                )
+                write_ours(self._mcp, ours, self._write, self._warned, subagent=subagent)
                 self._served, self.server_overlay = served, overlay
             self._document = document
         except Exception:

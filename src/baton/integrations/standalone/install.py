@@ -67,7 +67,7 @@ from baton.integrations._lifecycle import (
     CapturedRequest,
     install_lifecycle_capture,
 )
-from baton.integrations._llm_text import drop_subagent_clause, with_vendor_instructions
+from baton.integrations._llm_text import drop_subagent_clause, write_ours
 from baton.integrations._per_caller import per_caller_surface
 from baton.integrations._shared import Shared, check_config, install_one, server_session
 from baton.integrations._surface import build_server_meta
@@ -220,7 +220,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
         server_meta = {}
 
     # Server instructions — load-bearing on instruction-aware runtimes.
-    _set_instructions(mcp, with_vendor_instructions(mcp, text.instructions, shared.warned))
+    write_ours(mcp, text.instructions, _set_instructions, shared.warned)
     per_caller = per_caller_surface(mcp, config, text, shared, _set_instructions)
 
     # This adapter sees a tool's schema only when tools are listed, so the

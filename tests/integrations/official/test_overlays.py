@@ -18,7 +18,7 @@ import pytest
 from baton._capture_settings import CaptureSettings, parse_document
 from baton._overlays import Action, changed_text
 from baton.integrations import official
-from baton.integrations._llm_text import INTENT_INSTRUCTIONS, build_refusal_text
+from baton.integrations._llm_text import INTENT_INSTRUCTIONS, build_refusal_text, write_ours
 from baton.integrations.official._compat import MCPServerClass as OfficialFastMCP
 from baton.sinks import FileSink
 from tests._event_helpers import read_events
@@ -536,21 +536,26 @@ async def test_checking_for_a_hidden_tool_asks_the_hook_once_per_call(
     assert asked.count("legacy_book") == 1
 
 
-async def test_a_tool_the_server_lacks_is_unknown_though_an_overlay_hides_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@DRIVERS
+async def test_a_tool_the_server_lacks_is_unknown_where_the_adapter_can_tell(
+    drive: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The standalone adapter cannot tell a missing tool from a failed lookup,
+    and a failed lookup must not serve a hidden tool, so there it stays hidden."""
     document = _document()
     document["overlays"]["ov_beta_1"]["actions"].append(
         {"target": {"tool": "ghost_book"}, "remove": True}
     )
     _use(monkeypatch, document)
-    _, events, _ = await _official_drive(tmp_path, ["claude-code"])
+    (beta,), events, _ = await drive(tmp_path, ["claude-code"])
     (error,) = [
         e
         for e in events
         if e["event_type"] == "tool_call_error" and e["payload"]["tool_name"] == "ghost_book"
     ]
-    assert error["payload"]["failure_kind"] == "unknown_tool"
+    expected = "unknown_tool" if drive is _official_drive else "tool_hidden"
+    assert error["payload"]["failure_kind"] == expected
+    assert beta.calls["missing"]["content"][0]["text"].startswith("Unknown tool: ")
 
 
 @DRIVERS
@@ -575,6 +580,7 @@ def test_a_failed_instructions_write_is_tried_again() -> None:
     fetcher = _Fetcher(_document())
     settings = CaptureSettings(vendor_id="srv", fetcher=fetcher)  # type: ignore[arg-type]
     server = types.SimpleNamespace(instructions="Vendor.")
+    write_ours(server, f"Use `srv_annotate`.\n\n{INTENT_INSTRUCTIONS}", _assign)
     failures = [OSError("layout")]
 
     def write(mcp: Any, text: str) -> None:
@@ -592,9 +598,17 @@ def test_a_failed_instructions_write_is_tried_again() -> None:
         warned=set(),
     )
     surface.follow_settings()
-    assert server.instructions == "Vendor."
+    assert server.instructions == f"Vendor.\n\nUse `srv_annotate`.\n\n{INTENT_INSTRUCTIONS}"
     surface.follow_settings()
-    assert "Times are in the user's timezone." in server.instructions
+    assert server.instructions == (
+        "Vendor.\n\nTimes are in the user's timezone.\n\n"
+        "If a booking keeps failing, say so with the report tool.\n\n"
+        f"{INTENT_INSTRUCTIONS}\n\nPass the user's timezone to subagents."
+    )
+
+
+def _assign(mcp: Any, text: str) -> None:
+    mcp.instructions = text
 
 
 def test_a_surface_sent_under_another_server_overlay_is_sent_again() -> None:
