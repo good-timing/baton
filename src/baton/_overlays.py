@@ -78,7 +78,8 @@ def overlaid(text: str, overlay: Overlay | None, piece: str) -> str:
     """``text``, the piece ``piece`` of Baton's text, after ``overlay``."""
     if overlay is None:
         return text
-    return changed_text(text, overlay.piece_actions(piece))[0] or text
+    changed, _ = changed_text(text, overlay.piece_actions(piece))
+    return text if changed is None else changed
 
 
 def read_overlays(value: Any) -> Mapping[str, Any]:

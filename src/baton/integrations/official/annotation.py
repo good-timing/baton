@@ -19,7 +19,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from baton._capture_settings import CaptureSettings
+from baton._capture_settings import CaptureSettings, overlay_changes
 from baton._state import SessionCounter
 from baton.events import AnnotationEvent
 from baton.integrations._annotation_name import derive_annotation_tool_name
@@ -52,6 +52,7 @@ from baton.integrations.official._tool_wrap import (
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_emit
 
+_REFUSAL = "report_tool.refusal"
 logger = logging.getLogger(__name__)
 
 #: ``derive_annotation_tool_name`` is RE-EXPORTED here, not merely imported.
@@ -101,6 +102,10 @@ def register_annotation_tool(
         context: dict[str, Any] | None = None,
         ctx: Context = None,
     ) -> dict[str, Any]:
+        # Refused in code, not by a required schema field: that makes agents invent a problem.
+        if not is_report(what_happened) and not overlay_changes(capture_settings, _REFUSAL):
+            return {"ok": False, "error": build_refusal_text(annotation_tool_name=name)}
+
         # The MCP Context is threaded in for its ``_meta``, handshake and
         # headers, so this event carries the same ``client_observed``,
         # ``runtime_meta`` and session as the tool calls around it.
@@ -159,12 +164,6 @@ def register_annotation_tool(
             settings=capture_settings,
             client=client,
         )
-        # Refuse pre-call annotations structurally rather than by instruction
-        # text alone, which is only a request.
-        # Rejecting, rather than requiring what_happened in the schema,
-        # keeps the agent from inventing a problem just to get the call
-        # through — that would corrupt the reports, which are the signal
-        # worth protecting.
         if not is_report(what_happened):
             return {
                 "ok": False,

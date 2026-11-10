@@ -74,7 +74,6 @@ from baton.integrations._surface import (
     SentSurfaces,
     adapter_seam_augmentations,
     assemble_surface,
-    sent_key,
     surface_hash,
 )
 from baton.integrations.standalone import _auth
@@ -242,15 +241,17 @@ class BatonMiddleware(Middleware):
             )
             surface = assemble_surface(self._server_meta, surface_tools)
             digest = surface_hash(surface)
+            overlay = self._server_overlay()
+            overlay_id = overlay.id if overlay is not None else None
+            if self._sent_surfaces.was_sent(digest, overlay_id):
+                return
+
             seam = adapter_seam_augmentations(
                 names=self._names,
                 intent_param_mode=self._intent_param_mode,
                 surface_tools=surface_tools,
-                server_overlay=self._server_overlay(),
+                server_overlay=overlay,
             )
-            key = sent_key(digest, seam)
-            if self._sent_surfaces.was_sent(key):
-                return
 
             seq = await self._counter.next(self._fallback_session_id)
             event = SurfaceSnapshotEvent(
@@ -281,7 +282,7 @@ class BatonMiddleware(Middleware):
             except Exception:
                 logger.exception("baton: surface snapshot capture failed")
                 return
-            self._sent_surfaces.mark(key)
+            self._sent_surfaces.mark(digest, overlay_id)
         except Exception:
             logger.exception("baton: surface snapshot capture failed")
 

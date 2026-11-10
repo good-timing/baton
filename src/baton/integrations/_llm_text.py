@@ -347,7 +347,7 @@ def served_agent_text(
         source = "default"
         if server_overlay is not None and piece in INSTRUCTION_PIECES:
             changed, source = changed_text(text, server_overlay.piece_actions(piece))
-            text = changed or text
+            text = text if changed is None else changed
         pieces[piece] = {"text": text, "source": source}
     if vendor_serves_text:
         pieces.update(dict.fromkeys(_VENDOR_SERVED_PIECES))

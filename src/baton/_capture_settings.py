@@ -129,6 +129,17 @@ class SettingsDocument:
             for name in a.settings.overlay.hidden_tools
         )
 
+    @functools.cached_property
+    def audience_pieces(self) -> frozenset[str]:
+        """The pieces of Baton's text some audience's overlay changes."""
+        return frozenset(
+            action.piece
+            for a in self.audiences
+            if a.settings.overlay is not None
+            for action in a.settings.overlay.actions
+            if action.piece is not None
+        )
+
     def reports_on_for_anyone(self, code_value: str) -> bool:
         """Whether some caller can get reports, so the instructions point to the tool."""
         reachable = [a.settings for a in self.audiences]
@@ -329,3 +340,9 @@ class CaptureSettings:
         """``None`` while no document is held, and this config's values apply."""
         document = self.document
         return None if document is None else document.settings_for(caller, self._vendor_id)
+
+
+def overlay_changes(settings: CaptureSettings | None, piece: str) -> bool:
+    """Whether some audience's overlay changes ``piece`` of Baton's text."""
+    document = None if settings is None else settings.document
+    return document is not None and piece in document.audience_pieces

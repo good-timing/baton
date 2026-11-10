@@ -123,7 +123,6 @@ from baton.integrations._surface import (
     SentSurfaces,
     adapter_seam_augmentations,
     assemble_surface,
-    sent_key,
     surface_hash,
 )
 from baton.integrations.official import _auth
@@ -486,11 +485,10 @@ def _wrap_tool_run(
                     surface_tools=snapshot["tools"],
                     server_overlay=overlay,
                 )
-                key = sent_key(digest, seam)
             except Exception:
                 logger.exception("baton: surface snapshot capture failed")
             else:
-                if not surface_state.sent_surfaces.was_sent(key):
+                if not surface_state.sent_surfaces.was_sent(digest, overlay_id):
                     try:
                         await emit_surface(
                             fallback_session_id, digest, {**snapshot, "seam_augmentations": seam}
@@ -501,7 +499,7 @@ def _wrap_tool_run(
                         surface_state.dirty = True
                     else:
                         # Also when the sink is closed: counted once, not on every call.
-                        surface_state.sent_surfaces.mark(key)
+                        surface_state.sent_surfaces.mark(digest, overlay_id)
 
         # Strip the injected goal params IN PLACE, before snapshotting params —
         # ``arguments`` is the same object forwarded to the vendor handler, so

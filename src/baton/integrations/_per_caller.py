@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from baton._capture_settings import CaptureSettings
 from baton._overlays import Action, Overlay, changed_text, overlaid, warn_skipped
+from baton._white_space import WHITE_SPACE
 from baton.integrations._annotation_name import InstallText
 from baton.integrations._config import VendorConfig
 from baton.integrations._identity_adapter import ResolvedCaller
@@ -99,20 +100,19 @@ class PerCallerSurface:
             document = self._settings.document
             if document is self._document:
                 return
-            self._document = document
             overlay = document.server_overlay if document is not None else None
             pointer_on = self._pointer is not None and (
                 document is None or document.reports_on_for_anyone("on")
             )
             served = (pointer_on, overlay.id if overlay is not None else None)
-            if served == self._served:
-                return
-            ours, subagent = self._instructions(pointer_on, overlay)
-            self._write(
-                self._mcp,
-                with_vendor_instructions(self._mcp, ours, self._warned, subagent=subagent),
-            )
-            self._served, self.server_overlay = served, overlay
+            if served != self._served:
+                ours, subagent = self._instructions(pointer_on, overlay)
+                self._write(
+                    self._mcp,
+                    with_vendor_instructions(self._mcp, ours, self._warned, subagent=subagent),
+                )
+                self._served, self.server_overlay = served, overlay
+            self._document = document
         except Exception:
             logger.exception("baton: could not update the server instructions for new settings")
 
@@ -121,11 +121,12 @@ class PerCallerSurface:
         parts = list(overlay.instruction_appends()) if overlay is not None else []
         if pointer_on and self._pointer is not None:
             parts.append(overlaid(self._pointer, overlay, "instructions.report_pointer"))
-        subagent = None
         if not a_tool_declares_user_goal(self._mcp):
-            subagent = overlaid(INTENT_INSTRUCTIONS, overlay, "instructions.subagent")
-            parts.append(subagent)
-        return "\n\n".join(parts), subagent
+            parts.append(overlaid(INTENT_INSTRUCTIONS, overlay, "instructions.subagent"))
+        # SPEC §2.6's append rule: each paragraph loses the white space at its end.
+        kept = [part.rstrip(WHITE_SPACE) for part in parts]
+        subagent = kept[-1] if kept and not a_tool_declares_user_goal(self._mcp) else None
+        return "\n\n".join(part for part in kept if part), subagent or None
 
     def tools_for(self, result: Any, caller: ResolvedCaller) -> Any:
         """``result`` with the caller's goal, reports and overlay; as served on any failure."""

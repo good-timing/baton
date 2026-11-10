@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import types
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -412,6 +413,8 @@ async def test_a_new_server_overlay_sends_a_new_snapshot_and_the_same_one_does_n
             fetcher.document = parse_document(json.dumps(renamed).encode())
             await session.call_tool(*CALLS["book"])
             await session.call_tool(*CALLS["book"])
+            fetcher.document = parse_document(json.dumps(_document()).encode())
+            await session.call_tool(*CALLS["book"])
     finally:
         await handle.aclose()
     snapshots = [
@@ -419,7 +422,7 @@ async def test_a_new_server_overlay_sends_a_new_snapshot_and_the_same_one_does_n
         for e in read_events(tmp_path / "e.jsonl")
         if e["event_type"] == "surface_snapshot"
     ]
-    assert snapshots == ["ov_server_1", "ov_server_2"]
+    assert snapshots == ["ov_server_1", "ov_server_2", "ov_server_1"]
 
 
 @DRIVERS
@@ -531,3 +534,76 @@ async def test_checking_for_a_hidden_tool_asks_the_hook_once_per_call(
         await handle.aclose()
     # The client lists the tools itself after a call, which asks once more.
     assert asked.count("legacy_book") == 1
+
+
+async def test_a_tool_the_server_lacks_is_unknown_though_an_overlay_hides_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = _document()
+    document["overlays"]["ov_beta_1"]["actions"].append(
+        {"target": {"tool": "ghost_book"}, "remove": True}
+    )
+    _use(monkeypatch, document)
+    _, events, _ = await _official_drive(tmp_path, ["claude-code"])
+    (error,) = [
+        e
+        for e in events
+        if e["event_type"] == "tool_call_error" and e["payload"]["tool_name"] == "ghost_book"
+    ]
+    assert error["payload"]["failure_kind"] == "unknown_tool"
+
+
+@DRIVERS
+async def test_instruction_text_is_trimmed_and_an_empty_replace_removes_it(
+    drive: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = _document()
+    document["overlays"]["ov_server_1"]["actions"] = [
+        {"target": {"instructions": True}, "append": "Times are local.\n"},
+        {"target": {"agent_text": "instructions.subagent"}, "replace": ""},
+    ]
+    _use(monkeypatch, document)
+    (beta,), _, _ = await drive(tmp_path, ["claude-code"])
+    assert beta.instructions.startswith("Times are local.\n\nUse `")
+    assert "\n\n\n" not in beta.instructions
+    assert INTENT_INSTRUCTIONS not in beta.instructions
+
+
+def test_a_failed_instructions_write_is_tried_again() -> None:
+    from baton.integrations._per_caller import PerCallerSurface
+
+    fetcher = _Fetcher(_document())
+    settings = CaptureSettings(vendor_id="srv", fetcher=fetcher)  # type: ignore[arg-type]
+    server = types.SimpleNamespace(instructions="Vendor.")
+    failures = [OSError("layout")]
+
+    def write(mcp: Any, text: str) -> None:
+        if failures:
+            raise failures.pop()
+        mcp.instructions = text
+
+    surface = PerCallerSurface(
+        mcp=server,
+        settings=settings,
+        intent_param_mode="required",
+        annotation_tool_name="srv_annotate",
+        pointer="Use `srv_annotate`.",
+        write_instructions=write,
+        warned=set(),
+    )
+    surface.follow_settings()
+    assert server.instructions == "Vendor."
+    surface.follow_settings()
+    assert "Times are in the user's timezone." in server.instructions
+
+
+def test_a_surface_sent_under_another_server_overlay_is_sent_again() -> None:
+    from baton.integrations._surface import SentSurfaces
+
+    sent = SentSurfaces()
+    sent.mark("d1", "ov_a")
+    sent.mark("d2", "ov_b")
+    assert not sent.was_sent("d1", "ov_a")
+    sent.mark("d1", "ov_a")
+    assert sent.was_sent("d1", "ov_a")
+    assert not sent.was_sent("d2", "ov_a")

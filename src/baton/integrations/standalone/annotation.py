@@ -22,7 +22,7 @@ from typing import Any
 
 from fastmcp import Context, FastMCP
 
-from baton._capture_settings import CaptureSettings
+from baton._capture_settings import CaptureSettings, overlay_changes
 from baton._state import SessionCounter
 from baton.events import AnnotationEvent
 from baton.integrations._annotation_name import derive_annotation_tool_name
@@ -47,6 +47,7 @@ from baton.integrations.standalone._session import (
 from baton.scrub import identity_scrub
 from baton.sinks import Sink, safe_emit
 
+_REFUSAL = "report_tool.refusal"
 logger = logging.getLogger(__name__)
 
 #: ``derive_annotation_tool_name`` is RE-EXPORTED here, not merely imported.
@@ -91,6 +92,10 @@ def register_annotation_tool(
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        # Refused in code, not by a required schema field: that makes agents invent a problem.
+        if not is_report(what_happened) and not overlay_changes(capture_settings, _REFUSAL):
+            return {"ok": False, "error": build_refusal_text(annotation_tool_name=name)}
+
         rc = ctx.request_context if ctx is not None else None
         meta_dict = meta_to_dict(rc.meta if rc else None)
         call_headers = extract_headers()
@@ -131,12 +136,6 @@ def register_annotation_tool(
             settings=capture_settings,
             client=client,
         )
-        # Refuse pre-call annotations structurally rather than by instruction
-        # text alone, which is only a request.
-        # Rejecting, rather than requiring what_happened in the schema,
-        # keeps the agent from inventing a problem just to get the call
-        # through — that would corrupt the reports, which are the signal
-        # worth protecting.
         if not is_report(what_happened):
             return {
                 "ok": False,

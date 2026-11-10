@@ -60,14 +60,20 @@ class SentSurfaces:
 
     def __init__(self) -> None:
         self._hashes: OrderedDict[str, None] = OrderedDict()
+        self._server_overlay: str | None = None
 
-    def was_sent(self, digest: str) -> bool:
-        if digest not in self._hashes:
+    def was_sent(self, digest: str, server_overlay: str | None = None) -> bool:
+        """``server_overlay`` is not in ``surface_hash``, and a snapshot is sent
+        again whenever it changes (SPEC §11.4.2)."""
+        if server_overlay != self._server_overlay or digest not in self._hashes:
             return False
         self._hashes.move_to_end(digest)
         return True
 
-    def mark(self, digest: str) -> None:
+    def mark(self, digest: str, server_overlay: str | None = None) -> None:
+        if server_overlay != self._server_overlay:
+            self._hashes.clear()
+            self._server_overlay = server_overlay
         self._hashes[digest] = None
         if len(self._hashes) > SENT_SURFACES_CAP:
             self._hashes.popitem(last=False)
@@ -171,10 +177,3 @@ def adapter_seam_augmentations(
     )
     seam["server_overlay"] = server_overlay.id if server_overlay is not None else None
     return seam
-
-
-def sent_key(digest: str, seam_augmentations: Mapping[str, Any]) -> str:
-    """What a sent snapshot is remembered by. ``surface_hash`` leaves
-    ``seam_augmentations`` out, and a change there is sent again."""
-    seam = json.dumps(seam_augmentations, sort_keys=True, separators=(",", ":"))
-    return f"{digest} {hashlib.sha256(seam.encode()).hexdigest()}"

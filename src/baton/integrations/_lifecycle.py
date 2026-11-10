@@ -344,30 +344,34 @@ def install_lifecycle_capture(
             goals = None
         slot = CallSlot(goals=goals)
         started_at = monotonic()
-        if _may_hide(capture_settings, name):
-            try:
+        hidden: tuple[_Opened, Any, Any] | None = None
+        try:
+            # A tool the server does not have is unknown, whatever an overlay says.
+            if _may_hide(capture_settings, name) and call_seam.knows_tool(name) is not False:
                 reported, reported_goals = _reported(name, arguments, goals)
                 request = await opened(_CALL_FAMILY, read_request_context, params, name, reported)
-            except Exception:
-                logger.exception("baton: could not check whether the tool is hidden; it is served")
-                request = None
-            if request is not None:
-                overlay = request.caller.overlay
-                if overlay is not None and name in overlay.hidden_tools:
-                    answer = error_answer(call_seam.unknown_tool_text(name))
-                    await refused(
-                        call_seam,
-                        read_request_context,
-                        params,
-                        name,
-                        reported,
-                        reported_goals,
-                        started_at,
-                        result=answer,
-                        hidden_by=request,
-                    )
-                    return as_server_result(answer)
-                slot.caller = request.caller
+                if request is not None:
+                    slot.caller = request.caller
+                    overlay = request.caller.overlay
+                    if overlay is not None and name in overlay.hidden_tools:
+                        answer = error_answer(call_seam.unknown_tool_text(name))
+                        hidden = request, answer, as_server_result(answer)
+        except Exception:
+            logger.exception("baton: could not check whether the tool is hidden; it is served")
+        if hidden is not None:
+            request, answer, served = hidden
+            await refused(
+                call_seam,
+                read_request_context,
+                params,
+                name,
+                reported,
+                reported_goals,
+                started_at,
+                result=answer,
+                hidden_by=request,
+            )
+            return served
         token = current_slot.set(slot)
         failure = None
         try:
