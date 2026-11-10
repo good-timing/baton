@@ -8,6 +8,33 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## 1.1.0: overlays change what each audience's agent sees
+
+### Added
+
+- **Overlays** (experimental, SPEC §2.6). Under `settings="console"`, the
+  settings document can hold overlays. An audience's overlay changes that
+  audience's tool list: it adds to or replaces tool and param descriptions,
+  hides tools and params, marks a param required (shown to the agent only; a
+  call without it still runs), and changes Baton's `user_goal` and report
+  tool text, including the refusal. `server_overlay` adds text to the server
+  instructions and changes Baton's sentences there, for connections that
+  start after it loads. An overlay that can't be read is not applied, with
+  one warning; a bad action is skipped on its own.
+- **`failure_kind: "tool_hidden"`** (SPEC §11.4.3). A call to a tool the
+  caller's overlay hides gets the same answer as a call to a tool the server
+  doesn't have, and its event records `tool_hidden`.
+- **`capture.overlay`** on events is the id of the caller's audience
+  overlay, and `seam_augmentations.server_overlay` on `surface_snapshot` is
+  the server overlay's id (both experimental). A new snapshot is sent when
+  the server overlay changes.
+
+### Changed
+
+- **The identity hook runs before the tool for some calls.** When any
+  audience hides a tool, a call to that tool resolves the caller before the
+  tool runs, for every caller. The hook still runs once per call.
+
 ## 1.0.1: the snapshot names the text Baton showed the agent, and Console settings are stable
 
 ### Added
