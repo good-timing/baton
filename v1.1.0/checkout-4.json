@@ -1,0 +1,69 @@
+{
+  "sdk": "python",
+  "version": "1.1.0",
+  "source": "checkout",
+  "runtime": "CPython 3.12.13",
+  "cpu": "AMD EPYC 9V45 96-Core Processor",
+  "max_rss_bytes": 85131264,
+  "measures": {
+    "overhead": {
+      "plain_p50_ms": 0.23259099998540478,
+      "plain_p99_ms": 0.2640079999309819,
+      "baton_p50_ms": 0.4649619999099741,
+      "baton_p99_ms": 0.7460959999434635,
+      "added_p50_ms": 0.23237099992456933,
+      "added_p99_ms": 0.48208800001248164
+    },
+    "burst": {
+      "emitted": 20000,
+      "delivered": 20000,
+      "lost": 0,
+      "wall_ms": 4387.564272999953,
+      "call_p50_ms": 4.2320659999859345,
+      "call_p99_ms": 6.978619000051367,
+      "close_ms": 1.1635570000407824
+    },
+    "outage_hang": {
+      "emitted": 20000,
+      "delivered": 0,
+      "lost": 20000,
+      "wall_ms": 3847.110841000017,
+      "call_p50_ms": 3.571482999973341,
+      "call_p99_ms": 9.428136999986236,
+      "close_ms": 891.1944139999832
+    },
+    "outage_down": {
+      "emitted": 20000,
+      "delivered": 0,
+      "lost": 20000,
+      "wall_ms": 3842.128856000045,
+      "call_p50_ms": 3.7858669999195627,
+      "call_p99_ms": 6.47798199997851,
+      "close_ms": 705.0371320000295
+    },
+    "memory": {
+      "heap_after_warmup_bytes": 623931,
+      "heap_at_half_bytes": 637384,
+      "heap_at_end_bytes": 643992,
+      "growth_per_call_bytes": 0.6608
+    },
+    "memory_outage": {
+      "heap_after_warmup_bytes": 1507446,
+      "heap_at_half_bytes": 3638955,
+      "heap_at_end_bytes": 3549567,
+      "growth_per_call_bytes": -8.9388
+    },
+    "large_result": {
+      "plain_p50_ms": 0.19156899998051813,
+      "plain_p99_ms": 0.23848999990150332,
+      "baton_p50_ms": 0.5162989999689671,
+      "baton_p99_ms": 1.6751800000065487,
+      "added_p50_ms": 0.324729999988449,
+      "added_p99_ms": 1.4366900001050453,
+      "emitted": 2200,
+      "delivered": 2200,
+      "lost": 0,
+      "heap_growth_bytes": 2158919
+    }
+  }
+}
