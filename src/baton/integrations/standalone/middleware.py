@@ -47,7 +47,7 @@ from baton.events import (
 )
 from baton.integrations._annotation_name import AnnotationNames
 from baton.integrations._annotation_payload import with_tool_name_required
-from baton.integrations._call_slot import claim_call
+from baton.integrations._call_slot import claim_call, slot_caller
 from baton.integrations._client_observed import clean_runtime_meta, meta_to_dict, observe_client
 from baton.integrations._config import PrincipalResolutionContext, ResolvePrincipalHook
 from baton.integrations._error_result import (
@@ -242,17 +242,16 @@ class BatonMiddleware(Middleware):
             )
             surface = assemble_surface(self._server_meta, surface_tools)
             digest = surface_hash(surface)
-            overlay = self._server_overlay()
-            key = sent_key(digest, overlay)
-            if self._sent_surfaces.was_sent(key):
-                return
-
             seam = adapter_seam_augmentations(
                 names=self._names,
                 intent_param_mode=self._intent_param_mode,
                 surface_tools=surface_tools,
-                server_overlay=overlay,
+                server_overlay=self._server_overlay(),
             )
+            key = sent_key(digest, seam)
+            if self._sent_surfaces.was_sent(key):
+                return
+
             seq = await self._counter.next(self._fallback_session_id)
             event = SurfaceSnapshotEvent(
                 tenant_id=self._tenant_id,
@@ -401,16 +400,12 @@ class BatonMiddleware(Middleware):
             if self._resolve_principal_hook is not None
             else None
         )
-        caller = (
-            slot.caller
-            if slot is not None and slot.caller is not None
-            else await resolve_caller(
-                hook=self._resolve_principal_hook,
-                hook_context=identity_hook_context,
-                logger=logger,
-                settings=self._capture_settings,
-                client=client,
-            )
+        caller = slot_caller(slot) or await resolve_caller(
+            hook=self._resolve_principal_hook,
+            hook_context=identity_hook_context,
+            logger=logger,
+            settings=self._capture_settings,
+            client=client,
         )
         scrubbed_meta = clean_runtime_meta(self._scrubber, meta_dict, logger)
 

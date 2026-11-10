@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from baton._capture_settings import CaptureSettings
-from baton._overlays import Action, Overlay, changed_text, warn_skipped
+from baton._overlays import Action, Overlay, changed_text, overlaid, warn_skipped
 from baton.integrations._annotation_name import InstallText
 from baton.integrations._config import VendorConfig
 from baton.integrations._identity_adapter import ResolvedCaller
@@ -59,6 +59,9 @@ def per_caller_surface(
     return surface
 
 
+_UNREAD = object()
+
+
 class PerCallerSurface:
     """Rewrites each ``tools/list`` result for its caller, and keeps the
     instructions' report pointer while some audience has reports on, with the
@@ -85,8 +88,8 @@ class PerCallerSurface:
         self._pointer = pointer
         self._write = write_instructions
         self._warned = warned
-        # What install wrote: the pointer if there is one, and no server overlay.
-        self._served: tuple[bool, str | None] = (pointer is not None, None)
+        self._document: object = _UNREAD
+        self._served: tuple[bool, str | None] | None = None
         self.server_overlay: Overlay | None = None
 
     def follow_settings(self) -> None:
@@ -94,6 +97,9 @@ class PerCallerSurface:
         pointer or the server overlay should change."""
         try:
             document = self._settings.document
+            if document is self._document:
+                return
+            self._document = document
             overlay = document.server_overlay if document is not None else None
             pointer_on = self._pointer is not None and (
                 document is None or document.reports_on_for_anyone("on")
@@ -113,11 +119,11 @@ class PerCallerSurface:
     def _instructions(self, pointer_on: bool, overlay: Overlay | None) -> tuple[str, str | None]:
         """Baton's paragraphs, and the subagent sentence they end with if any."""
         parts = list(overlay.instruction_appends()) if overlay is not None else []
-        if pointer_on:
-            parts.append(_overlaid(self._pointer, overlay, "instructions.report_pointer"))
+        if pointer_on and self._pointer is not None:
+            parts.append(overlaid(self._pointer, overlay, "instructions.report_pointer"))
         subagent = None
         if not a_tool_declares_user_goal(self._mcp):
-            subagent = _overlaid(INTENT_INSTRUCTIONS, overlay, "instructions.subagent")
+            subagent = overlaid(INTENT_INSTRUCTIONS, overlay, "instructions.subagent")
             parts.append(subagent)
         return "\n\n".join(parts), subagent
 
@@ -159,12 +165,6 @@ class PerCallerSurface:
         return _with_overlay(out, injected, overlay, self._annotation_tool_name)
 
 
-def _overlaid(text: str | None, overlay: Overlay | None, piece: str) -> str:
-    if overlay is not None:
-        text, _ = changed_text(text, overlay.piece_actions(piece))
-    return text or ""
-
-
 def _with_overlay(
     tools: list[Any], injected: list[bool], overlay: Overlay, report_tool: str | None
 ) -> list[Any]:
@@ -190,7 +190,7 @@ def _with_overlay(
     if goal_actions := overlay.piece_actions("goal_param.description"):
         for i, ours in enumerate(injected):
             if ours:
-                _change_param(tools, i, USER_GOAL_PARAM_NAME, goal_actions)
+                _describe_param(tools, i, USER_GOAL_PARAM_NAME, goal_actions)
     if (report_actions := overlay.piece_actions("report_tool.description")) and (
         report_tool in position
     ):
@@ -225,11 +225,11 @@ def _param_change(tools: list[Any], i: int, action: Action, injected: bool) -> s
                 tools[i], "inputSchema", {**schema, "required": [*required, action.param]}
             )
     else:
-        _change_param(tools, i, action.param, (action,))
+        _describe_param(tools, i, action.param, (action,))
     return None
 
 
-def _change_param(tools: list[Any], i: int, param: str, actions: tuple[Action, ...]) -> None:
+def _describe_param(tools: list[Any], i: int, param: str, actions: tuple[Action, ...]) -> None:
     schema = _field(tools[i], "inputSchema")
     props = schema["properties"]
     described = props[param] if isinstance(props[param], Mapping) else {}

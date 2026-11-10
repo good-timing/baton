@@ -86,7 +86,7 @@ from baton.events import (
     ToolCallStartPayload,
 )
 from baton.integrations._annotation_name import AnnotationNames
-from baton.integrations._call_slot import claim_call
+from baton.integrations._call_slot import claim_call, slot_caller
 from baton.integrations._client_observed import clean_runtime_meta, meta_to_dict, observe_client
 from baton.integrations._config import (
     PrincipalResolutionContext,
@@ -480,17 +480,17 @@ def _wrap_tool_run(
             try:
                 snapshot = surface_state.build_snapshot()
                 digest = surface_hash(snapshot)
-                key = sent_key(digest, overlay)
+                seam = adapter_seam_augmentations(
+                    names=names,
+                    intent_param_mode=intent_param_mode,
+                    surface_tools=snapshot["tools"],
+                    server_overlay=overlay,
+                )
+                key = sent_key(digest, seam)
             except Exception:
                 logger.exception("baton: surface snapshot capture failed")
             else:
                 if not surface_state.sent_surfaces.was_sent(key):
-                    seam = adapter_seam_augmentations(
-                        names=names,
-                        intent_param_mode=intent_param_mode,
-                        surface_tools=snapshot["tools"],
-                        server_overlay=overlay,
-                    )
                     try:
                         await emit_surface(
                             fallback_session_id, digest, {**snapshot, "seam_augmentations": seam}
@@ -561,16 +561,12 @@ def _wrap_tool_run(
             if resolve_principal_hook is not None
             else None
         )
-        caller = (
-            slot.caller
-            if slot is not None and slot.caller is not None
-            else await resolve_caller(
-                hook=resolve_principal_hook,
-                hook_context=identity_hook_context,
-                logger=logger,
-                settings=capture_settings,
-                client=call_client,
-            )
+        caller = slot_caller(slot) or await resolve_caller(
+            hook=resolve_principal_hook,
+            hook_context=identity_hook_context,
+            logger=logger,
+            settings=capture_settings,
+            client=call_client,
         )
         scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, logger)
         call_session = await _resolve_call_session(

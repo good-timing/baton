@@ -119,11 +119,14 @@ class SettingsDocument:
                 return audience.settings
         return self.unmatched
 
-    def may_hide(self, tool_name: str) -> bool:
-        """Whether some audience's overlay hides ``tool_name``."""
-        return any(
-            a.settings.overlay is not None and tool_name in a.settings.overlay.hidden_tools
+    @functools.cached_property
+    def hidden_somewhere(self) -> frozenset[str]:
+        """The tools some audience's overlay hides."""
+        return frozenset(
+            name
             for a in self.audiences
+            if a.settings.overlay is not None
+            for name in a.settings.overlay.hidden_tools
         )
 
     def reports_on_for_anyone(self, code_value: str) -> bool:

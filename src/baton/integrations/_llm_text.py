@@ -21,7 +21,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from baton._overlays import Overlay, changed_text
+from baton._overlays import INSTRUCTION_PIECES, Overlay, changed_text, overlaid
 from baton._white_space import is_blank
 from baton.scrub import scrub_or_none
 
@@ -303,8 +303,7 @@ def declares_user_goal(schema: Any) -> bool:
     return isinstance(props, Mapping) and USER_GOAL_PARAM_NAME in props
 
 
-_INSTRUCTIONS_PIECES = ("instructions.subagent", "instructions.report_pointer")
-_VENDOR_SERVED_PIECES = (*_INSTRUCTIONS_PIECES, "report_tool.description", "report_tool.refusal")
+_VENDOR_SERVED_PIECES = (*INSTRUCTION_PIECES, "report_tool.description", "report_tool.refusal")
 
 
 def served_agent_text(
@@ -346,9 +345,9 @@ def served_agent_text(
     pieces: dict[str, dict[str, str] | None] = {}
     for piece, text in served.items():
         source = "default"
-        if server_overlay is not None and piece in _INSTRUCTIONS_PIECES:
+        if server_overlay is not None and piece in INSTRUCTION_PIECES:
             changed, source = changed_text(text, server_overlay.piece_actions(piece))
-            text = changed or ""
+            text = changed or text
         pieces[piece] = {"text": text, "source": source}
     if vendor_serves_text:
         pieces.update(dict.fromkeys(_VENDOR_SERVED_PIECES))
@@ -357,7 +356,7 @@ def served_agent_text(
 
 def instructions_suffix(agent_text: Mapping[str, Any]) -> bool | None:
     """Whether Baton's text is in the served instructions; ``None`` when unknown."""
-    pieces = [agent_text[piece] for piece in _INSTRUCTIONS_PIECES if piece in agent_text]
+    pieces = [agent_text[piece] for piece in INSTRUCTION_PIECES if piece in agent_text]
     return None if None in pieces else bool(pieces)
 
 
@@ -465,6 +464,4 @@ def build_refusal_text(*, annotation_tool_name: str, overlay: Overlay | None = N
         "what_happened. If neither is true, do NOT re-send: that would file a "
         "report for a call that did not go wrong."
     )
-    if overlay is None:
-        return text
-    return changed_text(text, overlay.piece_actions("report_tool.refusal"))[0] or text
+    return overlaid(text, overlay, "report_tool.refusal")

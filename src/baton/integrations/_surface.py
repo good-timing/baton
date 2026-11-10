@@ -173,7 +173,8 @@ def adapter_seam_augmentations(
     return seam
 
 
-def sent_key(digest: str, server_overlay: Overlay | None) -> str:
-    """What a sent snapshot is remembered by: a new server overlay is sent
-    again, though ``surface_hash`` leaves it out."""
-    return digest if server_overlay is None else f"{digest} {server_overlay.id}"
+def sent_key(digest: str, seam_augmentations: Mapping[str, Any]) -> str:
+    """What a sent snapshot is remembered by. ``surface_hash`` leaves
+    ``seam_augmentations`` out, and a change there is sent again."""
+    seam = json.dumps(seam_augmentations, sort_keys=True, separators=(",", ":"))
+    return f"{digest} {hashlib.sha256(seam.encode()).hexdigest()}"

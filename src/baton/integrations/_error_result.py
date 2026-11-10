@@ -248,13 +248,19 @@ def raised_error_fields(
 
 
 def error_answer(text: str) -> Any:
-    """A ``tools/call`` error result holding ``text``, shaped as this ``mcp``
-    version's low-level handler returns one."""
+    """A ``tools/call`` error result holding ``text``, with this ``mcp``
+    version's spelling of the error flag."""
     import mcp.types as mcp_types
 
     flag = "is_error" if "is_error" in mcp_types.CallToolResult.model_fields else "isError"
     content = [mcp_types.TextContent(type="text", text=text)]
-    result: Any = mcp_types.CallToolResult.model_validate({"content": content, flag: True})
+    return mcp_types.CallToolResult.model_validate({"content": content, flag: True})
+
+
+def as_server_result(result: Any) -> Any:
+    """``result`` as this ``mcp`` version's low-level handler returns it."""
+    import mcp.types as mcp_types
+
     # mcp 1.x handlers return a ``ServerResult`` model; on 2.x it is a type union.
     wrapper: Any = mcp_types.ServerResult
     return wrapper(result) if isinstance(wrapper, type) else result

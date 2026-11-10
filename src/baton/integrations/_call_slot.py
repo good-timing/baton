@@ -49,3 +49,8 @@ def claim_call() -> CallSlot | None:
         return None
     slot.claimed = True
     return slot
+
+
+def slot_caller(slot: CallSlot | None) -> ResolvedCaller | None:
+    """The caller the outer seam already resolved for this call, if it did."""
+    return None if slot is None else slot.caller

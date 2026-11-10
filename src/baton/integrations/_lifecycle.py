@@ -36,6 +36,7 @@ from baton.integrations._client_observed import clean_runtime_meta, observe_clie
 from baton.integrations._config import PrincipalResolutionContext, ResolvePrincipalHook
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
+    as_server_result,
     error_answer,
     is_error_result,
     raised_error_fields,
@@ -344,24 +345,29 @@ def install_lifecycle_capture(
         slot = CallSlot(goals=goals)
         started_at = monotonic()
         if _may_hide(capture_settings, name):
-            hidden = await hidden_call(
-                call_seam, read_request_context, params, name, arguments, goals
-            )
-            if isinstance(hidden, _Opened):
-                answer = error_answer(call_seam.unknown_tool_text(name))
-                await refused(
-                    call_seam,
-                    read_request_context,
-                    params,
-                    name,
-                    arguments,
-                    goals,
-                    started_at,
-                    result=getattr(answer, "root", answer),
-                    hidden_by=hidden,
-                )
-                return answer
-            slot.caller = hidden
+            try:
+                reported, reported_goals = _reported(name, arguments, goals)
+                request = await opened(_CALL_FAMILY, read_request_context, params, name, reported)
+            except Exception:
+                logger.exception("baton: could not check whether the tool is hidden; it is served")
+                request = None
+            if request is not None:
+                overlay = request.caller.overlay
+                if overlay is not None and name in overlay.hidden_tools:
+                    answer = error_answer(call_seam.unknown_tool_text(name))
+                    await refused(
+                        call_seam,
+                        read_request_context,
+                        params,
+                        name,
+                        reported,
+                        reported_goals,
+                        started_at,
+                        result=answer,
+                        hidden_by=request,
+                    )
+                    return as_server_result(answer)
+                slot.caller = request.caller
         token = current_slot.set(slot)
         failure = None
         try:
@@ -405,29 +411,6 @@ def install_lifecycle_capture(
                     await finish(failure)
                 except Exception:
                     logger.exception("baton: a tool call's end event was not sent")
-
-    async def hidden_call(
-        call_seam: CallSeam,
-        read_request_context: Callable[[], Any],
-        params: Any,
-        name: str,
-        arguments: dict[str, Any] | None,
-        goals: Goals | None,
-    ) -> _Opened | ResolvedCaller | None:
-        """The opened request when the caller's overlay hides ``name``, else
-        the caller for the inner capture to reuse; ``None`` on a failure."""
-        try:
-            arguments, _ = _reported(name, arguments, goals)
-            request = await opened(_CALL_FAMILY, read_request_context, params, name, arguments)
-            if request is None:
-                return None
-            overlay = request.caller.overlay
-            return (
-                request if overlay is not None and name in overlay.hidden_tools else request.caller
-            )
-        except Exception:
-            logger.exception("baton: could not check whether the tool is hidden; it is served")
-            return None
 
     async def refused(
         call_seam: CallSeam,
@@ -508,7 +491,7 @@ def install_lifecycle_capture(
 
 def _may_hide(settings: CaptureSettings | None, name: str) -> bool:
     document = None if settings is None else settings.document
-    return document is not None and document.may_hide(name)
+    return document is not None and name in document.hidden_somewhere
 
 
 def _reported(

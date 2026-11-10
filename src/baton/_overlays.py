@@ -14,10 +14,8 @@ logger = logging.getLogger("baton")
 
 Place = Literal["audience", "server"]
 
-INSTRUCTION_PIECES = frozenset({"instructions.subagent", "instructions.report_pointer"})
-AUDIENCE_PIECES = frozenset(
-    {"goal_param.description", "report_tool.description", "report_tool.refusal"}
-)
+INSTRUCTION_PIECES = ("instructions.subagent", "instructions.report_pointer")
+_AUDIENCE_PIECES = ("goal_param.description", "report_tool.description", "report_tool.refusal")
 _TEXT_CHANGES = ("append", "replace")
 _FLAG_CHANGES = ("remove", "required")
 
@@ -76,16 +74,19 @@ def changed_text(text: str | None, actions: tuple[Action, ...]) -> tuple[str | N
     return text, source
 
 
-def read_overlays(value: Any) -> dict[str, Any] | None:
-    """The document's ``overlays``; ``None`` when it is not an object."""
-    if value is None:
-        return {}
-    return value if isinstance(value, dict) else None
+def overlaid(text: str, overlay: Overlay | None, piece: str) -> str:
+    """``text``, the piece ``piece`` of Baton's text, after ``overlay``."""
+    if overlay is None:
+        return text
+    return changed_text(text, overlay.piece_actions(piece))[0] or text
 
 
-def overlay_for(
-    overlays: Mapping[str, Any] | None, overlay_id: Any, place: Place
-) -> Overlay | None:
+def read_overlays(value: Any) -> Mapping[str, Any]:
+    """The document's ``overlays``; one that is not an object holds none."""
+    return value if isinstance(value, dict) else {}
+
+
+def overlay_for(overlays: Mapping[str, Any], overlay_id: Any, place: Place) -> Overlay | None:
     """The overlay ``overlay_id`` names, holding the actions allowed in ``place``.
     ``None`` with one warning when it cannot be read; a bad action is skipped alone."""
     if overlay_id is None:
@@ -94,7 +95,7 @@ def overlay_for(
         overlay_id = repr(overlay_id)
         body = None
     else:
-        body = overlays.get(overlay_id) if overlays is not None else None
+        body = overlays.get(overlay_id)
     actions = body.get("actions") if isinstance(body, dict) else None
     if not isinstance(actions, list):
         if overlay_id not in _unreadable:
@@ -141,7 +142,7 @@ def _action(index: int, raw: Any, place: Place) -> tuple[Action | None, str]:
             return None, "agent_text takes only 'append' or 'replace'"
         if piece in INSTRUCTION_PIECES:
             return _placed(Action(index, change, text, piece=piece), place, "server")
-        if piece in AUDIENCE_PIECES:
+        if piece in _AUDIENCE_PIECES:
             return _placed(Action(index, change, text, piece=piece), place, "audience")
         return None, f"unknown agent_text {piece!r}"
     return None, "unknown target"
