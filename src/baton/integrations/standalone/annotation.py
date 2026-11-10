@@ -91,18 +91,6 @@ def register_annotation_tool(
         suggested_improvement: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        # Refuse pre-call annotations structurally rather than by instruction
-        # text alone, which is only a request.
-        # Rejecting here, rather than requiring what_happened in the schema,
-        # keeps the agent from inventing a problem just to get the call
-        # through — that would corrupt the reports, which are the signal
-        # worth protecting.
-        if not is_report(what_happened):
-            return {
-                "ok": False,
-                "error": build_refusal_text(annotation_tool_name=name),
-            }
-
         rc = ctx.request_context if ctx is not None else None
         meta_dict = meta_to_dict(rc.meta if rc else None)
         call_headers = extract_headers()
@@ -122,7 +110,6 @@ def register_annotation_tool(
             transport_observed=call_transport,
             context=ctx,
         )
-        seq = await next_sequence(counter, call_session)
         # Identity takes the SAME ladder the tool-call path takes, hook
         # included; see ``official/annotation.py`` for why the annotation path
         # must consult it too.
@@ -144,6 +131,20 @@ def register_annotation_tool(
             settings=capture_settings,
             client=client,
         )
+        # Refuse pre-call annotations structurally rather than by instruction
+        # text alone, which is only a request.
+        # Rejecting, rather than requiring what_happened in the schema,
+        # keeps the agent from inventing a problem just to get the call
+        # through — that would corrupt the reports, which are the signal
+        # worth protecting.
+        if not is_report(what_happened):
+            return {
+                "ok": False,
+                "error": build_refusal_text(
+                    annotation_tool_name=name, overlay=annotation_caller.overlay
+                ),
+            }
+        seq = await next_sequence(counter, call_session)
         # safe_emit, not safe_write: `build_annotation_payload` runs the
         # vendor's scrubber on five fields, and as an ARGUMENT expression it
         # would be evaluated in THIS frame, before `safe_write` was entered —

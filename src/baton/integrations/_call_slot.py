@@ -12,15 +12,20 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from baton.integrations._llm_text import Goals
+
+if TYPE_CHECKING:
+    from baton.integrations._identity_adapter import ResolvedCaller
 
 
 @dataclass
 class CallSlot:
     goals: Goals | None
     """``user_goal`` and the retired names, when the outer seam stripped them."""
+    caller: ResolvedCaller | None = None
+    """The caller, when the outer seam resolved it to check for a hidden tool."""
     claimed: bool = False
     finish: Callable[[Any], Awaitable[None]] | None = None
     """The inner capture's terminal event, called with what the server sent

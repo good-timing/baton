@@ -259,6 +259,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
             server_meta=server_meta,
             on_native_user_goal=on_native_user_goal,
             sent_surfaces=shared.sent_surfaces,
+            server_overlay=lambda: per_caller.server_overlay if per_caller is not None else None,
         )
         mcp.add_middleware(middleware)
     resolve_dispositions = middleware.resolve_dispositions
@@ -301,6 +302,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
             annotation_tool_name=annotation_tool_name,
             result_capture_mode=config.result_capture_mode,
             dispositions=lambda name: resolve_dispositions(name, mcp),
+            unknown_tool_text=_unknown_tool_text,
         ),
     )
 
@@ -329,3 +331,20 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
         session_id=fallback_session_id,
         shared=shared,
     )
+
+
+def _unknown_tool_text(name: str) -> str:
+    # fastmcp 3 quotes the name; ``test_a_hidden_tool_answers_as_a_missing_one`` pins both.
+    return f"Unknown tool: {name!r}" if _FASTMCP_MAJOR >= 3 else f"Unknown tool: {name}"
+
+
+def _fastmcp_major() -> int:
+    import fastmcp
+
+    try:
+        return int(str(fastmcp.__version__).split(".")[0])
+    except ValueError:
+        return 3
+
+
+_FASTMCP_MAJOR = _fastmcp_major()

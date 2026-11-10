@@ -36,6 +36,7 @@ from baton.integrations._client_observed import clean_runtime_meta, observe_clie
 from baton.integrations._config import PrincipalResolutionContext, ResolvePrincipalHook
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
+    error_answer,
     is_error_result,
     raised_error_fields,
     returned_error_fields,
@@ -105,6 +106,8 @@ class CallSeam:
     which strips ``user_goal`` alone (``pop_goal_params``)."""
     knows_tool: Callable[[str], bool | None] = lambda _name: None
     """Whether the server has the tool; ``None`` when the adapter cannot say."""
+    unknown_tool_text: Callable[[str], str] = lambda name: f"Unknown tool: {name}"
+    """The message the host answers a call to a tool it does not have with."""
 
 
 _TOOL_LIST = _Family("tools/list", "ListToolsRequest", "tool_list", count_key="tools")
@@ -315,6 +318,8 @@ def install_lifecycle_capture(
         params: Any,
         serve: Callable[[Any], Awaitable[Any]],
     ) -> Any:
+        if per_caller is not None:
+            per_caller.follow_settings()
         name = getattr(params, "name", None)
         arguments = getattr(params, "arguments", None)
         if not isinstance(name, str) or name == call_seam.annotation_tool_name:
@@ -337,8 +342,27 @@ def install_lifecycle_capture(
             logger.exception("baton: the tools/call strip failed; the inner capture strips instead")
             goals = None
         slot = CallSlot(goals=goals)
-        token = current_slot.set(slot)
         started_at = monotonic()
+        if _may_hide(capture_settings, name):
+            hidden = await hidden_call(
+                call_seam, read_request_context, params, name, arguments, goals
+            )
+            if isinstance(hidden, _Opened):
+                answer = error_answer(call_seam.unknown_tool_text(name))
+                await refused(
+                    call_seam,
+                    read_request_context,
+                    params,
+                    name,
+                    arguments,
+                    goals,
+                    started_at,
+                    result=getattr(answer, "root", answer),
+                    hidden_by=hidden,
+                )
+                return answer
+            slot.caller = hidden
+        token = current_slot.set(slot)
         failure = None
         try:
             try:
@@ -382,6 +406,29 @@ def install_lifecycle_capture(
                 except Exception:
                     logger.exception("baton: a tool call's end event was not sent")
 
+    async def hidden_call(
+        call_seam: CallSeam,
+        read_request_context: Callable[[], Any],
+        params: Any,
+        name: str,
+        arguments: dict[str, Any] | None,
+        goals: Goals | None,
+    ) -> _Opened | ResolvedCaller | None:
+        """The opened request when the caller's overlay hides ``name``, else
+        the caller for the inner capture to reuse; ``None`` on a failure."""
+        try:
+            arguments, _ = _reported(name, arguments, goals)
+            request = await opened(_CALL_FAMILY, read_request_context, params, name, arguments)
+            if request is None:
+                return None
+            overlay = request.caller.overlay
+            return (
+                request if overlay is not None and name in overlay.hidden_tools else request.caller
+            )
+        except Exception:
+            logger.exception("baton: could not check whether the tool is hidden; it is served")
+            return None
+
     async def refused(
         call_seam: CallSeam,
         read_request_context: Callable[[], Any],
@@ -393,24 +440,25 @@ def install_lifecycle_capture(
         *,
         raised: Exception | None = None,
         result: Any = None,
+        hidden_by: _Opened | None = None,
     ) -> None:
         """Send the pair for a call that failed before the inner capture ran."""
         duration_ms = int((monotonic() - started_at) * 1000)
         try:
-            if goals is None and arguments is not None:
-                # The outer seam left the strip to an inner capture that never
-                # ran, so the reserved name comes out of the reported copy here.
-                arguments = dict(arguments)
-                goals = pop_goal_params(name, arguments, None)
-            request = await opened(_CALL_FAMILY, read_request_context, params, name, arguments)
+            arguments, goals = _reported(name, arguments, goals)
+            request = hidden_by or await opened(
+                _CALL_FAMILY, read_request_context, params, name, arguments
+            )
             if request is None:
                 return
             session, caller = request.session, request.caller
             envelope = {**request.envelope, "call_id": str(uuid7())}
             scrubbed = scrub_goals(scrubber, goals or (None, None, None), logger)
-            # SPEC §11.4.3: an unknown tool's message is the library's and stays
-            # under "off"; a refusal's is the vendor's and is withheld.
-            if call_seam.knows_tool(name) is False:
+            # SPEC §11.4.3: an unknown or hidden tool's message is the library's
+            # and stays under "off"; a refusal's is the vendor's and is withheld.
+            if hidden_by is not None:
+                failure_kind, mode = "tool_hidden", "full"
+            elif call_seam.knows_tool(name) is False:
                 failure_kind, mode = "unknown_tool", "full"
             else:
                 failure_kind = "refused"
@@ -456,6 +504,23 @@ def install_lifecycle_capture(
             "baton: tool list, resource and prompt events may be missing; "
             "this mcp version has no known request handler layout"
         )
+
+
+def _may_hide(settings: CaptureSettings | None, name: str) -> bool:
+    document = None if settings is None else settings.document
+    return document is not None and document.may_hide(name)
+
+
+def _reported(
+    name: str, arguments: dict[str, Any] | None, goals: Goals | None
+) -> tuple[dict[str, Any] | None, Goals | None]:
+    """The arguments as reported, without Baton's params, and the goals."""
+    if goals is not None or arguments is None:
+        return arguments, goals
+    # The outer seam left the strip to an inner capture that has not run, so
+    # the reserved name comes out of the reported copy here.
+    arguments = dict(arguments)
+    return arguments, pop_goal_params(name, arguments, None)
 
 
 def warn_if_results_are_withheld(result_capture_mode: ResultCaptureMode) -> None:

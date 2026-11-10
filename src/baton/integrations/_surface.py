@@ -30,6 +30,7 @@ from baton.integrations._llm_text import (
 )
 
 if TYPE_CHECKING:
+    from baton._overlays import Overlay
     from baton.integrations._annotation_name import AnnotationNames
 
 SENT_SURFACES_CAP = 256
@@ -148,15 +149,31 @@ def build_seam_augmentations(
 
 
 def adapter_seam_augmentations(
-    *, names: AnnotationNames | None, intent_param_mode: str, surface_tools: list[Any]
+    *,
+    names: AnnotationNames | None,
+    intent_param_mode: str,
+    surface_tools: list[Any],
+    server_overlay: Overlay | None = None,
 ) -> dict[str, Any]:
-    """``build_seam_augmentations`` for an MCP adapter, which serves the instructions."""
-    return build_seam_augmentations(
+    """``build_seam_augmentations`` for an MCP adapter, which serves the
+    instructions and applies the server overlay."""
+    seam = build_seam_augmentations(
         injected_tool_names=[names.annotation_tool_name] if names else [],
         intent_param_names=[USER_GOAL_PARAM_NAME],
         intent_param_mode=intent_param_mode,
         required_names=list(required_param_names(intent_param_mode=intent_param_mode)),
         agent_text=served_agent_text(
-            names=names, intent_param_mode=intent_param_mode, surface_tools=surface_tools
+            names=names,
+            intent_param_mode=intent_param_mode,
+            surface_tools=surface_tools,
+            server_overlay=server_overlay,
         ),
     )
+    seam["server_overlay"] = server_overlay.id if server_overlay is not None else None
+    return seam
+
+
+def sent_key(digest: str, server_overlay: Overlay | None) -> str:
+    """What a sent snapshot is remembered by: a new server overlay is sent
+    again, though ``surface_hash`` leaves it out."""
+    return digest if server_overlay is None else f"{digest} {server_overlay.id}"

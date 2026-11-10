@@ -263,13 +263,13 @@ def _write(server: Any, text: str) -> None:
     server.instructions = text
 
 
-def _surface(server: _Server, settings: CaptureSettings, ours: str) -> PerCallerSurface:
+def _surface(server: _Server, settings: CaptureSettings) -> PerCallerSurface:
     return PerCallerSurface(
         mcp=server,
         settings=settings,
         intent_param_mode="required",
         annotation_tool_name="srv_annotate",
-        instructions=ours,
+        pointer=POINTER,
         write_instructions=_write,
         warned=set(),
     )
@@ -289,7 +289,7 @@ class TestInstructions:
     def test_they_follow_the_held_document_both_ways(self) -> None:
         settings, fetcher = _settings(NOBODY_REPORTS)
         server = _installed("Vendor text.")
-        surface = _surface(server, settings, OURS)
+        surface = _surface(server, settings)
 
         surface.follow_settings()
         assert server.instructions == f"Vendor text.\n\n{INTENT_INSTRUCTIONS}"
@@ -306,7 +306,7 @@ class TestInstructions:
         settings, fetcher = _settings(NOBODY_REPORTS)
         server = _installed("Vendor text.")
         drop_subagent_clause(server, "lookup", _write)
-        surface = _surface(server, settings, OURS)
+        surface = _surface(server, settings)
 
         surface.follow_settings()
         assert server.instructions == "Vendor text."
@@ -317,7 +317,7 @@ class TestInstructions:
     def test_text_the_vendor_sets_later_keeps_the_subagent_sentence(self) -> None:
         settings, fetcher = _settings(NOBODY_REPORTS)
         server = _installed("Vendor text.")
-        surface = _surface(server, settings, OURS)
+        surface = _surface(server, settings)
         server.instructions = "Later."
 
         surface.follow_settings()
@@ -366,7 +366,7 @@ def _listed(schema: dict[str, Any]) -> mcp_types.ListToolsResult:
 class TestToolsFor:
     def _surface(self) -> PerCallerSurface:
         settings, _ = _settings(BETA_QUIET)
-        return _surface(_Server(""), settings, OURS)
+        return _surface(_Server(""), settings)
 
     def _goal_schema(self) -> dict[str, Any]:
         return {

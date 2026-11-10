@@ -245,3 +245,16 @@ def raised_error_fields(
     if withholding(mode) and not marked_public(raised, tool_error):
         return ErrorResultFields(error_body="", result_capture=WITHHELD)
     return ErrorResultFields(error_body=str(scrubber(str(raised)))[:2000])
+
+
+def error_answer(text: str) -> Any:
+    """A ``tools/call`` error result holding ``text``, shaped as this ``mcp``
+    version's low-level handler returns one."""
+    import mcp.types as mcp_types
+
+    flag = "is_error" if "is_error" in mcp_types.CallToolResult.model_fields else "isError"
+    content = [mcp_types.TextContent(type="text", text=text)]
+    result: Any = mcp_types.CallToolResult.model_validate({"content": content, flag: True})
+    # mcp 1.x handlers return a ``ServerResult`` model; on 2.x it is a type union.
+    wrapper: Any = mcp_types.ServerResult
+    return wrapper(result) if isinstance(wrapper, type) else result

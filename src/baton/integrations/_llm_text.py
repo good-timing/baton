@@ -17,11 +17,11 @@ to make.
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from baton._overlays import Overlay, changed_text
 from baton._white_space import is_blank
 from baton.scrub import scrub_or_none
 
@@ -280,13 +280,13 @@ def drop_subagent_clause(mcp: Any, tool_name: str, write: Callable[[Any, str], N
 
 def remove_subagent_clause(mcp: Any, write: Callable[[Any, str], None]) -> bool:
     """``drop_subagent_clause`` without its warning; whether there was one to remove."""
-    current = mcp.instructions
-    if current == INTENT_INSTRUCTIONS:
-        write(mcp, "")
-    elif isinstance(current, str) and _INSTRUCTIONS_SUBAGENT_CLAUSE in current:
-        write(mcp, current.replace(_INSTRUCTIONS_SUBAGENT_CLAUSE, ""))
-    else:
+    ours = getattr(mcp, _OURS_ATTR, None)
+    subagent = getattr(mcp, _SUBAGENT_ATTR, None)
+    vendor = getattr(mcp, _VENDOR_INSTRUCTIONS_ATTR, None)
+    if not isinstance(ours, str) or not subagent or mcp.instructions != _joined(vendor, ours):
         return False
+    kept = ours.removesuffix(subagent).removesuffix("\n\n")
+    write(mcp, with_vendor_instructions(mcp, kept, subagent=None))
     return True
 
 
@@ -313,11 +313,12 @@ def served_agent_text(
     intent_param_mode: str,
     surface_tools: list[Any],
     vendor_serves_text: bool = False,
+    server_overlay: Overlay | None = None,
 ) -> dict[str, dict[str, str] | None]:
     """``seam_augmentations.agent_text`` (SPEC §11.4.2): Baton's own text as
-    served to the vendor-true ``surface_tools``. A piece not served is absent.
-    With ``vendor_serves_text`` the instructions and report tool are the
-    vendor's to serve, so their pieces are null."""
+    served to the vendor-true ``surface_tools``, after ``server_overlay``. A
+    piece not served is absent. With ``vendor_serves_text`` the instructions
+    and report tool are the vendor's to serve, so their pieces are null."""
     schemas = [
         tool.get("inputSchema") if isinstance(tool, Mapping) else None for tool in surface_tools
     ]
@@ -342,9 +343,13 @@ def served_agent_text(
         served["report_tool.refusal"] = build_refusal_text(
             annotation_tool_name=names.annotation_tool_name
         )
-    pieces: dict[str, dict[str, str] | None] = {
-        piece: {"text": text, "source": "default"} for piece, text in served.items()
-    }
+    pieces: dict[str, dict[str, str] | None] = {}
+    for piece, text in served.items():
+        source = "default"
+        if server_overlay is not None and piece in _INSTRUCTIONS_PIECES:
+            changed, source = changed_text(text, server_overlay.piece_actions(piece))
+            text = changed or ""
+        pieces[piece] = {"text": text, "source": source}
     if vendor_serves_text:
         pieces.update(dict.fromkeys(_VENDOR_SERVED_PIECES))
     return pieces
@@ -382,48 +387,43 @@ def build_server_instructions(
 
 
 _VENDOR_INSTRUCTIONS_ATTR = "_baton_vendor_instructions"
+_OURS_ATTR = "_baton_instructions"
+_SUBAGENT_ATTR = "_baton_subagent_sentence"
 
 
-def _whole_sentence(template: str) -> re.Pattern[str]:
-    parts = re.split(r"\{[a-z_]+\}", template)
-    return re.compile(".+?".join(map(re.escape, parts)))
+def _joined(vendor: Any, ours: str) -> str:
+    if not isinstance(vendor, str) or is_blank(vendor):
+        return ours
+    return f"{vendor}\n\n{ours}" if ours else vendor
 
 
-# Where our paragraph begins under report_mode "on" and "off".
-# The pointer is matched whole: its opening, "Use `", is how a vendor's own
-# paragraph may start (``TestAVendorParagraphLikeTheReportPointer``).
-_OURS_STARTS = (
-    _whole_sentence(_INSTRUCTIONS_REPORT_POINTER),
-    re.compile(re.escape(INTENT_INSTRUCTIONS)),
-)
-
-
-def _ends_in_ours(current: Any, vendor: Any) -> bool:
-    """Whether ``current`` is the vendor's text followed by a paragraph of ours."""
-    if not isinstance(current, str):
-        return False
-    prefix = f"{vendor}\n\n" if isinstance(vendor, str) and not is_blank(vendor) else ""
-    return current.startswith(prefix) and any(
-        start.match(current, len(prefix)) for start in _OURS_STARTS
-    )
-
-
-def with_vendor_instructions(mcp: Any, ours: str, warned: set[str] | None = None) -> str:
+def with_vendor_instructions(
+    mcp: Any,
+    ours: str,
+    warned: set[str] | None = None,
+    *,
+    subagent: str | None = INTENT_INSTRUCTIONS,
+) -> str:
     """SPEC §5.1.2: the vendor's own instructions first, ours below them.
+    ``subagent`` is the subagent sentence ``ours`` ends with, if it does.
 
     The runtime cuts at ``_CLAUDE_CODE_TRUNCATION_CAP`` from the end, so the
-    order decides whose text is lost. The vendor's text is remembered on the
-    server, so a second install replaces our paragraph rather than appending
-    another; text the vendor set in between replaces what was remembered.
+    order decides whose text is lost. The vendor's text and ours are
+    remembered on the server, so a second install replaces our paragraph
+    rather than appending another; text the vendor set in between replaces
+    what was remembered.
     """
     current = mcp.instructions
     vendor = getattr(mcp, _VENDOR_INSTRUCTIONS_ATTR, current)
-    if not _ends_in_ours(current, vendor):
+    written = getattr(mcp, _OURS_ATTR, None)
+    if not isinstance(written, str) or current != _joined(vendor, written):
         vendor = current
         setattr(mcp, _VENDOR_INSTRUCTIONS_ATTR, vendor)
-    if not isinstance(vendor, str) or is_blank(vendor):
+    setattr(mcp, _OURS_ATTR, ours)
+    setattr(mcp, _SUBAGENT_ATTR, subagent if subagent and ours.endswith(subagent) else None)
+    combined = _joined(vendor, ours)
+    if combined == ours:
         return ours
-    combined = f"{vendor}\n\n{ours}"
     # ``warned`` is shared by servers built per request, so this is said once.
     if len(combined) > _CLAUDE_CODE_TRUNCATION_CAP and _first_time(warned, "instructions over cap"):
         logger.warning(
@@ -452,9 +452,10 @@ def build_annotation_tool_description(*, vendor_display_name: str) -> str:
     return _REPORT_TOOL_DESCRIPTION_TEMPLATE.format(vendor_display_name=vendor_display_name)
 
 
-def build_refusal_text(*, annotation_tool_name: str) -> str:
-    """What the annotation tool answers when a call has no account (SPEC §5.1.1)."""
-    return (
+def build_refusal_text(*, annotation_tool_name: str, overlay: Overlay | None = None) -> str:
+    """What the annotation tool answers when a call has no account (SPEC §5.1.1),
+    after the caller's ``overlay``."""
+    text = (
         f"{annotation_tool_name} is reactive-only on this server. Call it only "
         "AFTER a tool call returns an unhelpful, empty, failed or contradictory "
         "result, or when no tool covers what the user asked for. What the user is "
@@ -464,3 +465,6 @@ def build_refusal_text(*, annotation_tool_name: str) -> str:
         "what_happened. If neither is true, do NOT re-send: that would file a "
         "report for a call that did not go wrong."
     )
+    if overlay is None:
+        return text
+    return changed_text(text, overlay.piece_actions("report_tool.refusal"))[0] or text

@@ -28,6 +28,7 @@ from types import MappingProxyType
 from typing import Any, TypeVar
 
 from baton._capture_settings import Caller, CallSettings, CaptureSettings, clean_labels
+from baton._overlays import Overlay
 from baton._white_space import UNSENDABLE, is_blank, usable_text
 from baton.events import ClientObserved, OrganizationWire, PrincipalWire
 from baton.identity import PRINCIPAL_FORM_RAW, PRINCIPAL_FORMS, Organization, Principal
@@ -90,6 +91,10 @@ class ResolvedCaller:
 
     def report_mode(self, code_value: str) -> str:
         return self._setting("report_mode", code_value)
+
+    @property
+    def overlay(self) -> Overlay | None:
+        return None if self.settings is None else self.settings.overlay
 
     def _setting(self, name: str, code_value: str) -> str:
         value = None if self.settings is None else getattr(self.settings, name)

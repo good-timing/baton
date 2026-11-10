@@ -21,7 +21,6 @@ import pytest
 from baton.integrations._llm_text import (
     _CLAUDE_CODE_TRUNCATION_CAP,
     _INSTRUCTIONS_LENGTH_CAP,
-    _OURS_STARTS,
     build_annotation_tool_description,
     build_refusal_text,
     build_server_instructions,
@@ -262,13 +261,6 @@ def test_the_refusal_names_the_next_step_for_each_sender() -> None:
         "what_happened. If neither is true, do NOT re-send: that would file a "
         "report for a call that did not go wrong."
     )
-
-
-def test_the_pointer_opens_with_the_text_that_marks_our_paragraph() -> None:
-    rendered = build_server_instructions(
-        vendor_display_name="Acme", annotation_tool_name="acme_annotate"
-    )
-    assert _OURS_STARTS[0].match(rendered)
 
 
 class TestWithVendorInstructions:

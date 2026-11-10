@@ -70,6 +70,7 @@ from time import monotonic
 from typing import Any
 
 from baton._capture_settings import CaptureSettings
+from baton._overlays import Overlay
 from baton._result_capture import ResultCaptureMode, end_result_fields
 from baton._state import SessionCounter
 from baton._uuid import uuid7
@@ -122,6 +123,7 @@ from baton.integrations._surface import (
     SentSurfaces,
     adapter_seam_augmentations,
     assemble_surface,
+    sent_key,
     surface_hash,
 )
 from baton.integrations.official import _auth
@@ -155,10 +157,17 @@ class _SurfaceState:
     ``seam_augmentations.injected_tools``.
     """
 
-    def __init__(self, server_meta: dict[str, Any], sent_surfaces: SentSurfaces) -> None:
+    def __init__(
+        self,
+        server_meta: dict[str, Any],
+        sent_surfaces: SentSurfaces,
+        server_overlay: Callable[[], Overlay | None],
+    ) -> None:
         self.server_meta = server_meta
         self.raw_tools: dict[str, dict[str, Any]] = {}
         self.sent_surfaces = sent_surfaces
+        self.server_overlay = server_overlay
+        self.served_overlay_id: str | None = None
         self.dirty = False
 
     def note_tool(self, name: str, tool: Any) -> None:
@@ -198,6 +207,7 @@ def install_wraps(
     resolve_principal_hook: ResolvePrincipalHook | None = None,
     sent_surfaces: SentSurfaces | None = None,
     capture_settings: CaptureSettings | None = None,
+    server_overlay: Callable[[], Overlay | None] = lambda: None,
 ) -> dict[str, dict[str, str]]:
     """Inject + wrap all currently-registered tools AND future registrations.
 
@@ -209,7 +219,9 @@ def install_wraps(
     # asyncio loop, so no statement interleaves.
     param_registry: dict[str, dict[str, str]] = {}
     surface_state = _SurfaceState(
-        server_meta or {}, sent_surfaces if sent_surfaces is not None else SentSurfaces()
+        server_meta or {},
+        sent_surfaces if sent_surfaces is not None else SentSurfaces(),
+        server_overlay,
     )
     emit_before, emit_after, emit_error, emit_surface = _make_emitters(
         tenant_id=tenant_id,
@@ -458,19 +470,26 @@ def _wrap_tool_run(
         # FIRST so a hashing/serialization error (deterministic — would just
         # re-throw identically every call) is one attempt per surface
         # change, not a retry storm.
+        overlay = surface_state.server_overlay()
+        overlay_id = overlay.id if overlay is not None else None
+        if overlay_id != surface_state.served_overlay_id:
+            surface_state.served_overlay_id = overlay_id
+            surface_state.dirty = True
         if surface_state.dirty:
             surface_state.dirty = False
             try:
                 snapshot = surface_state.build_snapshot()
                 digest = surface_hash(snapshot)
+                key = sent_key(digest, overlay)
             except Exception:
                 logger.exception("baton: surface snapshot capture failed")
             else:
-                if not surface_state.sent_surfaces.was_sent(digest):
+                if not surface_state.sent_surfaces.was_sent(key):
                     seam = adapter_seam_augmentations(
                         names=names,
                         intent_param_mode=intent_param_mode,
                         surface_tools=snapshot["tools"],
+                        server_overlay=overlay,
                     )
                     try:
                         await emit_surface(
@@ -482,7 +501,7 @@ def _wrap_tool_run(
                         surface_state.dirty = True
                     else:
                         # Also when the sink is closed: counted once, not on every call.
-                        surface_state.sent_surfaces.mark(digest)
+                        surface_state.sent_surfaces.mark(key)
 
         # Strip the injected goal params IN PLACE, before snapshotting params —
         # ``arguments`` is the same object forwarded to the vendor handler, so
@@ -542,12 +561,16 @@ def _wrap_tool_run(
             if resolve_principal_hook is not None
             else None
         )
-        caller = await resolve_caller(
-            hook=resolve_principal_hook,
-            hook_context=identity_hook_context,
-            logger=logger,
-            settings=capture_settings,
-            client=call_client,
+        caller = (
+            slot.caller
+            if slot is not None and slot.caller is not None
+            else await resolve_caller(
+                hook=resolve_principal_hook,
+                hook_context=identity_hook_context,
+                logger=logger,
+                settings=capture_settings,
+                client=call_client,
+            )
         )
         scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, logger)
         call_session = await _resolve_call_session(

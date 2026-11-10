@@ -155,6 +155,8 @@ class ToolCallErrorPayload(BaseModel):
     ===========================  ==========================================
     ``unknown_tool``             the handler never ran: no such tool
     ``tool_disabled``            the handler never ran: the tool is off
+    ``tool_hidden``              the handler never ran: the caller's overlay
+                                 hides the tool
     ``invalid_argument``         the handler never ran: arguments rejected
     ``output_schema_mismatch``   the handler RETURNED and the server's check
                                  of its output rejected it

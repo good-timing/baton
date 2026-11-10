@@ -101,18 +101,6 @@ def register_annotation_tool(
         context: dict[str, Any] | None = None,
         ctx: Context = None,
     ) -> dict[str, Any]:
-        # Refuse pre-call annotations structurally rather than by instruction
-        # text alone, which is only a request.
-        # Rejecting here, rather than requiring what_happened in the schema,
-        # keeps the agent from inventing a problem just to get the call
-        # through — that would corrupt the reports, which are the signal
-        # worth protecting.
-        if not is_report(what_happened):
-            return {
-                "ok": False,
-                "error": build_refusal_text(annotation_tool_name=name),
-            }
-
         # The MCP Context is threaded in for its ``_meta``, handshake and
         # headers, so this event carries the same ``client_observed``,
         # ``runtime_meta`` and session as the tool calls around it.
@@ -171,6 +159,19 @@ def register_annotation_tool(
             settings=capture_settings,
             client=client,
         )
+        # Refuse pre-call annotations structurally rather than by instruction
+        # text alone, which is only a request.
+        # Rejecting, rather than requiring what_happened in the schema,
+        # keeps the agent from inventing a problem just to get the call
+        # through — that would corrupt the reports, which are the signal
+        # worth protecting.
+        if not is_report(what_happened):
+            return {
+                "ok": False,
+                "error": build_refusal_text(
+                    annotation_tool_name=name, overlay=annotation_caller.overlay
+                ),
+            }
         seq = await next_sequence(counter, call_session)
         # safe_emit, not safe_write: `build_annotation_payload` runs the
         # vendor's scrubber on five fields, and as an ARGUMENT expression it

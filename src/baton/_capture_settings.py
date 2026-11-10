@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Literal, get_args
 
+from baton._overlays import Overlay, overlay_for, read_overlays
 from baton._result_capture import is_registered_mode
 from baton._white_space import usable_text
 from baton.events import CaptureObserved
@@ -72,6 +73,7 @@ class CallSettings:
     result_capture_mode: str | None = None
     intent_param_mode: str | None = None
     report_mode: str | None = None
+    overlay: Overlay | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +106,7 @@ class SettingsDocument:
     audiences: tuple[Audience, ...]
     unmatched: CallSettings
     uses_share: bool
+    server_overlay: Overlay | None = None
 
     def settings_for(self, caller: Caller, vendor_id: str) -> CallSettings:
         bucket = (
@@ -115,6 +118,13 @@ class SettingsDocument:
             if audience.matches(caller, bucket):
                 return audience.settings
         return self.unmatched
+
+    def may_hide(self, tool_name: str) -> bool:
+        """Whether some audience's overlay hides ``tool_name``."""
+        return any(
+            a.settings.overlay is not None and tool_name in a.settings.overlay.hidden_tools
+            for a in self.audiences
+        )
 
     def reports_on_for_anyone(self, code_value: str) -> bool:
         """Whether some caller can get reports, so the instructions point to the tool."""
@@ -136,7 +146,11 @@ def _known(value: Any, values: frozenset[str]) -> bool:
 
 
 def _audience(
-    version: int, audience_id: str, match: dict[str, Any], capture: dict[str, Any]
+    version: int,
+    audience_id: str,
+    match: dict[str, Any],
+    capture: dict[str, Any],
+    overlay: Overlay | None,
 ) -> Audience | None:
     """``None`` for an audience that can match nobody (SPEC §2.6)."""
     if not set(match) <= _MATCH_KEYS:
@@ -155,10 +169,15 @@ def _audience(
         threshold = math.floor(share * 10000 + 0.5)
     results, goal, reports = (capture.get(k) for k in ("results", "goal", "reports"))
     settings = CallSettings(
-        CaptureObserved(settings_version=version, audience=audience_id),
+        CaptureObserved(
+            settings_version=version,
+            audience=audience_id,
+            overlay=overlay.id if overlay is not None else None,
+        ),
         result_capture_mode=results if is_registered_mode(results) else None,
         intent_param_mode=goal if _known(goal, INTENT_PARAM_MODES) else None,
         report_mode=reports if _known(reports, REPORT_MODES) else None,
+        overlay=overlay,
     )
     return Audience(settings, labels, clients, threshold)
 
@@ -177,6 +196,7 @@ def parse_document(body: bytes) -> SettingsDocument | None:
         return None
     if not isinstance(audiences, list) or not audiences:
         return None
+    overlays = read_overlays(data.get("overlays"))
     parsed: list[Audience] = []
     for audience in audiences:
         if not isinstance(audience, dict):
@@ -186,13 +206,15 @@ def parse_document(body: bytes) -> SettingsDocument | None:
             return None
         if not isinstance(match, dict) or not isinstance(capture, dict):
             return None
-        if (readable := _audience(version, audience_id, match, capture)) is not None:
+        overlay = overlay_for(overlays, audience.get("overlay"), "audience")
+        if (readable := _audience(version, audience_id, match, capture, overlay)) is not None:
             parsed.append(readable)
     return SettingsDocument(
         version,
         tuple(parsed),
         unmatched=CallSettings(CaptureObserved(settings_version=version)),
         uses_share=any(a.share_threshold is not None for a in parsed),
+        server_overlay=overlay_for(overlays, data.get("server_overlay"), "server"),
     )
 
 

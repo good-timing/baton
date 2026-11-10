@@ -31,6 +31,7 @@ from mcp.types import CallToolRequestParams, ListToolsRequest
 from pydantic_core import to_jsonable_python
 
 from baton._capture_settings import CaptureSettings
+from baton._overlays import Overlay
 from baton._result_capture import ResultCaptureMode, end_result_fields
 from baton._state import SessionCounter
 from baton._uuid import uuid7
@@ -73,6 +74,7 @@ from baton.integrations._surface import (
     SentSurfaces,
     adapter_seam_augmentations,
     assemble_surface,
+    sent_key,
     surface_hash,
 )
 from baton.integrations.standalone import _auth
@@ -122,6 +124,7 @@ class BatonMiddleware(Middleware):
         capture_settings: CaptureSettings | None = None,
         on_native_user_goal: Callable[[str], None] | None = None,
         sent_surfaces: SentSurfaces | None = None,
+        server_overlay: Callable[[], Overlay | None] = lambda: None,
     ) -> None:
         self._tenant_id = tenant_id
         self._vendor_id = vendor_id
@@ -146,6 +149,7 @@ class BatonMiddleware(Middleware):
         # No lock: two concurrent listings of a new surface may both send it,
         # and the consumer stores a hash once.
         self._sent_surfaces = sent_surfaces if sent_surfaces is not None else SentSurfaces()
+        self._server_overlay = server_overlay
 
     async def on_list_tools(
         self,
@@ -238,13 +242,16 @@ class BatonMiddleware(Middleware):
             )
             surface = assemble_surface(self._server_meta, surface_tools)
             digest = surface_hash(surface)
-            if self._sent_surfaces.was_sent(digest):
+            overlay = self._server_overlay()
+            key = sent_key(digest, overlay)
+            if self._sent_surfaces.was_sent(key):
                 return
 
             seam = adapter_seam_augmentations(
                 names=self._names,
                 intent_param_mode=self._intent_param_mode,
                 surface_tools=surface_tools,
+                server_overlay=overlay,
             )
             seq = await self._counter.next(self._fallback_session_id)
             event = SurfaceSnapshotEvent(
@@ -275,7 +282,7 @@ class BatonMiddleware(Middleware):
             except Exception:
                 logger.exception("baton: surface snapshot capture failed")
                 return
-            self._sent_surfaces.mark(digest)
+            self._sent_surfaces.mark(key)
         except Exception:
             logger.exception("baton: surface snapshot capture failed")
 
@@ -394,12 +401,16 @@ class BatonMiddleware(Middleware):
             if self._resolve_principal_hook is not None
             else None
         )
-        caller = await resolve_caller(
-            hook=self._resolve_principal_hook,
-            hook_context=identity_hook_context,
-            logger=logger,
-            settings=self._capture_settings,
-            client=client,
+        caller = (
+            slot.caller
+            if slot is not None and slot.caller is not None
+            else await resolve_caller(
+                hook=self._resolve_principal_hook,
+                hook_context=identity_hook_context,
+                logger=logger,
+                settings=self._capture_settings,
+                client=client,
+            )
         )
         scrubbed_meta = clean_runtime_meta(self._scrubber, meta_dict, logger)
 
