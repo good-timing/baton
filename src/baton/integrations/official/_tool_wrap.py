@@ -160,7 +160,7 @@ class _SurfaceState:
         self,
         server_meta: dict[str, Any],
         sent_surfaces: SentSurfaces,
-        server_overlay: Callable[[], Overlay | None],
+        server_overlay: Callable[[], Overlay | None] | None,
     ) -> None:
         self.server_meta = server_meta
         self.raw_tools: dict[str, dict[str, Any]] = {}
@@ -206,7 +206,7 @@ def install_wraps(
     resolve_principal_hook: ResolvePrincipalHook | None = None,
     sent_surfaces: SentSurfaces | None = None,
     capture_settings: CaptureSettings | None = None,
-    server_overlay: Callable[[], Overlay | None] = lambda: None,
+    server_overlay: Callable[[], Overlay | None] | None = None,
 ) -> dict[str, dict[str, str]]:
     """Inject + wrap all currently-registered tools AND future registrations.
 
@@ -469,7 +469,7 @@ def _wrap_tool_run(
         # FIRST so a hashing/serialization error (deterministic — would just
         # re-throw identically every call) is one attempt per surface
         # change, not a retry storm.
-        overlay = surface_state.server_overlay()
+        overlay = surface_state.server_overlay() if surface_state.server_overlay else None
         overlay_id = overlay.id if overlay is not None else None
         if overlay_id != surface_state.served_overlay_id:
             surface_state.served_overlay_id = overlay_id
@@ -483,6 +483,7 @@ def _wrap_tool_run(
                     names=names,
                     intent_param_mode=intent_param_mode,
                     surface_tools=snapshot["tools"],
+                    applies_overlays=surface_state.server_overlay is not None,
                     server_overlay=overlay,
                 )
             except Exception:

@@ -123,7 +123,7 @@ class BatonMiddleware(Middleware):
         capture_settings: CaptureSettings | None = None,
         on_native_user_goal: Callable[[str], None] | None = None,
         sent_surfaces: SentSurfaces | None = None,
-        server_overlay: Callable[[], Overlay | None] = lambda: None,
+        server_overlay: Callable[[], Overlay | None] | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._vendor_id = vendor_id
@@ -241,7 +241,7 @@ class BatonMiddleware(Middleware):
             )
             surface = assemble_surface(self._server_meta, surface_tools)
             digest = surface_hash(surface)
-            overlay = self._server_overlay()
+            overlay = self._server_overlay() if self._server_overlay else None
             overlay_id = overlay.id if overlay is not None else None
             if self._sent_surfaces.was_sent(digest, overlay_id):
                 return
@@ -250,6 +250,7 @@ class BatonMiddleware(Middleware):
                 names=self._names,
                 intent_param_mode=self._intent_param_mode,
                 surface_tools=surface_tools,
+                applies_overlays=self._server_overlay is not None,
                 server_overlay=overlay,
             )
 

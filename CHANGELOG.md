@@ -8,22 +8,34 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Fixed
+
+- **`seam_augmentations.server_overlay` is sent only when the install
+  reads Console settings** (`settings="console"` with a DSN). In 1.1.0 every
+  MCP adapter sent it, as null otherwise, though such a server never applies
+  overlays. SPEC §11.4.2 says a producer that does not apply overlays leaves
+  it out.
+
 ## 1.1.0: overlays change what each audience's agent sees
 
 ### Added
 
-- **Overlays** (experimental, SPEC §2.6). Under `settings="console"`, the
-  settings document can hold overlays. An audience's overlay changes that
-  audience's tool list: it adds to or replaces tool and param descriptions,
-  hides tools and params, marks a param required (shown to the agent only; a
-  call without it still runs), and changes Baton's `user_goal` and report
-  tool text, including the refusal. `server_overlay` adds text to the server
-  instructions and changes Baton's sentences there, for connections that
-  start after it loads. An overlay that can't be read is not applied, with
-  one warning; a bad action is skipped on its own.
+- **Overlays** (experimental, SPEC §2.6). With `settings="console"`, the
+  Console can change what each audience's agent sees. An audience's overlay
+  can add to or replace tool, param and Baton text, hide tools, hide params
+  the tool does not require, and mark a param required (the agent sees it as
+  required; calls without it still run). `server_overlay` can add to the
+  server instructions and add to or replace Baton's sentences there. It
+  reaches connections that start after the next request the server handles,
+  so on stdio, where the one connection starts first, it does not apply. An
+  overlay that can't be read is not applied, with one warning. A bad action
+  is skipped on its own, with one warning.
 - **`failure_kind: "tool_hidden"`** (SPEC §11.4.3). A call to a tool the
   caller's overlay hides gets the same answer as a call to a tool the server
-  doesn't have, and its event records `tool_hidden`.
+  doesn't have, and its event records `tool_hidden`. Baton answers it before
+  the vendor's own fastmcp middleware runs.
 - **`capture.overlay`** on events is the id of the caller's audience
   overlay, and `seam_augmentations.server_overlay` on `surface_snapshot` is
   the server overlay's id (both experimental). A new snapshot is sent when
@@ -31,9 +43,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Changed
 
-- **The identity hook runs before the tool for some calls.** When any
-  audience hides a tool, a call to that tool resolves the caller before the
-  tool runs, for every caller. The hook still runs once per call.
+- **The identity hook runs earlier for some calls.** When any audience
+  hides a tool, every call to that tool resolves the caller in Baton's
+  `tools/call` handler, before the vendor's fastmcp middleware and before
+  fastmcp's per-call context exists. A `resolve_principal` that reads that
+  context, or state the vendor's middleware sets, sees nothing for those
+  calls.
 
 ## 1.0.1: the snapshot names the text Baton showed the agent, and Console settings are stable
 

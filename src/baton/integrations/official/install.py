@@ -174,7 +174,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
         capture_settings=shared.capture_settings,
         server_meta=server_meta,
         sent_surfaces=shared.sent_surfaces,
-        server_overlay=lambda: per_caller.server_overlay if per_caller is not None else None,
+        server_overlay=None if per_caller is None else lambda: per_caller.server_overlay,
     )
 
     async def read_request(request_context: Any) -> CapturedRequest:

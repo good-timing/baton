@@ -397,6 +397,15 @@ async def test_with_no_server_overlay_the_snapshot_sends_null(
     assert snapshot["payload"]["seam_augmentations"]["server_overlay"] is None
 
 
+@DRIVERS
+async def test_without_console_settings_the_snapshot_leaves_server_overlay_out(
+    drive: Any, tmp_path: Path
+) -> None:
+    _, events, _ = await drive(tmp_path, ["claude-code"])
+    (snapshot,) = [e for e in events if e["event_type"] == "surface_snapshot"]
+    assert "server_overlay" not in snapshot["payload"]["seam_augmentations"]
+
+
 async def test_a_new_server_overlay_sends_a_new_snapshot_and_the_same_one_does_not(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

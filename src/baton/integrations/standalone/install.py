@@ -259,7 +259,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
             server_meta=server_meta,
             on_native_user_goal=on_native_user_goal,
             sent_surfaces=shared.sent_surfaces,
-            server_overlay=lambda: per_caller.server_overlay if per_caller is not None else None,
+            server_overlay=None if per_caller is None else lambda: per_caller.server_overlay,
         )
         mcp.add_middleware(middleware)
     resolve_dispositions = middleware.resolve_dispositions

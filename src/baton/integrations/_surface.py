@@ -159,10 +159,11 @@ def adapter_seam_augmentations(
     names: AnnotationNames | None,
     intent_param_mode: str,
     surface_tools: list[Any],
+    applies_overlays: bool,
     server_overlay: Overlay | None = None,
 ) -> dict[str, Any]:
     """``build_seam_augmentations`` for an MCP adapter, which serves the
-    instructions and applies the server overlay."""
+    instructions and, with Console settings, applies the server overlay."""
     seam = build_seam_augmentations(
         injected_tool_names=[names.annotation_tool_name] if names else [],
         intent_param_names=[USER_GOAL_PARAM_NAME],
@@ -175,5 +176,6 @@ def adapter_seam_augmentations(
             server_overlay=server_overlay,
         ),
     )
-    seam["server_overlay"] = server_overlay.id if server_overlay is not None else None
+    if applies_overlays:
+        seam["server_overlay"] = server_overlay.id if server_overlay is not None else None
     return seam
