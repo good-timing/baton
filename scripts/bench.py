@@ -49,7 +49,13 @@ def collector(mode: str) -> Iterator[int]:
         yield 1
         return
     process = subprocess.Popen(
-        [sys.executable, str(SPEC / "collector" / "fake_collector.py"), "--mode", mode],
+        [
+            sys.executable,
+            str(SPEC / "collector" / "fake_collector.py"),
+            "--mode",
+            mode,
+            "--no-events",
+        ],
         stdout=subprocess.PIPE,
         text=True,
     )
