@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 1.1.1: the snapshot names a server overlay only when the server can apply one
 
 ### Fixed
 
