@@ -27,11 +27,11 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 - **`vendor_display_name` and `report_mode`** on both clients, with the
   same meaning and defaults as on `VendorConfig`.
 - **Old wiring left inside `serve()` is logged as an ERROR**, once per
-  process: `session()`, `trace()` or `list_tools()` called from the vendor's
-  code while `serve()` runs it would record the work twice. Nothing is
-  raised, and the request is served as usual.
-- **`tools=`** on both clients: the vendor's full tool list, or a function
-  returning it. `serve()` otherwise learns the tools from the lists it serves,
+  process: `trace()` in a tool call, or `list_tools()` in a tool list, that
+  `serve()` already records. Nothing is raised, and the request is served
+  as usual.
+- **`tools=`** on both clients: the vendor's full tool list, or a plain
+  (not async) function returning it. `serve()` otherwise learns the tools from the lists it serves,
   so a process that has served none removes `user_goal` from every call and
   treats the report tool's name as Baton's. Pass it when a tool declares its
   own `user_goal` or has the report tool's name.

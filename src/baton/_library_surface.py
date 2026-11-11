@@ -81,11 +81,21 @@ def known_tools(tools: list[Any]) -> tuple[dict[str, dict[str, str]], set[str]]:
     for tool in tools:
         try:
             as_json = _as_json(tool)
-            _served(tool, as_json, dispositions)
         except Exception:
             continue
-        if isinstance(as_json, Mapping) and isinstance(as_json.get("name"), str):
-            names.add(as_json["name"])
+        name = as_json.get("name") if isinstance(as_json, Mapping) else None
+        if not isinstance(name, str):
+            continue
+        names.add(name)
+        schema = as_json.get("inputSchema")
+        if isinstance(schema, Mapping):
+            # Only these two levels change, so only they are copied.
+            copied = dict(schema)
+            if isinstance(copied.get("properties"), Mapping):
+                copied["properties"] = dict(copied["properties"])
+            if isinstance(copied.get("required"), list):
+                copied["required"] = list(copied["required"])
+            dispositions[name] = inject_goal_params(copied, intent_param_mode=INTENT_PARAM_MODE)
     return dispositions, names
 
 

@@ -5,6 +5,7 @@ so a failure serves the vendor's own answer."""
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import threading
@@ -138,27 +139,34 @@ class Serving:
         them, a call to a tool not yet listed is served as on a cold process."""
         if self._unread_tools is None:
             return
+        # Held until the tools are remembered, so a concurrent first request
+        # waits for them rather than being served as on a cold process.
         with self._tools_lock:
-            source, self._unread_tools = self._unread_tools, None
+            source = self._unread_tools
             if source is None:
                 return
             try:
                 tools = source() if callable(source) else source
+                if inspect.isawaitable(tools):
+                    getattr(tools, "close", lambda: None)()
+                    raise TypeError("tools= must be a list or a plain function, not async")
                 if not isinstance(tools, list):
                     raise TypeError(f"tools= gave a {type(tools).__name__}, not a list")
+                self._remember(*known_tools(tools))
             except Exception:
                 logger.warning(
                     "baton: could not read tools=; a call this process has not seen "
                     "listed loses user_goal",
                     exc_info=True,
                 )
-                return
-            self._remember(*known_tools(tools))
+            finally:
+                self._unread_tools = None
 
     def _remember(self, dispositions: dict[str, dict[str, str]], names: set[str]) -> None:
         clash = self._report is not None and self._report[1].name in names
         with self._lock:
-            if len(self._dispositions) + len(dispositions) > _REMEMBERED_TOOLS:
+            new = dispositions.keys() - self._dispositions.keys()
+            if len(self._dispositions) + len(new) > _REMEMBERED_TOOLS:
                 self._dispositions.clear()
             self._dispositions.update(dispositions)
             first_clash = clash and not self._vendor_has_report_name
@@ -224,7 +232,7 @@ class Serving:
             {t["name"] for t in tools if isinstance(t, Mapping) and isinstance(t.get("name"), str)},
         )
         report = self._ours()
-        first_page = "cursor" not in request.params
+        first_page = request.params.get("cursor") is None
         out = list(served.tools)
         if report is not None and first_page:
             tool = report[1]

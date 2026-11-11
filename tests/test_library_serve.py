@@ -686,17 +686,74 @@ def test_old_wiring_inside_serve_is_an_error_once_each(
     vendor = Vendor()
 
     def hand_wired(message: Any) -> Any:
+        if message["method"] == "tools/list":
+            h.client.list_tools(TOOLS) if not h.is_async else None
         with h.client.session():
             h.client.trace(tool_name="find_slots")
             return vendor(message)
 
     with caplog.at_level(logging.ERROR, logger="baton"):
         for _ in range(3):
+            h.serve(_list(), hand_wired)
             h.serve(_call("find_slots", {"day": "mon"}), hand_wired)
     errors = _errors(caplog)
-    assert len(errors) == 2
-    assert "client.session() was called inside serve()" in errors[0]
-    assert "client.trace() was called inside serve()" in errors[1]
+    expected = ["trace"] if h.is_async else ["list_tools", "trace"]
+    assert [e.split("client.")[1].split("(")[0] for e in errors] == expected
+
+
+@CLIENTS
+def test_a_request_serve_does_not_record_raises_no_error(
+    harness: Any, caplog: pytest.LogCaptureFixture, fresh_log: None
+) -> None:
+    h = harness()
+
+    def traced_read(message: Any) -> Any:
+        h.client.trace(tool_name="read_resource")
+        return Vendor()(message)
+
+    with caplog.at_level(logging.ERROR, logger="baton"):
+        h.serve({"jsonrpc": "2.0", "id": 9, "method": "resources/read"}, traced_read)
+        h.serve(_initialize(), traced_read)
+    assert _errors(caplog) == []
+
+
+def test_work_a_dispatch_starts_is_not_inside_serve(
+    caplog: pytest.LogCaptureFixture, fresh_log: None
+) -> None:
+    client = AsyncClient(vendor_id="v", sink=_CollectingSink())
+    started: list[asyncio.Task[None]] = []
+
+    async def later() -> None:
+        await asyncio.sleep(0)
+        client.trace(tool_name="nightly_sync")
+
+    async def dispatch(message: Any) -> Any:
+        started.append(asyncio.create_task(later()))
+        return Vendor()(message)
+
+    async def go() -> None:
+        await client.serve(_call("find_slots", {}), dispatch)
+        await started[0]
+        await client.aclose()
+
+    with caplog.at_level(logging.ERROR, logger="baton"):
+        asyncio.run(go())
+    assert _errors(caplog) == []
+
+
+def test_a_serve_nested_in_another_flags_nothing_of_batons(
+    caplog: pytest.LogCaptureFixture, fresh_log: None
+) -> None:
+    client = Client(vendor_id="v", sink=_CollectingSink(), report_mode="on")
+    vendor = Vendor()
+
+    def gateway(message: Any) -> Any:
+        return client.serve(_call("find_slots", {"day": "mon"}), vendor)
+
+    with caplog.at_level(logging.ERROR, logger="baton"):
+        client.serve(_call("find_slots", {"day": "mon"}), gateway)
+    client.close()
+    assert _errors(caplog) == []
 
 
 @CLIENTS
@@ -723,3 +780,59 @@ def test_old_wiring_outside_serve_is_fine(
             trace.observed({})
     client.close()
     assert _errors(caplog) == []
+
+
+def test_a_slow_tools_function_makes_a_concurrent_call_wait() -> None:
+    import threading
+
+    reading = threading.Event()
+    release = threading.Event()
+
+    def slow() -> list[Any]:
+        reading.set()
+        release.wait(5)
+        return [OWN_GOAL]
+
+    client = Client(vendor_id="v", sink=_CollectingSink(), tools=slow)
+    first, second = Vendor([OWN_GOAL]), Vendor([OWN_GOAL])
+    a = threading.Thread(target=client.serve, args=(_call("own", {"user_goal": "a"}), first))
+    a.start()
+    reading.wait(5)
+    b = threading.Thread(target=client.serve, args=(_call("own", {"user_goal": "b"}), second))
+    b.start()
+    release.set()
+    a.join(5)
+    b.join(5)
+    client.close()
+    assert second.seen[-1]["params"]["arguments"] == {"user_goal": "b"}
+
+
+def test_an_async_tools_function_is_refused_with_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def listed() -> list[Any]:
+        return [OWN_GOAL]
+
+    client = Client(vendor_id="v", sink=_CollectingSink(), tools=listed)  # type: ignore[arg-type]
+    with caplog.at_level(logging.WARNING, logger="baton"):
+        client.serve(_call("own", {"user_goal": "a"}), Vendor())
+    client.close()
+    assert any(r.exc_info and "not async" in str(r.exc_info[1]) for r in caplog.records)
+
+
+@CLIENTS
+def test_a_null_cursor_is_the_first_page(harness: Any) -> None:
+    h = harness()
+    message = {**_list(), "params": {"cursor": None}}
+    assert REPORT in _names(h.serve(message, Vendor()))
+
+
+def test_tools_already_known_do_not_count_against_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("baton._library_serve._REMEMBERED_TOOLS", 3)
+    many = [{**OWN_GOAL, "name": f"own{i}"} for i in range(3)]
+    client = Client(vendor_id="v", sink=_CollectingSink(), tools=many)
+    vendor = Vendor(many[1:2])
+    client.serve(_list(), vendor)
+    client.serve(_call("own0", {"user_goal": "kept"}), vendor)
+    client.close()
+    assert vendor.seen[-1]["params"]["arguments"] == {"user_goal": "kept"}

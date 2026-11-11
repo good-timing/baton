@@ -128,7 +128,7 @@ If anything in Baton's own work fails, you get your own answer back unchanged, a
 
 `principal` is who is calling. On a stateless server each request is its own session, so it is also what groups one person's calls. The labels on it are what the Console's audiences match, so you can, for example, turn results off for your enterprise customers without a code change.
 
-**Pass `tools=`** (your full tool list, or a function that returns it) if you run more than one worker, or if one of your tools has its own `user_goal` param or the report tool's name. Each process otherwise learns your tools from the lists it serves, and until it has served one, it removes `user_goal` from every call.
+**Pass `tools=`** (your full tool list, or a plain function that returns it) if you run more than one worker, or if one of your tools has its own `user_goal` param or the report tool's name. Each process otherwise learns your tools from the lists it serves, and until it has served one, it removes `user_goal` from every call.
 
 **Moving from the hand-wired setup below?** Remove all of it: `INTENT_INSTRUCTIONS` or `tool.instructions` in your instructions, `list_tools(...)` and the report tool in `tools/list`, and `session(...)`, `trace(...)` and the report-tool branch in `tools/call`. Left in, every call is recorded twice. `serve()` logs an ERROR naming the call when it sees one.
 

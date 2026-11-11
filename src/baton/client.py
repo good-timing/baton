@@ -1199,7 +1199,10 @@ class _Sessions:
     def _flag_double_wiring(self, call: str) -> None:
         """An ERROR, once per process, when the vendor's code inside ``serve()``
         still calls what ``serve()`` now does: the old wiring was left in."""
-        if _IN_DISPATCH.get() is not self or call in _DOUBLE_WIRING_LOGGED:
+        mark = _IN_DISPATCH.get()
+        if mark is None or not mark.active or mark.owner is not self:
+            return
+        if call in _DOUBLE_WIRING_LOGGED:
             return
         _DOUBLE_WIRING_LOGGED.add(call)
         logger.error(
@@ -1326,7 +1329,6 @@ class _Sessions:
         a ``clientInfo`` in it is preferred to ``client_info``. A bad value is
         logged and dropped, never raised.
         """
-        self._flag_double_wiring("session")
         block = new_session(
             session_id=session_id,
             principal=principal,
@@ -1586,20 +1588,38 @@ class Client(_Sessions):
         comes back unchanged apart from Baton's additions. A failure in Baton's
         own work is logged, never raised.
         """
+        # Baton's own session and trace here are not the vendor's, even inside
+        # another serve()'s dispatch.
+        token = _IN_DISPATCH.set(None)
+        try:
+            return self._serve_unmarked(message, dispatch, principal, headers, session_id)
+        finally:
+            _IN_DISPATCH.reset(token)
+
+    def _serve_unmarked(
+        self,
+        message: Any,
+        dispatch: Callable[[Any], Any],
+        principal: Principal | Organization | None,
+        headers: Mapping[str, Any] | None,
+        session_id: str | None,
+    ) -> Any:
         request = self._request(message)
         if request is None:
-            return _inside(self, dispatch, message)
+            return dispatch(message)
         with ExitStack() as stack:
             opened = self._open(stack, request, message, principal, headers, session_id)
             if opened is None:
-                return _inside(self, dispatch, without_user_goal(message))
+                return dispatch(without_user_goal(message))
             caller, call = opened
             if request.method != TOOL_CALL:
-                answer, event = self._shaped(request, _inside(self, dispatch, message), caller)
+                listed = request.method == TOOL_LIST
+                answer = _inside(self, dispatch, message) if listed else dispatch(message)
+                answer, event = self._shaped(request, answer, caller)
                 self._send_snapshot(event)
                 return answer
             if call is None:
-                return _inside(self, dispatch, message)
+                return dispatch(message)
             if call.answer is not None:
                 self._answer_ourselves(call)
                 return call.answer
@@ -2314,22 +2334,39 @@ class AsyncClient(_Sessions):
     ) -> Any:
         """Async equivalent of ``Client.serve``. ``dispatch`` may return its
         answer or an awaitable of it."""
+        # Baton's own session and trace here are not the vendor's, even inside
+        # another serve()'s dispatch.
+        token = _IN_DISPATCH.set(None)
+        try:
+            return await self._serve_unmarked(message, dispatch, principal, headers, session_id)
+        finally:
+            _IN_DISPATCH.reset(token)
+
+    async def _serve_unmarked(
+        self,
+        message: Any,
+        dispatch: Callable[[Any], Any],
+        principal: Principal | Organization | None,
+        headers: Mapping[str, Any] | None,
+        session_id: str | None,
+    ) -> Any:
         request = self._request(message)
         if request is None:
-            return await _dispatched(self, dispatch, message)
+            return await _dispatched(dispatch, message)
         async with AsyncExitStack() as stack:
             opened = self._open(stack, request, message, principal, headers, session_id)
             if opened is None:
-                return await _dispatched(self, dispatch, without_user_goal(message))
+                return await _dispatched(dispatch, without_user_goal(message))
             caller, call = opened
             if request.method != TOOL_CALL:
-                answer, event = self._shaped(
-                    request, await _dispatched(self, dispatch, message), caller
+                answer = await _dispatched(
+                    dispatch, message, marked_for=self if request.method == TOOL_LIST else None
                 )
+                answer, event = self._shaped(request, answer, caller)
                 await self._send_snapshot(event)
                 return answer
             if call is None:
-                return await _dispatched(self, dispatch, message)
+                return await _dispatched(dispatch, message)
             if call.answer is not None:
                 await self._answer_ourselves(call)
                 return call.answer
@@ -2338,7 +2375,7 @@ class AsyncClient(_Sessions):
             except Exception:
                 logger.exception("baton: serve() could not trace the call")
                 trace = None
-            answer = await _dispatched(self, dispatch, call.message)
+            answer = await _dispatched(dispatch, call.message, marked_for=self)
             self._record(trace, answer, caller)
             return answer
 
@@ -2405,23 +2442,41 @@ class AsyncClient(_Sessions):
         await safe_emit(self._sink, build, logger)
 
 
-_IN_DISPATCH: ContextVar[object | None] = ContextVar("baton_serve_dispatch", default=None)
+class _Mark:
+    """That ``owner``'s ``serve()`` is running the vendor's dispatch. A task the
+    dispatch starts copies the context, so the mark ends rather than the variable."""
+
+    __slots__ = ("active", "owner")
+
+    def __init__(self, owner: object) -> None:
+        self.owner = owner
+        self.active = True
+
+
+_IN_DISPATCH: ContextVar[_Mark | None] = ContextVar("baton_serve_dispatch", default=None)
 _DOUBLE_WIRING_LOGGED: set[str] = set()
 
 
 def _inside(owner: object, dispatch: Callable[[Any], Any], message: Any) -> Any:
-    """``dispatch(message)``, marked as running inside ``owner``'s ``serve()``."""
-    token = _IN_DISPATCH.set(owner)
+    """``dispatch(message)``, marked as one whose work ``owner``'s ``serve()`` records."""
+    mark = _Mark(owner)
+    token = _IN_DISPATCH.set(mark)
     try:
         return dispatch(message)
     finally:
+        mark.active = False
         _IN_DISPATCH.reset(token)
 
 
-async def _dispatched(owner: object, dispatch: Callable[[Any], Any], message: Any) -> Any:
-    token = _IN_DISPATCH.set(owner)
+async def _dispatched(
+    dispatch: Callable[[Any], Any], message: Any, *, marked_for: object = None
+) -> Any:
+    mark = _Mark(marked_for) if marked_for is not None else None
+    token = _IN_DISPATCH.set(mark)
     try:
         answer = dispatch(message)
         return await answer if inspect.isawaitable(answer) else answer
     finally:
+        if mark is not None:
+            mark.active = False
         _IN_DISPATCH.reset(token)
