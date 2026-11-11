@@ -1,6 +1,7 @@
-/tmp/tmp.aHTFTiGmKu/published/lib/python3.12/site-packages/baton/sinks.py:104: UserWarning: Baton HTTP sink buffer full (1000); oldest events dropped. Further overflows will be silent.
+/tmp/tmp.OykvugczPd/published/lib/python3.12/site-packages/baton/sinks.py:104: UserWarning: Baton HTTP sink buffer full (1000); oldest events dropped. Further overflows will be silent.
   await sink.write(event)
 baton: the sink closed with 1000 event(s) unsent.
 baton: the sink closed with 1000 event(s) unsent.
 baton: delivering again; 40806 event(s) lost before this: buffer_full 38806, unsent_at_close 2000.
 baton: the sink closed with 1000 event(s) unsent.
+baton: delivering again; 40403 event(s) lost before this: buffer_full 39403, unsent_at_close 1000.
