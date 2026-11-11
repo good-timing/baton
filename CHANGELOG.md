@@ -8,6 +8,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Changed
+
+- **A share samples principals only.** A caller whose `resolve_principal` returns an `Organization` and no `Principal` is no longer placed in a Console share by the organization's id. To target a company, give its `Organization` a label.
+
 ## 1.1.1: the snapshot names a server overlay only when the server can apply one
 
 ### Fixed
