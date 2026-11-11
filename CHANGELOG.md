@@ -33,6 +33,11 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   raised inside a library trace**, as the MCP adapters do: it may quote what
   the tool fetched. The error event keeps its `error_type` and carries
   `result_capture: "off"`. Text passed to `observed()` by name is still sent.
+- **A vendor tool with the report tool's name is kept**, on both MCP
+  adapters and in `serve()`. Baton adds no report tool, leaves the report
+  sentence out of the instructions, and warns once. Before, the standalone
+  adapter replaced the vendor's tool with Baton's, and the official one
+  kept the vendor's but still pointed agents at it as the report tool.
 - **No tool whose root schema is `$ref`, `oneOf`, `anyOf` or `allOf` gets
   `user_goal`**, on the adapters as on the library path: a property added
   beside such a root can change what the schema accepts.

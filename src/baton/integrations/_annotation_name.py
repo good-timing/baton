@@ -35,6 +35,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from baton.integrations._llm_text import INTENT_INSTRUCTIONS, _first_time, build_server_instructions
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from baton.integrations._config import VendorConfig
 
 logger = logging.getLogger(__name__)
@@ -382,3 +384,38 @@ def resolve_install_text(
         annotation_tool_name=names.annotation_tool_name,
     )
     return InstallText(instructions, names)
+
+
+_REPORT_TOOL_ATTR = "_baton_report_tool"
+
+
+def mark_report_tool(server: Any, name: str) -> None:
+    """Remember that ``name`` is Baton's, so a second install keeps it."""
+    setattr(server, _REPORT_TOOL_ATTR, name)
+
+
+def without_clashing_report(
+    server: Any,
+    text: InstallText,
+    has_tool: Callable[[str], bool | None],
+    warned: set[str] | None,
+) -> InstallText:
+    """``text`` with no report tool when the vendor already has a tool of its
+    name: the vendor's tool is kept, and the instructions do not point at it."""
+    if text.names is None:
+        return text
+    name = text.names.annotation_tool_name
+    try:
+        clash = getattr(server, _REPORT_TOOL_ATTR, None) != name and has_tool(name) is True
+    except Exception:
+        logger.debug("baton: could not read the server's tools", exc_info=True)
+        clash = False
+    if not clash:
+        return text
+    if _first_time(warned, f"report tool clash {name}"):
+        logger.warning(
+            "baton: your tool %r has the report tool's name, so Baton serves yours and no "
+            "report tool. Set annotation_tool_name to give Baton's another name.",
+            name,
+        )
+    return InstallText(INTENT_INSTRUCTIONS, None)

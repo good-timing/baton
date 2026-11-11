@@ -56,7 +56,12 @@ from fastmcp import FastMCP
 from fastmcp.server.context import Context
 
 from baton._optout import capture_disabled
-from baton.integrations._annotation_name import InstallText, resolve_install_text
+from baton.integrations._annotation_name import (
+    InstallText,
+    mark_report_tool,
+    resolve_install_text,
+    without_clashing_report,
+)
 from baton.integrations._client_observed import meta_to_dict
 from baton.integrations._config import (
     VendorConfig,
@@ -203,6 +208,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
     """Install into one server with state its siblings share (``baton.create_baton``)."""
     scrubber, tenant_id, sink = shared.scrubber, shared.tenant_id, shared.sink
     counter, fallback_session_id = server_session(shared)
+    text = without_clashing_report(mcp, text, lambda name: _has_own_tool(mcp, name), shared.warned)
     annotation_tool_name = text.names.annotation_tool_name if text.names else ""
 
     # Captured BEFORE any Baton mutation below — the vendor-true baseline the
@@ -323,6 +329,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
             resolve_principal_hook=config.resolve_principal,
             capture_settings=shared.capture_settings,
         )
+        mark_report_tool(mcp, annotation_tool_name)
 
     return BatonHandle(
         sink=sink,
@@ -331,6 +338,17 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
         session_id=fallback_session_id,
         shared=shared,
     )
+
+
+def _has_own_tool(mcp: Any, name: str) -> bool | None:
+    """Whether the server registered a tool named ``name``; ``None`` when this
+    fastmcp keeps its tools where Baton cannot read them."""
+    provider = getattr(mcp, "_local_provider", None)
+    if provider is not None:
+        # fastmcp 3+ keys a tool as "tool:<name>@<version>".
+        return any(key.partition("@")[0] == f"tool:{name}" for key in provider._components)
+    manager = getattr(mcp, "_tool_manager", None)
+    return name in manager._tools if manager is not None else None
 
 
 def _unknown_tool_text(name: str) -> str:

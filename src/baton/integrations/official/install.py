@@ -49,7 +49,12 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from baton._optout import capture_disabled
-from baton.integrations._annotation_name import InstallText, resolve_install_text
+from baton.integrations._annotation_name import (
+    InstallText,
+    mark_report_tool,
+    resolve_install_text,
+    without_clashing_report,
+)
 from baton.integrations._config import (
     VendorConfig,
 )
@@ -133,6 +138,9 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
     """Install into one server with state its siblings share (``baton.create_baton``)."""
     scrubber, tenant_id, sink = shared.scrubber, shared.tenant_id, shared.sink
     counter, fallback_session_id = server_session(shared)
+    text = without_clashing_report(
+        mcp, text, lambda name: name in get_tool_registry(mcp), shared.warned
+    )
     annotation_tool_name = text.names.annotation_tool_name if text.names else ""
 
     # Captured BEFORE any Baton mutation below — the vendor-true baseline the
@@ -231,6 +239,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
             capture_settings=shared.capture_settings,
             scrubber=scrubber,
         )
+        mark_report_tool(mcp, annotation_tool_name)
 
     return BatonHandle(
         sink=sink,
