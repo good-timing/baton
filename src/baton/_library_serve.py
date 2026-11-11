@@ -10,28 +10,29 @@ import logging
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
-from baton._capture_settings import CaptureSettings
+from baton._capture_settings import CaptureSettings, SettingsDocument
 from baton._library_surface import INTENT_PARAM_MODE, Surface, serve_tools
 from baton._report_tool import ReportTool
-from baton._result_capture import WITHHELD, withholding
 from baton.integrations._annotation_name import AnnotationNames
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
     ErrorResultFields,
-    is_error_result,
+    jsonrpc_error_fields,
     returned_error_fields,
 )
 from baton.integrations._identity_adapter import ResolvedCaller
 from baton.integrations._llm_text import (
+    USER_GOAL_PARAM_NAME,
     Goals,
     build_refusal_text,
     build_report_pointer,
     join_instructions,
     pop_goal_params,
+    unknown_tool_text,
 )
-from baton.integrations._per_caller import baton_paragraphs, tools_for_caller
+from baton.integrations._per_caller import baton_paragraphs, pointer_shown, tools_for_caller
 from baton.integrations._surface import adapter_seam_augmentations
 
 logger = logging.getLogger(__name__)
@@ -77,33 +78,40 @@ class Call:
     goals: Goals
     message: Any
     """What dispatch gets."""
+    kind: Literal["forward", "report", "refused", "hidden"] = "forward"
     answer: dict[str, Any] | None = None
-    """Baton's own answer, when dispatch is not called."""
+    """Baton's own answer, unless the call is forwarded."""
     report: dict[str, Any] | None = None
     """``annotate()``'s arguments, for an accepted report."""
-    hidden: bool = False
+
+    def trace_kwargs(self) -> dict[str, Any]:
+        intent, expected, workflow = self.goals
+        return {
+            "tool_name": self.name,
+            "intent": intent,
+            "expected_outcome": expected,
+            "workflow": workflow,
+            "params": self.arguments,
+        }
 
 
 @dataclass(frozen=True)
 class Listed:
     answer: Any
     surface: Surface | None
-    seam: dict[str, Any]
+    """``None`` for a paged list: one page is not the server's surface."""
+    seam: Callable[[], dict[str, Any]]
     server_overlay: str | None
+
+
+Report = tuple[AnnotationNames, ReportTool]
 
 
 class Serving:
     """What one client's ``serve()`` remembers between requests: the vendor's
-    ``initialize`` values and which tools declare ``user_goal`` themselves."""
+    ``initialize`` values and each listed tool's ``user_goal`` disposition."""
 
-    def __init__(
-        self,
-        *,
-        names: AnnotationNames | None,
-        report: ReportTool | None,
-        settings: CaptureSettings | None,
-    ) -> None:
-        self._names = names
+    def __init__(self, *, report: Report | None, settings: CaptureSettings | None) -> None:
         self._report = report
         self._settings = settings
         self._lock = threading.Lock()
@@ -113,8 +121,15 @@ class Serving:
             "instructions": None,
         }
         self._dispositions: dict[str, dict[str, str]] = {}
-        self._native_goal = False
         self._vendor_has_report_name = False
+
+    def _ours(self) -> Report | None:
+        """The report tool, unless a vendor tool has its name."""
+        with self._lock:
+            return None if self._vendor_has_report_name else self._report
+
+    def _document(self) -> SettingsDocument | None:
+        return self._settings.document if self._settings is not None else None
 
     def initialized(self, answer: Any) -> Any:
         result = _result(answer)
@@ -127,19 +142,27 @@ class Serving:
                 "capabilities": result.get("capabilities"),
                 "instructions": vendor,
             }
-            native_goal = self._native_goal
-        document = self._settings.document if self._settings is not None else None
-        overlay = document.server_overlay if document is not None else None
-        pointer = None
-        if self._names is not None and (document is None or document.reports_on_for_anyone("on")):
-            pointer = build_report_pointer(
-                vendor_display_name=self._names.vendor_display_name,
-                annotation_tool_name=self._names.annotation_tool_name,
+            native_goal = any(
+                d.get(USER_GOAL_PARAM_NAME) == "native" for d in self._dispositions.values()
             )
-        ours, _ = baton_paragraphs(pointer, overlay, subagent_line=not native_goal)
+        report = self._ours()
+        document = self._document()
+        pointer = (
+            build_report_pointer(
+                vendor_display_name=report[0].vendor_display_name,
+                annotation_tool_name=report[0].annotation_tool_name,
+            )
+            if report is not None
+            else None
+        )
+        ours, _ = baton_paragraphs(
+            pointer if pointer_shown(pointer, document) else None,
+            document.server_overlay if document is not None else None,
+            subagent_line=not native_goal,
+        )
         return {**answer, "result": {**result, "instructions": join_instructions(vendor, ours)}}
 
-    def listed(self, answer: Any, caller: ResolvedCaller) -> Listed | None:
+    def listed(self, request: Request, answer: Any, caller: ResolvedCaller) -> Listed | None:
         result = _result(answer)
         tools = result.get("tools") if result is not None else None
         if result is None or not isinstance(tools, list):
@@ -147,55 +170,52 @@ class Serving:
         with self._lock:
             meta = dict(self._server_meta)
         served = serve_tools(tools, **meta)
-        report = self._report
-        clash = report is not None and any(
-            isinstance(tool, Mapping) and tool.get("name") == report.name for tool in tools
+        clash = self._report is not None and any(
+            isinstance(tool, Mapping) and tool.get("name") == self._report[1].name for tool in tools
         )
         with self._lock:
             if len(self._dispositions) + len(served.dispositions) > _REMEMBERED_TOOLS:
                 self._dispositions.clear()
             self._dispositions.update(served.dispositions)
-            self._native_goal = self._native_goal or any(
-                d.get("user_goal") == "native" for d in served.dispositions.values()
-            )
             first_clash = clash and not self._vendor_has_report_name
             self._vendor_has_report_name = self._vendor_has_report_name or clash
-            ours = report is not None and not self._vendor_has_report_name
         if first_clash:
             logger.warning(
                 "baton: your tool %r has the report tool's name, so Baton serves yours "
                 "and no report tool. Set vendor_display_name to give Baton's another name.",
-                report.name if report is not None else None,
+                self._report[1].name if self._report is not None else None,
             )
+        report = self._ours()
+        last_page = result.get("nextCursor") is None
         out = list(served.tools)
-        # Added once, on the last page of a paged list.
-        if ours and report is not None and result.get("nextCursor") is None:
+        if report is not None and last_page:
+            tool = report[1]
             out.append(
                 {
-                    "name": report.name,
-                    "description": report.description,
-                    "inputSchema": report.input_schema,
+                    "name": tool.name,
+                    "description": tool.description,
+                    "inputSchema": tool.input_schema,
                 }
             )
-        document = self._settings.document if self._settings is not None else None
+        document = self._document()
         overlay = document.server_overlay if document is not None else None
         listed = tools_for_caller(
             {**result, "tools": out},
             caller,
             intent_param_mode=INTENT_PARAM_MODE,
-            annotation_tool_name=report.name if ours and report is not None else None,
+            annotation_tool_name=report[1].name if report is not None else None,
         )
-        seam = adapter_seam_augmentations(
-            names=self._names if ours else None,
-            intent_param_mode=INTENT_PARAM_MODE,
-            surface_tools=served.surface[0]["tools"] if served.surface is not None else [],
-            applies_overlays=self._settings is not None,
-            server_overlay=overlay,
-        )
+        surface = served.surface if last_page and "cursor" not in request.params else None
         return Listed(
             {**answer, "result": listed},
-            served.surface,
-            seam,
+            surface,
+            lambda: adapter_seam_augmentations(
+                names=report[0] if report is not None else None,
+                intent_param_mode=INTENT_PARAM_MODE,
+                surface_tools=surface[0]["tools"] if surface is not None else [],
+                applies_overlays=self._settings is not None,
+                server_overlay=overlay,
+            ),
             overlay.id if overlay is not None else None,
         )
 
@@ -209,85 +229,127 @@ class Serving:
             return None
         with self._lock:
             dispositions = self._dispositions.get(name)
-            ours = self._report is not None and not self._vendor_has_report_name
-        report = self._report if ours else None
-        if report is not None and name == report.name:
-            if caller.report_mode("on") == "off":
-                return self._hidden(name, dict(arguments), (None, None, None), message)
-            kwargs = report.annotate_kwargs(arguments)
-            body: dict[str, Any] = (
-                {"ok": True}
-                if kwargs is not None
-                else {
-                    "ok": False,
-                    "error": build_refusal_text(annotation_tool_name=name, overlay=caller.overlay),
-                }
-            )
-            text = json.dumps(body)
-            return Call(
-                name,
-                dict(arguments),
-                (None, None, None),
-                message,
-                answer=_answer(
-                    message,
-                    {"content": [{"type": "text", "text": text}], "structuredContent": body},
-                ),
-                report=kwargs,
-            )
+        report = self._ours()
+        if report is not None and name == report[1].name:
+            return self._report_call(report[1], name, arguments, message, caller)
         stripped = dict(arguments)
         goals = pop_goal_params(name, stripped, dispositions)
         if caller.overlay is not None and name in caller.overlay.hidden_tools:
-            return self._hidden(name, stripped, goals, message)
-        forwarded = (
-            message
-            if len(stripped) == len(arguments)
-            else {**message, "params": {**request.params, "arguments": stripped}}
-        )
-        return Call(name, stripped, goals, forwarded)
+            return _hidden(name, stripped, goals, message)
+        return Call(name, stripped, goals, _forwarded(message, request.params, stripped, arguments))
 
     @staticmethod
-    def _hidden(
-        name: str, arguments: dict[str, Any], goals: Goals, message: Mapping[str, Any]
+    def _report_call(
+        tool: ReportTool,
+        name: str,
+        arguments: Mapping[str, Any],
+        message: Mapping[str, Any],
+        caller: ResolvedCaller,
     ) -> Call:
-        text = f"Unknown tool: {name}"
+        if caller.report_mode("on") == "off":
+            return _hidden(name, dict(arguments), _NO_GOALS, message)
+        kwargs = tool.annotate_kwargs(arguments)
+        body: dict[str, Any] = (
+            {"ok": True}
+            if kwargs is not None
+            else {
+                "ok": False,
+                "error": build_refusal_text(annotation_tool_name=name, overlay=caller.overlay),
+            }
+        )
         return Call(
             name,
-            arguments,
-            goals,
+            dict(arguments),
+            _NO_GOALS,
             message,
-            answer=_answer(message, {"content": [{"type": "text", "text": text}], "isError": True}),
-            hidden=True,
+            kind="report" if kwargs is not None else "refused",
+            answer=_answer(
+                message,
+                {
+                    "content": [{"type": "text", "text": json.dumps(body)}],
+                    "structuredContent": body,
+                },
+            ),
+            report=kwargs,
         )
+
+
+_NO_GOALS: Goals = (None, None, None)
+
+
+def _hidden(name: str, arguments: dict[str, Any], goals: Goals, message: Mapping[str, Any]) -> Call:
+    result = {"content": [{"type": "text", "text": unknown_tool_text(name)}], "isError": True}
+    return Call(name, arguments, goals, message, kind="hidden", answer=_answer(message, result))
+
+
+def _forwarded(
+    message: Mapping[str, Any],
+    params: Mapping[str, Any],
+    stripped: dict[str, Any],
+    arguments: Mapping[str, Any],
+) -> Any:
+    if len(stripped) == len(arguments):
+        return message
+    return {**message, "params": {**params, "arguments": stripped}}
+
+
+def without_user_goal(message: Any) -> Any:
+    """``message`` without ``user_goal``, for when Baton's plan failed: the
+    list it served may have added it. Never raises."""
+    try:
+        params = message["params"]
+        arguments = params["arguments"]
+        if USER_GOAL_PARAM_NAME not in arguments:
+            return message
+        stripped = {k: v for k, v in arguments.items() if k != USER_GOAL_PARAM_NAME}
+        return {**message, "params": {**params, "arguments": stripped}}
+    except Exception:
+        return message
 
 
 def hidden_fields(call: Call, scrubber: Callable[[Any], Any]) -> ErrorResultFields:
-    """The error fields of a hidden tool's answer: Baton's text, kept under any mode."""
-    assert call.answer is not None
-    return returned_error_fields(mode="full", scrubber=scrubber, result=call.answer["result"])
+    """Baton's own text, kept under any mode."""
+    answer = call.answer
+    assert answer is not None
+    return _fields(
+        lambda: returned_error_fields(mode="full", scrubber=scrubber, result=answer["result"])
+    )
 
 
 def record(trace: Any, answer: Any, mode: str, scrubber: Callable[[Any], Any]) -> None:
     """Record dispatch's answer on ``trace``: a JSON-RPC error, a tool error, or the result."""
     if isinstance(answer, Mapping) and isinstance(answer.get("error"), Mapping):
         error = answer["error"]
-        fields = (
-            ErrorResultFields(error_body="", result_capture=WITHHELD)
-            if withholding(mode)
-            else ErrorResultFields(
-                error_body=str(scrubber(str(error.get("message", ""))))[:2000],
-                result=scrubber(dict(error)),
-            )
+        trace._observed_failure(
+            JSONRPC_ERROR_TYPE,
+            _fields(lambda: jsonrpc_error_fields(mode=mode, scrubber=scrubber, error=error)),
         )
-        trace._observed_failure(JSONRPC_ERROR_TYPE, fields)
         return
     result = _result(answer)
-    if is_error_result(result):
+    if _is_error(result):
         trace._observed_failure(
-            TOOL_ERROR_TYPE, returned_error_fields(mode=mode, scrubber=scrubber, result=result)
+            TOOL_ERROR_TYPE,
+            _fields(lambda: returned_error_fields(mode=mode, scrubber=scrubber, result=result)),
         )
         return
     trace.observed(result if result is not None else answer)
+
+
+def _fields(build: Callable[[], ErrorResultFields]) -> ErrorResultFields:
+    """A raising scrubber loses the error's text, not the fact that the call failed."""
+    try:
+        return build()
+    except Exception:
+        logger.exception("baton: the configured scrubber raised on an error answer")
+        return ErrorResultFields(error_body="")
+
+
+def _is_error(result: Mapping[str, Any] | None) -> bool:
+    return (
+        result is not None
+        and isinstance(result.get("content"), list)
+        and result.get("isError") is True
+    )
 
 
 def _result(answer: Any) -> dict[str, Any] | None:

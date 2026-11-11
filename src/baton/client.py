@@ -117,11 +117,13 @@ from baton._library_serve import (
     hidden_fields,
     read_request,
     record,
+    without_user_goal,
 )
 from baton._library_session import (
     LibrarySession,
     enter_block,
     exit_block,
+    in_block,
     new_session,
     session_for_call,
 )
@@ -151,7 +153,11 @@ from baton.events import (
     ToolCallStartPayload,
 )
 from baton.identity import Organization, Principal
-from baton.integrations._annotation_name import AnnotationNames
+from baton.integrations._annotation_name import (
+    AnnotationNames,
+    derive_annotation_tool_name,
+    tool_name_for_display_name,
+)
 from baton.integrations._config import console_settings, validate_settings
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
@@ -545,7 +551,7 @@ def _resolve_client_config(
                 if settings == "console"
                 else None
             ),
-            report=_report(report_on, vendor_display_name or parsed.vendor_id),
+            report=_report(report_on, parsed.vendor_id, vendor_display_name),
         )
 
     if sink is None:
@@ -573,16 +579,21 @@ def _resolve_client_config(
         tenant_id=tenant_id_resolved or vendor_id_resolved,
         consent_token=_resolve_consent_token(consent_token),
         result_capture_mode=mode,
-        report=_report(report_on, vendor_display_name or vendor_id_resolved),
+        report=_report(report_on, vendor_id_resolved, vendor_display_name),
     )
 
 
-def _report(on: bool, display_name: str) -> tuple[AnnotationNames, ReportTool] | None:
-    """The report tool ``serve()`` adds, or ``None`` with reports off."""
+def _report(
+    on: bool, vendor_id: str, display_name: str | None
+) -> tuple[AnnotationNames, ReportTool] | None:
+    """The report tool ``serve()`` adds, or ``None`` with reports off. Named
+    as the adapters name it, falling back to ``<vendor_id>_annotate``."""
     if not on:
         return None
-    tool = report_tool(vendor_display_name=display_name)
-    return AnnotationNames(display_name, tool.name), tool
+    display = display_name or vendor_id
+    name = derive_annotation_tool_name(vendor_id, tool_name_for_display_name(display))
+    tool = report_tool(vendor_display_name=display, name=name)
+    return AnnotationNames(display, tool.name), tool
 
 
 def _resolve_consent_token(explicit: str | None) -> str:
@@ -1123,17 +1134,19 @@ class _Sessions:
         session_id: str | None,
     ) -> tuple[ResolvedCaller, Call | None] | None:
         """Enter ``serve()``'s session block and plan a ``tools/call``; ``None``
-        when that fails, and the message goes to dispatch as it came."""
+        when that fails. A block the vendor opened around ``serve()`` is kept
+        unless this call names its own caller or session."""
         try:
-            stack.enter_context(
-                self.session(
-                    session_id=session_id,
-                    principal=principal,
-                    client_info=request.client_info,
-                    headers=headers,
-                    meta=request.meta,
+            if not in_block(self) or (principal, headers, session_id) != (None, None, None):
+                stack.enter_context(
+                    self.session(
+                        session_id=session_id,
+                        principal=principal,
+                        client_info=request.client_info,
+                        headers=headers,
+                        meta=request.meta,
+                    )
                 )
-            )
             caller = session_for_call(self, self._capture_settings).caller
             if request.method != TOOL_CALL:
                 return caller, None
@@ -1150,7 +1163,7 @@ class _Sessions:
         try:
             if request.method != TOOL_LIST:
                 return self._serving.initialized(answer), None
-            listed = self._serving.listed(answer, caller)
+            listed = self._serving.listed(request, answer, caller)
             if listed is None:
                 return answer, None
             return listed.answer, self._snapshot_once(
@@ -1177,19 +1190,8 @@ class _Sessions:
                 record(trace, outcome, mode, self._scrubber)
         except Exception:
             logger.exception("baton: serve() could not record the tool call")
-            # The end goes out with no result, without warning the vendor
-            # that they forgot observed().
-            trace._observed_result = None
-
-    def _trace_kwargs(self, call: Call) -> dict[str, Any]:
-        intent, expected, workflow = call.goals
-        return {
-            "tool_name": call.name,
-            "intent": intent,
-            "expected_outcome": expected,
-            "workflow": workflow,
-            "params": call.arguments,
-        }
+            with contextlib.suppress(Exception):
+                trace.observed(None)
 
     def _start_settings(self, settings: CaptureSettings | None) -> None:
         self._capture_settings = settings
@@ -1221,9 +1223,7 @@ class _Sessions:
         capabilities: Mapping[str, Any] | None,
         instructions: str | None,
     ) -> tuple[list[Any], SurfaceSnapshotEvent | None]:
-        """The tools to serve, and the snapshot to send if this surface has not
-        been sent. The hash is marked sent here, and unmarked if the event
-        cannot be built or written."""
+        """The tools to serve, and the snapshot to send if this surface has not been sent."""
         served = serve_tools(
             tools, server_info=server_info, capabilities=capabilities, instructions=instructions
         )
@@ -1232,7 +1232,7 @@ class _Sessions:
     def _snapshot_once(
         self,
         surface: Surface | None,
-        seam: dict[str, Any] | None = None,
+        seam: Callable[[], dict[str, Any]] | None = None,
         server_overlay: str | None = None,
     ) -> SurfaceSnapshotEvent | None:
         """The snapshot to send if this surface has not been sent. The hash is
@@ -1246,7 +1246,9 @@ class _Sessions:
             self._sent_surfaces.mark(digest, server_overlay)
         event = cast(
             SurfaceSnapshotEvent | None,
-            build_or_none(lambda: self._snapshot_event(payload, digest, seam), logger),
+            build_or_none(
+                lambda: self._snapshot_event(payload, digest, seam() if seam else None), logger
+            ),
         )
         if event is None:
             self._unmark_surface(digest)
@@ -1398,11 +1400,7 @@ class Client(_Sessions):
         self._closing_thread: int | None = None
         self._init_surfaces()
         self._start_settings(resolved.capture_settings)
-        self._serving = Serving(
-            names=resolved.report[0] if resolved.report else None,
-            report=resolved.report[1] if resolved.report else None,
-            settings=self._capture_settings,
-        )
+        self._serving = Serving(report=resolved.report, settings=self._capture_settings)
 
     def trace(
         self,
@@ -1566,7 +1564,7 @@ class Client(_Sessions):
         with ExitStack() as stack:
             opened = self._open(stack, request, message, principal, headers, session_id)
             if opened is None:
-                return dispatch(message)
+                return dispatch(without_user_goal(message))
             caller, call = opened
             if request.method != TOOL_CALL:
                 answer, event = self._shaped(request, dispatch(message), caller)
@@ -1578,7 +1576,7 @@ class Client(_Sessions):
                 self._answer_ourselves(call)
                 return call.answer
             try:
-                trace = stack.enter_context(self.trace(**self._trace_kwargs(call)))
+                trace = stack.enter_context(self.trace(**call.trace_kwargs()))
             except Exception:
                 logger.exception("baton: serve() could not trace the call")
                 trace = None
@@ -1594,8 +1592,8 @@ class Client(_Sessions):
         try:
             if call.report is not None:
                 self.annotate(**call.report)
-            elif call.hidden:
-                with self.trace(**self._trace_kwargs(call)) as trace:
+            elif call.kind == "hidden":
+                with self.trace(**call.trace_kwargs()) as trace:
                     trace._observed_failure(
                         TOOL_ERROR_TYPE, hidden_fields(call, self._scrubber), "tool_hidden"
                     )
@@ -2153,11 +2151,7 @@ class AsyncClient(_Sessions):
         self._closing: asyncio.Future[None] | None = None
         self._init_surfaces()
         self._start_settings(resolved.capture_settings)
-        self._serving = Serving(
-            names=resolved.report[0] if resolved.report else None,
-            report=resolved.report[1] if resolved.report else None,
-            settings=self._capture_settings,
-        )
+        self._serving = Serving(report=resolved.report, settings=self._capture_settings)
 
     def trace(
         self,
@@ -2286,7 +2280,7 @@ class AsyncClient(_Sessions):
         async with AsyncExitStack() as stack:
             opened = self._open(stack, request, message, principal, headers, session_id)
             if opened is None:
-                return await _dispatched(dispatch, message)
+                return await _dispatched(dispatch, without_user_goal(message))
             caller, call = opened
             if request.method != TOOL_CALL:
                 answer, event = self._shaped(request, await _dispatched(dispatch, message), caller)
@@ -2298,7 +2292,7 @@ class AsyncClient(_Sessions):
                 await self._answer_ourselves(call)
                 return call.answer
             try:
-                trace = await stack.enter_async_context(self.trace(**self._trace_kwargs(call)))
+                trace = await stack.enter_async_context(self.trace(**call.trace_kwargs()))
             except Exception:
                 logger.exception("baton: serve() could not trace the call")
                 trace = None
@@ -2314,8 +2308,8 @@ class AsyncClient(_Sessions):
         try:
             if call.report is not None:
                 await self.annotate(**call.report)
-            elif call.hidden:
-                async with self.trace(**self._trace_kwargs(call)) as trace:
+            elif call.kind == "hidden":
+                async with self.trace(**call.trace_kwargs()) as trace:
                     trace._observed_failure(
                         TOOL_ERROR_TYPE, hidden_fields(call, self._scrubber), "tool_hidden"
                     )

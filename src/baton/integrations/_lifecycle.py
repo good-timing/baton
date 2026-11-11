@@ -54,6 +54,7 @@ from baton.integrations._llm_text import (
     intent_source,
     pop_goal_params,
     scrub_goals,
+    unknown_tool_text,
 )
 from baton.integrations._mrtr import mcp_refusal, pause_refused, paused, resumes_a_pause
 from baton.integrations._per_caller import PerCallerSurface
@@ -107,7 +108,7 @@ class CallSeam:
     which strips ``user_goal`` alone (``pop_goal_params``)."""
     knows_tool: Callable[[str], bool | None] = lambda _name: None
     """Whether the server has the tool; ``None`` when the adapter cannot say."""
-    unknown_tool_text: Callable[[str], str] = lambda name: f"Unknown tool: {name}"
+    unknown_tool_text: Callable[[str], str] = unknown_tool_text
     """The message the host answers a call to a tool it does not have with."""
 
 

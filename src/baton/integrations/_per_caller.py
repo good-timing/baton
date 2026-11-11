@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
-from baton._capture_settings import CaptureSettings
+from baton._capture_settings import CaptureSettings, SettingsDocument
 from baton._overlays import Action, Overlay, changed_text, overlaid, warn_skipped
 from baton._white_space import WHITE_SPACE
 from baton.integrations._annotation_name import InstallText
@@ -101,9 +101,7 @@ class PerCallerSurface:
             if document is self._document:
                 return
             overlay = document.server_overlay if document is not None else None
-            pointer_on = self._pointer is not None and (
-                document is None or document.reports_on_for_anyone("on")
-            )
+            pointer_on = pointer_shown(self._pointer, document)
             served = (pointer_on, overlay.id if overlay is not None else None)
             if served != self._served:
                 ours, subagent = self._instructions(pointer_on, overlay)
@@ -127,6 +125,11 @@ class PerCallerSurface:
             intent_param_mode=self._intent_param_mode,
             annotation_tool_name=self._annotation_tool_name,
         )
+
+
+def pointer_shown(pointer: str | None, document: SettingsDocument | None) -> bool:
+    """The report pointer is in the instructions while some audience has reports on."""
+    return pointer is not None and (document is None or document.reports_on_for_anyone("on"))
 
 
 def baton_paragraphs(

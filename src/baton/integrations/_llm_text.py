@@ -470,6 +470,11 @@ def build_annotation_tool_description(*, vendor_display_name: str) -> str:
     return _REPORT_TOOL_DESCRIPTION_TEMPLATE.format(vendor_display_name=vendor_display_name)
 
 
+def unknown_tool_text(name: str) -> str:
+    """What the official mcp package answers a call to a tool it does not have."""
+    return f"Unknown tool: {name}"
+
+
 def build_refusal_text(*, annotation_tool_name: str, overlay: Overlay | None = None) -> str:
     """What the annotation tool answers when a call has no account (SPEC §5.1.1),
     after the caller's ``overlay``."""

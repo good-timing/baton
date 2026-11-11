@@ -20,9 +20,10 @@ publish ``is_error``, and ``fastmcp`` 2.14.7 has no such field at all. On that
 floor there is nothing to read and nothing to reclassify, which is correct
 rather than a gap — ``is_error_result`` simply answers False.
 
-Everything here is duck-typed, never ``isinstance``-checked, for the reason
-``_is_mrtr_pause`` is: an import shim against one library's types would make
-this inert on the other adapter and untestable on whichever venv is installed.
+Everything here is duck-typed, never ``isinstance``-checked against a library's
+types, for the reason ``_is_mrtr_pause`` is: an import shim against one
+library's types would make this inert on the other adapter and untestable on
+whichever venv is installed. ``serve()``'s JSON dicts are read by key.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from baton._white_space import strip_white_space
 #: until 2026-10-02; that is unsupported, the ``isError`` read arrives there in
 #: ``cc75dee`` (2026-08-05), after its only tag. Same correction as SPEC §13.
 TOOL_ERROR_TYPE = "tool_error"
+ERROR_BODY_CAP = 2000
 
 # ⚠ No cap here, deliberately. The CALLER truncates AFTER scrubbing, matching
 # the raise path's `str(scrubber(str(exc)))[:2000]`. Cutting inside this helper
@@ -90,8 +92,6 @@ def is_error_result(value: Any) -> bool:
     try:
         if value is None:
             return False
-        if isinstance(value, Mapping):
-            return isinstance(value.get("content"), list) and value.get("isError") is True
         for name in ("is_error", "isError"):
             if hasattr(value, name):
                 if not isinstance(getattr(value, "content", None), list):
@@ -210,7 +210,7 @@ def returned_error_fields(
     if withholding(mode):
         return ErrorResultFields(error_body="", result_capture=WITHHELD)
     return ErrorResultFields(
-        error_body=str(scrubber(error_text(result)))[:2000],
+        error_body=str(scrubber(error_text(result)))[:ERROR_BODY_CAP],
         result=scrubber(envelope_to_jsonable(result)),
     )
 
@@ -252,7 +252,20 @@ def raised_error_fields(
     under ``"off"`` unless the vendor marked the message public."""
     if withholding(mode) and not marked_public(raised, tool_error):
         return ErrorResultFields(error_body="", result_capture=WITHHELD)
-    return ErrorResultFields(error_body=str(scrubber(str(raised)))[:2000])
+    return ErrorResultFields(error_body=str(scrubber(str(raised)))[:ERROR_BODY_CAP])
+
+
+def jsonrpc_error_fields(
+    *, mode: str, scrubber: Callable[[Any], Any], error: Mapping[str, Any]
+) -> ErrorResultFields:
+    """A JSON-RPC ``error`` answer's fields: the vendor's own message, so
+    withheld under ``"off"`` as a returned error is."""
+    if withholding(mode):
+        return ErrorResultFields(error_body="", result_capture=WITHHELD)
+    return ErrorResultFields(
+        error_body=str(scrubber(str(error.get("message", ""))))[:ERROR_BODY_CAP],
+        result=scrubber(dict(error)),
+    )
 
 
 def error_answer(text: str) -> Any:

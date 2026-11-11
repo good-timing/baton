@@ -150,6 +150,11 @@ def session_for_call(owner: object, settings: CaptureSettings | None = None) -> 
     return session if caller is session.caller else replace(session, caller=caller)
 
 
+def in_block(owner: object) -> bool:
+    entry = _current.get()
+    return entry is not None and entry[0] is owner
+
+
 def enter_block(owner: object, session: LibrarySession) -> Any:
     return _current.set((owner, session))
 

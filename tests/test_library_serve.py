@@ -359,8 +359,24 @@ def test_a_tool_whose_root_schema_is_composite_is_left_alone(harness: Any) -> No
     h = harness()
     vendor = Vendor([composite])
     assert _tool(h.serve(_list(), vendor), "pick")["inputSchema"] == composite["inputSchema"]
-    h.serve(_call("pick", {"user_goal": "theirs"}), vendor)
+    # It declares no user_goal, so the subagent sentence stays.
+    assert h.serve(_initialize(), vendor)["result"]["instructions"].endswith(INTENT_INSTRUCTIONS)
+
+
+@CLIENTS
+def test_a_tool_with_its_own_user_goal_keeps_it(harness: Any) -> None:
+    own = {
+        "name": "own",
+        "inputSchema": {"type": "object", "properties": {"user_goal": {"type": "string"}}},
+    }
+    h = harness()
+    vendor = Vendor([own])
+    h.serve(_list(), vendor)
+    h.serve(_call("own", {"user_goal": "theirs"}), vendor)
     assert vendor.seen[-1]["params"]["arguments"] == {"user_goal": "theirs"}
+    assert not h.serve(_initialize(), vendor)["result"]["instructions"].endswith(
+        INTENT_INSTRUCTIONS
+    )
 
 
 @CLIENTS
@@ -378,6 +394,65 @@ def test_a_vendor_tool_with_the_report_name_wins(
     assert sum("report tool's name" in r.getMessage() for r in caplog.records) == 1
     h.serve(_call(REPORT, {"what_happened": "x"}), vendor)
     assert vendor.seen[-1]["params"]["name"] == REPORT
+    assert REPORT not in h.serve(_initialize(), vendor)["result"]["instructions"]
+
+
+@CLIENTS
+def test_a_paged_list_sends_no_snapshot(harness: Any, sink: _CollectingSink) -> None:
+    h = harness()
+
+    def paged(message: Any) -> Any:
+        answer = Vendor()(message)
+        answer["result"]["nextCursor"] = "p2"
+        return answer
+
+    h.serve(_list(), paged)
+    h.serve(_list("p2"), Vendor())
+    assert sink.of("surface_snapshot") == []
+
+
+@CLIENTS
+def test_a_block_the_vendor_opened_is_kept(harness: Any, sink: _CollectingSink) -> None:
+    h = harness(settings="local")
+    with h.client.session(principal=Principal(principal_id="u9"), session_id="conv-1"):
+        h.serve(_call("find_slots", {"day": "mon"}), Vendor())
+    (start,) = sink.of("tool_call_start")
+    assert start["principal"]["id"] == "u9"
+    assert start["session_id"] == "conv-1"
+
+
+@CLIENTS
+def test_a_scrubber_that_raises_still_records_a_failure(
+    harness: Any, sink: _CollectingSink
+) -> None:
+    def scrub(value: Any) -> Any:
+        if isinstance(value, dict):
+            raise ValueError("scrubber broke")
+        return value
+
+    h = harness(scrubber=scrub)
+    vendor = Vendor()
+    vendor.call_answer = {"jsonrpc": "2.0", "id": 3, "error": {"code": -1, "message": "bad"}}
+    assert h.serve(_call("find_slots", {}), vendor) is vendor.call_answer
+    assert sink.of("tool_call_end") == []
+    (error,) = sink.of("tool_call_error")
+    assert error["payload"]["error_type"] == "JSONRPCError"
+
+
+@CLIENTS
+def test_a_server_name_with_no_tool_name_falls_back_to_the_vendor_id(
+    make: Any, sink: _CollectingSink, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "baton.client.console_settings",
+        lambda _dsn, _tenant, vendor_id, _refresh: CaptureSettings(
+            vendor_id=vendor_id,
+            fetcher=_Fetcher(None),  # type: ignore[arg-type]
+        ),
+    )
+    h = Harness(make, dsn="https://k@example.invalid/ten_0123abcd/fastmcp", settings="console")
+    assert "fastmcp_annotate" in _names(h.serve(_list(), Vendor()))
+    h.close()
 
 
 # --- never break the vendor ---------------------------------------------------
@@ -475,7 +550,7 @@ def test_a_baton_failure_serves_the_vendors_own_answer(
 
 
 @CLIENTS
-def test_a_failure_before_dispatch_sends_the_original_message(
+def test_a_failure_before_dispatch_still_removes_user_goal(
     harness: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     h = harness()
@@ -483,7 +558,8 @@ def test_a_failure_before_dispatch_sends_the_original_message(
     vendor = Vendor()
     message = _call("find_slots", {"day": "mon", "user_goal": GOAL})
     h.serve(message, vendor)
-    assert vendor.seen == [message] and vendor.seen[0] is message
+    # The list Baton served asked for user_goal, so the vendor never sees it.
+    assert vendor.seen == [_call("find_slots", {"day": "mon"})]
 
 
 @CLIENTS

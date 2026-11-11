@@ -11,6 +11,7 @@ from typing import Any, NamedTuple
 
 from baton.events import SurfaceSnapshotPayload
 from baton.integrations._llm_text import (
+    RETIRED_PARAM_NAMES,
     USER_GOAL_PARAM_NAME,
     inject_goal_params,
     required_param_names,
@@ -118,7 +119,8 @@ def _served(tool: Any, as_json: Any, dispositions: dict[str, dict[str, str]]) ->
     name = entry.get("name")
     if isinstance(schema, Mapping) and any(key in schema for key in _COMPOSITE_ROOT):
         if isinstance(name, str):
-            dispositions[name] = {USER_GOAL_PARAM_NAME: "native"}
+            # user_goal is reserved, so a stray one is still stripped on a call.
+            dispositions[name] = {n: "native" for n in RETIRED_PARAM_NAMES}
         return tool
     if isinstance(schema, Mapping):
         # Only these two levels change, so only they are copied.
