@@ -176,7 +176,7 @@ The SDK reads the settings every 60 seconds. Set `settings_refresh_s` to change 
 
 `report_mode` is `"on"` by default here, so the Console decides who sees the report tool. Set `report_mode="off"` to keep it off for everyone. The report sentence in your server's instructions stays while any audience has reports on. A client reads the instructions when it connects, so a change reaches new connections only.
 
-Labels come from your `resolve_principal` hook, as `Principal(labels=[...])` or `Organization(labels=[...])`. Up to 20 per caller, sent on every event, so send only names you are happy for Baton to see. A share of callers is picked by the principal's id, or the company's when there is no principal, so the same person always lands in the same group. A caller with neither is never in a share.
+Labels come from your `resolve_principal` hook, as `Principal(labels=[...])` or `Organization(labels=[...])`. Up to 20 per caller, sent on every event, so send only names you are happy for Baton to see. A share of callers is picked by the principal's id, so the same person always lands in the same group. A caller with no principal is never in a share, even with an organization. To target a company, give its `Organization` a label.
 
 ## PII scrubbing
 

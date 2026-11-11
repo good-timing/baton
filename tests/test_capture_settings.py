@@ -29,7 +29,7 @@ from baton.events import CaptureObserved
 from baton.integrations import _config as config_module
 from baton.integrations import official, standalone
 from baton.integrations._config import build_capture_settings
-from baton.integrations._identity_adapter import _wire_caller
+from baton.integrations._identity_adapter import _match_view, _wire_caller
 from baton.integrations.official._compat import MCPServerClass as OfficialFastMCP
 from baton.sinks import FileSink
 from tests._event_helpers import read_events, without_surface_snapshots
@@ -82,6 +82,12 @@ class TestLabels:
         caller = _wire_caller(Organization("org_1", labels=["enterprise"]), logger=LOGGER)
         assert caller.principal is None
         assert caller.envelope_fields()["labels"] == ["enterprise"]
+
+    def test_a_share_samples_the_principal_and_never_the_organization(self) -> None:
+        both = _wire_caller(Principal("user-1", organization=Organization("org_1")), logger=LOGGER)
+        org_only = _wire_caller(Organization("org_1"), logger=LOGGER)
+        assert _match_view(both, None).share_key == "user-1"
+        assert _match_view(org_only, None).share_key is None
 
     @staticmethod
     def _then_raise() -> Any:

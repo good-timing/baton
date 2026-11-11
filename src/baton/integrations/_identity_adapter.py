@@ -345,9 +345,8 @@ async def resolve_caller(
 
 
 def _match_view(caller: ResolvedCaller, client: ClientObserved | None) -> Caller:
-    identity = caller.principal or caller.organization
     return Caller(
         labels=caller.labels,
         client_name=client.info.name if client is not None and client.info is not None else None,
-        share_key=identity.id if identity is not None else None,
+        share_key=caller.principal.id if caller.principal is not None else None,
     )
