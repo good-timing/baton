@@ -186,9 +186,9 @@ class Serving:
                 self._report[1].name if self._report is not None else None,
             )
         report = self._ours()
-        last_page = result.get("nextCursor") is None
+        first_page = "cursor" not in request.params
         out = list(served.tools)
-        if report is not None and last_page:
+        if report is not None and first_page:
             tool = report[1]
             out.append(
                 {
@@ -205,7 +205,7 @@ class Serving:
             intent_param_mode=INTENT_PARAM_MODE,
             annotation_tool_name=report[1].name if report is not None else None,
         )
-        surface = served.surface if last_page and "cursor" not in request.params else None
+        surface = served.surface if first_page and result.get("nextCursor") is None else None
         return Listed(
             {**answer, "result": listed},
             surface,

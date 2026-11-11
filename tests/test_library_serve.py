@@ -239,7 +239,7 @@ def test_local_settings_add_user_goal_and_no_report_tool(
 
 
 @CLIENTS
-def test_a_paged_list_gets_the_report_tool_on_its_last_page(harness: Any) -> None:
+def test_a_paged_list_gets_the_report_tool_on_its_first_page(harness: Any) -> None:
     h = harness()
 
     def paged(message: Any) -> Any:
@@ -247,8 +247,8 @@ def test_a_paged_list_gets_the_report_tool_on_its_last_page(harness: Any) -> Non
         answer["result"]["nextCursor"] = "p2"
         return answer
 
-    assert REPORT not in _names(h.serve(_list(), paged))
-    assert REPORT in _names(h.serve(_list("p2"), Vendor()))
+    assert REPORT in _names(h.serve(_list(), paged))
+    assert REPORT not in _names(h.serve(_list("p2"), Vendor()))
 
 
 @CLIENTS
