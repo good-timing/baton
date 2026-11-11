@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from baton._capture_settings import CaptureSettings, SettingsDocument
-from baton._library_surface import INTENT_PARAM_MODE, Surface, serve_tools
+from baton._library_surface import INTENT_PARAM_MODE, Surface, known_tools, serve_tools
 from baton._report_tool import ReportTool
 from baton.integrations._annotation_name import AnnotationNames
 from baton.integrations._error_result import (
@@ -105,13 +105,21 @@ class Listed:
 
 
 Report = tuple[AnnotationNames, ReportTool]
+VendorTools = list[Any] | Callable[[], list[Any]]
 
 
 class Serving:
     """What one client's ``serve()`` remembers between requests: the vendor's
-    ``initialize`` values and each listed tool's ``user_goal`` disposition."""
+    ``initialize`` values, and what it knows of the vendor's tools from the
+    lists it served and from ``tools``."""
 
-    def __init__(self, *, report: Report | None, settings: CaptureSettings | None) -> None:
+    def __init__(
+        self,
+        *,
+        report: Report | None,
+        settings: CaptureSettings | None,
+        tools: VendorTools | None = None,
+    ) -> None:
         self._report = report
         self._settings = settings
         self._lock = threading.Lock()
@@ -122,6 +130,45 @@ class Serving:
         }
         self._dispositions: dict[str, dict[str, str]] = {}
         self._vendor_has_report_name = False
+        self._tools_lock = threading.Lock()
+        self._unread_tools = tools
+
+    def _read_vendor_tools(self) -> None:
+        """Learn the vendor's ``tools`` once per process. Never raises: without
+        them, a call to a tool not yet listed is served as on a cold process."""
+        if self._unread_tools is None:
+            return
+        with self._tools_lock:
+            source, self._unread_tools = self._unread_tools, None
+            if source is None:
+                return
+            try:
+                tools = source() if callable(source) else source
+                if not isinstance(tools, list):
+                    raise TypeError(f"tools= gave a {type(tools).__name__}, not a list")
+            except Exception:
+                logger.warning(
+                    "baton: could not read tools=; a call this process has not seen "
+                    "listed loses user_goal",
+                    exc_info=True,
+                )
+                return
+            self._remember(*known_tools(tools))
+
+    def _remember(self, dispositions: dict[str, dict[str, str]], names: set[str]) -> None:
+        clash = self._report is not None and self._report[1].name in names
+        with self._lock:
+            if len(self._dispositions) + len(dispositions) > _REMEMBERED_TOOLS:
+                self._dispositions.clear()
+            self._dispositions.update(dispositions)
+            first_clash = clash and not self._vendor_has_report_name
+            self._vendor_has_report_name = self._vendor_has_report_name or clash
+        if first_clash:
+            logger.warning(
+                "baton: your tool %r has the report tool's name, so Baton serves yours "
+                "and no report tool. Set vendor_display_name to give Baton's another name.",
+                self._report[1].name if self._report is not None else None,
+            )
 
     def _ours(self) -> Report | None:
         """The report tool, unless a vendor tool has its name."""
@@ -136,6 +183,7 @@ class Serving:
         if result is None:
             return answer
         vendor = result.get("instructions")
+        self._read_vendor_tools()
         with self._lock:
             self._server_meta = {
                 "server_info": result.get("serverInfo"),
@@ -167,24 +215,14 @@ class Serving:
         tools = result.get("tools") if result is not None else None
         if result is None or not isinstance(tools, list):
             return None
+        self._read_vendor_tools()
         with self._lock:
             meta = dict(self._server_meta)
         served = serve_tools(tools, **meta)
-        clash = self._report is not None and any(
-            isinstance(tool, Mapping) and tool.get("name") == self._report[1].name for tool in tools
+        self._remember(
+            served.dispositions,
+            {t["name"] for t in tools if isinstance(t, Mapping) and isinstance(t.get("name"), str)},
         )
-        with self._lock:
-            if len(self._dispositions) + len(served.dispositions) > _REMEMBERED_TOOLS:
-                self._dispositions.clear()
-            self._dispositions.update(served.dispositions)
-            first_clash = clash and not self._vendor_has_report_name
-            self._vendor_has_report_name = self._vendor_has_report_name or clash
-        if first_clash:
-            logger.warning(
-                "baton: your tool %r has the report tool's name, so Baton serves yours "
-                "and no report tool. Set vendor_display_name to give Baton's another name.",
-                self._report[1].name if self._report is not None else None,
-            )
         report = self._ours()
         first_page = "cursor" not in request.params
         out = list(served.tools)
@@ -227,6 +265,7 @@ class Serving:
         arguments = request.params.get("arguments", {})
         if not isinstance(name, str) or not isinstance(arguments, Mapping):
             return None
+        self._read_vendor_tools()
         with self._lock:
             dispositions = self._dispositions.get(name)
         report = self._ours()

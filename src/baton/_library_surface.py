@@ -73,6 +73,22 @@ def serve_tools(
         return Served(served, None, dispositions)
 
 
+def known_tools(tools: list[Any]) -> tuple[dict[str, dict[str, str]], set[str]]:
+    """Each tool's dispositions, as ``serve_tools`` finds them, and every
+    tool's name. An entry that cannot be read is skipped."""
+    dispositions: dict[str, dict[str, str]] = {}
+    names: set[str] = set()
+    for tool in tools:
+        try:
+            as_json = _as_json(tool)
+            _served(tool, as_json, dispositions)
+        except Exception:
+            continue
+        if isinstance(as_json, Mapping) and isinstance(as_json.get("name"), str):
+            names.add(as_json["name"])
+    return dispositions, names
+
+
 def snapshot_payload(
     surface: dict[str, Any], digest: str, seam: dict[str, Any] | None = None
 ) -> SurfaceSnapshotPayload:

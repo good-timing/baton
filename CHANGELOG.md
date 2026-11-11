@@ -26,6 +26,11 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   path too. The caller's audience is matched on every call.
 - **`vendor_display_name` and `report_mode`** on both clients, with the
   same meaning and defaults as on `VendorConfig`.
+- **`tools=`** on both clients: the vendor's full tool list, or a function
+  returning it. `serve()` otherwise learns the tools from the lists it serves,
+  so a process that has served none removes `user_goal` from every call and
+  treats the report tool's name as Baton's. Pass it when a tool declares its
+  own `user_goal` or has the report tool's name.
 
 ### Changed
 

@@ -587,3 +587,80 @@ def test_a_raised_message_is_cut_to_the_cap(harness: Any, sink: _CollectingSink)
         h.serve(_call("find_slots", {}), vendor)
     (error,) = sink.of("tool_call_error")
     assert len(error["payload"]["error_body"]) == 2000
+
+
+# --- tools=: what a process knows before it serves a list ---------------------
+
+OWN_GOAL = {
+    "name": "own",
+    "inputSchema": {"type": "object", "properties": {"user_goal": {"type": "string"}}},
+}
+CLASHING = {"name": REPORT, "description": "Mine.", "inputSchema": {"type": "object"}}
+
+
+@CLIENTS
+@pytest.mark.parametrize("given", ["list", "function"])
+def test_tools_keep_a_tools_own_user_goal_before_any_list(harness: Any, given: str) -> None:
+    tools = [OWN_GOAL]
+    h = harness(tools=tools if given == "list" else lambda: tools)
+    vendor = Vendor(tools)
+    h.serve(_call("own", {"user_goal": "theirs"}), vendor)
+    assert vendor.seen[-1]["params"]["arguments"] == {"user_goal": "theirs"}
+
+
+@CLIENTS
+def test_tools_send_a_call_to_the_vendors_report_named_tool_to_it(harness: Any) -> None:
+    h = harness(tools=[CLASHING])
+    vendor = Vendor([CLASHING])
+    h.serve(_call(REPORT, {"what_happened": "x"}), vendor)
+    assert vendor.seen[-1]["params"]["name"] == REPORT
+
+
+@CLIENTS
+def test_tools_set_the_first_instructions_right(harness: Any) -> None:
+    h = harness(tools=[OWN_GOAL])
+    instructions = h.serve(_initialize(), Vendor([OWN_GOAL]))["result"]["instructions"]
+    assert not instructions.endswith(INTENT_INSTRUCTIONS)
+
+
+@CLIENTS
+def test_a_tools_function_that_raises_falls_back_with_one_warning(
+    harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    calls = []
+
+    def broken() -> list[Any]:
+        calls.append(1)
+        raise RuntimeError("no list")
+
+    h = harness(tools=broken)
+    vendor = Vendor([OWN_GOAL])
+    with caplog.at_level(logging.WARNING, logger="baton"):
+        h.serve(_call("own", {"user_goal": "theirs"}), vendor)
+        h.serve(_call("own", {"user_goal": "theirs"}), vendor)
+    assert vendor.seen[-1]["params"]["arguments"] == {}
+    assert calls == [1]
+    assert sum("could not read tools=" in r.getMessage() for r in caplog.records) == 1
+
+
+@CLIENTS
+def test_a_served_list_still_teaches_after_tools(harness: Any) -> None:
+    h = harness(tools=[TOOLS[0]])
+    vendor = Vendor([OWN_GOAL])
+    h.serve(_list(), vendor)
+    h.serve(_call("own", {"user_goal": "theirs"}), vendor)
+    assert vendor.seen[-1]["params"]["arguments"] == {"user_goal": "theirs"}
+
+
+@CLIENTS
+def test_the_off_switch_never_reads_tools(
+    make: Any, sink: _CollectingSink, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BATON_DISABLED", "1")
+
+    def refuse() -> list[Any]:
+        raise AssertionError("read tools")
+
+    h = Harness(make, settings="console", tools=refuse)
+    h.serve(_call("own", {}), Vendor())
+    h.close()

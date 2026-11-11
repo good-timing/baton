@@ -114,6 +114,7 @@ from baton._library_serve import (
     Call,
     Request,
     Serving,
+    VendorTools,
     hidden_fields,
     read_request,
     record,
@@ -1347,6 +1348,7 @@ class Client(_Sessions):
         settings_refresh_s: float = DEFAULT_REFRESH_S,
         report_mode: str | None = None,
         vendor_display_name: str | None = None,
+        tools: VendorTools | None = None,
     ) -> None:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
@@ -1401,7 +1403,11 @@ class Client(_Sessions):
         self._closing_thread: int | None = None
         self._init_surfaces()
         self._start_settings(resolved.capture_settings)
-        self._serving = Serving(report=resolved.report, settings=self._capture_settings)
+        self._serving = Serving(
+            report=resolved.report,
+            settings=self._capture_settings,
+            tools=tools,
+        )
 
     def trace(
         self,
@@ -1555,7 +1561,11 @@ class Client(_Sessions):
         ``dispatch`` as it came.
 
         ``principal``, ``headers`` and ``session_id`` are as on ``session()``.
-        ``dispatch`` is called at most once, and what it returns or raises
+        A process learns the vendor's tools from the lists it serves. Until it
+        has, a call loses ``user_goal`` and the report tool's name is Baton's;
+        pass ``Client(tools=...)``, the full list or a function returning it,
+        when a tool declares its own ``user_goal`` or has the report tool's
+        name. ``dispatch`` is called at most once, and what it returns or raises
         comes back unchanged apart from Baton's additions. A failure in Baton's
         own work is logged, never raised.
         """
@@ -2122,6 +2132,7 @@ class AsyncClient(_Sessions):
         settings_refresh_s: float = DEFAULT_REFRESH_S,
         report_mode: str | None = None,
         vendor_display_name: str | None = None,
+        tools: VendorTools | None = None,
     ) -> None:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
@@ -2157,7 +2168,11 @@ class AsyncClient(_Sessions):
         self._closing: asyncio.Future[None] | None = None
         self._init_surfaces()
         self._start_settings(resolved.capture_settings)
-        self._serving = Serving(report=resolved.report, settings=self._capture_settings)
+        self._serving = Serving(
+            report=resolved.report,
+            settings=self._capture_settings,
+            tools=tools,
+        )
 
     def trace(
         self,
