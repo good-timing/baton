@@ -104,6 +104,7 @@ from time import monotonic
 from types import TracebackType
 from typing import Any, Self, TypeVar, cast
 
+from baton._capture_settings import DEFAULT_REFRESH_S, CaptureSettings
 from baton._dsn import parse_dsn, select_dsn
 from baton._library_session import (
     LibrarySession,
@@ -137,6 +138,7 @@ from baton.events import (
     ToolCallStartPayload,
 )
 from baton.identity import Organization, Principal
+from baton.integrations._config import console_settings, validate_settings
 from baton.integrations._llm_text import INTENT_SOURCE_LIBRARY
 from baton.integrations._surface import SentSurfaces
 from baton.scrub import (  # noqa: F401  identity_scrub kept exported
@@ -371,6 +373,7 @@ class _ClientConfig:
     tenant_id: str
     consent_token: str
     result_capture_mode: ResultCaptureMode
+    capture_settings: CaptureSettings | None = None
 
 
 def _disabled_client_config(
@@ -458,6 +461,8 @@ def _resolve_client_config(
     tenant_id: str | None,
     consent_token: str | None,
     result_capture_mode: ResultCaptureMode,
+    settings: str = "local",
+    settings_refresh_s: float = DEFAULT_REFRESH_S,
 ) -> _ClientConfig:
     """The library API's config resolution — the twin of ``install_baton``'s.
 
@@ -494,6 +499,7 @@ def _resolve_client_config(
         },
         "Client",
     )
+    validate_settings(settings, settings_refresh_s, has_dsn=dsn_string is not None, owner="Client")
     if dsn_string is not None:
         parsed = parse_dsn(dsn_string)
         consent = _resolve_consent_token(consent_token)
@@ -505,6 +511,11 @@ def _resolve_client_config(
             tenant_id=parsed.tenant_id,
             consent_token=consent,
             result_capture_mode=mode,
+            capture_settings=(
+                console_settings(parsed, parsed.tenant_id, parsed.vendor_id, settings_refresh_s)
+                if settings == "console"
+                else None
+            ),
         )
 
     if sink is None:
@@ -854,7 +865,9 @@ class Trace:
         if error_type is not None or error_body is not None:
             self._observed_error = (error_type or "Error", error_body or "")
             self._observed_result = _UNSET
-        elif withholding(self._client._result_capture_mode):
+        elif withholding(
+            self._session.caller.result_capture_mode(self._client._result_capture_mode)
+        ):
             # The gate is HERE, not at payload construction: SPEC §7 forbids
             # invoking the scrubber on a withheld result, and by payload time
             # it has already run. So the body is never held at all — not
@@ -1027,6 +1040,7 @@ class _Sessions:
     _tenant_id: str
     _vendor_id: str
     _consent_token: str
+    _capture_settings: CaptureSettings | None
 
     def _next_seq(self) -> int:
         return PROCESS_SEQUENCE.next()
@@ -1138,6 +1152,7 @@ class _Sessions:
             meta=meta,
             scrubber=self._scrubber,
             disabled=self._disabled,
+            settings=self._capture_settings,
         )
         token = enter_block(self, block)
         try:
@@ -1161,6 +1176,8 @@ class Client(_Sessions):
         consent_token: str | None = None,
         scrubber: Any = None,
         result_capture_mode: ResultCaptureMode = "full",
+        settings: str = "local",
+        settings_refresh_s: float = DEFAULT_REFRESH_S,
     ) -> None:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
@@ -1174,6 +1191,8 @@ class Client(_Sessions):
                 tenant_id=tenant_id,
                 consent_token=consent_token,
                 result_capture_mode=result_capture_mode,
+                settings=settings,
+                settings_refresh_s=settings_refresh_s,
             )
         )
 
@@ -1210,6 +1229,9 @@ class Client(_Sessions):
         self._writes: set[asyncio.Task[Any]] = set()
         self._closing_thread: int | None = None
         self._init_surfaces()
+        self._capture_settings = resolved.capture_settings
+        if self._capture_settings is not None:
+            self._capture_settings.start()
 
     def trace(
         self,
@@ -1369,6 +1391,8 @@ class Client(_Sessions):
             if self._closing_thread != threading.get_ident():
                 self._close_done.wait(timeout=self._close_limit_seconds())
             return
+        if self._capture_settings is not None:
+            self._capture_settings.stop()
         deadline = monotonic() + self._close_limit_seconds()
         sink_deadline = deadline - _CLOSE_MARGIN_SECONDS
         try:
@@ -1660,7 +1684,9 @@ class AsyncTrace:
         if error_type is not None or error_body is not None:
             self._observed_error = (error_type or "Error", error_body or "")
             self._observed_result = _UNSET
-        elif withholding(self._client._result_capture_mode):
+        elif withholding(
+            self._session.caller.result_capture_mode(self._client._result_capture_mode)
+        ):
             # The gate is HERE, not at payload construction: SPEC §7 forbids
             # invoking the scrubber on a withheld result, and by payload time
             # it has already run. So the body is never held at all — not
@@ -1830,6 +1856,8 @@ class AsyncClient(_Sessions):
         consent_token: str | None = None,
         scrubber: Any = None,
         result_capture_mode: ResultCaptureMode = "full",
+        settings: str = "local",
+        settings_refresh_s: float = DEFAULT_REFRESH_S,
     ) -> None:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
@@ -1843,6 +1871,8 @@ class AsyncClient(_Sessions):
                 tenant_id=tenant_id,
                 consent_token=consent_token,
                 result_capture_mode=result_capture_mode,
+                settings=settings,
+                settings_refresh_s=settings_refresh_s,
             )
         )
 
@@ -1860,6 +1890,9 @@ class AsyncClient(_Sessions):
         self._closed = False
         self._closing: asyncio.Future[None] | None = None
         self._init_surfaces()
+        self._capture_settings = resolved.capture_settings
+        if self._capture_settings is not None:
+            self._capture_settings.start()
 
     def trace(
         self,
@@ -1980,6 +2013,8 @@ class AsyncClient(_Sessions):
         # A close cancelled from outside (loop teardown) is started again.
         if self._closing is None or self._closing.cancelled():
             self._closed = True
+            if self._capture_settings is not None:
+                self._capture_settings.stop()
             self._closing = asyncio.ensure_future(bounded_sink_call(self._sink, "aclose"))
         await asyncio.shield(self._closing)
 

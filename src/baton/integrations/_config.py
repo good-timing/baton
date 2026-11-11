@@ -21,7 +21,7 @@ from baton._capture_settings import (
     SettingsFetcher,
 )
 from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
-from baton._dsn import parse_dsn, resolve_dsn, select_dsn
+from baton._dsn import Dsn, parse_dsn, resolve_dsn, select_dsn
 from baton._result_capture import ResultCaptureMode, validate_mode
 from baton.events import DEFAULT_CONSENT_TOKEN
 from baton.identity import Organization, Principal
@@ -674,15 +674,37 @@ def build_capture_settings(config: VendorConfig, tenant_id: str) -> CaptureSetti
     them in code."""
     if config.settings != "console" or config.dsn is None:
         return None
-    dsn = parse_dsn(config.dsn)
+    return console_settings(
+        parse_dsn(config.dsn), tenant_id, config.vendor_id, config.settings_refresh_s
+    )
+
+
+def console_settings(dsn: Dsn, tenant_id: str, vendor_id: str, refresh_s: float) -> CaptureSettings:
+    """The Capture page's settings for ``vendor_id``, not yet reading."""
     fetcher = SettingsFetcher(
         origin=dsn.origin,
         api_key=dsn.key,
         tenant_id=tenant_id,
-        vendor_id=config.vendor_id,
-        refresh_s=config.settings_refresh_s,
+        vendor_id=vendor_id,
+        refresh_s=refresh_s,
     )
-    return CaptureSettings(vendor_id=config.vendor_id, fetcher=fetcher)
+    return CaptureSettings(vendor_id=vendor_id, fetcher=fetcher)
+
+
+def validate_settings(settings: object, refresh_s: object, *, has_dsn: bool, owner: str) -> None:
+    if settings not in SETTINGS_MODES:
+        raise ValueError(f"{owner}.settings {settings!r} must be one of {sorted(SETTINGS_MODES)}.")
+    if settings == "console" and not has_dsn:
+        raise ValueError(
+            f"{owner}(settings='console') reads the Capture page with the "
+            "dsn's key, so it needs a dsn."
+        )
+    if (
+        isinstance(refresh_s, bool)
+        or not isinstance(refresh_s, int | float)
+        or not MIN_REFRESH_S <= refresh_s <= threading.TIMEOUT_MAX
+    ):
+        raise ValueError(f"{owner}.settings_refresh_s must be at least {MIN_REFRESH_S:g} seconds.")
 
 
 def _validate_vendor_config(config: VendorConfig) -> None:
@@ -735,24 +757,9 @@ def _validate_vendor_config(config: VendorConfig) -> None:
             f"VendorConfig.intent_param_mode {intent_param_mode!r} must be "
             f"one of {sorted(INTENT_PARAM_MODES)}."
         )
-    if config.settings not in SETTINGS_MODES:
-        raise ValueError(
-            f"VendorConfig.settings {config.settings!r} must be one of {sorted(SETTINGS_MODES)}."
-        )
-    if config.settings == "console" and not config.dsn:
-        raise ValueError(
-            "VendorConfig(settings='console') reads the Capture page with the "
-            "dsn's key, so it needs a dsn."
-        )
-    refresh = config.settings_refresh_s
-    if (
-        isinstance(refresh, bool)
-        or not isinstance(refresh, int | float)
-        or not MIN_REFRESH_S <= refresh <= threading.TIMEOUT_MAX
-    ):
-        raise ValueError(
-            f"VendorConfig.settings_refresh_s must be at least {MIN_REFRESH_S:g} seconds."
-        )
+    validate_settings(
+        config.settings, config.settings_refresh_s, has_dsn=bool(config.dsn), owner="VendorConfig"
+    )
     if config.report_mode is not None and config.report_mode not in REPORT_MODES:
         raise ValueError(
             f"VendorConfig.report_mode {config.report_mode!r} must be "
