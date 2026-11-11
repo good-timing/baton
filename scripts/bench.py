@@ -161,15 +161,25 @@ def pct(samples: list[float], p: float) -> float:
     return ordered[min(len(ordered) - 1, int(p / 100 * len(ordered)))]
 
 
+async def one_pass(
+    m: dict[str, Any], port: int | None, call: tuple[str, dict[str, Any]] = ECHO
+) -> tuple[list[float], float, Any]:
+    """Call times, wall time and the still-open install handle of one pass on a new server."""
+    server, handle = echo_server(port, m.get("result_bytes", 0))
+    async with client(server) as session:
+        await timed_calls(session, m["warmup"], 1, call)
+        started = time.perf_counter()
+        times = await timed_calls(session, m["calls"], m["concurrency"], call)
+        wall = time.perf_counter() - started
+    return times, wall, handle
+
+
 async def added(m: dict[str, Any], port: int, call: tuple[str, dict[str, Any]]) -> dict[str, float]:
     """The call times on a server without Baton, then on one with it, and
     what Baton adds to them."""
     figures: dict[str, list[float]] = {}
     for name, to in (("plain", None), ("baton", port)):
-        server, handle = echo_server(to, m.get("result_bytes", 0))
-        async with client(server) as session:
-            await timed_calls(session, m["warmup"], 1, call)
-            figures[name] = await timed_calls(session, m["calls"], m["concurrency"], call)
+        figures[name], _, handle = await one_pass(m, to, call)
         if handle is not None:
             await handle.aclose()
     out = {f"{n}_p{p}_ms": ms(pct(figures[n], p)) for n in ("plain", "baton") for p in (50, 99)}
@@ -205,21 +215,21 @@ async def large_result(m: dict[str, Any]) -> dict[str, float]:
 
 async def load(m: dict[str, Any]) -> dict[str, float]:
     with collector(m["collector"]) as port:
-        server, handle = echo_server(port)
-        async with client(server) as session:
-            await timed_calls(session, m["warmup"], 1)
-            started = time.perf_counter()
-            times = await timed_calls(session, m["calls"], m["concurrency"])
-            wall = time.perf_counter() - started
+        # So that neither pass's times include collecting garbage made before it.
+        gc.collect()
+        plain, plain_wall, _ = await one_pass(m, None)
+        gc.collect()
+        times, wall, handle = await one_pass(m, port)
         started = time.perf_counter()
         await handle.aclose()
-        closing = time.perf_counter() - started
-        return losses(port, m) | {
-            "wall_ms": ms(wall),
-            "call_p50_ms": ms(pct(times, 50)),
-            "call_p99_ms": ms(pct(times, 99)),
-            "close_ms": ms(closing),
-        }
+        out = {"close_ms": ms(time.perf_counter() - started)}
+        for prefix, t, w in (("plain_", plain, plain_wall), ("", times, wall)):
+            out[f"{prefix}wall_ms"] = ms(w)
+            for p in (50, 99):
+                out[f"{prefix}call_p{p}_ms"] = ms(pct(t, p))
+        for p in (50, 99):
+            out[f"added_call_p{p}_ms"] = out[f"call_p{p}_ms"] - out[f"plain_call_p{p}_ms"]
+        return losses(port, m) | out
 
 
 def live_heap() -> int:
