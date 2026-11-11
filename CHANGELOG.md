@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 1.1.2: a share samples principals only
 
 ### Changed
 
