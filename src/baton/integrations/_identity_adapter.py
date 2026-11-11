@@ -332,6 +332,18 @@ async def resolve_caller(
     else:
         resolved = await resolve_principal_via_hook(hook, hook_context, logger=logger)
         caller = _wire_caller(resolved, logger=logger)
+    return with_settings(caller, client, settings, logger=logger)
+
+
+def with_settings(
+    caller: ResolvedCaller,
+    client: ClientObserved | None,
+    settings: CaptureSettings | None,
+    *,
+    logger: logging.Logger,
+) -> ResolvedCaller:
+    """``caller`` with the capture settings its audience runs under. Never
+    raises: a failure leaves this config's values."""
     if settings is None:
         return caller
     try:

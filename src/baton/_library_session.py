@@ -5,17 +5,22 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
+from baton._capture_settings import CaptureSettings
 from baton._uuid import uuid7
-from baton.events import ClientObserved, OrganizationWire, PrincipalWire
+from baton.events import ClientObserved
 from baton.integrations._client_observed import (
     clean_runtime_meta,
     meta_to_dict,
     observe_client,
 )
-from baton.integrations._identity_adapter import wire_vendor_caller
+from baton.integrations._identity_adapter import (
+    ResolvedCaller,
+    wire_vendor_caller,
+    with_settings,
+)
 from baton.integrations._session import SessionOrigin, clean_session_id
 
 logger = logging.getLogger(__name__)
@@ -32,9 +37,7 @@ class LibrarySession:
 
     session_id: str
     session_id_origin: SessionOrigin
-    principal: PrincipalWire | None = None
-    organization: OrganizationWire | None = None
-    labels: list[str] | None = None
+    caller: ResolvedCaller = field(default_factory=ResolvedCaller)
     client_observed: ClientObserved | None = None
     runtime_meta: dict[str, Any] | None = None
 
@@ -43,9 +46,7 @@ class LibrarySession:
             "session_id": self.session_id,
             "session_id_origin": self.session_id_origin,
             "transport_observed": TRANSPORT_LIBRARY,
-            "principal": self.principal,
-            "organization": self.organization,
-            "labels": self.labels,
+            **self.caller.envelope_fields(),
             "client_observed": self.client_observed,
             "runtime_meta": self.runtime_meta,
         }
@@ -102,6 +103,7 @@ def new_session(
     meta: object = None,
     scrubber: Callable[[Any], Any],
     disabled: bool,
+    settings: CaptureSettings | None = None,
 ) -> LibrarySession:
     """A ``session()`` block's values. Never raises: a value that is not
     usable is logged and dropped."""
@@ -112,20 +114,17 @@ def new_session(
         # will never be sent.
         return base
     request_meta = _request_meta(meta)
+    client_observed = (
+        observe_client(request_meta, client_info=client_info, headers=headers, scrubber=scrubber)
+        if request_meta or client_info is not None or headers is not None
+        else None
+    )
     caller = wire_vendor_caller(principal, logger=logger)
     return LibrarySession(
         base.session_id,
         base.session_id_origin,
-        principal=caller.principal,
-        organization=caller.organization,
-        labels=list(caller.labels) or None,
-        client_observed=(
-            observe_client(
-                request_meta, client_info=client_info, headers=headers, scrubber=scrubber
-            )
-            if request_meta or client_info is not None or headers is not None
-            else None
-        ),
+        caller=with_settings(caller, client_observed, settings, logger=logger),
+        client_observed=client_observed,
         runtime_meta=_runtime_meta(request_meta, _vendor_id("turn_id", turn_id), scrubber),
     )
 
