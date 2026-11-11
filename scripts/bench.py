@@ -20,7 +20,7 @@ import sys
 import time
 import tracemalloc
 import urllib.request
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from importlib.metadata import version
 from pathlib import Path
@@ -40,22 +40,29 @@ except ImportError:
 
 SPEC = Path(__file__).resolve().parent.parent / "baton-spec"
 BENCH = json.loads((SPEC / "bench" / "bench.json").read_text())
+sys.path.insert(0, str(SPEC / "scripts"))
+from compare_bench import release  # type: ignore[import-not-found]  # noqa: E402
+
 TOOL_EVENTS = ("tool_call_start", "tool_call_end")
 
 
 @contextmanager
-def collector(mode: str) -> Iterator[int]:
+def collector(m: dict[str, Any]) -> Iterator[int]:
+    mode = m["collector"]
     if mode == "down":
         yield 1
         return
+    command = [
+        sys.executable,
+        str(SPEC / "collector" / "fake_collector.py"),
+        "--mode",
+        mode,
+        "--no-events",
+    ]
+    if "settings" in m:
+        command += ["--settings", json.dumps(m["settings"])]
     process = subprocess.Popen(
-        [
-            sys.executable,
-            str(SPEC / "collector" / "fake_collector.py"),
-            "--mode",
-            mode,
-            "--no-events",
-        ],
+        command,
         stdout=subprocess.PIPE,
         text=True,
     )
@@ -182,6 +189,10 @@ async def added(m: dict[str, Any], port: int, call: tuple[str, dict[str, Any]]) 
         figures[name], _, handle = await one_pass(m, to, call)
         if handle is not None:
             await handle.aclose()
+    return added_ms(figures)
+
+
+def added_ms(figures: dict[str, list[float]]) -> dict[str, float]:
     out = {f"{n}_p{p}_ms": ms(pct(figures[n], p)) for n in ("plain", "baton") for p in (50, 99)}
     for p in (50, 99):
         out[f"added_p{p}_ms"] = out[f"baton_p{p}_ms"] - out[f"plain_p{p}_ms"]
@@ -189,12 +200,12 @@ async def added(m: dict[str, Any], port: int, call: tuple[str, dict[str, Any]]) 
 
 
 async def overhead(m: dict[str, Any]) -> dict[str, float]:
-    with collector(m["collector"]) as port:
+    with collector(m) as port:
         return await added(m, port, ECHO)
 
 
 async def large_result(m: dict[str, Any]) -> dict[str, float]:
-    with collector(m["collector"]) as port:
+    with collector(m) as port:
         out = await added(m, port, LARGE) | losses(port, m)
         # Read on a second Baton server, untimed: tracemalloc slows every
         # allocation, and Baton's side allocates more than the plain one.
@@ -214,7 +225,7 @@ async def large_result(m: dict[str, Any]) -> dict[str, float]:
 
 
 async def load(m: dict[str, Any]) -> dict[str, float]:
-    with collector(m["collector"]) as port:
+    with collector(m) as port:
         # So that neither pass's times include collecting garbage made before it.
         gc.collect()
         plain, plain_wall, _ = await one_pass(m, None)
@@ -232,6 +243,77 @@ async def load(m: dict[str, Any]) -> dict[str, float]:
         return losses(port, m) | out
 
 
+SERVE_TOOLS = [
+    {
+        "name": "echo",
+        "description": "Returns its text.",
+        "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}},
+    }
+]
+SERVE_CALL = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {"name": "echo", "arguments": {"text": "hello", "user_goal": "1: say hello"}},
+}
+
+
+def echo_dispatch(message: dict[str, Any]) -> dict[str, Any]:
+    if message["method"] == "tools/list":
+        result: dict[str, Any] = {"tools": SERVE_TOOLS}
+    else:
+        text = message["params"]["arguments"]["text"]
+        result = {"content": [{"type": "text", "text": text}]}
+    return {"jsonrpc": "2.0", "id": message["id"], "result": result}
+
+
+def timed(call: Callable[[], Any], m: dict[str, Any]) -> list[float]:
+    """``one_pass``'s warmup and timing, for a blocking call."""
+    for _ in range(m["warmup"]):
+        call()
+    times = []
+    for _ in range(m["calls"]):
+        started = time.perf_counter()
+        call()
+        times.append(time.perf_counter() - started)
+    return times
+
+
+def goal_optional(listed: dict[str, Any]) -> bool:
+    echo = next(t for t in listed["result"]["tools"] if t["name"] == "echo")
+    return "user_goal" not in echo["inputSchema"].get("required", [])
+
+
+async def serve_overhead(m: dict[str, Any]) -> dict[str, float]:
+    import baton
+
+    if m["concurrency"] != 1:
+        raise ValueError("serve_overhead runs one call at a time")
+    caller = baton.Principal(
+        principal_id="u1", organization=baton.Organization(organization_id="o1", labels=["starter"])
+    )
+    tools_list = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
+    figures = {"plain": timed(lambda: echo_dispatch(SERVE_CALL), m)}
+    with collector(m) as port:
+        client = baton.Client(
+            dsn=f"http://k@127.0.0.1:{port}/ten_0123abcd/v", settings="console", tools=SERVE_TOOLS
+        )
+        try:
+            deadline = time.monotonic() + 10
+            while not goal_optional(client.serve(tools_list, echo_dispatch, principal=caller)):
+                if time.monotonic() > deadline:
+                    raise RuntimeError("the caller's Console audience never applied")
+                time.sleep(0.01)
+            if "result" not in client.serve(SERVE_CALL, echo_dispatch, principal=caller):
+                raise RuntimeError("echo through serve failed")
+            figures["baton"] = timed(
+                lambda: client.serve(SERVE_CALL, echo_dispatch, principal=caller), m
+            )
+        finally:
+            client.close()
+    return added_ms(figures)
+
+
 def live_heap() -> int:
     gc.collect()
     return tracemalloc.get_traced_memory()[0]
@@ -241,7 +323,7 @@ async def memory(m: dict[str, Any]) -> dict[str, float]:
     half = m["calls"] // 2
     tracemalloc.start()
     try:
-        with collector(m["collector"]) as port:
+        with collector(m) as port:
             server, handle = echo_server(port)
             async with client(server) as session:
                 await timed_calls(session, m["warmup"], 1)
@@ -268,16 +350,26 @@ RUNNERS = {
     "outage_down": load,
     "memory": memory,
     "memory_outage": memory,
+    "serve_overhead": serve_overhead,
 }
 
 
-async def run(only: str | None) -> tuple[dict[str, dict[str, float]], int]:
+def runs_here(m: dict[str, Any], source: str) -> bool:
+    """Whether bench.json's 'since' lets this version run ``m``, as compare_bench reads it."""
+    if "since" not in m:
+        return True
+    if "python" not in m["since"]:
+        return False
+    return source == "checkout" or release(version("baton-sdk")) >= release(m["since"]["python"])
+
+
+async def run(only: str | None, source: str) -> tuple[dict[str, dict[str, float]], int]:
     """Each measure's metrics, and the peak memory before the first memory measure
     (at the end when none ran)."""
     measures: dict[str, dict[str, float]] = {}
     peak = 0
     for m in BENCH["measures"]:
-        if only not in (None, m["name"]):
+        if only not in (None, m["name"]) or not runs_here(m, source):
             continue
         if m["name"].startswith("memory") and not peak:
             peak = max_rss_bytes()
@@ -314,7 +406,7 @@ def main() -> None:
         help="run this measure alone",
     )
     args = parser.parse_args()
-    measures, peak = anyio.run(run, args.only)
+    measures, peak = anyio.run(run, args.only, args.source)
     result = {
         "sdk": "python",
         "version": version("baton-sdk"),
