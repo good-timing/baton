@@ -27,7 +27,7 @@ this inert on the other adapter and untestable on whichever venv is installed.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, NamedTuple
 
 from baton._result_capture import WITHHELD, withholding
@@ -90,6 +90,8 @@ def is_error_result(value: Any) -> bool:
     try:
         if value is None:
             return False
+        if isinstance(value, Mapping):
+            return isinstance(value.get("content"), list) and value.get("isError") is True
         for name in ("is_error", "isError"):
             if hasattr(value, name):
                 if not isinstance(getattr(value, "content", None), list):
@@ -113,10 +115,16 @@ def error_text(result: Any) -> str:
     """
     parts: list[str] = []
     try:
-        content = getattr(result, "content", None)
+        content = (
+            result.get("content")
+            if isinstance(result, Mapping)
+            else getattr(result, "content", None)
+        )
         if isinstance(content, list):
             for part in content:
-                text = getattr(part, "text", None)
+                text = (
+                    part.get("text") if isinstance(part, Mapping) else getattr(part, "text", None)
+                )
                 if isinstance(text, str) and (stripped := strip_white_space(text)):
                     parts.append(stripped)
     except Exception:  # pragma: no cover - defensive; see is_error_result

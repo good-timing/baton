@@ -311,9 +311,9 @@ def test_a_surface_already_sent_builds_no_payload(monkeypatch: pytest.MonkeyPatc
     built: list[str] = []
     real = client_module.snapshot_payload
 
-    def counting(surface: dict[str, Any], digest: str) -> Any:
+    def counting(surface: dict[str, Any], digest: str, seam: Any = None) -> Any:
         built.append(digest)
-        return real(surface, digest)
+        return real(surface, digest, seam)
 
     monkeypatch.setattr(client_module, "snapshot_payload", counting)
     client = _client(_CollectingSink())
@@ -329,11 +329,11 @@ def test_a_snapshot_that_cannot_be_built_is_retried(monkeypatch: pytest.MonkeyPa
     real = client_module.snapshot_payload
     calls = {"n": 0}
 
-    def fails_once(surface: dict[str, Any], digest: str) -> Any:
+    def fails_once(surface: dict[str, Any], digest: str, seam: Any = None) -> Any:
         calls["n"] += 1
         if calls["n"] == 1:
             raise ValueError("odd value")
-        return real(surface, digest)
+        return real(surface, digest, seam)
 
     monkeypatch.setattr(client_module, "snapshot_payload", fails_once)
     sink = _CollectingSink()

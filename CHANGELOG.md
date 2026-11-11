@@ -8,6 +8,25 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased (1.2.0): serving MCP yourself
+
+### Added
+
+- **`client.serve(message, dispatch, principal=..., headers=...)`** on
+  `Client` and `AsyncClient`, for a vendor whose own code answers MCP
+  requests. It wraps the vendor's JSON-RPC dispatch function: `initialize`
+  gets Baton's instructions, `tools/list` gets `user_goal` and the report
+  tool, and `tools/call` is traced with `user_goal` removed. With
+  `settings="console"` the caller's audience applies: goal, reports,
+  results and overlays. Baton answers a call to the report tool, and a call
+  to a tool the caller's overlay hides gets `Unknown tool: <name>`. Anything
+  else goes to `dispatch` unchanged, and a failure in Baton's work serves
+  the vendor's own answer.
+- **`Client(settings="console")`** reads the Capture page on the library
+  path too. The caller's audience is matched on every call.
+- **`vendor_display_name` and `report_mode`** on both clients, with the
+  same meaning and defaults as on `VendorConfig`.
+
 ## 1.1.2: a share samples principals only
 
 ### Changed

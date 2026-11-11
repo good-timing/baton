@@ -114,53 +114,76 @@ class PerCallerSurface:
             logger.exception("baton: could not update the server instructions for new settings")
 
     def _instructions(self, pointer_on: bool, overlay: Overlay | None) -> tuple[str, str | None]:
-        """Baton's paragraphs, and the subagent sentence they end with if any."""
-        parts = list(overlay.instruction_appends()) if overlay is not None else []
-        if pointer_on and self._pointer is not None:
-            parts.append(overlaid(self._pointer, overlay, "instructions.report_pointer"))
-        if not a_tool_declares_user_goal(self._mcp):
-            parts.append(overlaid(INTENT_INSTRUCTIONS, overlay, "instructions.subagent"))
-        # SPEC §2.6's append rule: each paragraph loses the white space at its end.
-        kept = [part.rstrip(WHITE_SPACE) for part in parts]
-        subagent = kept[-1] if kept and not a_tool_declares_user_goal(self._mcp) else None
-        return "\n\n".join(part for part in kept if part), subagent or None
+        return baton_paragraphs(
+            self._pointer if pointer_on else None,
+            overlay,
+            subagent_line=not a_tool_declares_user_goal(self._mcp),
+        )
 
     def tools_for(self, result: Any, caller: ResolvedCaller) -> Any:
-        """``result`` with the caller's goal, reports and overlay; as served on any failure."""
-        if caller.settings is None:
-            return result
-        goal = caller.intent_param_mode(self._intent_param_mode)
-        hide_reports = self._annotation_tool_name is not None and caller.report_mode("on") == "off"
-        overlay = caller.overlay
-        if goal == self._intent_param_mode and not hide_reports and overlay is None:
-            return result
-        try:
-            return _with_tools(
-                result, lambda tools: self._rewrite(tools, goal, hide_reports, overlay)
-            )
-        except Exception:
-            logger.exception("baton: could not apply capture settings to the tool list")
-            return result
+        return tools_for_caller(
+            result,
+            caller,
+            intent_param_mode=self._intent_param_mode,
+            annotation_tool_name=self._annotation_tool_name,
+        )
 
-    def _rewrite(
-        self, tools: list[Any], goal: str, hide_reports: bool, overlay: Overlay | None
-    ) -> list[Any]:
-        served = build_user_goal_param_description(intent_param_mode=self._intent_param_mode)
+
+def baton_paragraphs(
+    pointer: str | None, overlay: Overlay | None, *, subagent_line: bool
+) -> tuple[str, str | None]:
+    """Baton's paragraphs of the instructions, and the subagent sentence they
+    end with if any."""
+    parts = list(overlay.instruction_appends()) if overlay is not None else []
+    if pointer is not None:
+        parts.append(overlaid(pointer, overlay, "instructions.report_pointer"))
+    if subagent_line:
+        parts.append(overlaid(INTENT_INSTRUCTIONS, overlay, "instructions.subagent"))
+    # SPEC §2.6's append rule: each paragraph loses the white space at its end.
+    kept = [part.rstrip(WHITE_SPACE) for part in parts]
+    subagent = kept[-1] if kept and subagent_line else None
+    return "\n\n".join(part for part in kept if part), subagent or None
+
+
+def tools_for_caller(
+    result: Any,
+    caller: ResolvedCaller,
+    *,
+    intent_param_mode: str,
+    annotation_tool_name: str | None,
+) -> Any:
+    """``result`` with the caller's goal, reports and overlay; as served on any failure."""
+    if caller.settings is None:
+        return result
+    goal = caller.intent_param_mode(intent_param_mode)
+    hide_reports = annotation_tool_name is not None and caller.report_mode("on") == "off"
+    overlay = caller.overlay
+    if goal == intent_param_mode and not hide_reports and overlay is None:
+        return result
+
+    def rewrite(tools: list[Any]) -> list[Any]:
+        served = build_user_goal_param_description(intent_param_mode=intent_param_mode)
         out = []
         injected = []
         for tool in tools:
             name = _field(tool, "name")
-            if hide_reports and name == self._annotation_tool_name:
+            if hide_reports and name == annotation_tool_name:
                 continue
             schema = _field(tool, "inputSchema")
             ours = _injected_goal(schema, served)
-            if goal != self._intent_param_mode and ours:
+            if goal != intent_param_mode and ours:
                 tool = _replace(tool, "inputSchema", _with_goal_mode(schema, goal))
             out.append(tool)
             injected.append(ours)
         if overlay is None:
             return out
-        return _with_overlay(out, injected, overlay, self._annotation_tool_name)
+        return _with_overlay(out, injected, overlay, annotation_tool_name)
+
+    try:
+        return _with_tools(result, rewrite)
+    except Exception:
+        logger.exception("baton: could not apply capture settings to the tool list")
+        return result
 
 
 def _with_overlay(
@@ -265,18 +288,23 @@ def _attribute(obj: Any, wire_name: str) -> str | None:
 
 
 def _field(obj: Any, wire_name: str) -> Any:
+    """``wire_name`` of an mcp model, or of a JSON-RPC dict on the library path."""
+    if isinstance(obj, Mapping):
+        return obj.get(wire_name)
     attribute = _attribute(obj, wire_name)
     return None if attribute is None else getattr(obj, attribute)
 
 
 def _replace(obj: Any, wire_name: str, value: Any) -> Any:
+    if isinstance(obj, Mapping):
+        return {**obj, wire_name: value}
     return obj.model_copy(update={_attribute(obj, wire_name): value})
 
 
 def _with_tools(result: Any, rewrite: Callable[[list[Any]], list[Any]]) -> Any:
     """``result`` of the same type, its tools rewritten. mcp 1.x wraps the list
     result in a ``ServerResult``; mcp 2.x does not."""
-    root = getattr(result, "root", None)
+    root = None if isinstance(result, Mapping) else getattr(result, "root", None)
     if root is not None:
         return result.model_copy(update={"root": _with_tools(root, rewrite)})
     tools = _field(result, "tools")

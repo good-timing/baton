@@ -92,21 +92,32 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import inspect
 import logging
 import os
 import threading
 import traceback
 import weakref
 from collections.abc import Callable, Coroutine, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import AsyncExitStack, ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import monotonic
 from types import TracebackType
 from typing import Any, Self, TypeVar, cast
 
-from baton._capture_settings import DEFAULT_REFRESH_S, CaptureSettings
+from baton._capture_settings import DEFAULT_REFRESH_S, REPORT_MODES, CaptureSettings
 from baton._dsn import parse_dsn, select_dsn
+from baton._library_serve import (
+    TOOL_CALL,
+    TOOL_LIST,
+    Call,
+    Request,
+    Serving,
+    hidden_fields,
+    read_request,
+    record,
+)
 from baton._library_session import (
     LibrarySession,
     enter_block,
@@ -114,8 +125,9 @@ from baton._library_session import (
     new_session,
     session_for_call,
 )
-from baton._library_surface import serve_tools, snapshot_payload
+from baton._library_surface import Surface, serve_tools, snapshot_payload
 from baton._optout import DisabledSink, capture_disabled, log_disabled
+from baton._report_tool import ReportTool, report_tool
 from baton._result_capture import (
     WITHHELD,
     ResultCaptureMode,
@@ -139,7 +151,14 @@ from baton.events import (
     ToolCallStartPayload,
 )
 from baton.identity import Organization, Principal
+from baton.integrations._annotation_name import AnnotationNames
 from baton.integrations._config import console_settings, validate_settings
+from baton.integrations._error_result import (
+    TOOL_ERROR_TYPE,
+    ErrorResultFields,
+    raised_error_fields,
+)
+from baton.integrations._identity_adapter import ResolvedCaller
 from baton.integrations._llm_text import INTENT_SOURCE_LIBRARY
 from baton.integrations._surface import SentSurfaces
 from baton.scrub import (  # noqa: F401  identity_scrub kept exported
@@ -375,6 +394,7 @@ class _ClientConfig:
     consent_token: str
     result_capture_mode: ResultCaptureMode
     capture_settings: CaptureSettings | None = None
+    report: tuple[AnnotationNames, ReportTool] | None = None
 
 
 def _disabled_client_config(
@@ -464,6 +484,8 @@ def _resolve_client_config(
     result_capture_mode: ResultCaptureMode,
     settings: str = "local",
     settings_refresh_s: float = DEFAULT_REFRESH_S,
+    report_mode: str | None = None,
+    vendor_display_name: str | None = None,
 ) -> _ClientConfig:
     """The library API's config resolution — the twin of ``install_baton``'s.
 
@@ -501,6 +523,12 @@ def _resolve_client_config(
         "Client",
     )
     validate_settings(settings, settings_refresh_s, has_dsn=dsn_string is not None, owner="Client")
+    if report_mode is not None and report_mode not in REPORT_MODES:
+        raise ValueError(
+            f"Client.report_mode {report_mode!r} must be one of {sorted(REPORT_MODES)}."
+        )
+    # As VendorConfig: on with Console settings unless the code says otherwise.
+    report_on = report_mode == "on" if report_mode is not None else settings == "console"
     if dsn_string is not None:
         parsed = parse_dsn(dsn_string)
         consent = _resolve_consent_token(consent_token)
@@ -517,6 +545,7 @@ def _resolve_client_config(
                 if settings == "console"
                 else None
             ),
+            report=_report(report_on, vendor_display_name or parsed.vendor_id),
         )
 
     if sink is None:
@@ -544,7 +573,16 @@ def _resolve_client_config(
         tenant_id=tenant_id_resolved or vendor_id_resolved,
         consent_token=_resolve_consent_token(consent_token),
         result_capture_mode=mode,
+        report=_report(report_on, vendor_display_name or vendor_id_resolved),
     )
+
+
+def _report(on: bool, display_name: str) -> tuple[AnnotationNames, ReportTool] | None:
+    """The report tool ``serve()`` adds, or ``None`` with reports off."""
+    if not on:
+        return None
+    tool = report_tool(vendor_display_name=display_name)
+    return AnnotationNames(display_name, tool.name), tool
 
 
 def _resolve_consent_token(explicit: str | None) -> str:
@@ -731,6 +769,7 @@ class Trace:
         self._params: dict[str, Any] = {}
         self._observed_result: Any = _UNSET
         self._observed_error: tuple[str, str] | None = None
+        self._failure_fields: dict[str, Any] = {}
         self._start_seq: int | None = None
         self._call_started_at: float | None = None
         # SPEC §11.4's per-call join key. Minted on ENTRY, not here: this
@@ -859,6 +898,7 @@ class Trace:
                 )
                 self._observed_warned = True
 
+        self._failure_fields = {}
         if error is not None:
             error_type = error_type or type(error).__name__
             error_body = error_body or str(error)
@@ -909,6 +949,18 @@ class Trace:
             self._observed_error = None
         return self
 
+    def _observed_failure(
+        self, error_type: str, fields: ErrorResultFields, failure_kind: str | None = None
+    ) -> None:
+        """``serve()``'s failure, its fields already decided by the caller's mode."""
+        self._observed_error = (error_type, fields.error_body)
+        self._observed_result = _UNSET
+        self._failure_fields = {
+            "result": fields.result,
+            "result_capture": fields.result_capture,
+            "failure_kind": failure_kind,
+        }
+
     def __enter__(self) -> Self:
         self._call_started_at = monotonic()
         self._entered_before = True
@@ -921,6 +973,7 @@ class Trace:
         self._observed_result = _UNSET
         self._observed_error = None
         self._observed_warned = False
+        self._failure_fields = {}
         # Read into a LOCAL before the thunk. ``_start_seq`` is ``int | None``
         # and ``__enter__`` has just set it; a closure cannot carry that
         # narrowing, and a thunk re-reading the attribute would see whatever
@@ -952,7 +1005,7 @@ class Trace:
         duration_ms = self._compute_duration_ms()
         end_seq = self._client._next_seq()
 
-        if exc is not None:
+        if exc is not None and not self._failure_fields:
             self._client._emit_sync(
                 lambda: ToolCallErrorEvent(
                     **_trace_envelope(self, end_seq),
@@ -996,8 +1049,11 @@ class Trace:
                     payload=ToolCallErrorPayload(
                         tool_name=self._tool_name,
                         error_type=error_type,
-                        error_body=self._client._scrubber(error_body),
+                        error_body=error_body
+                        if self._failure_fields
+                        else self._client._scrubber(error_body),
                         duration_ms=duration_ms,
+                        **self._failure_fields,
                     ),
                 )
             )
@@ -1042,9 +1098,98 @@ class _Sessions:
     _vendor_id: str
     _consent_token: str
     _capture_settings: CaptureSettings | None
+    _serving: Serving
+    _result_capture_mode: ResultCaptureMode
 
     def _next_seq(self) -> int:
         return PROCESS_SEQUENCE.next()
+
+    def _request(self, message: Any) -> Request | None:
+        if self._disabled:
+            return None
+        try:
+            return read_request(message)
+        except Exception:
+            logger.exception("baton: serve() could not read the request; it is served as it came")
+            return None
+
+    def _open(
+        self,
+        stack: ExitStack | AsyncExitStack,
+        request: Request,
+        message: Any,
+        principal: Principal | Organization | None,
+        headers: Mapping[str, Any] | None,
+        session_id: str | None,
+    ) -> tuple[ResolvedCaller, Call | None] | None:
+        """Enter ``serve()``'s session block and plan a ``tools/call``; ``None``
+        when that fails, and the message goes to dispatch as it came."""
+        try:
+            stack.enter_context(
+                self.session(
+                    session_id=session_id,
+                    principal=principal,
+                    client_info=request.client_info,
+                    headers=headers,
+                    meta=request.meta,
+                )
+            )
+            caller = session_for_call(self, self._capture_settings).caller
+            if request.method != TOOL_CALL:
+                return caller, None
+            return caller, self._serving.call(request, message, caller)
+        except Exception:
+            logger.exception("baton: serve() could not read the request; it is served as it came")
+            return None
+
+    def _shaped(
+        self, request: Request, answer: Any, caller: ResolvedCaller
+    ) -> tuple[Any, SurfaceSnapshotEvent | None]:
+        """Dispatch's ``initialize`` or ``tools/list`` answer with Baton's
+        additions, and the snapshot to send; the answer unchanged on failure."""
+        try:
+            if request.method != TOOL_LIST:
+                return self._serving.initialized(answer), None
+            listed = self._serving.listed(answer, caller)
+            if listed is None:
+                return answer, None
+            return listed.answer, self._snapshot_once(
+                listed.surface, listed.seam, listed.server_overlay
+            )
+        except Exception:
+            logger.exception("baton: serve() could not add to the answer; it is served as it came")
+            return answer, None
+
+    def _record(self, trace: Any, outcome: Any, caller: ResolvedCaller) -> None:
+        """``outcome`` is dispatch's answer, or the exception it raised."""
+        if trace is None:
+            return
+        mode = caller.result_capture_mode(self._result_capture_mode)
+        try:
+            if isinstance(outcome, Exception):
+                trace._observed_failure(
+                    type(outcome).__name__,
+                    raised_error_fields(
+                        mode=mode, scrubber=self._scrubber, raised=outcome, tool_error=None
+                    ),
+                )
+            else:
+                record(trace, outcome, mode, self._scrubber)
+        except Exception:
+            logger.exception("baton: serve() could not record the tool call")
+            # The end goes out with no result, without warning the vendor
+            # that they forgot observed().
+            trace._observed_result = None
+
+    def _trace_kwargs(self, call: Call) -> dict[str, Any]:
+        intent, expected, workflow = call.goals
+        return {
+            "tool_name": call.name,
+            "intent": intent,
+            "expected_outcome": expected,
+            "workflow": workflow,
+            "params": call.arguments,
+        }
 
     def _start_settings(self, settings: CaptureSettings | None) -> None:
         self._capture_settings = settings
@@ -1079,23 +1224,33 @@ class _Sessions:
         """The tools to serve, and the snapshot to send if this surface has not
         been sent. The hash is marked sent here, and unmarked if the event
         cannot be built or written."""
-        served, surface = serve_tools(
+        served = serve_tools(
             tools, server_info=server_info, capabilities=capabilities, instructions=instructions
         )
+        return served.tools, self._snapshot_once(served.surface)
+
+    def _snapshot_once(
+        self,
+        surface: Surface | None,
+        seam: dict[str, Any] | None = None,
+        server_overlay: str | None = None,
+    ) -> SurfaceSnapshotEvent | None:
+        """The snapshot to send if this surface has not been sent. The hash is
+        marked sent here, and unmarked if the event cannot be built or written."""
         if surface is None:
-            return served, None
+            return None
         payload, digest = surface
         with self._surface_lock:
-            if self._sent_surfaces.was_sent(digest):
-                return served, None
-            self._sent_surfaces.mark(digest)
+            if self._sent_surfaces.was_sent(digest, server_overlay):
+                return None
+            self._sent_surfaces.mark(digest, server_overlay)
         event = cast(
             SurfaceSnapshotEvent | None,
-            build_or_none(lambda: self._snapshot_event(payload, digest), logger),
+            build_or_none(lambda: self._snapshot_event(payload, digest, seam), logger),
         )
         if event is None:
             self._unmark_surface(digest)
-        return served, event
+        return event
 
     def _unmark_surface(self, digest: str) -> None:
         with self._surface_lock:
@@ -1105,7 +1260,9 @@ class _Sessions:
         logger.warning("baton: surface snapshot write failed; will retry", exc_info=True)
         self._unmark_surface(event.payload.surface_hash)
 
-    def _snapshot_event(self, surface: dict[str, Any], digest: str) -> SurfaceSnapshotEvent:
+    def _snapshot_event(
+        self, surface: dict[str, Any], digest: str, seam: dict[str, Any] | None = None
+    ) -> SurfaceSnapshotEvent:
         # A snapshot describes the server, so it takes no block's session,
         # principal or client (SPEC §5.6 rule 7).
         return SurfaceSnapshotEvent(
@@ -1116,7 +1273,7 @@ class _Sessions:
             session_id_origin="minted",
             sequence_number=self._next_seq(),
             captured_at=datetime.now(UTC),
-            payload=snapshot_payload(surface, digest),
+            payload=snapshot_payload(surface, digest, seam),
         )
 
     @contextmanager
@@ -1185,6 +1342,8 @@ class Client(_Sessions):
         result_capture_mode: ResultCaptureMode = "full",
         settings: str = "local",
         settings_refresh_s: float = DEFAULT_REFRESH_S,
+        report_mode: str | None = None,
+        vendor_display_name: str | None = None,
     ) -> None:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
@@ -1200,6 +1359,8 @@ class Client(_Sessions):
                 result_capture_mode=result_capture_mode,
                 settings=settings,
                 settings_refresh_s=settings_refresh_s,
+                report_mode=report_mode,
+                vendor_display_name=vendor_display_name,
             )
         )
 
@@ -1237,6 +1398,11 @@ class Client(_Sessions):
         self._closing_thread: int | None = None
         self._init_surfaces()
         self._start_settings(resolved.capture_settings)
+        self._serving = Serving(
+            names=resolved.report[0] if resolved.report else None,
+            report=resolved.report[1] if resolved.report else None,
+            settings=self._capture_settings,
+        )
 
     def trace(
         self,
@@ -1362,10 +1528,79 @@ class Client(_Sessions):
         if self._bridge is None:
             return tools
         served, event = self._serve(tools, server_info, capabilities, instructions)
+        self._send_snapshot(event)
+        return served
+
+    def _send_snapshot(self, event: SurfaceSnapshotEvent | None) -> None:
         if event is not None and not self._dropping_after_close():
             if self._deliver(self._write_snapshot(event)) is None:
                 self._snapshot_write_failed(event)
-        return served
+
+    def serve(
+        self,
+        message: Any,
+        dispatch: Callable[[Any], Any],
+        *,
+        principal: Principal | Organization | None = None,
+        headers: Mapping[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> Any:
+        """Answer one MCP JSON-RPC ``message`` with ``dispatch``, the vendor's
+        own function from message to answer, and Baton around it (SPEC §5.6).
+
+        ``initialize`` gets Baton's instructions. ``tools/list`` gets
+        ``user_goal`` and the report tool, under the caller's Console settings,
+        and sends the snapshot. ``tools/call`` is traced, with ``user_goal``
+        removed before ``dispatch`` sees it; Baton answers the report tool and
+        a tool the caller's overlay hides itself. Anything else goes to
+        ``dispatch`` as it came.
+
+        ``principal``, ``headers`` and ``session_id`` are as on ``session()``.
+        ``dispatch`` is called at most once, and what it returns or raises
+        comes back unchanged apart from Baton's additions. A failure in Baton's
+        own work is logged, never raised.
+        """
+        request = self._request(message)
+        if request is None:
+            return dispatch(message)
+        with ExitStack() as stack:
+            opened = self._open(stack, request, message, principal, headers, session_id)
+            if opened is None:
+                return dispatch(message)
+            caller, call = opened
+            if request.method != TOOL_CALL:
+                answer, event = self._shaped(request, dispatch(message), caller)
+                self._send_snapshot(event)
+                return answer
+            if call is None:
+                return dispatch(message)
+            if call.answer is not None:
+                self._answer_ourselves(call)
+                return call.answer
+            try:
+                trace = stack.enter_context(self.trace(**self._trace_kwargs(call)))
+            except Exception:
+                logger.exception("baton: serve() could not trace the call")
+                trace = None
+            try:
+                answer = dispatch(call.message)
+            except Exception as exc:
+                self._record(trace, exc, caller)
+                raise
+            self._record(trace, answer, caller)
+            return answer
+
+    def _answer_ourselves(self, call: Call) -> None:
+        try:
+            if call.report is not None:
+                self.annotate(**call.report)
+            elif call.hidden:
+                with self.trace(**self._trace_kwargs(call)) as trace:
+                    trace._observed_failure(
+                        TOOL_ERROR_TYPE, hidden_fields(call, self._scrubber), "tool_hidden"
+                    )
+        except Exception:
+            logger.exception("baton: serve() could not record its own answer")
 
     def flush(self) -> None:
         """Wait for pending events to drain, up to the sink's shutdown budget;
@@ -1572,6 +1807,7 @@ class AsyncTrace:
         self._params: dict[str, Any] = {}
         self._observed_result: Any = _UNSET
         self._observed_error: tuple[str, str] | None = None
+        self._failure_fields: dict[str, Any] = {}
         self._start_seq: int | None = None
         self._call_started_at: float | None = None
         # SPEC §11.4's per-call join key. Minted on ENTRY, not here: this
@@ -1682,6 +1918,7 @@ class AsyncTrace:
                 )
                 self._observed_warned = True
 
+        self._failure_fields = {}
         if error is not None:
             error_type = error_type or type(error).__name__
             error_body = error_body or str(error)
@@ -1732,6 +1969,18 @@ class AsyncTrace:
             self._observed_error = None
         return self
 
+    def _observed_failure(
+        self, error_type: str, fields: ErrorResultFields, failure_kind: str | None = None
+    ) -> None:
+        """``serve()``'s failure, its fields already decided by the caller's mode."""
+        self._observed_error = (error_type, fields.error_body)
+        self._observed_result = _UNSET
+        self._failure_fields = {
+            "result": fields.result,
+            "result_capture": fields.result_capture,
+            "failure_kind": failure_kind,
+        }
+
     async def __aenter__(self) -> Self:
         self._call_started_at = monotonic()
         self._entered_before = True
@@ -1744,6 +1993,7 @@ class AsyncTrace:
         self._observed_result = _UNSET
         self._observed_error = None
         self._observed_warned = False
+        self._failure_fields = {}
         # See ``Trace.__enter__`` for why this is a local, not an attribute
         # read inside the thunk.
         start_seq = self._start_seq
@@ -1777,7 +2027,7 @@ class AsyncTrace:
         )
         end_seq = self._client._next_seq()
 
-        if exc is not None:
+        if exc is not None and not self._failure_fields:
             await self._client._emit(
                 lambda: ToolCallErrorEvent(
                     **_trace_envelope(self, end_seq),
@@ -1819,8 +2069,11 @@ class AsyncTrace:
                     payload=ToolCallErrorPayload(
                         tool_name=self._tool_name,
                         error_type=error_type,
-                        error_body=self._client._scrubber(error_body),
+                        error_body=error_body
+                        if self._failure_fields
+                        else self._client._scrubber(error_body),
                         duration_ms=duration_ms,
+                        **self._failure_fields,
                     ),
                 )
             )
@@ -1863,6 +2116,8 @@ class AsyncClient(_Sessions):
         result_capture_mode: ResultCaptureMode = "full",
         settings: str = "local",
         settings_refresh_s: float = DEFAULT_REFRESH_S,
+        report_mode: str | None = None,
+        vendor_display_name: str | None = None,
     ) -> None:
         switch = capture_disabled()
         self._disabled: bool = switch is not None
@@ -1878,6 +2133,8 @@ class AsyncClient(_Sessions):
                 result_capture_mode=result_capture_mode,
                 settings=settings,
                 settings_refresh_s=settings_refresh_s,
+                report_mode=report_mode,
+                vendor_display_name=vendor_display_name,
             )
         )
 
@@ -1896,6 +2153,11 @@ class AsyncClient(_Sessions):
         self._closing: asyncio.Future[None] | None = None
         self._init_surfaces()
         self._start_settings(resolved.capture_settings)
+        self._serving = Serving(
+            names=resolved.report[0] if resolved.report else None,
+            report=resolved.report[1] if resolved.report else None,
+            settings=self._capture_settings,
+        )
 
     def trace(
         self,
@@ -1993,6 +2255,10 @@ class AsyncClient(_Sessions):
         if self._disabled:
             return tools
         served, event = self._serve(tools, server_info, capabilities, instructions)
+        await self._send_snapshot(event)
+        return served
+
+    async def _send_snapshot(self, event: SurfaceSnapshotEvent | None) -> None:
         if event is not None and not self._dropping_after_close():
             try:
                 await write_unless_closed(self._sink, event, logger)
@@ -2002,7 +2268,59 @@ class AsyncClient(_Sessions):
                 # A cancelled write must not leave the surface marked as sent.
                 self._unmark_surface(event.payload.surface_hash)
                 raise
-        return served
+
+    async def serve(
+        self,
+        message: Any,
+        dispatch: Callable[[Any], Any],
+        *,
+        principal: Principal | Organization | None = None,
+        headers: Mapping[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> Any:
+        """Async equivalent of ``Client.serve``. ``dispatch`` may return its
+        answer or an awaitable of it."""
+        request = self._request(message)
+        if request is None:
+            return await _dispatched(dispatch, message)
+        async with AsyncExitStack() as stack:
+            opened = self._open(stack, request, message, principal, headers, session_id)
+            if opened is None:
+                return await _dispatched(dispatch, message)
+            caller, call = opened
+            if request.method != TOOL_CALL:
+                answer, event = self._shaped(request, await _dispatched(dispatch, message), caller)
+                await self._send_snapshot(event)
+                return answer
+            if call is None:
+                return await _dispatched(dispatch, message)
+            if call.answer is not None:
+                await self._answer_ourselves(call)
+                return call.answer
+            try:
+                trace = await stack.enter_async_context(self.trace(**self._trace_kwargs(call)))
+            except Exception:
+                logger.exception("baton: serve() could not trace the call")
+                trace = None
+            try:
+                answer = await _dispatched(dispatch, call.message)
+            except Exception as exc:
+                self._record(trace, exc, caller)
+                raise
+            self._record(trace, answer, caller)
+            return answer
+
+    async def _answer_ourselves(self, call: Call) -> None:
+        try:
+            if call.report is not None:
+                await self.annotate(**call.report)
+            elif call.hidden:
+                async with self.trace(**self._trace_kwargs(call)) as trace:
+                    trace._observed_failure(
+                        TOOL_ERROR_TYPE, hidden_fields(call, self._scrubber), "tool_hidden"
+                    )
+        except Exception:
+            logger.exception("baton: serve() could not record its own answer")
 
     async def flush(self) -> None:
         if self._closed:
@@ -2053,3 +2371,8 @@ class AsyncClient(_Sessions):
         # write. See ``Client._emit_sync`` for why construction needs a guard
         # at all, and why the sync twin cannot use this helper.
         await safe_emit(self._sink, build, logger)
+
+
+async def _dispatched(dispatch: Callable[[Any], Any], message: Any) -> Any:
+    answer = dispatch(message)
+    return await answer if inspect.isawaitable(answer) else answer

@@ -283,7 +283,11 @@ def remove_subagent_clause(mcp: Any, write: Callable[[Any, str], None]) -> bool:
     ours = getattr(mcp, _OURS_ATTR, None)
     subagent = getattr(mcp, _SUBAGENT_ATTR, None)
     vendor = getattr(mcp, _VENDOR_INSTRUCTIONS_ATTR, None)
-    if not isinstance(ours, str) or not subagent or mcp.instructions != _joined(vendor, ours):
+    if (
+        not isinstance(ours, str)
+        or not subagent
+        or mcp.instructions != join_instructions(vendor, ours)
+    ):
         return False
     kept = ours.removesuffix(subagent).removesuffix("\n\n")
     write_ours(mcp, kept, write, subagent=None)
@@ -390,7 +394,7 @@ _OURS_ATTR = "_baton_instructions"
 _SUBAGENT_ATTR = "_baton_subagent_sentence"
 
 
-def _joined(vendor: Any, ours: str) -> str:
+def join_instructions(vendor: Any, ours: str) -> str:
     if not isinstance(vendor, str) or is_blank(vendor):
         return ours
     return f"{vendor}\n\n{ours}" if ours else vendor
@@ -423,7 +427,11 @@ def _vendor_text(mcp: Any) -> Any:
     current = mcp.instructions
     written = getattr(mcp, _OURS_ATTR, None)
     vendor = getattr(mcp, _VENDOR_INSTRUCTIONS_ATTR, current)
-    return vendor if isinstance(written, str) and current == _joined(vendor, written) else current
+    return (
+        vendor
+        if isinstance(written, str) and current == join_instructions(vendor, written)
+        else current
+    )
 
 
 def with_vendor_instructions(mcp: Any, ours: str, warned: set[str] | None = None) -> str:
@@ -431,7 +439,7 @@ def with_vendor_instructions(mcp: Any, ours: str, warned: set[str] | None = None
     The runtime cuts at ``_CLAUDE_CODE_TRUNCATION_CAP`` from the end, so the
     order decides whose text is lost."""
     vendor = _vendor_text(mcp)
-    combined = _joined(vendor, ours)
+    combined = join_instructions(vendor, ours)
     if combined == ours:
         return ours
     # ``warned`` is shared by servers built per request, so this is said once.
