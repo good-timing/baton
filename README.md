@@ -89,7 +89,52 @@ Open one `client.session(...)` per request or conversation. Every `trace()` and 
 
 ### Serving MCP yourself
 
-If your server handles MCP's JSON-RPC in its own code, without FastMCP or the `mcp` package, there is no server object for `install_baton` to wrap. The library gives you the same capture, but the code goes in four places instead of one:
+If your server handles MCP's JSON-RPC in its own code, without FastMCP or the `mcp` package, there is no server object for `install_baton` to wrap. Put your handling in one function from a request to its answer, and pass each request through `serve()`:
+
+```python
+from baton import AsyncClient, Organization, Principal
+
+baton = AsyncClient(                                   # once, at startup
+    dsn="https://baton_pk_...",
+    settings="console",
+    vendor_display_name="Acme",
+    tools=YOUR_TOOLS,                                  # optional, see below
+)
+
+async def dispatch(message: dict) -> dict:             # your existing handling
+    ...                                                # initialize, tools/list, tools/call, the rest
+    return {"jsonrpc": "2.0", "id": message["id"], "result": result}
+
+# in your view, after your own auth:
+answer = await baton.serve(
+    message,                                           # the parsed JSON-RPC request
+    dispatch,
+    principal=Principal(
+        principal_id=user.id,
+        organization=Organization(organization_id=user.company_id, labels=[user.plan]),
+    ),
+    headers=request.headers,
+)
+```
+
+`serve()` calls `dispatch` once and adds what an MCP adapter adds:
+
+- `initialize`: Baton's paragraphs go below your `instructions`.
+- `tools/list`: each tool gets the `user_goal` param, and the report tool is added (with `settings="console"`; set `report_mode` to choose yourself). A snapshot of your own tools is sent once per change.
+- `tools/call`: `user_goal` is removed before your code sees the call, and the call is recorded with its result or error. Baton answers calls to the report tool itself.
+- Anything else goes to `dispatch` as it came.
+
+If anything in Baton's own work fails, you get your own answer back unchanged, and `dispatch` still runs only once. With `BATON_DISABLED=1`, `serve()` just calls `dispatch`.
+
+`principal` is who is calling. On a stateless server each request is its own session, so it is also what groups one person's calls. The labels on it are what the Console's audiences match, so you can, for example, turn results off for your enterprise customers without a code change.
+
+**Pass `tools=`** (your full tool list, or a function that returns it) if you run more than one worker, or if one of your tools has its own `user_goal` param or the report tool's name. Each process otherwise learns your tools from the lists it serves, and until it has served one, it removes `user_goal` from every call.
+
+**Moving from the hand-wired setup below?** Remove all of it: `INTENT_INSTRUCTIONS` or `tool.instructions` in your instructions, `list_tools(...)` and the report tool in `tools/list`, and `session(...)`, `trace(...)` and the report-tool branch in `tools/call`. Left in, every call is recorded twice. `serve()` logs an ERROR naming the call when it sees one.
+
+#### Without `serve()`
+
+The same capture, wired by hand in four places:
 
 ```python
 from baton import INTENT_INSTRUCTIONS, INTENT_PARAMS, AsyncClient, Principal
@@ -117,6 +162,8 @@ await baton.aclose()                                              # at shutdown
 `list_tools` adds the `user_goal` param to each tool, as the MCP adapters do, and sends a snapshot of your own tool list once for each distinct list. A tool that already has its own `user_goal` argument keeps it: don't pop `user_goal` for that tool, and leave `INTENT_INSTRUCTIONS` out, or the agent writes Baton's turn number into your argument. `meta` is the request's `_meta`: the client's conversation and turn ids ride along, scrubbed. On a stateless server each request is its own session; pass `principal` so one person's calls group together.
 
 ### Agent reports on your own API
+
+`serve()` adds the report tool for you. This section is for the hand-wired setup, or an API that is not MCP.
 
 The MCP adapters give agents a report tool, so an agent can tell you when a call went wrong or no tool covers what the user asked. On your own API, offer the same tool with `report_tool`. It has the name, description and input schema an adapter registers on a server with that name, so an agent reads the same words.
 
@@ -175,6 +222,8 @@ Three things can differ by audience.
 The SDK reads the settings every 60 seconds. Set `settings_refresh_s` to change that, down to 15. Until the first read succeeds, and while nothing is saved, the values in your `VendorConfig` apply. Once settings are read, each event says which ones it ran under, in `capture`.
 
 `report_mode` is `"on"` by default here, so the Console decides who sees the report tool. Set `report_mode="off"` to keep it off for everyone. The report sentence in your server's instructions stays while any audience has reports on. A client reads the instructions when it connects, so a change reaches new connections only.
+
+On the library path, pass `settings="console"` to `Client` or `AsyncClient`; the caller is the `principal` you pass to `serve()` or `session()`, and it is matched on every call.
 
 Labels come from your `resolve_principal` hook, as `Principal(labels=[...])` or `Organization(labels=[...])`. Up to 20 per caller, sent on every event, so send only names you are happy for Baton to see. A share of callers is picked by the principal's id, so the same person always lands in the same group. A caller with no principal is never in a share, even with an organization. To target a company, give its `Organization` a label.
 

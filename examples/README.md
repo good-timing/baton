@@ -19,6 +19,7 @@ The same scenario, the same SDK, the same event envelopes — only the **sink** 
 |---|---|
 | [`fastmcp_server/`](fastmcp_server/) | The FastMCP integration: wrap an existing server with `install_baton(mcp, VendorConfig(...))`. Demonstrates the middleware event stream and per-tool intent-param injection (the `user_goal` param that captures *why* a tool was called and what success should look like, even on clients that ignore server instructions). Runs offline with `StdoutSink`. |
 | [`skill_demo/`](skill_demo/) | The library API in the Skill-instrumented agent-code pattern. Stubbed vendor SDK; runs offline. Demonstrates `client.trace(...)`, `trace.observed(...)`, `trace.annotate(...)`, the failure-with-reactive-ticket flow, and the local ingest emulator (`local_ingest.py`). |
+| [`serve_mcp/`](serve_mcp/) | A hand-written MCP server (one stdlib POST route, stateless, its own tokens) with Baton through `client.serve(message, dispatch, ...)`: Baton's instructions, `user_goal`, the report tool and call capture, with no Baton code in `dispatch`. Runs offline with `StdoutSink`. |
 | [`library_api_smoke_test/`](library_api_smoke_test/) | Self-contained end-to-end smoke test for the library API. Runs an in-process HTTP capture server and asserts the full SPEC §11.4 envelope shape across both sync (`Client`) and async (`AsyncClient`) paths. Copyable starting point for your own integration tests. |
 
 ## What's NOT here
