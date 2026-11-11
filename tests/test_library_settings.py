@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 from typing import Any
 
@@ -141,6 +142,53 @@ def test_the_settings_reader_starts_with_the_client_and_stops_at_close(
     assert fetcher.started and fetcher.stopped
 
 
+EVERYONE_OFF = {
+    "version": 5,
+    "audiences": [{"id": "everyone", "match": {}, "capture": {"results": "off"}}],
+}
+
+
+def test_a_call_outside_a_block_runs_under_the_settings(
+    sink: _CollectingSink, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use(monkeypatch, EVERYONE_OFF)
+    client = Client(dsn=DSN, settings="console")
+    with client.trace(tool_name="fetch") as trace:
+        trace.observed({"note": "private"})
+    client.annotate(what_happened="slow")
+    client.close()
+    end = _end(sink)
+    assert "private" not in json.dumps(end)
+    assert {json.dumps(e.model_dump(mode="json")["capture"]) for e in sink.events} == {
+        json.dumps({"settings_version": 5, "audience": "everyone"})
+    }
+
+
+def test_a_block_open_across_the_first_read_picks_the_settings_up(
+    sink: _CollectingSink, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fetcher = _use(monkeypatch, None)
+    client = Client(dsn=DSN, settings="console")
+    with client.session(principal=ENTERPRISE):
+        fetcher.document = parse_document(json.dumps(DOCUMENT).encode())
+        with client.trace(tool_name="fetch") as trace:
+            trace.observed({"note": "private"})
+    client.close()
+    assert _end(sink)["payload"]["result_capture"] == "off"
+
+
+def test_the_block_still_shows_who_it_is_for(
+    sink: _CollectingSink, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use(monkeypatch, None)
+    client = Client(dsn=DSN, settings="console")
+    with client.session(principal=ENTERPRISE) as block:
+        assert block.principal is not None and block.principal.id == "u1"
+        assert block.organization is not None
+        assert block.labels == ["enterprise"]
+    client.close()
+
+
 def test_local_settings_never_read_the_console(
     sink: _CollectingSink, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -173,3 +221,13 @@ def test_console_settings_need_a_dsn() -> None:
 def test_the_off_switch_never_raises_over_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BATON_DISABLED", "1")
     Client(settings="console").close()
+
+
+@CLIENTS
+def test_a_client_dropped_without_close_stops_reading_the_console(
+    make: Any, sink: _CollectingSink, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fetcher = _use(monkeypatch, None)
+    make(dsn=DSN, settings="console")
+    gc.collect()
+    assert fetcher.stopped

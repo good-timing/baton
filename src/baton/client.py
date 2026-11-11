@@ -96,6 +96,7 @@ import logging
 import os
 import threading
 import traceback
+import weakref
 from collections.abc import Callable, Coroutine, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -1045,6 +1046,13 @@ class _Sessions:
     def _next_seq(self) -> int:
         return PROCESS_SEQUENCE.next()
 
+    def _start_settings(self, settings: CaptureSettings | None) -> None:
+        self._capture_settings = settings
+        if settings is not None:
+            settings.start()
+            # A client dropped without close() must not poll the Console forever.
+            weakref.finalize(self, settings.stop)
+
     def _dropping_after_close(self) -> bool:
         """True once closed: the event is dropped, never raised into the
         vendor's code (SPEC §11.2). Warns once."""
@@ -1152,7 +1160,6 @@ class _Sessions:
             meta=meta,
             scrubber=self._scrubber,
             disabled=self._disabled,
-            settings=self._capture_settings,
         )
         token = enter_block(self, block)
         try:
@@ -1229,9 +1236,7 @@ class Client(_Sessions):
         self._writes: set[asyncio.Task[Any]] = set()
         self._closing_thread: int | None = None
         self._init_surfaces()
-        self._capture_settings = resolved.capture_settings
-        if self._capture_settings is not None:
-            self._capture_settings.start()
+        self._start_settings(resolved.capture_settings)
 
     def trace(
         self,
@@ -1262,7 +1267,7 @@ class Client(_Sessions):
             expected_outcome=expected_outcome,
             workflow=workflow,
             consent_token=consent_token,
-            session=session_for_call(self),
+            session=session_for_call(self, self._capture_settings),
         )
         if params is not None:
             # See ``Trace.with_params`` — same statement, same reason, and the
@@ -1292,7 +1297,7 @@ class Client(_Sessions):
         configured token.
         """
         self._annotate(
-            session_for_call(self),
+            session_for_call(self, self._capture_settings),
             consent_token=consent_token or self._consent_token,
             what_happened=what_happened,
             tool_name=tool_name,
@@ -1890,9 +1895,7 @@ class AsyncClient(_Sessions):
         self._closed = False
         self._closing: asyncio.Future[None] | None = None
         self._init_surfaces()
-        self._capture_settings = resolved.capture_settings
-        if self._capture_settings is not None:
-            self._capture_settings.start()
+        self._start_settings(resolved.capture_settings)
 
     def trace(
         self,
@@ -1912,7 +1915,7 @@ class AsyncClient(_Sessions):
             expected_outcome=expected_outcome,
             workflow=workflow,
             consent_token=consent_token,
-            session=session_for_call(self),
+            session=session_for_call(self, self._capture_settings),
         )
         if params is not None:
             # See ``Trace.with_params`` — same statement, same reason, and the
@@ -1935,7 +1938,7 @@ class AsyncClient(_Sessions):
     ) -> None:
         """Async equivalent of ``Client.annotate``."""
         await self._annotate(
-            session_for_call(self),
+            session_for_call(self, self._capture_settings),
             consent_token=consent_token or self._consent_token,
             what_happened=what_happened,
             tool_name=tool_name,

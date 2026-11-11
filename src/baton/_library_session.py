@@ -5,12 +5,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from baton._capture_settings import CaptureSettings
 from baton._uuid import uuid7
-from baton.events import ClientObserved
+from baton.events import ClientObserved, OrganizationWire, PrincipalWire
 from baton.integrations._client_observed import (
     clean_runtime_meta,
     meta_to_dict,
@@ -40,6 +40,18 @@ class LibrarySession:
     caller: ResolvedCaller = field(default_factory=ResolvedCaller)
     client_observed: ClientObserved | None = None
     runtime_meta: dict[str, Any] | None = None
+
+    @property
+    def principal(self) -> PrincipalWire | None:
+        return self.caller.principal
+
+    @property
+    def organization(self) -> OrganizationWire | None:
+        return self.caller.organization
+
+    @property
+    def labels(self) -> list[str] | None:
+        return list(self.caller.labels) or None
 
     def envelope(self) -> dict[str, Any]:
         return {
@@ -103,7 +115,6 @@ def new_session(
     meta: object = None,
     scrubber: Callable[[Any], Any],
     disabled: bool,
-    settings: CaptureSettings | None = None,
 ) -> LibrarySession:
     """A ``session()`` block's values. Never raises: a value that is not
     usable is logged and dropped."""
@@ -119,22 +130,24 @@ def new_session(
         if request_meta or client_info is not None or headers is not None
         else None
     )
-    caller = wire_vendor_caller(principal, logger=logger)
     return LibrarySession(
         base.session_id,
         base.session_id_origin,
-        caller=with_settings(caller, client_observed, settings, logger=logger),
+        caller=wire_vendor_caller(principal, logger=logger),
         client_observed=client_observed,
         runtime_meta=_runtime_meta(request_meta, _vendor_id("turn_id", turn_id), scrubber),
     )
 
 
-def session_for_call(owner: object) -> LibrarySession:
-    """``owner``'s open block, or a minted session for this call alone."""
+def session_for_call(owner: object, settings: CaptureSettings | None = None) -> LibrarySession:
+    """``owner``'s open block, or a minted session for this call alone, under
+    the settings in force now: a block can outlive a Console change."""
     entry = _current.get()
-    if entry is not None and entry[0] is owner:
-        return entry[1]
-    return _minted()
+    session = entry[1] if entry is not None and entry[0] is owner else _minted()
+    if settings is None:
+        return session
+    caller = with_settings(session.caller, session.client_observed, settings, logger=logger)
+    return session if caller is session.caller else replace(session, caller=caller)
 
 
 def enter_block(owner: object, session: LibrarySession) -> Any:
