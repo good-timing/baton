@@ -27,6 +27,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 - **`vendor_display_name` and `report_mode`** on both clients, with the
   same meaning and defaults as on `VendorConfig`.
 
+### Changed
+
+- **`result_capture_mode="off"` now withholds the message of an exception
+  raised inside a library trace**, as the MCP adapters do: it may quote what
+  the tool fetched. The error event keeps its `error_type` and carries
+  `result_capture: "off"`. Text passed to `observed()` by name is still sent.
+- **No tool whose root schema is `$ref`, `oneOf`, `anyOf` or `allOf` gets
+  `user_goal`**, on the adapters as on the library path: a property added
+  beside such a root can change what the schema accepts.
+
 ## 1.1.2: a share samples principals only
 
 ### Changed

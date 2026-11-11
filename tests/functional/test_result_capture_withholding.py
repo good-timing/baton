@@ -279,6 +279,73 @@ def test_library_end_carries_the_marker_and_no_body(tmp_path: Path) -> None:
         assert payload.get("result") is None
 
 
+def _library_failures(events_path: Path, mode: str, scrubber: Any) -> None:
+    from baton import Client
+    from baton.sinks import FileSink
+
+    client = Client(
+        sink=FileSink(str(events_path)),
+        vendor_id="withhold",
+        tenant_id=TENANT,
+        scrubber=scrubber,
+        result_capture_mode=mode,
+    )
+    try:
+        with pytest.raises(ValueError), client.trace(tool_name="raises"):
+            raise ValueError(SECRET)
+        with client.trace(tool_name="error") as t:
+            t.observed(error=ValueError(SECRET))
+        with client.trace(tool_name="body") as t:
+            t.observed(error_type="NotFound", error_body=SECRET)
+    finally:
+        client.close()
+
+
+def test_library_off_withholds_a_raised_message_and_keeps_one_passed_by_name(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "e.jsonl"
+    recorder = _Recorder()
+    _library_failures(p, "off", recorder)
+    raised, *passed = _payloads(p, "tool_call_error")
+    assert (raised["error_type"], raised["error_body"]) == ("ValueError", "")
+    assert raised["result_capture"] == "off"
+    assert [SECRET in e["error_body"] for e in passed] == [True, True]
+    assert {e["result_capture"] for e in passed} == {None}
+    assert sum(SECRET in str(call) for call in recorder.calls) == 2
+
+
+def test_async_library_off_withholds_a_raised_message(tmp_path: Path) -> None:
+    import asyncio
+
+    from baton import AsyncClient
+    from baton.sinks import FileSink
+
+    async def run() -> None:
+        client = AsyncClient(
+            sink=FileSink(str(tmp_path / "e.jsonl")),
+            vendor_id="withhold",
+            tenant_id=TENANT,
+            result_capture_mode="off",
+        )
+        with pytest.raises(ValueError):
+            async with client.trace(tool_name="raises"):
+                raise ValueError(SECRET)
+        await client.aclose()
+
+    asyncio.run(run())
+    (error,) = _payloads(tmp_path / "e.jsonl", "tool_call_error")
+    assert (error["error_body"], error["result_capture"]) == ("", "off")
+
+
+def test_library_full_keeps_every_error_message(tmp_path: Path) -> None:
+    p = tmp_path / "e.jsonl"
+    _library_failures(p, "full", _Recorder())
+    errors = _payloads(p, "tool_call_error")
+    assert [SECRET in e["error_body"] for e in errors] == [True, True, True]
+    assert {e["result_capture"] for e in errors} == {None}
+
+
 # =============================================================================
 # 3 · Absent means captured — and the reference SDK spells absent as ``null``
 # =============================================================================

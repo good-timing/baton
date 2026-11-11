@@ -162,7 +162,6 @@ from baton.integrations._config import console_settings, validate_settings
 from baton.integrations._error_result import (
     TOOL_ERROR_TYPE,
     ErrorResultFields,
-    raised_error_fields,
 )
 from baton.integrations._identity_adapter import ResolvedCaller
 from baton.integrations._llm_text import INTENT_SOURCE_LIBRARY
@@ -917,9 +916,7 @@ class Trace:
         if error_type is not None or error_body is not None:
             self._observed_error = (error_type or "Error", error_body or "")
             self._observed_result = _UNSET
-        elif withholding(
-            self._session.caller.result_capture_mode(self._client._result_capture_mode)
-        ):
+        elif self._withholding():
             # The gate is HERE, not at payload construction: SPEC §7 forbids
             # invoking the scrubber on a withheld result, and by payload time
             # it has already run. So the body is never held at all — not
@@ -959,6 +956,11 @@ class Trace:
                 self._observed_result = _SCRUB_FAILED
             self._observed_error = None
         return self
+
+    def _withholding(self) -> bool:
+        return withholding(
+            self._session.caller.result_capture_mode(self._client._result_capture_mode)
+        )
 
     def _observed_failure(
         self, error_type: str, fields: ErrorResultFields, failure_kind: str | None = None
@@ -1016,17 +1018,21 @@ class Trace:
         duration_ms = self._compute_duration_ms()
         end_seq = self._client._next_seq()
 
-        if exc is not None and not self._failure_fields:
+        if exc is not None:
+            # A raised message may quote what the tool fetched; text passed to
+            # observed() by name is the vendor's choice and is kept (SPEC §11.4.3).
+            withheld = self._withholding()
             self._client._emit_sync(
                 lambda: ToolCallErrorEvent(
                     **_trace_envelope(self, end_seq),
                     payload=ToolCallErrorPayload(
                         tool_name=self._tool_name,
                         error_type=exc.__class__.__name__,
-                        error_body=self._client._scrubber(
-                            str(exc) or "".join(traceback.format_tb(tb))
-                        ),
+                        error_body=""
+                        if withheld
+                        else self._client._scrubber(str(exc) or "".join(traceback.format_tb(tb))),
                         duration_ms=duration_ms,
+                        result_capture=WITHHELD if withheld else None,
                     ),
                 )
             )
@@ -1173,21 +1179,13 @@ class _Sessions:
             logger.exception("baton: serve() could not add to the answer; it is served as it came")
             return answer, None
 
-    def _record(self, trace: Any, outcome: Any, caller: ResolvedCaller) -> None:
-        """``outcome`` is dispatch's answer, or the exception it raised."""
+    def _record(self, trace: Any, answer: Any, caller: ResolvedCaller) -> None:
         if trace is None:
             return
-        mode = caller.result_capture_mode(self._result_capture_mode)
         try:
-            if isinstance(outcome, Exception):
-                trace._observed_failure(
-                    type(outcome).__name__,
-                    raised_error_fields(
-                        mode=mode, scrubber=self._scrubber, raised=outcome, tool_error=None
-                    ),
-                )
-            else:
-                record(trace, outcome, mode, self._scrubber)
+            record(
+                trace, answer, caller.result_capture_mode(self._result_capture_mode), self._scrubber
+            )
         except Exception:
             logger.exception("baton: serve() could not record the tool call")
             with contextlib.suppress(Exception):
@@ -1580,11 +1578,7 @@ class Client(_Sessions):
             except Exception:
                 logger.exception("baton: serve() could not trace the call")
                 trace = None
-            try:
-                answer = dispatch(call.message)
-            except Exception as exc:
-                self._record(trace, exc, caller)
-                raise
+            answer = dispatch(call.message)
             self._record(trace, answer, caller)
             return answer
 
@@ -1924,9 +1918,7 @@ class AsyncTrace:
         if error_type is not None or error_body is not None:
             self._observed_error = (error_type or "Error", error_body or "")
             self._observed_result = _UNSET
-        elif withholding(
-            self._session.caller.result_capture_mode(self._client._result_capture_mode)
-        ):
+        elif self._withholding():
             # The gate is HERE, not at payload construction: SPEC §7 forbids
             # invoking the scrubber on a withheld result, and by payload time
             # it has already run. So the body is never held at all — not
@@ -1966,6 +1958,11 @@ class AsyncTrace:
                 self._observed_result = _SCRUB_FAILED
             self._observed_error = None
         return self
+
+    def _withholding(self) -> bool:
+        return withholding(
+            self._session.caller.result_capture_mode(self._client._result_capture_mode)
+        )
 
     def _observed_failure(
         self, error_type: str, fields: ErrorResultFields, failure_kind: str | None = None
@@ -2025,17 +2022,21 @@ class AsyncTrace:
         )
         end_seq = self._client._next_seq()
 
-        if exc is not None and not self._failure_fields:
+        if exc is not None:
+            # A raised message may quote what the tool fetched; text passed to
+            # observed() by name is the vendor's choice and is kept (SPEC §11.4.3).
+            withheld = self._withholding()
             await self._client._emit(
                 lambda: ToolCallErrorEvent(
                     **_trace_envelope(self, end_seq),
                     payload=ToolCallErrorPayload(
                         tool_name=self._tool_name,
                         error_type=exc.__class__.__name__,
-                        error_body=self._client._scrubber(
-                            str(exc) or "".join(traceback.format_tb(tb))
-                        ),
+                        error_body=""
+                        if withheld
+                        else self._client._scrubber(str(exc) or "".join(traceback.format_tb(tb))),
                         duration_ms=duration_ms,
+                        result_capture=WITHHELD if withheld else None,
                     ),
                 )
             )
@@ -2296,11 +2297,7 @@ class AsyncClient(_Sessions):
             except Exception:
                 logger.exception("baton: serve() could not trace the call")
                 trace = None
-            try:
-                answer = await _dispatched(dispatch, call.message)
-            except Exception as exc:
-                self._record(trace, exc, caller)
-                raise
+            answer = await _dispatched(dispatch, call.message)
             self._record(trace, answer, caller)
             return answer
 
