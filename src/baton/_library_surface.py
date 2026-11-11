@@ -11,7 +11,6 @@ from typing import Any, NamedTuple
 
 from baton.events import SurfaceSnapshotPayload
 from baton.integrations._llm_text import (
-    RETIRED_PARAM_NAMES,
     USER_GOAL_PARAM_NAME,
     inject_goal_params,
     required_param_names,
@@ -25,10 +24,6 @@ logger = logging.getLogger(__name__)
 INTENT_PARAM_MODE = "required"
 
 Surface = tuple[dict[str, Any], str]
-
-# A root that is not a plain object schema: a property added beside it may
-# change what the schema accepts, so it gets no ``user_goal``.
-_COMPOSITE_ROOT = ("$ref", "oneOf", "anyOf", "allOf")
 
 
 class Served(NamedTuple):
@@ -117,11 +112,6 @@ def _served(tool: Any, as_json: Any, dispositions: dict[str, dict[str, str]]) ->
     entry = dict(as_json)
     schema = entry.get("inputSchema")
     name = entry.get("name")
-    if isinstance(schema, Mapping) and any(key in schema for key in _COMPOSITE_ROOT):
-        if isinstance(name, str):
-            # user_goal is reserved, so a stray one is still stripped on a call.
-            dispositions[name] = {n: "native" for n in RETIRED_PARAM_NAMES}
-        return tool
     if isinstance(schema, Mapping):
         # Only these two levels change, so only they are copied.
         schema = dict(schema)

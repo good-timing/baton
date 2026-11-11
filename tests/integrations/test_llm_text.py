@@ -21,10 +21,12 @@ import pytest
 from baton.integrations._llm_text import (
     _CLAUDE_CODE_TRUNCATION_CAP,
     _INSTRUCTIONS_LENGTH_CAP,
+    RETIRED_PARAM_NAMES,
     build_annotation_tool_description,
     build_refusal_text,
     build_server_instructions,
     build_user_goal_param_description,
+    inject_goal_params,
     pop_goal_params,
     required_param_names,
     served_agent_text,
@@ -356,3 +358,17 @@ def test_agent_text_sees_a_user_goal_declared_in_any_mapping() -> None:
 
 def _assign(mcp: Any, text: str) -> None:
     mcp.instructions = text
+
+
+@pytest.mark.parametrize("root", ["$ref", "oneOf", "anyOf", "allOf"])
+def test_a_composite_root_schema_gets_no_user_goal(root: str) -> None:
+    schema: dict[str, Any] = {root: "#/$defs/A" if root == "$ref" else [{"type": "object"}]}
+    before = dict(schema)
+    dispositions = inject_goal_params(schema, intent_param_mode="required")
+    assert schema == before
+    assert dispositions == dict.fromkeys(RETIRED_PARAM_NAMES, "native")
+    pieces = served_agent_text(
+        names=None, intent_param_mode="required", surface_tools=[{"inputSchema": schema}]
+    )
+    assert "goal_param.description" not in pieces
+    assert "instructions.subagent" in pieces

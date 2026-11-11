@@ -205,6 +205,9 @@ def inject_goal_params(schema: Any, *, intent_param_mode: str) -> dict[str, str]
     and keeps it, so its value is forwarded rather than stripped."""
     if not isinstance(schema, dict):
         return {}
+    if composite_root(schema):
+        # Its params cannot be read, so a retired name it may declare is kept.
+        return dict.fromkeys(RETIRED_PARAM_NAMES, "native")
     props = schema.setdefault("properties", {})
     if not isinstance(props, dict):
         return {}
@@ -224,6 +227,15 @@ def inject_goal_params(schema: Any, *, intent_param_mode: str) -> dict[str, str]
         if USER_GOAL_PARAM_NAME not in required:
             required.append(USER_GOAL_PARAM_NAME)
     return dispositions
+
+
+# A root that is not a plain object schema: a property added beside it may
+# change what the schema accepts, so it gets no ``user_goal``.
+_COMPOSITE_ROOT = ("$ref", "oneOf", "anyOf", "allOf")
+
+
+def composite_root(schema: Any) -> bool:
+    return isinstance(schema, Mapping) and any(key in schema for key in _COMPOSITE_ROOT)
 
 
 def required_param_names(*, intent_param_mode: str) -> tuple[str, ...]:
@@ -330,7 +342,8 @@ def served_agent_text(
     if not any(native):
         served["instructions.subagent"] = INTENT_INSTRUCTIONS
     if any(
-        isinstance(schema, Mapping) and not n for schema, n in zip(schemas, native, strict=True)
+        isinstance(schema, Mapping) and not n and not composite_root(schema)
+        for schema, n in zip(schemas, native, strict=True)
     ):
         served["goal_param.description"] = build_user_goal_param_description(
             intent_param_mode=intent_param_mode
