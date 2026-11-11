@@ -223,6 +223,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
     # Register the annotation tool LAST so the wrap layer's add_tool patch
     # knows to skip wrapping it (by name match).
     if text.names is not None:
+        mark_report_tool(mcp, annotation_tool_name)
         register_annotation_tool(
             mcp,
             vendor_id=config.vendor_id,
@@ -239,7 +240,6 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
             capture_settings=shared.capture_settings,
             scrubber=scrubber,
         )
-        mark_report_tool(mcp, annotation_tool_name)
 
     return BatonHandle(
         sink=sink,

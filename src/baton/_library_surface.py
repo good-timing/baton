@@ -12,6 +12,7 @@ from typing import Any, NamedTuple
 from baton.events import SurfaceSnapshotPayload
 from baton.integrations._llm_text import (
     USER_GOAL_PARAM_NAME,
+    composite_root,
     inject_goal_params,
     required_param_names,
     served_agent_text,
@@ -112,6 +113,10 @@ def _served(tool: Any, as_json: Any, dispositions: dict[str, dict[str, str]]) ->
     entry = dict(as_json)
     schema = entry.get("inputSchema")
     name = entry.get("name")
+    if composite_root(schema):
+        if isinstance(name, str):
+            dispositions[name] = inject_goal_params(schema, intent_param_mode=INTENT_PARAM_MODE)
+        return tool
     if isinstance(schema, Mapping):
         # Only these two levels change, so only they are copied.
         schema = dict(schema)

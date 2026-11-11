@@ -372,3 +372,38 @@ def test_a_composite_root_schema_gets_no_user_goal(root: str) -> None:
     )
     assert "goal_param.description" not in pieces
     assert "instructions.subagent" in pieces
+
+
+def test_a_composite_root_that_declares_user_goal_keeps_it() -> None:
+    schema = {
+        "properties": {"user_goal": {"type": "string"}, "q": {"type": "string"}},
+        "oneOf": [{"additionalProperties": False}],
+    }
+    dispositions = inject_goal_params(schema, intent_param_mode="required")
+    assert dispositions["user_goal"] == "native"
+    arguments = {"user_goal": "vendor value", "q": "x"}
+    pop_goal_params("t", arguments, dispositions)
+    assert arguments == {"user_goal": "vendor value", "q": "x"}
+
+
+@pytest.mark.parametrize(
+    ("schema", "gets_goal"),
+    [
+        ({"type": "object", "properties": {"id": {}}, "anyOf": [{"required": ["id"]}]}, True),
+        (
+            {
+                "type": "object",
+                "properties": {"id": {}},
+                "oneOf": [{"additionalProperties": False}],
+            },
+            False,
+        ),
+        ({"oneOf": [{"type": "object"}]}, False),
+        ({"$ref": "#/$defs/A", "properties": {"id": {}}}, False),
+    ],
+)
+def test_only_a_schema_that_could_reject_user_goal_is_skipped(
+    schema: dict[str, Any], gets_goal: bool
+) -> None:
+    inject_goal_params(schema, intent_param_mode="required")
+    assert ("user_goal" in schema.get("properties", {})) is gets_goal

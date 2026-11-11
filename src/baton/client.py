@@ -160,6 +160,7 @@ from baton.integrations._annotation_name import (
 )
 from baton.integrations._config import console_settings, validate_settings
 from baton.integrations._error_result import (
+    ERROR_BODY_CAP,
     TOOL_ERROR_TYPE,
     ErrorResultFields,
 )
@@ -1030,7 +1031,9 @@ class Trace:
                         error_type=exc.__class__.__name__,
                         error_body=""
                         if withheld
-                        else self._client._scrubber(str(exc) or "".join(traceback.format_tb(tb))),
+                        else str(
+                            self._client._scrubber(str(exc) or "".join(traceback.format_tb(tb)))
+                        )[:ERROR_BODY_CAP],
                         duration_ms=duration_ms,
                         result_capture=WITHHELD if withheld else None,
                     ),
@@ -2034,7 +2037,9 @@ class AsyncTrace:
                         error_type=exc.__class__.__name__,
                         error_body=""
                         if withheld
-                        else self._client._scrubber(str(exc) or "".join(traceback.format_tb(tb))),
+                        else str(
+                            self._client._scrubber(str(exc) or "".join(traceback.format_tb(tb)))
+                        )[:ERROR_BODY_CAP],
                         duration_ms=duration_ms,
                         result_capture=WITHHELD if withheld else None,
                     ),

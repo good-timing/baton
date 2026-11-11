@@ -76,7 +76,7 @@ from baton.integrations._llm_text import drop_subagent_clause, write_ours
 from baton.integrations._per_caller import per_caller_surface
 from baton.integrations._shared import Shared, check_config, install_one, server_session
 from baton.integrations._surface import build_server_meta
-from baton.integrations.official._registry import get_tool_manager
+from baton.integrations.official._registry import get_tool_manager, get_tool_registry
 from baton.integrations.standalone import _auth
 from baton.integrations.standalone._session import (
     extract_headers,
@@ -313,6 +313,7 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
     )
 
     if text.names is not None:
+        mark_report_tool(mcp, annotation_tool_name)
         register_annotation_tool(
             mcp,
             vendor_id=config.vendor_id,
@@ -329,7 +330,6 @@ def attach(mcp: FastMCP, config: VendorConfig, text: InstallText, shared: Shared
             resolve_principal_hook=config.resolve_principal,
             capture_settings=shared.capture_settings,
         )
-        mark_report_tool(mcp, annotation_tool_name)
 
     return BatonHandle(
         sink=sink,
@@ -347,8 +347,9 @@ def _has_own_tool(mcp: Any, name: str) -> bool | None:
     if provider is not None:
         # fastmcp 3+ keys a tool as "tool:<name>@<version>".
         return any(key.partition("@")[0] == f"tool:{name}" for key in provider._components)
-    manager = getattr(mcp, "_tool_manager", None)
-    return name in manager._tools if manager is not None else None
+    if getattr(mcp, "_tool_manager", None) is None:
+        return None
+    return name in get_tool_registry(mcp)
 
 
 def _unknown_tool_text(name: str) -> str:

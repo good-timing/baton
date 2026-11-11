@@ -206,8 +206,12 @@ def inject_goal_params(schema: Any, *, intent_param_mode: str) -> dict[str, str]
     if not isinstance(schema, dict):
         return {}
     if composite_root(schema):
-        # Its params cannot be read, so a retired name it may declare is kept.
-        return dict.fromkeys(RETIRED_PARAM_NAMES, "native")
+        # Its branches may declare a retired name, so one is kept; user_goal
+        # is reserved and is the tool's own only where its root declares it.
+        dispositions = dict.fromkeys(RETIRED_PARAM_NAMES, "native")
+        if declares_user_goal(schema):
+            dispositions[USER_GOAL_PARAM_NAME] = "native"
+        return dispositions
     props = schema.setdefault("properties", {})
     if not isinstance(props, dict):
         return {}
@@ -229,13 +233,29 @@ def inject_goal_params(schema: Any, *, intent_param_mode: str) -> dict[str, str]
     return dispositions
 
 
-# A root that is not a plain object schema: a property added beside it may
-# change what the schema accepts, so it gets no ``user_goal``.
-_COMPOSITE_ROOT = ("$ref", "oneOf", "anyOf", "allOf")
+_BRANCHES = ("oneOf", "anyOf", "allOf")
 
 
 def composite_root(schema: Any) -> bool:
-    return isinstance(schema, Mapping) and any(key in schema for key in _COMPOSITE_ROOT)
+    """Whether a ``user_goal`` added at the root could change what ``schema``
+    accepts: a ``$ref`` root, branches with no root ``properties`` beside
+    them, or a branch that refuses properties it does not name."""
+    if not isinstance(schema, Mapping):
+        return False
+    if "$ref" in schema:
+        return True
+    branches = [
+        branch
+        for key in _BRANCHES
+        if isinstance(schema.get(key), list)
+        for branch in schema[key]
+        if isinstance(branch, Mapping)
+    ]
+    if not any(key in schema for key in _BRANCHES):
+        return False
+    return not isinstance(schema.get("properties"), Mapping) or any(
+        branch.get("additionalProperties") is False for branch in branches
+    )
 
 
 def required_param_names(*, intent_param_mode: str) -> tuple[str, ...]:

@@ -576,3 +576,14 @@ def test_serve_never_waits_on_a_sink_that_hangs(make: Any) -> None:
         h.serve(_call("find_slots", {"day": "mon", "user_goal": GOAL}), vendor)
     assert time.monotonic() - started < 2.0
     h.close()
+
+
+@CLIENTS
+def test_a_raised_message_is_cut_to_the_cap(harness: Any, sink: _CollectingSink) -> None:
+    h = harness(settings="local", scrubber=lambda value: value)
+    vendor = Vendor()
+    vendor.raises = RuntimeError("x" * 5000)
+    with pytest.raises(RuntimeError):
+        h.serve(_call("find_slots", {}), vendor)
+    (error,) = sink.of("tool_call_error")
+    assert len(error["payload"]["error_body"]) == 2000

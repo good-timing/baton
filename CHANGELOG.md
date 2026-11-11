@@ -35,12 +35,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   `result_capture: "off"`. Text passed to `observed()` by name is still sent.
 - **A vendor tool with the report tool's name is kept**, on both MCP
   adapters and in `serve()`. Baton adds no report tool, leaves the report
-  sentence out of the instructions, and warns once. Before, the standalone
+  sentence out of the instructions, and warns once. On the adapters this
+  covers a tool registered on the server itself before install; a tool
+  from a mounted server, or one added after install, is not checked. Before, the standalone
   adapter replaced the vendor's tool with Baton's, and the official one
   kept the vendor's but still pointed agents at it as the report tool.
-- **No tool whose root schema is `$ref`, `oneOf`, `anyOf` or `allOf` gets
-  `user_goal`**, on the adapters as on the library path: a property added
-  beside such a root can change what the schema accepts.
+- **A tool whose schema could reject an added property gets no
+  `user_goal`**, on the adapters as on the library path: a `$ref` root, a
+  `oneOf`/`anyOf`/`allOf` root with no `properties` beside it, or a branch
+  with `additionalProperties: false`.
 
 ## 1.1.2: a share samples principals only
 
