@@ -664,3 +664,62 @@ def test_the_off_switch_never_reads_tools(
     h = Harness(make, settings="console", tools=refuse)
     h.serve(_call("own", {}), Vendor())
     h.close()
+
+
+# --- old wiring left inside serve() --------------------------------------------
+
+
+@pytest.fixture
+def fresh_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("baton.client._DOUBLE_WIRING_LOGGED", set())
+
+
+def _errors(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+@CLIENTS
+def test_old_wiring_inside_serve_is_an_error_once_each(
+    harness: Any, caplog: pytest.LogCaptureFixture, fresh_log: None
+) -> None:
+    h = harness()
+    vendor = Vendor()
+
+    def hand_wired(message: Any) -> Any:
+        with h.client.session():
+            h.client.trace(tool_name="find_slots")
+            return vendor(message)
+
+    with caplog.at_level(logging.ERROR, logger="baton"):
+        for _ in range(3):
+            h.serve(_call("find_slots", {"day": "mon"}), hand_wired)
+    errors = _errors(caplog)
+    assert len(errors) == 2
+    assert "client.session() was called inside serve()" in errors[0]
+    assert "client.trace() was called inside serve()" in errors[1]
+
+
+@CLIENTS
+def test_serve_on_its_own_logs_no_error(
+    harness: Any, caplog: pytest.LogCaptureFixture, fresh_log: None
+) -> None:
+    h = harness()
+    vendor = Vendor()
+    with caplog.at_level(logging.ERROR, logger="baton"):
+        h.serve(_initialize(), vendor)
+        h.serve(_list(), vendor)
+        h.serve(_call("find_slots", {"day": "mon"}), vendor)
+        h.serve(_call(REPORT, {"what_happened": "x"}), vendor)
+    assert _errors(caplog) == []
+
+
+def test_old_wiring_outside_serve_is_fine(
+    caplog: pytest.LogCaptureFixture, fresh_log: None
+) -> None:
+    client = Client(vendor_id="v", sink=_CollectingSink())
+    with caplog.at_level(logging.ERROR, logger="baton"), client.session():
+        client.list_tools(TOOLS)
+        with client.trace(tool_name="find_slots") as trace:
+            trace.observed({})
+    client.close()
+    assert _errors(caplog) == []

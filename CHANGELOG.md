@@ -26,6 +26,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   path too. The caller's audience is matched on every call.
 - **`vendor_display_name` and `report_mode`** on both clients, with the
   same meaning and defaults as on `VendorConfig`.
+- **Old wiring left inside `serve()` is logged as an ERROR**, once per
+  process: `session()`, `trace()` or `list_tools()` called from the vendor's
+  code while `serve()` runs it would record the work twice. Nothing is
+  raised, and the request is served as usual.
 - **`tools=`** on both clients: the vendor's full tool list, or a function
   returning it. `serve()` otherwise learns the tools from the lists it serves,
   so a process that has served none removes `user_goal` from every call and

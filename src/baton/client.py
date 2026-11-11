@@ -100,6 +100,7 @@ import traceback
 import weakref
 from collections.abc import Callable, Coroutine, Iterator, Mapping
 from contextlib import AsyncExitStack, ExitStack, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import monotonic
@@ -1195,6 +1196,19 @@ class _Sessions:
             with contextlib.suppress(Exception):
                 trace.observed(None)
 
+    def _flag_double_wiring(self, call: str) -> None:
+        """An ERROR, once per process, when the vendor's code inside ``serve()``
+        still calls what ``serve()`` now does: the old wiring was left in."""
+        if _IN_DISPATCH.get() is not self or call in _DOUBLE_WIRING_LOGGED:
+            return
+        _DOUBLE_WIRING_LOGGED.add(call)
+        logger.error(
+            "baton: client.%s() was called inside serve(). serve() already does this, so "
+            "it is recorded twice. Remove the old Baton wiring: session(), trace(), "
+            "list_tools() and the report tool code.",
+            call,
+        )
+
     def _start_settings(self, settings: CaptureSettings | None) -> None:
         self._capture_settings = settings
         if settings is not None:
@@ -1312,6 +1326,7 @@ class _Sessions:
         a ``clientInfo`` in it is preferred to ``client_info``. A bad value is
         logged and dropped, never raised.
         """
+        self._flag_double_wiring("session")
         block = new_session(
             session_id=session_id,
             principal=principal,
@@ -1431,6 +1446,7 @@ class Client(_Sessions):
         retained for late-bound updates but emits a ``UserWarning`` because the
         start event has already shipped by the time the body runs.
         """
+        self._flag_double_wiring("trace")
         trace = Trace(
             client=self,
             tool_name=tool_name,
@@ -1530,6 +1546,7 @@ class Client(_Sessions):
         input is not changed. Never raises over the tool list: one it cannot
         read is returned as it came.
         """
+        self._flag_double_wiring("list_tools")
         if self._bridge is None:
             return tools
         served, event = self._serve(tools, server_info, capabilities, instructions)
@@ -1571,18 +1588,18 @@ class Client(_Sessions):
         """
         request = self._request(message)
         if request is None:
-            return dispatch(message)
+            return _inside(self, dispatch, message)
         with ExitStack() as stack:
             opened = self._open(stack, request, message, principal, headers, session_id)
             if opened is None:
-                return dispatch(without_user_goal(message))
+                return _inside(self, dispatch, without_user_goal(message))
             caller, call = opened
             if request.method != TOOL_CALL:
-                answer, event = self._shaped(request, dispatch(message), caller)
+                answer, event = self._shaped(request, _inside(self, dispatch, message), caller)
                 self._send_snapshot(event)
                 return answer
             if call is None:
-                return dispatch(message)
+                return _inside(self, dispatch, message)
             if call.answer is not None:
                 self._answer_ourselves(call)
                 return call.answer
@@ -1591,7 +1608,7 @@ class Client(_Sessions):
             except Exception:
                 logger.exception("baton: serve() could not trace the call")
                 trace = None
-            answer = dispatch(call.message)
+            answer = _inside(self, dispatch, call.message)
             self._record(trace, answer, caller)
             return answer
 
@@ -2185,6 +2202,7 @@ class AsyncClient(_Sessions):
         consent_token: str | None = None,
     ) -> AsyncTrace:
         """Async equivalent of ``Client.trace``."""
+        self._flag_double_wiring("trace")
         trace = AsyncTrace(
             client=self,
             tool_name=tool_name,
@@ -2267,6 +2285,7 @@ class AsyncClient(_Sessions):
         instructions: str | None = None,
     ) -> list[Any]:
         """Async equivalent of ``Client.list_tools``."""
+        self._flag_double_wiring("list_tools")
         if self._disabled:
             return tools
         served, event = self._serve(tools, server_info, capabilities, instructions)
@@ -2297,18 +2316,20 @@ class AsyncClient(_Sessions):
         answer or an awaitable of it."""
         request = self._request(message)
         if request is None:
-            return await _dispatched(dispatch, message)
+            return await _dispatched(self, dispatch, message)
         async with AsyncExitStack() as stack:
             opened = self._open(stack, request, message, principal, headers, session_id)
             if opened is None:
-                return await _dispatched(dispatch, without_user_goal(message))
+                return await _dispatched(self, dispatch, without_user_goal(message))
             caller, call = opened
             if request.method != TOOL_CALL:
-                answer, event = self._shaped(request, await _dispatched(dispatch, message), caller)
+                answer, event = self._shaped(
+                    request, await _dispatched(self, dispatch, message), caller
+                )
                 await self._send_snapshot(event)
                 return answer
             if call is None:
-                return await _dispatched(dispatch, message)
+                return await _dispatched(self, dispatch, message)
             if call.answer is not None:
                 await self._answer_ourselves(call)
                 return call.answer
@@ -2317,7 +2338,7 @@ class AsyncClient(_Sessions):
             except Exception:
                 logger.exception("baton: serve() could not trace the call")
                 trace = None
-            answer = await _dispatched(dispatch, call.message)
+            answer = await _dispatched(self, dispatch, call.message)
             self._record(trace, answer, caller)
             return answer
 
@@ -2384,6 +2405,23 @@ class AsyncClient(_Sessions):
         await safe_emit(self._sink, build, logger)
 
 
-async def _dispatched(dispatch: Callable[[Any], Any], message: Any) -> Any:
-    answer = dispatch(message)
-    return await answer if inspect.isawaitable(answer) else answer
+_IN_DISPATCH: ContextVar[object | None] = ContextVar("baton_serve_dispatch", default=None)
+_DOUBLE_WIRING_LOGGED: set[str] = set()
+
+
+def _inside(owner: object, dispatch: Callable[[Any], Any], message: Any) -> Any:
+    """``dispatch(message)``, marked as running inside ``owner``'s ``serve()``."""
+    token = _IN_DISPATCH.set(owner)
+    try:
+        return dispatch(message)
+    finally:
+        _IN_DISPATCH.reset(token)
+
+
+async def _dispatched(owner: object, dispatch: Callable[[Any], Any], message: Any) -> Any:
+    token = _IN_DISPATCH.set(owner)
+    try:
+        answer = dispatch(message)
+        return await answer if inspect.isawaitable(answer) else answer
+    finally:
+        _IN_DISPATCH.reset(token)
