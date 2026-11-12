@@ -427,9 +427,17 @@ def test_a_tool_once_seen_keeping_user_goal_keeps_it(harness: Any) -> None:
 
 @CLIENTS
 def test_a_tool_read_later_loses_batons_user_goal(harness: Any) -> None:
-    h = harness(tools=[{"name": "find_slots"}])
+    h = harness(tools=[{"name": "find_slots", "inputSchema": "not a schema"}])
     vendor = Vendor()
     h.serve(_list(), vendor)
+    h.serve(_call("find_slots", {"day": "mon", "user_goal": GOAL}), vendor)
+    assert vendor.seen[-1]["params"]["arguments"] == {"day": "mon"}
+
+
+@CLIENTS
+def test_a_tool_with_no_schema_loses_user_goal(harness: Any) -> None:
+    h = harness(tools=[{"name": "find_slots"}])
+    vendor = Vendor()
     h.serve(_call("find_slots", {"day": "mon", "user_goal": GOAL}), vendor)
     assert vendor.seen[-1]["params"]["arguments"] == {"day": "mon"}
 

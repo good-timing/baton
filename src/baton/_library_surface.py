@@ -135,6 +135,10 @@ def _with_goal(schema: Any) -> tuple[Any, dict[str, str]]:
             schema["properties"] = dict(schema["properties"])
         if isinstance(schema.get("required"), list):
             schema["required"] = list(schema["required"])
+    if schema is None:
+        # No schema declares nothing, so the tool is read as an empty one; the
+        # vendor's entry is served without one.
+        return schema, inject_goal_params({}, intent_param_mode=INTENT_PARAM_MODE)
     return schema, inject_goal_params(schema, intent_param_mode=INTENT_PARAM_MODE)
 
 
