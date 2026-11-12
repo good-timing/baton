@@ -780,6 +780,47 @@ def test_old_wiring_inside_serve_is_an_error_once_each(
 
 
 @CLIENTS
+def test_wiring_for_the_other_request_is_no_error(
+    harness: Any, caplog: pytest.LogCaptureFixture, fresh_log: None
+) -> None:
+    h = harness()
+    vendor = Vendor()
+
+    def own_timing(message: Any) -> Any:
+        if message["method"] == "tools/list":
+            h.client.trace(tool_name="list_catalog")
+        elif not h.is_async:
+            h.client.list_tools(TOOLS)
+        return vendor(message)
+
+    with caplog.at_level(logging.ERROR, logger="baton"):
+        h.serve(_list(), own_timing)
+        h.serve(_call("find_slots", {"day": "mon"}), own_timing)
+    assert _errors(caplog) == []
+
+
+def test_async_list_tools_inside_a_list_is_an_error(
+    caplog: pytest.LogCaptureFixture, fresh_log: None, sink: _CollectingSink
+) -> None:
+    client = AsyncClient(dsn=DSN, vendor_display_name="Sunny")
+    vendor = Vendor()
+
+    async def hand_wired(message: Any) -> Any:
+        await client.list_tools(TOOLS)
+        return vendor(message)
+
+    async def run() -> None:
+        try:
+            await client.serve(_list(), hand_wired)
+        finally:
+            await client.aclose()
+
+    with caplog.at_level(logging.ERROR, logger="baton"):
+        asyncio.run(run())
+    assert [e.split("client.")[1].split("(")[0] for e in _errors(caplog)] == ["list_tools"]
+
+
+@CLIENTS
 def test_a_request_serve_does_not_record_raises_no_error(
     harness: Any, caplog: pytest.LogCaptureFixture, fresh_log: None
 ) -> None:
@@ -878,11 +919,77 @@ def test_a_slow_tools_function_makes_a_concurrent_call_wait() -> None:
     reading.wait(5)
     b = threading.Thread(target=client.serve, args=(_call("own", {"user_goal": "b"}), second))
     b.start()
+    time.sleep(0.2)  # b reaches the lock before the tools are known
     release.set()
     a.join(5)
     b.join(5)
     client.close()
     assert second.seen[-1]["params"]["arguments"] == {"user_goal": "b"}
+
+
+def test_a_tools_function_slower_than_the_bound_holds_no_one_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    monkeypatch.setattr("baton._library_serve._TOOLS_WAIT_S", 0.05)
+    reading = threading.Event()
+    release = threading.Event()
+
+    def stuck() -> list[Any]:
+        reading.set()
+        release.wait(5)
+        return [OWN_GOAL]
+
+    client = Client(vendor_id="v", sink=_CollectingSink(), tools=stuck)
+    first, second = Vendor([OWN_GOAL]), Vendor([OWN_GOAL])
+    a = threading.Thread(target=client.serve, args=(_call("own", {"user_goal": "a"}), first))
+    a.start()
+    reading.wait(5)
+    b = threading.Thread(target=client.serve, args=(_call("own", {"user_goal": "b"}), second))
+    b.start()
+    b.join(2)
+    held_up = b.is_alive()
+    release.set()
+    a.join(5)
+    b.join(5)
+    client.close()
+    assert not held_up
+    assert second.seen[-1]["params"]["arguments"] == {}
+
+
+def test_a_tools_function_that_calls_serve_does_not_wait_on_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("baton._library_serve._TOOLS_WAIT_S", 5.0)
+    vendor = Vendor([OWN_GOAL])
+    client: Client
+
+    def through_serve() -> list[Any]:
+        listed = client.serve(_list(), vendor)
+        return list(listed["result"]["tools"])
+
+    client = Client(vendor_id="v", sink=_CollectingSink(), tools=through_serve)
+    started = time.monotonic()
+    try:
+        client.serve(_call("own", {"user_goal": "theirs"}), vendor)
+    finally:
+        client.close()
+    assert time.monotonic() - started < 2
+    assert vendor.seen[-1]["params"]["arguments"] == {"user_goal": "theirs"}
+
+
+class _Unreadable(dict):  # type: ignore[type-arg]
+    def get(self, *_: Any) -> Any:
+        raise RuntimeError("unreadable")
+
+
+@CLIENTS
+def test_one_bad_entry_in_tools_skips_only_itself(harness: Any) -> None:
+    h = harness(tools=[{"name": "bad", "inputSchema": _Unreadable(oneOf=[])}, OWN_GOAL])
+    vendor = Vendor([OWN_GOAL])
+    h.serve(_call("own", {"user_goal": "theirs"}), vendor)
+    assert vendor.seen[-1]["params"]["arguments"] == {"user_goal": "theirs"}
 
 
 def test_an_async_tools_function_is_refused_with_a_warning(

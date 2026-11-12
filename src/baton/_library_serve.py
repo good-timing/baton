@@ -39,6 +39,8 @@ from baton.integrations._surface import adapter_seam_augmentations
 
 logger = logging.getLogger(__name__)
 
+_TOOLS_WAIT_S = 1.0
+
 INITIALIZE = "initialize"
 TOOL_LIST = "tools/list"
 TOOL_CALL = "tools/call"
@@ -134,19 +136,24 @@ class Serving:
         self._vendor_has_report_name = False
         self._warned_unlisted = False
         self._tools_lock = threading.Lock()
+        self._tools_reader: int | None = None
         self._unread_tools = tools
 
     def _read_vendor_tools(self) -> None:
         """Learn the vendor's ``tools`` once per process. Never raises: without
         them, a call to a tool not yet listed is served as on a cold process."""
-        if self._unread_tools is None:
+        # The reader's own thread is a tools= function that calls serve().
+        if self._unread_tools is None or self._tools_reader == threading.get_ident():
             return
         # Held until the tools are remembered, so a concurrent first request
-        # waits for them rather than being served as on a cold process.
-        with self._tools_lock:
+        # waits for them; past the bound it is served as on a cold process.
+        if not self._tools_lock.acquire(timeout=_TOOLS_WAIT_S):
+            return
+        try:
             source = self._unread_tools
             if source is None:
                 return
+            self._tools_reader = threading.get_ident()
             try:
                 tools = source() if callable(source) else source
                 if inspect.isawaitable(tools):
@@ -163,6 +170,9 @@ class Serving:
                 )
             finally:
                 self._unread_tools = None
+                self._tools_reader = None
+        finally:
+            self._tools_lock.release()
 
     def _remember(self, dispositions: dict[str, dict[str, str]], names: set[str]) -> None:
         clash = self._report is not None and self._report[1].name in names

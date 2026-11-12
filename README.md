@@ -130,7 +130,7 @@ If anything in Baton's own work fails, you get your own answer back unchanged, a
 
 **Pass `tools=`** (your full tool list, or a plain function that returns it) if you run more than one worker, or if one of your tools has its own `user_goal` param or the report tool's name. Each process otherwise learns your tools from the lists it serves, and until it has served one, it removes `user_goal` from every call.
 
-**Moving from the hand-wired setup below?** Remove all of it: `INTENT_INSTRUCTIONS` or `tool.instructions` in your instructions, `list_tools(...)` and the report tool in `tools/list`, and `session(...)`, `trace(...)` and the report-tool branch in `tools/call`. Left in, every call is recorded twice. `serve()` logs an ERROR naming the call when it sees one.
+**Moving from the hand-wired setup below?** Remove all of it: `INTENT_INSTRUCTIONS` or `tool.instructions` in your instructions, `list_tools(...)` and the report tool in `tools/list`, and `session(...)`, `trace(...)` and the report-tool branch in `tools/call`. Left in, every call is recorded twice. `serve()` logs an ERROR when it sees `trace()` in a tool call or `list_tools()` in a tool list.
 
 #### Without `serve()`
 

@@ -1200,7 +1200,7 @@ class _Sessions:
         """An ERROR, once per process, when the vendor's code inside ``serve()``
         still calls what ``serve()`` now does: the old wiring was left in."""
         mark = _IN_DISPATCH.get()
-        if mark is None or not mark.active or mark.owner is not self:
+        if mark is None or not mark.active or mark.owner is not self or mark.flags != call:
             return
         if call in _DOUBLE_WIRING_LOGGED:
             return
@@ -1614,7 +1614,9 @@ class Client(_Sessions):
             caller, call = opened
             if request.method != TOOL_CALL:
                 listed = request.method == TOOL_LIST
-                answer = _inside(self, dispatch, message) if listed else dispatch(message)
+                answer = (
+                    _inside(self, "list_tools", dispatch, message) if listed else dispatch(message)
+                )
                 answer, event = self._shaped(request, answer, caller)
                 self._send_snapshot(event)
                 return answer
@@ -1628,7 +1630,7 @@ class Client(_Sessions):
             except Exception:
                 logger.exception("baton: serve() could not trace the call")
                 trace = None
-            answer = _inside(self, dispatch, call.message)
+            answer = _inside(self, "trace", dispatch, call.message)
             self._record(trace, answer, caller)
             return answer
 
@@ -2360,7 +2362,10 @@ class AsyncClient(_Sessions):
             caller, call = opened
             if request.method != TOOL_CALL:
                 answer = await _dispatched(
-                    dispatch, message, marked_for=self if request.method == TOOL_LIST else None
+                    dispatch,
+                    message,
+                    marked_for=self if request.method == TOOL_LIST else None,
+                    flags="list_tools",
                 )
                 answer, event = self._shaped(request, answer, caller)
                 await self._send_snapshot(event)
@@ -2375,7 +2380,7 @@ class AsyncClient(_Sessions):
             except Exception:
                 logger.exception("baton: serve() could not trace the call")
                 trace = None
-            answer = await _dispatched(dispatch, call.message, marked_for=self)
+            answer = await _dispatched(dispatch, call.message, marked_for=self, flags="trace")
             self._record(trace, answer, caller)
             return answer
 
@@ -2443,13 +2448,15 @@ class AsyncClient(_Sessions):
 
 
 class _Mark:
-    """That ``owner``'s ``serve()`` is running the vendor's dispatch. A task the
-    dispatch starts copies the context, so the mark ends rather than the variable."""
+    """That ``owner``'s ``serve()`` is running the vendor's dispatch for a
+    request where it already does what ``flags`` names. A task the dispatch
+    starts copies the context, so the mark ends rather than the variable."""
 
-    __slots__ = ("active", "owner")
+    __slots__ = ("active", "flags", "owner")
 
-    def __init__(self, owner: object) -> None:
+    def __init__(self, owner: object, flags: str) -> None:
         self.owner = owner
+        self.flags = flags
         self.active = True
 
 
@@ -2457,9 +2464,9 @@ _IN_DISPATCH: ContextVar[_Mark | None] = ContextVar("baton_serve_dispatch", defa
 _DOUBLE_WIRING_LOGGED: set[str] = set()
 
 
-def _inside(owner: object, dispatch: Callable[[Any], Any], message: Any) -> Any:
+def _inside(owner: object, flags: str, dispatch: Callable[[Any], Any], message: Any) -> Any:
     """``dispatch(message)``, marked as one whose work ``owner``'s ``serve()`` records."""
-    mark = _Mark(owner)
+    mark = _Mark(owner, flags)
     token = _IN_DISPATCH.set(mark)
     try:
         return dispatch(message)
@@ -2469,9 +2476,9 @@ def _inside(owner: object, dispatch: Callable[[Any], Any], message: Any) -> Any:
 
 
 async def _dispatched(
-    dispatch: Callable[[Any], Any], message: Any, *, marked_for: object = None
+    dispatch: Callable[[Any], Any], message: Any, *, marked_for: object = None, flags: str = ""
 ) -> Any:
-    mark = _Mark(marked_for) if marked_for is not None else None
+    mark = _Mark(marked_for, flags) if marked_for is not None else None
     token = _IN_DISPATCH.set(mark)
     try:
         answer = dispatch(message)

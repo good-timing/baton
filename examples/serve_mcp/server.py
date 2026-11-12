@@ -24,6 +24,7 @@ TOOLS = [
         },
     }
 ]
+PARSE_ERROR = {"code": -32700, "message": "Parse error"}
 USERS = {"token-alice": ("usr_alice", "org_small", "starter")}
 
 baton = Client(
@@ -35,11 +36,15 @@ baton = Client(
 )
 
 
-def dispatch(message: dict[str, Any]) -> dict[str, Any]:
+def dispatch(message: dict[str, Any]) -> dict[str, Any] | None:
     """The server's own JSON-RPC handling, with no Baton in it."""
     method, params = message.get("method"), message.get("params") or {}
-    if method == "initialize":
-        result: dict[str, Any] = {
+    if "id" not in message:  # a notification gets no answer
+        return None
+    if method == "ping":
+        result: dict[str, Any] = {}
+    elif method == "initialize":
+        result = {
             "protocolVersion": "2025-06-18",
             "capabilities": {"tools": {}},
             "serverInfo": {"name": "weather", "version": "1.0"},
@@ -48,7 +53,7 @@ def dispatch(message: dict[str, Any]) -> dict[str, Any]:
     elif method == "tools/list":
         result = {"tools": TOOLS}
     elif method == "tools/call" and params.get("name") == "get_weather":
-        city = params.get("arguments", {}).get("city", "")
+        city = (params.get("arguments") or {}).get("city", "")
         result = {"content": [{"type": "text", "text": f"Sunny in {city}"}]}
     else:
         error = {"code": -32601, "message": f"not found: {method}"}
@@ -62,7 +67,11 @@ class Handler(BaseHTTPRequestHandler):
         if user is None:
             self.send_error(401)
             return
-        message = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        try:
+            message = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        except ValueError:
+            self._send(400, {"jsonrpc": "2.0", "id": None, "error": PARSE_ERROR})
+            return
         user_id, org_id, plan = user
         answer = baton.serve(
             message,
@@ -73,8 +82,16 @@ class Handler(BaseHTTPRequestHandler):
             ),
             headers=dict(self.headers),
         )
+        if answer is None:
+            self.send_response(202)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self._send(200, answer)
+
+    def _send(self, status: int, answer: dict[str, Any]) -> None:
         body = json.dumps(answer).encode()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()

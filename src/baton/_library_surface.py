@@ -81,13 +81,13 @@ def known_tools(tools: list[Any]) -> tuple[dict[str, dict[str, str]], set[str]]:
     for tool in tools:
         try:
             as_json = _as_json(tool)
+            name = as_json.get("name") if isinstance(as_json, Mapping) else None
+            if not isinstance(name, str):
+                continue
+            names.add(name)
+            dispositions[name] = _with_goal(as_json.get("inputSchema"))[1]
         except Exception:
             continue
-        name = as_json.get("name") if isinstance(as_json, Mapping) else None
-        if not isinstance(name, str):
-            continue
-        names.add(name)
-        dispositions[name] = _with_goal(as_json.get("inputSchema"))[1]
     return dispositions, names
 
 
