@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased (1.2.0): serving MCP yourself
+## 1.2.0: serving MCP yourself
 
 ### Added
 
@@ -34,7 +34,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   (not async) function returning it. `serve()` otherwise learns the tools from the lists it serves,
   so a process that has served none removes `user_goal` from every call,
   warning once, and treats the report tool's name as Baton's. Pass it when a tool declares its
-  own `user_goal` or has the report tool's name.
+  own `user_goal` or has the report tool's name. A slow `tools=` function
+  holds up a process's other first requests for at most 1 s.
 
 ### Changed
 
