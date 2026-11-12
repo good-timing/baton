@@ -386,6 +386,63 @@ def test_a_composite_root_that_declares_user_goal_keeps_it() -> None:
     assert arguments == {"user_goal": "vendor value", "q": "x"}
 
 
+def test_a_composite_root_finds_user_goal_at_any_depth() -> None:
+    nested = {"type": "object", "properties": {"inner": {"properties": {"user_goal": {}}}}}
+    cyclic: dict[str, Any] = {"anyOf": [nested]}
+    cyclic["anyOf"].append(cyclic)
+    assert _may_take({"allOf": [{"items": [{"oneOf": [nested]}]}]})
+    assert _may_take(cyclic)
+    assert not _may_take({"oneOf": [{"properties": {"q": {}}}], "x": "user_goal"})
+    assert _may_take(MappingProxyType({"oneOf": [nested]}))
+
+
+@pytest.mark.parametrize(
+    ("schema", "may_take"),
+    [
+        ({"anyOf": [{"type": "object", "required": ["user_goal"]}]}, True),
+        ({"$ref": "https://example.com/tool.json"}, True),
+        ({"$ref": "#/$defs/A", "$defs": {"A": {"properties": {"q": {}}}}}, False),
+        ({"oneOf": [{"type": "object"}], "not": {"required": ["user_goal"]}}, False),
+        ({"oneOf": [{"type": "object", "examples": [{"properties": {"user_goal": 1}}]}]}, False),
+        ({"oneOf": [{"properties": {"default": {"required": ["user_goal"]}}}]}, True),
+        ({"$ref": "#/$defs/not", "$defs": {"not": {"properties": {"user_goal": {}}}}}, True),
+        ({"anyOf": [{}], "dependentSchemas": {"enum": {"required": ["user_goal"]}}}, True),
+        ({"anyOf": [{}], "patternProperties": {"const": {"required": ["user_goal"]}}}, True),
+    ],
+    ids=[
+        "required",
+        "outside_ref",
+        "local_ref",
+        "forbidden",
+        "example",
+        "prop_named",
+        "def_named",
+        "dependent_named",
+        "pattern_named",
+    ],
+)
+def test_a_composite_root_may_take_user_goal(schema: dict[str, Any], may_take: bool) -> None:
+    assert _may_take(schema) is may_take
+
+
+def _may_take(schema: Any) -> bool:
+    return inject_goal_params(schema, intent_param_mode="required").get("user_goal") == "may_take"
+
+
+def test_user_goal_below_a_plain_root_is_not_the_tools_own() -> None:
+    schema = {"type": "object", "properties": {"inner": {"properties": {"user_goal": {}}}}}
+    assert inject_goal_params(schema, intent_param_mode="required")["user_goal"] == "injected"
+
+
+@pytest.mark.parametrize("schema", ["not a schema", {"properties": ["user_goal"]}])
+def test_a_schema_baton_cannot_read_keeps_every_argument(schema: Any) -> None:
+    dispositions = inject_goal_params(schema, intent_param_mode="required")
+    sent = {"user_goal": "g", "expected_result": "e", "overall_task": "t"}
+    arguments = dict(sent)
+    assert pop_goal_params("t", arguments, dispositions) == (None, None, None)
+    assert arguments == sent
+
+
 @pytest.mark.parametrize(
     ("schema", "gets_goal"),
     [

@@ -380,6 +380,76 @@ def test_a_tool_with_its_own_user_goal_keeps_it(harness: Any) -> None:
 
 
 @CLIENTS
+@pytest.mark.parametrize(
+    ("schema", "kept"),
+    [
+        ({"oneOf": [{"type": "object", "properties": {"user_goal": {}}}]}, True),
+        ({"$ref": "#/$defs/A", "$defs": {"A": {"properties": {"user_goal": {}}}}}, True),
+        ({"oneOf": [{"type": "object", "properties": {"q": {}}}]}, False),
+    ],
+    ids=["in_a_branch", "in_defs", "absent"],
+)
+def test_a_composite_tool_keeps_user_goal_only_where_its_schema_names_it(
+    harness: Any, schema: dict[str, Any], kept: bool
+) -> None:
+    h = harness()
+    vendor = Vendor([{"name": "pick", "inputSchema": schema}])
+    h.serve(_list(), vendor)
+    sent = {"user_goal": "theirs", "overall_task": "t"}
+    h.serve(_call("pick", sent), vendor)
+    assert vendor.seen[-1]["params"]["arguments"] == (sent if kept else {"overall_task": "t"})
+    # Only a root user_goal is where the subagent sentence's turn number goes.
+    assert h.serve(_initialize(), vendor)["result"]["instructions"].endswith(INTENT_INSTRUCTIONS)
+
+
+@CLIENTS
+@pytest.mark.parametrize("given", ["list", "tools"])
+def test_a_tool_baton_cannot_read_keeps_its_arguments(harness: Any, given: str) -> None:
+    odd = [{"name": "odd", "inputSchema": "not a schema"}]
+    h = harness(tools=odd) if given == "tools" else harness()
+    vendor = Vendor(odd)
+    if given == "list":
+        h.serve(_list(), vendor)
+    sent = {"user_goal": GOAL, "q": "x"}
+    h.serve(_call("odd", sent), vendor)
+    assert vendor.seen[-1]["params"]["arguments"] == sent
+    assert h.serve(_initialize(), vendor)["result"]["instructions"].endswith(INTENT_INSTRUCTIONS)
+
+
+@CLIENTS
+def test_a_tool_once_seen_keeping_user_goal_keeps_it(harness: Any) -> None:
+    h = harness(tools=[OWN_GOAL])
+    vendor = Vendor([{**OWN_GOAL, "inputSchema": {"type": "object"}}])
+    h.serve(_list(), vendor)
+    h.serve(_call("own", {"user_goal": "theirs"}), vendor)
+    assert vendor.seen[-1]["params"]["arguments"] == {"user_goal": "theirs"}
+
+
+@CLIENTS
+def test_a_tool_read_later_loses_batons_user_goal(harness: Any) -> None:
+    h = harness(tools=[{"name": "find_slots"}])
+    vendor = Vendor()
+    h.serve(_list(), vendor)
+    h.serve(_call("find_slots", {"day": "mon", "user_goal": GOAL}), vendor)
+    assert vendor.seen[-1]["params"]["arguments"] == {"day": "mon"}
+
+
+@CLIENTS
+def test_a_call_to_an_unlisted_tool_warns_once_naming_tools(
+    harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    h = harness()
+    vendor = Vendor()
+    with caplog.at_level(logging.WARNING, logger="baton"):
+        h.serve(_call("find_slots", {"day": "mon", "user_goal": GOAL}), vendor)
+        h.serve(_call("legacy_book", {"user_goal": GOAL}), vendor)
+    assert vendor.seen[-1]["params"]["arguments"] == {}
+    warnings = [r.getMessage() for r in caplog.records if "user_goal" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "tools=" in warnings[0]
+
+
+@CLIENTS
 def test_a_vendor_tool_with_the_report_name_wins(
     harness: Any, caplog: pytest.LogCaptureFixture
 ) -> None:

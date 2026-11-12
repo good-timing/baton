@@ -32,8 +32,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   as usual.
 - **`tools=`** on both clients: the vendor's full tool list, or a plain
   (not async) function returning it. `serve()` otherwise learns the tools from the lists it serves,
-  so a process that has served none removes `user_goal` from every call and
-  treats the report tool's name as Baton's. Pass it when a tool declares its
+  so a process that has served none removes `user_goal` from every call,
+  warning once, and treats the report tool's name as Baton's. Pass it when a tool declares its
   own `user_goal` or has the report tool's name.
 
 ### Changed
@@ -52,7 +52,11 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 - **A tool whose schema could reject an added property gets no
   `user_goal`**, on the adapters as on the library path: a `$ref` root, a
   `oneOf`/`anyOf`/`allOf` root with no `properties` beside it, or a branch
-  with `additionalProperties: false`.
+  with `additionalProperties: false`. Such a tool keeps a `user_goal` its
+  schema may take (a property or a `required` name at any depth, or a
+  `$ref` outside the schema); from any other, Baton removes `user_goal` and
+  leaves the retired names. A tool whose schema Baton cannot read keeps
+  every argument.
 
 ## 1.1.2: a share samples principals only
 

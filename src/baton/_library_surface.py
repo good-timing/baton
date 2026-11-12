@@ -87,15 +87,7 @@ def known_tools(tools: list[Any]) -> tuple[dict[str, dict[str, str]], set[str]]:
         if not isinstance(name, str):
             continue
         names.add(name)
-        schema = as_json.get("inputSchema")
-        if isinstance(schema, Mapping):
-            # Only these two levels change, so only they are copied.
-            copied = dict(schema)
-            if isinstance(copied.get("properties"), Mapping):
-                copied["properties"] = dict(copied["properties"])
-            if isinstance(copied.get("required"), list):
-                copied["required"] = list(copied["required"])
-            dispositions[name] = inject_goal_params(copied, intent_param_mode=INTENT_PARAM_MODE)
+        dispositions[name] = _with_goal(as_json.get("inputSchema"))[1]
     return dispositions, names
 
 
@@ -133,27 +125,31 @@ def _as_json(tool: Any) -> Any:
     return tool
 
 
-def _served(tool: Any, as_json: Any, dispositions: dict[str, dict[str, str]]) -> Any:
-    if not isinstance(as_json, Mapping):
-        return tool
-    entry = dict(as_json)
-    schema = entry.get("inputSchema")
-    name = entry.get("name")
-    if composite_root(schema):
-        if isinstance(name, str):
-            dispositions[name] = inject_goal_params(schema, intent_param_mode=INTENT_PARAM_MODE)
-        return tool
-    if isinstance(schema, Mapping):
+def _with_goal(schema: Any) -> tuple[Any, dict[str, str]]:
+    """``schema`` with ``user_goal`` added, copied where it changes, and its
+    dispositions. A schema Baton leaves alone comes back as it is."""
+    if isinstance(schema, Mapping) and not composite_root(schema):
         # Only these two levels change, so only they are copied.
         schema = dict(schema)
         if isinstance(schema.get("properties"), Mapping):
             schema["properties"] = dict(schema["properties"])
         if isinstance(schema.get("required"), list):
             schema["required"] = list(schema["required"])
-        disposition = inject_goal_params(schema, intent_param_mode=INTENT_PARAM_MODE)
-        if isinstance(name, str):
-            dispositions[name] = disposition
-        entry["inputSchema"] = schema
+    return schema, inject_goal_params(schema, intent_param_mode=INTENT_PARAM_MODE)
+
+
+def _served(tool: Any, as_json: Any, dispositions: dict[str, dict[str, str]]) -> Any:
+    if not isinstance(as_json, Mapping):
+        return tool
+    entry = dict(as_json)
+    vendors = entry.get("inputSchema")
+    schema, disposition = _with_goal(vendors)
+    name = entry.get("name")
+    if isinstance(name, str):
+        dispositions[name] = disposition
+    if schema is vendors:
+        return tool
+    entry["inputSchema"] = schema
     if as_json is tool:
         return entry
     # A vendor's MCP library may read the entries it gets back as models.

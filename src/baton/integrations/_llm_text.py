@@ -96,18 +96,21 @@ RETIRED_PARAM_NAMES = (EXPECTED_RESULT_PARAM_NAME, OVERALL_TASK_PARAM_NAME)
 
 
 def pop_goal_params(
-    tool_name: str, arguments: dict[str, Any], dispositions: dict[str, str] | None
+    tool_name: str,
+    arguments: dict[str, Any],
+    dispositions: dict[str, str] | None,
+    *,
+    warn: bool = True,
 ) -> tuple[str | None, str | None, str | None]:
     """Pop ``user_goal`` and the retired names from ``arguments`` in place and
-    return their values; a name the tool declares (``"native"``) is the
-    vendor's and stays.
+    return their values; a name whose disposition keeps it stays.
 
     With no dispositions (a call before the tool was listed) ``user_goal`` is
-    stripped with a warning, which is safe because it is reserved. The
-    retired names are no longer reserved, so they stay.
+    stripped, with a warning unless ``warn`` is false, which is safe because
+    it is reserved. The retired names are no longer reserved, so they stay.
     """
     if dispositions is None:
-        if USER_GOAL_PARAM_NAME in arguments:
+        if warn and USER_GOAL_PARAM_NAME in arguments:
             logger.warning(
                 "baton: stripping %s from unlisted tool %r (cold registry)",
                 USER_GOAL_PARAM_NAME,
@@ -115,7 +118,7 @@ def pop_goal_params(
             )
         return _pop_text(arguments, USER_GOAL_PARAM_NAME), None, None
     goal, expected, task = (
-        None if dispositions.get(name) == "native" else _pop_text(arguments, name)
+        None if dispositions.get(name) in _KEPT else _pop_text(arguments, name)
         for name in (USER_GOAL_PARAM_NAME, *RETIRED_PARAM_NAMES)
     )
     return goal, expected, task
@@ -198,23 +201,39 @@ def build_user_goal_param_description(*, intent_param_mode: str = "optional") ->
     return _USER_GOAL_PARAM_DESCRIPTION
 
 
+_OWN = ("native", "may_take")
+_KEPT = (*_OWN, "unread")
+
+
+def owns_user_goal(dispositions: Mapping[str, str]) -> bool:
+    """Whether a tool's schema showed ``user_goal`` as the vendor's own."""
+    return dispositions.get(USER_GOAL_PARAM_NAME) in _OWN
+
+
+_UNREAD = {USER_GOAL_PARAM_NAME: "unread", **dict.fromkeys(RETIRED_PARAM_NAMES, "native")}
+
+
 def inject_goal_params(schema: Any, *, intent_param_mode: str) -> dict[str, str]:
     """Add ``user_goal`` to a tool's input ``schema`` in place, and to its
     ``required`` under ``"required"`` mode. Return each name's disposition:
-    ``"injected"``, or ``"native"`` where the tool declares the name itself
-    and keeps it, so its value is forwarded rather than stripped."""
-    if not isinstance(schema, dict):
-        return {}
+    ``"injected"``; ``"native"`` where the tool declares the name itself;
+    ``"may_take"`` where a composite schema may take it below its root; or
+    ``"unread"`` for a schema Baton cannot read. All but ``"injected"`` are
+    forwarded rather than stripped; only ``"native"`` drops the subagent
+    sentence, whose turn number goes in a root ``user_goal``."""
     if composite_root(schema):
-        # Its branches may declare a retired name, so one is kept; user_goal
-        # is reserved and is the tool's own only where its root declares it.
+        # Its branches may declare a retired name, so one is kept.
         dispositions = dict.fromkeys(RETIRED_PARAM_NAMES, "native")
         if declares_user_goal(schema):
             dispositions[USER_GOAL_PARAM_NAME] = "native"
+        elif _may_take_user_goal(schema):
+            dispositions[USER_GOAL_PARAM_NAME] = "may_take"
         return dispositions
+    if not isinstance(schema, dict):
+        return dict(_UNREAD)
     props = schema.setdefault("properties", {})
     if not isinstance(props, dict):
-        return {}
+        return dict(_UNREAD)
     dispositions = {name: "native" for name in RETIRED_PARAM_NAMES if name in props}
     if declares_user_goal(schema):
         dispositions[USER_GOAL_PARAM_NAME] = "native"
@@ -337,6 +356,41 @@ def declares_user_goal(schema: Any) -> bool:
     """Whether a tool's input ``schema`` declares ``user_goal`` itself."""
     props = schema.get("properties") if isinstance(schema, Mapping) else None
     return isinstance(props, Mapping) and USER_GOAL_PARAM_NAME in props
+
+
+# A name under these forbids the property or only shows sample values.
+_NOT_TAKING = frozenset({"not", "const", "enum", "default", "examples"})
+# Their keys are names, not keywords, so a property called "default" is walked.
+_NAMED_SCHEMAS = frozenset(
+    {"properties", "patternProperties", "dependentSchemas", "$defs", "definitions"}
+)
+
+
+def _may_take_user_goal(schema: Any) -> bool:
+    """Whether ``user_goal`` is a property or a ``required`` name anywhere in
+    ``schema``, or a ``$ref`` points outside it, where Baton cannot look."""
+    stack, seen = [schema], set()
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, Mapping):
+            required, ref = node.get("required"), node.get("$ref")
+            if (
+                declares_user_goal(node)
+                or (isinstance(required, list) and USER_GOAL_PARAM_NAME in required)
+                or (isinstance(ref, str) and not ref.startswith("#"))
+            ):
+                return True
+            for key, value in node.items():
+                if key in _NAMED_SCHEMAS and isinstance(value, Mapping):
+                    stack.extend(v for v in value.values() if isinstance(v, (Mapping, list)))
+                elif key not in _NOT_TAKING and isinstance(value, (Mapping, list)):
+                    stack.append(value)
+        elif isinstance(node, list):
+            stack.extend(v for v in node if isinstance(v, (Mapping, list)))
+    return False
 
 
 _VENDOR_SERVED_PIECES = (*INSTRUCTION_PIECES, "report_tool.description", "report_tool.refusal")

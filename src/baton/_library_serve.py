@@ -30,6 +30,7 @@ from baton.integrations._llm_text import (
     build_refusal_text,
     build_report_pointer,
     join_instructions,
+    owns_user_goal,
     pop_goal_params,
     unknown_tool_text,
 )
@@ -131,6 +132,7 @@ class Serving:
         }
         self._dispositions: dict[str, dict[str, str]] = {}
         self._vendor_has_report_name = False
+        self._warned_unlisted = False
         self._tools_lock = threading.Lock()
         self._unread_tools = tools
 
@@ -168,7 +170,11 @@ class Serving:
             new = dispositions.keys() - self._dispositions.keys()
             if len(self._dispositions) + len(new) > _REMEMBERED_TOOLS:
                 self._dispositions.clear()
-            self._dispositions.update(dispositions)
+            self._dispositions.update(
+                (name, d)
+                for name, d in dispositions.items()
+                if not owns_user_goal(self._dispositions.get(name, {}))
+            )
             first_clash = clash and not self._vendor_has_report_name
             self._vendor_has_report_name = self._vendor_has_report_name or clash
         if first_clash:
@@ -279,8 +285,16 @@ class Serving:
         report = self._ours()
         if report is not None and name == report[1].name:
             return self._report_call(report[1], name, arguments, message, caller)
+        if dispositions is None and USER_GOAL_PARAM_NAME in arguments and not self._warned_unlisted:
+            self._warned_unlisted = True
+            logger.warning(
+                "baton: removed user_goal from a call to %r, a tool in no list this "
+                "process has served or read from tools=; a tool that declares its own "
+                "user_goal keeps it only once Baton has seen its schema",
+                name,
+            )
         stripped = dict(arguments)
-        goals = pop_goal_params(name, stripped, dispositions)
+        goals = pop_goal_params(name, stripped, dispositions, warn=False)
         if caller.overlay is not None and name in caller.overlay.hidden_tools:
             return _hidden(name, stripped, goals, message)
         return Call(name, stripped, goals, _forwarded(message, request.params, stripped, arguments))
