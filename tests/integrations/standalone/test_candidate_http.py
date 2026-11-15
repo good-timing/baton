@@ -56,7 +56,7 @@ def _running(mcp: Any) -> Iterator[str]:
 
 def _install(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changes: dict[str, Any]
-) -> tuple[Any, Path]:
+) -> tuple[Any, Any, Path]:
     from baton.integrations import _shared
 
     settings = candidate_settings(Collector(changes))
@@ -73,7 +73,7 @@ def _install(
         return name
 
     events = tmp_path / "e.jsonl"
-    standalone.install_baton(
+    handle = standalone.install_baton(
         mcp,
         standalone.VendorConfig(
             vendor_id="srv",
@@ -83,7 +83,7 @@ def _install(
             sink=FileSink(str(events)),
         ),
     )
-    return mcp, events
+    return mcp, handle, events
 
 
 async def _listed_until(url: str, headers: dict[str, str], text: str) -> dict[str, Any]:
@@ -113,12 +113,13 @@ def _hides_drop(description: str, **extra: Any) -> dict[str, Any]:
 async def test_a_test_key_with_the_header_gets_the_change_and_tagged_events(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    mcp, events = _install(
+    mcp, handle, events = _install(
         tmp_path, monkeypatch, {CHANGE: _hides_drop("The change's text.", candidate=CHANGE)}
     )
     with _running(mcp) as url:
         seen = await _listed_until(url, {"Baton-Candidate": CHANGE}, "The change's text.")
         plain = await _listed_until(url, {}, "Today's text.")
+    await handle.aclose()
     assert "drop" not in seen["tools"]
     assert seen["dropped"].is_error
     assert not plain["dropped"].is_error
@@ -138,10 +139,11 @@ async def test_a_test_key_with_the_header_gets_the_change_and_tagged_events(
 async def test_a_prod_key_with_the_header_gets_the_approved_overlays_tool_list(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    mcp, events = _install(tmp_path, monkeypatch, {CHANGE: 403})
+    mcp, handle, events = _install(tmp_path, monkeypatch, {CHANGE: 403})
     with _running(mcp) as url:
         await _listed_until(url, {"Baton-Candidate": CHANGE}, "Today's text.")
         seen = await _listed_until(url, {"Baton-Candidate": CHANGE}, "Today's text.")
+    await handle.aclose()
     assert set(seen["tools"]) >= {"lookup", "drop"}
     events_seen = [e for e in read_events(events) if e["event_type"] == "tool_call_end"]
     assert events_seen
