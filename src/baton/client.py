@@ -160,7 +160,11 @@ from baton.integrations._annotation_name import (
     derive_annotation_tool_name,
     tool_name_for_display_name,
 )
-from baton.integrations._config import console_settings, validate_settings
+from baton.integrations._config import (
+    candidate_needs_console,
+    console_settings,
+    validate_settings,
+)
 from baton.integrations._error_result import (
     ERROR_BODY_CAP,
     TOOL_ERROR_TYPE,
@@ -531,6 +535,7 @@ def _resolve_client_config(
         "Client",
     )
     validate_settings(settings, settings_refresh_s, has_dsn=dsn_string is not None, owner="Client")
+    candidate_needs_console(settings)
     if report_mode is not None and report_mode not in REPORT_MODES:
         raise ValueError(
             f"Client.report_mode {report_mode!r} must be one of {sorted(REPORT_MODES)}."

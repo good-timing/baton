@@ -566,6 +566,7 @@ def _wrap_tool_run(
             logger=logger,
             settings=capture_settings,
             client=call_client,
+            headers=call_headers,
         )
         scrubbed_meta = clean_runtime_meta(scrubber, meta_dict, logger)
         call_session = await _resolve_call_session(

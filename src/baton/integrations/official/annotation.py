@@ -163,6 +163,7 @@ def register_annotation_tool(
             logger=logger,
             settings=capture_settings,
             client=client,
+            headers=call_headers,
         )
         if not is_report(what_happened):
             return {

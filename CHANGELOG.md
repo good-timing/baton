@@ -8,6 +8,26 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Added
+
+- **Test changes by id** (experimental, SPEC §2.6). With
+  `settings="console"`, a request's `Baton-Candidate: <id>` header (HTTP
+  only), or `BATON_CANDIDATE=<id>` for the whole process, serves a test
+  change the Console stores under that id. Only a test key can fetch one: a
+  production key gets one warning and today's settings. The variable is
+  fetched at install, waiting up to 5 s, so the change reaches the server
+  instructions on stdio too; a header's change is fetched in the background
+  the first time its id is seen, and requests get today's settings until it
+  arrives. A header's change does not change the server instructions, which
+  go out once per connection; test a `server_overlay` change with the
+  variable. Baton never refuses to start over a change: one it cannot load,
+  or a variable set without Console settings, is logged as an ERROR and
+  today's settings apply. Events served under a change carry
+  `capture.candidate`. `serve(headers=...)` and `session(headers=...)` take
+  the header too.
+
 ## 1.2.0: serving MCP yourself
 
 ### Added

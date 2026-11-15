@@ -15,6 +15,7 @@ from baton.integrations._config import (
     _validate_vendor_config,
     build_capture_settings,
     build_config,
+    candidate_needs_console,
     nothing_configured,
     resolve_sink,
     with_stand_in_identity,
@@ -39,10 +40,17 @@ class Shared:
     # And the warnings they would each repeat are said once.
     warned: set[str] = field(default_factory=set)
     capture_settings: CaptureSettings | None = None
+    # Re-run once settings start, since BATON_CANDIDATE's change loads there.
+    on_settings_start: list[Callable[[], None]] = field(default_factory=list)
+    started: bool = False
 
     def start(self) -> None:
+        self.started = True
         if self.capture_settings is not None:
             self.capture_settings.start()
+            for follow in self.on_settings_start:
+                follow()
+        self.on_settings_start.clear()
 
     def stop(self) -> None:
         if self.capture_settings is not None:
@@ -122,4 +130,5 @@ def check_config(config: VendorConfig | None, dsn: str | None) -> CheckedConfig:
     _validate_vendor_config(built)
     if not unconfigured:
         warn_if_results_are_withheld(built.result_capture_mode)
+        candidate_needs_console(built.settings)
     return CheckedConfig(built, display_name_given, unconfigured)

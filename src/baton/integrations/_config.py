@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from baton._capture_settings import (
+    CANDIDATE_ENV,
     DEFAULT_REFRESH_S,
     INTENT_PARAM_MODES,
     MIN_REFRESH_S,
@@ -19,6 +20,7 @@ from baton._capture_settings import (
     IntentParamMode,
     ReportMode,
     SettingsFetcher,
+    env_candidate,
 )
 from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
 from baton._dsn import Dsn, parse_dsn, resolve_dsn, select_dsn
@@ -688,7 +690,18 @@ def console_settings(dsn: Dsn, tenant_id: str, vendor_id: str, refresh_s: float)
         vendor_id=vendor_id,
         refresh_s=refresh_s,
     )
-    return CaptureSettings(vendor_id=vendor_id, fetcher=fetcher)
+    return CaptureSettings(vendor_id=vendor_id, fetcher=fetcher, candidate=env_candidate())
+
+
+def candidate_needs_console(settings: str) -> None:
+    """``BATON_CANDIDATE`` is read only with Console settings; say so loudly,
+    since a test run would otherwise measure today's text."""
+    if settings != "console" and env_candidate() is not None:
+        logger.error(
+            "baton: %s is set, but this server's settings are not 'console', "
+            "so the change is not fetched; today's settings apply.",
+            CANDIDATE_ENV,
+        )
 
 
 def validate_settings(settings: object, refresh_s: object, *, has_dsn: bool, owner: str) -> None:
