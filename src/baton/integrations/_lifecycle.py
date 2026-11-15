@@ -26,7 +26,7 @@ from typing import Any, NamedTuple
 
 from pydantic import TypeAdapter
 
-from baton._capture_settings import CaptureSettings
+from baton._capture_settings import CaptureSettings, may_hide
 from baton._result_capture import ResultCaptureMode
 from baton._state import SessionCounter
 from baton._uuid import uuid7
@@ -198,6 +198,7 @@ def install_lifecycle_capture(
                 logger=logger,
                 settings=capture_settings,
                 client=client,
+                headers=request.headers,
             )
             sent = _params_sent(params)
             subject = (
@@ -348,7 +349,7 @@ def install_lifecycle_capture(
         hidden: tuple[_Opened, Any, Any] | None = None
         try:
             # A tool the server does not have is unknown, whatever an overlay says.
-            if _may_hide(capture_settings, name) and call_seam.knows_tool(name) is not False:
+            if may_hide(capture_settings, name) and call_seam.knows_tool(name) is not False:
                 reported, reported_goals = _reported(name, arguments, goals)
                 request = await opened(_CALL_FAMILY, read_request_context, params, name, reported)
                 if request is not None:
@@ -492,11 +493,6 @@ def install_lifecycle_capture(
             "baton: tool list, resource and prompt events may be missing; "
             "this mcp version has no known request handler layout"
         )
-
-
-def _may_hide(settings: CaptureSettings | None, name: str) -> bool:
-    document = None if settings is None else settings.document
-    return document is not None and name in document.hidden_somewhere
 
 
 def _reported(

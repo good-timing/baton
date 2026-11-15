@@ -27,7 +27,13 @@ from itertools import islice
 from types import MappingProxyType
 from typing import Any, TypeVar
 
-from baton._capture_settings import Caller, CallSettings, CaptureSettings, clean_labels
+from baton._capture_settings import (
+    Caller,
+    CallSettings,
+    CaptureSettings,
+    clean_labels,
+    header_candidate,
+)
 from baton._overlays import Overlay
 from baton._white_space import UNSENDABLE, is_blank, usable_text
 from baton.events import ClientObserved, OrganizationWire, PrincipalWire
@@ -305,6 +311,7 @@ async def resolve_caller(
     logger: logging.Logger,
     settings: CaptureSettings | None = None,
     client: ClientObserved | None = None,
+    headers: Mapping[str, Any] | None = None,
 ) -> ResolvedCaller:
     """The envelope's ``principal``, ``organization`` and labels for one call, and with
     ``settings`` the capture settings it runs under (SPEC §2.6). The identity is the
@@ -332,7 +339,9 @@ async def resolve_caller(
     else:
         resolved = await resolve_principal_via_hook(hook, hook_context, logger=logger)
         caller = _wire_caller(resolved, logger=logger)
-    return with_settings(caller, client, settings, logger=logger)
+    return with_settings(
+        caller, client, settings, logger=logger, candidate=header_candidate(headers)
+    )
 
 
 def with_settings(
@@ -341,13 +350,14 @@ def with_settings(
     settings: CaptureSettings | None,
     *,
     logger: logging.Logger,
+    candidate: str | None = None,
 ) -> ResolvedCaller:
     """``caller`` with the capture settings its audience runs under. Never
     raises: a failure leaves this config's values."""
     if settings is None:
         return caller
     try:
-        call_settings = settings.for_caller(_match_view(caller, client))
+        call_settings = settings.for_caller(_match_view(caller, client, candidate))
     except Exception:
         logger.exception(
             "baton: applying capture settings failed; this call uses the config's values"
@@ -356,9 +366,12 @@ def with_settings(
     return caller if call_settings is None else replace(caller, settings=call_settings)
 
 
-def _match_view(caller: ResolvedCaller, client: ClientObserved | None) -> Caller:
+def _match_view(
+    caller: ResolvedCaller, client: ClientObserved | None, candidate: str | None = None
+) -> Caller:
     return Caller(
         labels=caller.labels,
         client_name=client.info.name if client is not None and client.info is not None else None,
         share_key=caller.principal.id if caller.principal is not None else None,
+        candidate=candidate,
     )

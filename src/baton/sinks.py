@@ -517,7 +517,7 @@ def _proxy_for(url: str) -> str | None:
 _proxy_warned = False
 
 
-def _pool_through(proxy: str | None) -> Any:
+def _pool_through(proxy: str | None, maxsize: int = 1) -> Any:
     """A connection pool, through ``proxy`` if given. Never raises for a bad
     proxy value: the sink is built at install, and a proxy typo must not stop
     the vendor's server."""
@@ -526,7 +526,7 @@ def _pool_through(proxy: str | None) -> Any:
     import certifi
 
     options: dict[str, Any] = {
-        "maxsize": 1,
+        "maxsize": maxsize,
         "retries": False,
         "cert_reqs": "CERT_REQUIRED",
         "ca_certs": certifi.where(),

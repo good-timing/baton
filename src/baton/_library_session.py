@@ -8,7 +8,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from baton._capture_settings import CaptureSettings
+from baton._capture_settings import CANDIDATE_HEADER, CaptureSettings, candidate_id
 from baton._uuid import uuid7
 from baton.events import ClientObserved, OrganizationWire, PrincipalWire
 from baton.integrations._client_observed import (
@@ -40,6 +40,7 @@ class LibrarySession:
     caller: ResolvedCaller = field(default_factory=ResolvedCaller)
     client_observed: ClientObserved | None = None
     runtime_meta: dict[str, Any] | None = None
+    candidate: str | None = None
 
     @property
     def principal(self) -> PrincipalWire | None:
@@ -76,6 +77,21 @@ def _vendor_id(name: str, value: object) -> str | None:
     if cleaned is None and value is not None:
         logger.warning("baton: %s=%r is not a non-blank string — ignoring it.", name, value)
     return cleaned
+
+
+def _vendor_header_candidate(headers: Mapping[str, Any] | None) -> str | None:
+    # A vendor's ``headers=`` may keep the client's spelling of the name.
+    try:
+        return next(
+            (
+                candidate_id(v)
+                for k, v in (headers or {}).items()
+                if str(k).lower() == CANDIDATE_HEADER
+            ),
+            None,
+        )
+    except Exception:
+        return None
 
 
 def _minted() -> LibrarySession:
@@ -136,6 +152,7 @@ def new_session(
         caller=wire_vendor_caller(principal, logger=logger),
         client_observed=client_observed,
         runtime_meta=_runtime_meta(request_meta, _vendor_id("turn_id", turn_id), scrubber),
+        candidate=_vendor_header_candidate(headers),
     )
 
 
@@ -146,7 +163,13 @@ def session_for_call(owner: object, settings: CaptureSettings | None = None) -> 
     session = entry[1] if entry is not None and entry[0] is owner else _minted()
     if settings is None:
         return session
-    caller = with_settings(session.caller, session.client_observed, settings, logger=logger)
+    caller = with_settings(
+        session.caller,
+        session.client_observed,
+        settings,
+        logger=logger,
+        candidate=session.candidate,
+    )
     return session if caller is session.caller else replace(session, caller=caller)
 
 

@@ -332,6 +332,7 @@ class CaptureObserved(_OmitsUnset):
     settings_version: int | None = Field(default=None, ge=1)
     audience: str | None = None
     overlay: str | None = None
+    candidate: str | None = None
 
 
 class PrincipalWire(BaseModel):

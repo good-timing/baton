@@ -408,6 +408,7 @@ class BatonMiddleware(Middleware):
             logger=logger,
             settings=self._capture_settings,
             client=client,
+            headers=call_headers,
         )
         scrubbed_meta = clean_runtime_meta(self._scrubber, meta_dict, logger)
 

@@ -57,6 +57,8 @@ def per_caller_surface(
     )
     # Now, not at the first request: ``initialize`` passes no seam of ours.
     surface.follow_settings()
+    if not shared.started:
+        shared.on_settings_start.append(surface.follow_settings)
     return surface
 
 
