@@ -34,6 +34,7 @@ from baton._dsn import (
 
 WORKSPACE = "ten_655b084e118b43f88992ee6357fcc23c"
 KEY = "baton_pk_" + "a" * 43
+TEST_KEY = "baton_tk_" + "e" * 43
 DSN = f"https://{KEY}@ingest.goodtiming.ai/{WORKSPACE}/echo-server"
 
 # Every shape this parser refuses, in ONE list. Two file-wide properties are
@@ -229,6 +230,7 @@ class TestWhatItRefuses:
         [
             pytest.param(KEY, "bare key", id="a-bare-publishable-key"),
             pytest.param("baton_sk_" + "c" * 43, "bare key", id="a-bare-secret-key"),
+            pytest.param(TEST_KEY, "bare key", id="a-bare-test-key"),
             pytest.param(f"ingest.goodtiming.ai/{WORKSPACE}/srv", "https://", id="no-scheme"),
             pytest.param(
                 f"ftp://{KEY}@h.example.com/{WORKSPACE}/srv", "https://", id="wrong-scheme"
@@ -266,14 +268,15 @@ class TestWhatItRefuses:
         with pytest.raises(ValueError, match=expected):
             parse_dsn(raw)
 
+    @pytest.mark.parametrize("key", [KEY, TEST_KEY], ids=["publishable", "test"])
     @pytest.mark.parametrize("raw", EVERY_REFUSAL, ids=EVERY_REFUSAL_ID)
-    def test_no_refusal_ever_repeats_the_credential(self, raw: str) -> None:
+    def test_no_refusal_ever_repeats_the_credential(self, raw: str, key: str) -> None:
         """The one thing a parse error must not do. Every message above passes
         through ``redact``; this is the test that keeps the next one doing so."""
         with pytest.raises(ValueError) as caught:
-            parse_dsn(raw)
-        assert KEY not in str(caught.value)
-        assert "a" * 43 not in str(caught.value)
+            parse_dsn(raw.replace(KEY, key))
+        assert key not in str(caught.value)
+        assert key[len("baton_pk_") :] not in str(caught.value)
 
     def test_a_bare_key_is_told_where_to_find_the_real_one(self) -> None:
         """The likeliest paste error by far — /account labels the key type
@@ -282,10 +285,19 @@ class TestWhatItRefuses:
         with pytest.raises(ValueError, match="/account"):
             parse_dsn(KEY)
 
-    def test_a_bare_key_is_not_echoed_back_either(self) -> None:
+    @pytest.mark.parametrize("key", [KEY, TEST_KEY], ids=["publishable", "test"])
+    def test_a_bare_key_is_not_echoed_back_either(self, key: str) -> None:
         with pytest.raises(ValueError) as caught:
-            parse_dsn(KEY)
-        assert KEY not in str(caught.value)
+            parse_dsn(key)
+        assert key not in str(caught.value)
+
+
+class TestATestKeyParsesWithoutAWarning:
+    def test_it_parses_and_warns_about_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="baton._dsn"):
+            parsed = parse_dsn(f"https://{TEST_KEY}@h.example.com/{WORKSPACE}/srv")
+        assert parsed.key == TEST_KEY
+        assert caplog.text == ""
 
 
 class TestASecretKeyWarnsAndWorks:

@@ -8,7 +8,8 @@ A **DSN** carries the four values an install needs in one string::
 
     dsn        = scheme "://" key "@" authority "/" workspace "/" server
     scheme     = "https" | "http"
-    key        = "baton_pk_" tail          ; "baton_sk_" warns and still works
+    key        = "baton_pk_" tail          ; "baton_sk_" warns and still works;
+                                           ; "baton_tk_" (a test key) does not warn
     authority  = host [ ":" port ]
     workspace  = "ten_" ( 8(hexdigit) | 32(hexdigit) )
     server     = the vendor_id pattern below
@@ -99,6 +100,7 @@ _WORKSPACE_PATTERN = re.compile(r"^ten_(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{32})$")
 
 _PUBLISHABLE_PREFIX = "baton_pk_"
 _SECRET_PREFIX = "baton_sk_"
+_TEST_PREFIX = "baton_tk_"
 
 
 # A credential ANYWHERE in a string, not merely at its start. The tail is
@@ -108,7 +110,7 @@ _SECRET_PREFIX = "baton_sk_"
 # ``...`` in this module's own ``https://baton_pk_...@host/...`` examples,
 # whose dots are not in the class. Kept byte-identical to ``baton-ts``'s
 # ``KEY_RUN`` so the two parsers cannot drift on what counts as a key.
-_KEY_RUN = re.compile(r"baton_(?:pk|sk)_[A-Za-z0-9_%-]{8,}")
+_KEY_RUN = re.compile(r"baton_(?:pk|sk|tk)_[A-Za-z0-9_%-]{8,}")
 
 
 def _sweep(message: str) -> str:
@@ -166,7 +168,7 @@ def _contains_key(value: str) -> bool:
     places** — the two path-slot refusals and, once review found it, the host
     slot, where a credential does not merely print but parses. A
     segment with a key glued on — ``srv-baton_pk_...``, the shape a paste into
-    a half-filled field makes — starts with neither prefix, so it walked past
+    a half-filled field makes — starts with no key prefix, so it walked past
     both the key-in-slot refusal that names the slot and the "the key is in the
     PATH" hint, landing instead on a pattern-mismatch message that interpolates
     the segment. Reproduced in Python before being fixed: the bearer printed in
@@ -435,7 +437,7 @@ def parse_dsn(raw: str) -> Dsn:
     if not raw:
         _fail("dsn must be a non-empty string")
 
-    if raw.startswith((_PUBLISHABLE_PREFIX, _SECRET_PREFIX)):
+    if raw.startswith((_PUBLISHABLE_PREFIX, _SECRET_PREFIX, _TEST_PREFIX)):
         # No redact() — a bare key has no structure to show, and echoing it is
         # the thing redact() exists to prevent.
         _fail(f"dsn is not a URL: {_BARE_KEY_HINT}")
