@@ -35,6 +35,7 @@ from baton._dsn import (
 WORKSPACE = "ten_655b084e118b43f88992ee6357fcc23c"
 KEY = "baton_pk_" + "a" * 43
 TEST_KEY = "baton_tk_" + "e" * 43
+OLD_KEY = "baton_" + "o" * 43
 DSN = f"https://{KEY}@ingest.goodtiming.ai/{WORKSPACE}/echo-server"
 
 # Every shape this parser refuses, in ONE list. Two file-wide properties are
@@ -153,6 +154,19 @@ class TestDeliberatePermissiveness:
         with pytest.raises(ValueError, match="where the server belongs"):
             parse_dsn(f"https://{KEY}@h.example.com/{WORKSPACE}/{'s' * 49}")
 
+    @pytest.mark.parametrize(
+        "server",
+        [
+            "baton_onboarding",
+            max(
+                filter(VENDOR_ID_PATTERN.fullmatch, ("baton_" + "s" * n for n in range(60))),
+                key=len,
+            ),
+        ],
+    )
+    def test_a_server_named_baton_something_is_not_read_as_a_key(self, server: str) -> None:
+        assert parse_dsn(f"https://{KEY}@h.example.com/{WORKSPACE}/{server}").vendor_id == server
+
 
 class TestTheWorkspaceIsEightOrThirtyTwoHex:
     """The two minted lengths, and the ones either side of each.
@@ -268,7 +282,7 @@ class TestWhatItRefuses:
         with pytest.raises(ValueError, match=expected):
             parse_dsn(raw)
 
-    @pytest.mark.parametrize("key", [KEY, TEST_KEY], ids=["publishable", "test"])
+    @pytest.mark.parametrize("key", [KEY, TEST_KEY, OLD_KEY], ids=["publishable", "test", "old"])
     @pytest.mark.parametrize("raw", EVERY_REFUSAL, ids=EVERY_REFUSAL_ID)
     def test_no_refusal_ever_repeats_the_credential(self, raw: str, key: str) -> None:
         """The one thing a parse error must not do. Every message above passes
@@ -276,7 +290,7 @@ class TestWhatItRefuses:
         with pytest.raises(ValueError) as caught:
             parse_dsn(raw.replace(KEY, key))
         assert key not in str(caught.value)
-        assert key[len("baton_pk_") :] not in str(caught.value)
+        assert key[-43:] not in str(caught.value)
 
     def test_a_bare_key_is_told_where_to_find_the_real_one(self) -> None:
         """The likeliest paste error by far — /account labels the key type
@@ -285,7 +299,7 @@ class TestWhatItRefuses:
         with pytest.raises(ValueError, match="/account"):
             parse_dsn(KEY)
 
-    @pytest.mark.parametrize("key", [KEY, TEST_KEY], ids=["publishable", "test"])
+    @pytest.mark.parametrize("key", [KEY, TEST_KEY, OLD_KEY], ids=["publishable", "test", "old"])
     def test_a_bare_key_is_not_echoed_back_either(self, key: str) -> None:
         with pytest.raises(ValueError) as caught:
             parse_dsn(key)

@@ -16,6 +16,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   test key in the wrong place, or a bare test key, is refused with the key
   replaced, as for `baton_pk_` and `baton_sk_` keys. A test key gets no
   warning.
+- **An older key with no type letters (`baton_` and 43 characters) is never
+  repeated in an error either.** These keys were issued before `baton_pk_` and
+  `baton_sk_` and still work. A server named `baton_<something>` is still
+  accepted and is not mistaken for a key.
 
 ## 1.3.0: test changes by id
 
