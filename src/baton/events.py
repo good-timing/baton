@@ -333,6 +333,7 @@ class CaptureObserved(_OmitsUnset):
     audience: str | None = None
     overlay: str | None = None
     candidate: str | None = None
+    task: str | None = None
 
 
 class PrincipalWire(BaseModel):

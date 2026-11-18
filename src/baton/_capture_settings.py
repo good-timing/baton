@@ -14,7 +14,7 @@ import time
 import urllib.parse
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, get_args
 
 from baton._overlays import Overlay, overlay_for, read_overlays
@@ -39,6 +39,9 @@ CANDIDATE_READS_AT_ONCE = 4
 CANDIDATE_START_TIMEOUT_S = 5.0
 # The header is the caller's: it becomes a query value and a cache key.
 _CANDIDATE_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+TASK_ENV = "BATON_TASK"
+TASK_HEADER = "baton-task"
+_TASK_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 
 LABELS_MAX = 20
 LABEL_MAX_LENGTH = 64
@@ -67,24 +70,49 @@ def share_bucket(vendor_id: str, key: str) -> int:
     return int.from_bytes(digest[:8], "big") % 10000
 
 
-def candidate_id(value: object) -> str | None:
-    """``value`` as a change id, stripped, or ``None`` when it cannot be one."""
+def _matching_id(pattern: re.Pattern[str], value: object) -> str | None:
     if not isinstance(value, str):
         return None
     # A plain copy: a str subclass can refuse to hash.
     value = strip_white_space(str.__str__(value))
-    return value if _CANDIDATE_ID.fullmatch(value) else None
+    return value if pattern.fullmatch(value) else None
+
+
+def candidate_id(value: object) -> str | None:
+    """``value`` as a change id, stripped, or ``None`` when it cannot be one."""
+    return _matching_id(_CANDIDATE_ID, value)
 
 
 def header_candidate(headers: Mapping[str, Any] | None) -> str | None:
-    """The ``Baton-Candidate`` header's change id. The adapters' header
-    mappings are lowercased or case-insensitive. Never raises."""
+    """The ``Baton-Candidate`` header's change id. Never raises."""
+    return _header_id(headers, CANDIDATE_HEADER, candidate_id)
+
+
+def _header_id(
+    headers: Mapping[str, Any] | None, name: str, parse: Callable[[object], str | None]
+) -> str | None:
+    # The adapters' header mappings are lowercased or case-insensitive.
     if not headers:
         return None
     try:
-        return candidate_id(headers.get(CANDIDATE_HEADER))
+        return parse(headers.get(name))
     except Exception:
         return None
+
+
+def task_id(value: object) -> str | None:
+    """``value`` as a test run's task id, stripped, or ``None`` when it cannot be one."""
+    return _matching_id(_TASK_ID, value)
+
+
+def header_task(headers: Mapping[str, Any] | None) -> str | None:
+    """The ``Baton-Task`` header's task id. Never raises."""
+    return _header_id(headers, TASK_HEADER, task_id)
+
+
+def env_task() -> str | None:
+    """``BATON_TASK``; a value that cannot be a task id is dropped."""
+    return task_id(os.environ.get(TASK_ENV))
 
 
 def env_candidate() -> str | None:
@@ -106,8 +134,10 @@ class Caller:
     labels: tuple[str, ...] = ()
     client_name: str | None = None
     share_key: str | None = None
-    # From the request's header; selects a document, never an audience.
+    # From the request's headers: ``candidate`` selects a document, never an
+    # audience; ``task`` only tags the events served under it.
     candidate: str | None = None
+    task: str | None = None
 
 
 @dataclass(frozen=True)
@@ -423,11 +453,13 @@ class CaptureSettings:
         vendor_id: str,
         fetcher: SettingsFetcher,
         candidate: str | None = None,
+        task: str | None = None,
         start_timeout_s: float = CANDIDATE_START_TIMEOUT_S,
     ) -> None:
         self._vendor_id = vendor_id
         self._fetcher = fetcher
         self._candidate = candidate
+        self._task = task
         self._start_timeout_s = start_timeout_s
         self._process_document: SettingsDocument | None = None
         # id -> its document, ``None`` for an unknown id, ``_PENDING``, or the
@@ -476,10 +508,16 @@ class CaptureSettings:
     def for_caller(self, caller: Caller) -> CallSettings | None:
         """``None`` while no document is held, and this config's values apply."""
         if caller.candidate is None:
-            document = self.document
+            document, task = self.document, self._task
         else:
             document = self._header_document(caller.candidate) or self._fetcher.document
-        return None if document is None else document.settings_for(caller, self._vendor_id)
+            task = caller.task
+        if document is None:
+            return None
+        settings = document.settings_for(caller, self._vendor_id)
+        if task is None or settings.capture.candidate is None:
+            return settings
+        return replace(settings, capture=settings.capture.model_copy(update={"task": task}))
 
     def documents(self) -> list[SettingsDocument]:
         """Every document a request could be served under now."""

@@ -21,6 +21,7 @@ from baton._capture_settings import (
     ReportMode,
     SettingsFetcher,
     env_candidate,
+    env_task,
 )
 from baton._dsn import VENDOR_ID_PATTERN as _VENDOR_ID_PATTERN
 from baton._dsn import Dsn, parse_dsn, resolve_dsn, select_dsn
@@ -690,7 +691,9 @@ def console_settings(dsn: Dsn, tenant_id: str, vendor_id: str, refresh_s: float)
         vendor_id=vendor_id,
         refresh_s=refresh_s,
     )
-    return CaptureSettings(vendor_id=vendor_id, fetcher=fetcher, candidate=env_candidate())
+    return CaptureSettings(
+        vendor_id=vendor_id, fetcher=fetcher, candidate=env_candidate(), task=env_task()
+    )
 
 
 def candidate_needs_console(settings: str) -> None:

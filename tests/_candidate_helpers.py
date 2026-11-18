@@ -7,7 +7,7 @@ import json
 import time
 from typing import Any
 
-from baton._capture_settings import CaptureSettings, SettingsFetcher
+from baton._capture_settings import CaptureSettings, SettingsDocument, SettingsFetcher
 
 CHANGE = "chg_1"
 
@@ -66,7 +66,9 @@ class Collector:
         return [u.rsplit("candidate=", 1)[1] for u in self.urls if "candidate=" in u]
 
 
-def candidate_settings(collector: Collector, candidate: str | None = None) -> CaptureSettings:
+def candidate_settings(
+    collector: Collector, candidate: str | None = None, task: str | None = None
+) -> CaptureSettings:
     fetcher = SettingsFetcher(
         origin="https://h.example.com",
         api_key="baton_pk_x",
@@ -76,15 +78,22 @@ def candidate_settings(collector: Collector, candidate: str | None = None) -> Ca
         make_pool=lambda: collector,
     )
     return CaptureSettings(
-        vendor_id="srv", fetcher=fetcher, candidate=candidate, start_timeout_s=0.5
+        vendor_id="srv", fetcher=fetcher, candidate=candidate, task=task, start_timeout_s=0.5
     )
 
 
-def started(collector: Collector, candidate: str | None = None) -> CaptureSettings:
-    settings = candidate_settings(collector, candidate)
+def started(
+    collector: Collector, candidate: str | None = None, task: str | None = None
+) -> CaptureSettings:
+    settings = candidate_settings(collector, candidate, task)
     settings.start()
     wait_for(lambda: settings.document is not None)
     return settings
+
+
+def held(settings: CaptureSettings, candidate: str) -> None:
+    """Wait until ``candidate``'s document is held."""
+    wait_for(lambda: isinstance(settings._held.get(candidate), SettingsDocument))
 
 
 def wait_for(done: Any, timeout_s: float = 5.0) -> None:

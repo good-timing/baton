@@ -150,10 +150,16 @@ async def test_a_test_key_with_the_header_gets_the_change_and_tagged_events(
 ) -> None:
     mcp, handle, events = _install(tmp_path, monkeypatch, {CHANGE: _changed()}, None)
     with _running(mcp) as url:
-        listed = await _warmed_up(url, {"Baton-Candidate": CHANGE}, "The change's text.")
-        await _warmed_up(url, {}, "Today's text.")
+        test = {"Baton-Candidate": CHANGE, "Baton-Task": "task_1"}
+        listed = await _warmed_up(url, test, "The change's text.")
+        await _warmed_up(url, {"Baton-Task": "task_1"}, "Today's text.")
     await handle.aclose()
     assert "drop" not in listed
+    assert {
+        (e["capture"].get("candidate"), e["capture"].get("task"))
+        for e in read_events(events)
+        if e["event_type"] in ("tool_call_end", "tool_call_error")
+    } == {(CHANGE, "task_1"), (None, None)}
     assert _outcomes(events) == {
         ("tool_call_end", "lookup", CHANGE),
         ("tool_call_error", "drop", CHANGE),

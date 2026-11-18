@@ -8,7 +8,13 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from baton._capture_settings import CANDIDATE_HEADER, CaptureSettings, candidate_id
+from baton._capture_settings import (
+    CANDIDATE_HEADER,
+    TASK_HEADER,
+    CaptureSettings,
+    candidate_id,
+    task_id,
+)
 from baton._uuid import uuid7
 from baton.events import ClientObserved, OrganizationWire, PrincipalWire
 from baton.integrations._client_observed import (
@@ -41,6 +47,7 @@ class LibrarySession:
     client_observed: ClientObserved | None = None
     runtime_meta: dict[str, Any] | None = None
     candidate: str | None = None
+    task: str | None = None
 
     @property
     def principal(self) -> PrincipalWire | None:
@@ -79,17 +86,12 @@ def _vendor_id(name: str, value: object) -> str | None:
     return cleaned
 
 
-def _vendor_header_candidate(headers: Mapping[str, Any] | None) -> str | None:
+def _vendor_header(
+    headers: Mapping[str, Any] | None, name: str, parse: Callable[[object], str | None]
+) -> str | None:
     # A vendor's ``headers=`` may keep the client's spelling of the name.
     try:
-        return next(
-            (
-                candidate_id(v)
-                for k, v in (headers or {}).items()
-                if str(k).lower() == CANDIDATE_HEADER
-            ),
-            None,
-        )
+        return next((parse(v) for k, v in (headers or {}).items() if str(k).lower() == name), None)
     except Exception:
         return None
 
@@ -152,7 +154,8 @@ def new_session(
         caller=wire_vendor_caller(principal, logger=logger),
         client_observed=client_observed,
         runtime_meta=_runtime_meta(request_meta, _vendor_id("turn_id", turn_id), scrubber),
-        candidate=_vendor_header_candidate(headers),
+        candidate=_vendor_header(headers, CANDIDATE_HEADER, candidate_id),
+        task=_vendor_header(headers, TASK_HEADER, task_id),
     )
 
 
@@ -169,6 +172,7 @@ def session_for_call(owner: object, settings: CaptureSettings | None = None) -> 
         settings,
         logger=logger,
         candidate=session.candidate,
+        task=session.task,
     )
     return session if caller is session.caller else replace(session, caller=caller)
 

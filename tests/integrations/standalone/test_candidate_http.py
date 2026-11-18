@@ -117,22 +117,28 @@ async def test_a_test_key_with_the_header_gets_the_change_and_tagged_events(
         tmp_path, monkeypatch, {CHANGE: _hides_drop("The change's text.", candidate=CHANGE)}
     )
     with _running(mcp) as url:
-        seen = await _listed_until(url, {"Baton-Candidate": CHANGE}, "The change's text.")
-        plain = await _listed_until(url, {}, "Today's text.")
+        test = {"Baton-Candidate": CHANGE, "Baton-Task": "task_1"}
+        seen = await _listed_until(url, test, "The change's text.")
+        plain = await _listed_until(url, {"Baton-Task": "task_1"}, "Today's text.")
     await handle.aclose()
     assert "drop" not in seen["tools"]
     assert seen["dropped"].is_error
     assert not plain["dropped"].is_error
     tagged = {
-        (e["event_type"], e["payload"]["tool_name"], e["capture"].get("candidate"))
+        (
+            e["event_type"],
+            e["payload"]["tool_name"],
+            e["capture"].get("candidate"),
+            e["capture"].get("task"),
+        )
         for e in read_events(events)
         if e["event_type"].startswith("tool_call_") and e["event_type"] != "tool_call_start"
     }
     assert tagged == {
-        ("tool_call_end", "lookup", CHANGE),
-        ("tool_call_error", "drop", CHANGE),
-        ("tool_call_end", "lookup", None),
-        ("tool_call_end", "drop", None),
+        ("tool_call_end", "lookup", CHANGE, "task_1"),
+        ("tool_call_error", "drop", CHANGE, "task_1"),
+        ("tool_call_end", "lookup", None, None),
+        ("tool_call_end", "drop", None, None),
     }
 
 
