@@ -8,6 +8,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## 1.3.2: the test run's task id
+
+### Added
+
+- **The test run's task id** (experimental, SPEC §2.6). Beside a test
+  change, a request's `Baton-Task: <id>` header, or `BATON_TASK=<id>` for the
+  whole process, puts the id on events as `capture.task`. It is sent only
+  with `capture.candidate`, and from the same place: the header's task goes
+  with the header's change, the variable's with the variable's. An id that
+  is not 1 to 128 characters from `A-Za-z0-9_.:-` is dropped without a
+  warning. `serve(headers=...)` and `session(headers=...)` take the header
+  too.
+
 ## 1.3.1: keys are never repeated in errors
 
 ### Fixed
