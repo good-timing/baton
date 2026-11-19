@@ -8,6 +8,25 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## 1.3.3: your instructions kept intact, and keys in capitals hidden
+
+### Fixed
+
+- **Baton's paragraph in the server instructions is written once.** If you
+  add text to the instructions after install, before or after Baton's
+  paragraph, Baton no longer adds its paragraph a second time. Instructions
+  of your own that quote Baton's sentence are left as they are.
+- **A key typed in capitals is hidden in DSN errors**, as one in lower case
+  already was.
+- **The length limit names Baton's report sentence.** Its error says the
+  limit is on Baton's own sentence, not on your instructions.
+- **`serve()` warns about a report-tool name clash when the client is
+  built.** With `tools=[...]` as a list, a tool with the report tool's name
+  is found then, not at the first request. The list is still read in full at
+  the first request, so tools you add before then are seen.
+- **`report_tool()` refuses a blank `vendor_display_name`.** A client given
+  one falls back to the vendor id, as for an empty one.
+
 ## 1.3.2: the test run's task id
 
 ### Added
