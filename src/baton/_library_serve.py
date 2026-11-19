@@ -138,6 +138,14 @@ class Serving:
         self._tools_lock = threading.Lock()
         self._tools_reader: int | None = None
         self._unread_tools = tools
+        # A given list is checked for the report tool's name now, so the clash
+        # is reported at install. It is read in full at the first request,
+        # since the vendor may add to it before then.
+        if report is not None and isinstance(tools, list):
+            try:
+                self._remember({}, known_tools(tools)[1])
+            except Exception:
+                pass  # The full read at the first request warns.
 
     def _read_vendor_tools(self) -> None:
         """Learn the vendor's ``tools`` once per process. Never raises: without

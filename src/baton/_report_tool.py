@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from baton._white_space import is_blank
 from baton.integrations._annotation_name import (
     tool_name_for_display_name,
     validate_annotation_tool_name,
@@ -80,12 +81,16 @@ class ReportTool:
 def report_tool(*, vendor_display_name: str, name: str | None = None) -> ReportTool:
     """The annotation tool an adapter registers on a server named
     ``vendor_display_name``. ``name`` overrides the name made from it."""
+    if is_blank(vendor_display_name):
+        raise ValueError(
+            "vendor_display_name is blank. Baton's report sentence names the server by it."
+        )
     if name is None:
         name = tool_name_for_display_name(vendor_display_name)
         if name is None:
             raise ValueError(
                 f"vendor_display_name={vendor_display_name!r} gives no usable tool name, "
-                "or one too long for the instructions. Pass name="
+                "or one too long for Baton's report sentence. Pass name="
             )
     validate_annotation_tool_name(name)
     return ReportTool(

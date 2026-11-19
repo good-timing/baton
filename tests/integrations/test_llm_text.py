@@ -19,8 +19,9 @@ from typing import Any
 import pytest
 
 from baton.integrations._llm_text import (
+    _BATON_SENTENCE_LENGTH_CAP,
     _CLAUDE_CODE_TRUNCATION_CAP,
-    _INSTRUCTIONS_LENGTH_CAP,
+    INTENT_INSTRUCTIONS,
     RETIRED_PARAM_NAMES,
     build_annotation_tool_description,
     build_refusal_text,
@@ -28,6 +29,7 @@ from baton.integrations._llm_text import (
     build_user_goal_param_description,
     inject_goal_params,
     pop_goal_params,
+    remove_subagent_clause,
     required_param_names,
     served_agent_text,
     with_vendor_instructions,
@@ -46,7 +48,7 @@ def test_instructions_under_truncation_cap() -> None:
 def test_instructions_raises_when_names_exceed_cap() -> None:
     """build_server_instructions raises ValueError if rendered length exceeds cap,
     rather than silently returning a string Claude Code will truncate."""
-    with pytest.raises(ValueError, match="exceeds the"):
+    with pytest.raises(ValueError, match="over its 1500-char limit"):
         build_server_instructions(vendor_display_name="A" * 1500, annotation_tool_name="a_annotate")
 
 
@@ -227,7 +229,7 @@ class TestTurnNumber:
         rendered = build_server_instructions(
             vendor_display_name="A" * longest, annotation_tool_name="a_annotate"
         )
-        assert len(rendered) - len("\n\n" + self.SUBAGENTS) == _INSTRUCTIONS_LENGTH_CAP
+        assert len(rendered) - len("\n\n" + self.SUBAGENTS) == _BATON_SENTENCE_LENGTH_CAP
         assert len(rendered) < _CLAUDE_CODE_TRUNCATION_CAP
 
 
@@ -292,6 +294,42 @@ class TestWithVendorInstructions:
         write_ours(mcp, self.OURS, _assign)
         mcp.instructions = "Vendor v2."
         assert with_vendor_instructions(mcp, self.OURS) == f"Vendor v2.\n\n{self.OURS}"
+
+    def test_vendor_text_added_after_our_paragraph_is_kept_once(self) -> None:
+        mcp = self._server("Vendor.")
+        write_ours(mcp, self.OURS, _assign)
+        mcp.instructions += "\n\nAppended."
+        write_ours(mcp, self.OURS, _assign)
+        assert mcp.instructions == f"Vendor.\n\nAppended.\n\n{self.OURS}"
+
+    def test_vendor_text_added_before_our_paragraph_is_kept_once(self) -> None:
+        mcp = self._server(None)
+        write_ours(mcp, self.OURS, _assign)
+        mcp.instructions = f"Prepended.\n\n{mcp.instructions}"
+        write_ours(mcp, self.OURS, _assign)
+        assert mcp.instructions == f"Prepended.\n\n{self.OURS}"
+
+    def test_the_subagent_sentence_is_removed_after_vendor_text_was_appended(self) -> None:
+        mcp = self._server("Vendor.")
+        ours = f"{self.OURS}\n\n{INTENT_INSTRUCTIONS}"
+        write_ours(mcp, ours, _assign)
+        mcp.instructions += "\n\nAppended."
+        assert remove_subagent_clause(mcp, _assign)
+        assert mcp.instructions == f"Vendor.\n\nAppended.\n\n{self.OURS}"
+
+    def test_a_copy_of_our_sentence_inside_vendor_text_is_left_alone(self) -> None:
+        mcp = self._server(None)
+        write_ours(mcp, INTENT_INSTRUCTIONS, _assign)
+        mcp.instructions = f"Vendor quotes: {INTENT_INSTRUCTIONS}"
+        assert not remove_subagent_clause(mcp, _assign)
+        assert mcp.instructions == f"Vendor quotes: {INTENT_INSTRUCTIONS}"
+
+    def test_the_last_copy_is_ours(self) -> None:
+        mcp = self._server(None)
+        write_ours(mcp, self.OURS, _assign)
+        mcp.instructions = f"{self.OURS}\n\nVendor.\n\n{self.OURS}"
+        write_ours(mcp, self.OURS, _assign)
+        assert mcp.instructions == f"{self.OURS}\n\nVendor.\n\n{self.OURS}"
 
 
 class TestAVendorParagraphLikeTheReportPointer:

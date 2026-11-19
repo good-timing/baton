@@ -282,7 +282,11 @@ class TestWhatItRefuses:
         with pytest.raises(ValueError, match=expected):
             parse_dsn(raw)
 
-    @pytest.mark.parametrize("key", [KEY, TEST_KEY, OLD_KEY], ids=["publishable", "test", "old"])
+    @pytest.mark.parametrize(
+        "key",
+        [KEY, TEST_KEY, OLD_KEY, TEST_KEY.upper()],
+        ids=["publishable", "test", "old", "test-in-capitals"],
+    )
     @pytest.mark.parametrize("raw", EVERY_REFUSAL, ids=EVERY_REFUSAL_ID)
     def test_no_refusal_ever_repeats_the_credential(self, raw: str, key: str) -> None:
         """The one thing a parse error must not do. Every message above passes
@@ -299,7 +303,11 @@ class TestWhatItRefuses:
         with pytest.raises(ValueError, match="/account"):
             parse_dsn(KEY)
 
-    @pytest.mark.parametrize("key", [KEY, TEST_KEY, OLD_KEY], ids=["publishable", "test", "old"])
+    @pytest.mark.parametrize(
+        "key",
+        [KEY, TEST_KEY, OLD_KEY, TEST_KEY.upper()],
+        ids=["publishable", "test", "old", "test-in-capitals"],
+    )
     def test_a_bare_key_is_not_echoed_back_either(self, key: str) -> None:
         with pytest.raises(ValueError) as caught:
             parse_dsn(key)

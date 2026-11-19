@@ -182,7 +182,7 @@ def _name_the_vendor_chose(server: Any) -> str | None:
 def _tool_name_candidate(raw: str) -> str | None:
     """``{slug}_annotate`` from a vendor-chosen name, validated, or ``None``.
 
-    Not yet checked against the instructions budget: the display name is
+    Not yet checked against the report-sentence budget: the display name is
     rendered beside this candidate before the tool name's own check runs.
     """
     slug = slug_server_name(raw)
@@ -210,7 +210,7 @@ def _tool_name_within_budget(
         if _first_time(warned, "tool name over budget"):
             logger.warning(
                 "baton: the server-derived annotation tool name %r does not fit the "
-                "server-instructions budget alongside vendor_display_name (%d chars); "
+                "budget of Baton's report sentence alongside vendor_display_name (%d chars); "
                 "keeping %r. Shorten vendor_display_name to get the readable name.",
                 candidate,
                 len(vendor_display_name),
@@ -320,8 +320,8 @@ def resolve_annotation_names(
             vendor_display_name = server_name
         elif _first_time(warned, "server name over budget"):
             logger.warning(
-                "baton: the server name %r does not fit the server-instructions "
-                "budget as vendor_display_name beside the annotation tool %r; "
+                "baton: the server name %r does not fit the budget of "
+                "Baton's report sentence as vendor_display_name beside the annotation tool %r; "
                 "keeping the DSN's server segment %r. Pass vendor_display_name= "
                 "to name the server in fewer characters.",
                 server_name,

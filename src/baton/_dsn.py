@@ -110,10 +110,12 @@ _TEST_PREFIX = "baton_tk_"
 # ``...`` in this module's own ``https://baton_pk_...@host/...`` examples,
 # whose dots are not in the class. An older key has no type letters, so that
 # branch needs a floor longer than any legal server name: a server called
-# ``baton_<name>`` must not read as a key. Kept byte-identical to
-# ``baton-ts``'s ``KEY_RUN`` so the two parsers cannot drift on what counts as
-# a key.
-_KEY_RUN = re.compile(r"baton_(?:(?:pk|sk|tk)_[A-Za-z0-9_%-]{8,}|[A-Za-z0-9_%-]{43,})")
+# ``baton_<name>`` must not read as a key. Case is ignored: a key pasted in
+# capitals is still a key. Kept identical to ``baton-ts``'s ``KEY_RUN`` so the
+# two parsers cannot drift on what counts as a key.
+_KEY_RUN = re.compile(
+    r"baton_(?:(?:pk|sk|tk)_[A-Za-z0-9_%-]{8,}|[A-Za-z0-9_%-]{43,})", re.IGNORECASE
+)
 
 
 def _sweep(message: str) -> str:

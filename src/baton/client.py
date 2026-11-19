@@ -597,7 +597,7 @@ def _report(
     as the adapters name it, falling back to ``<vendor_id>_annotate``."""
     if not on:
         return None
-    display = display_name or vendor_id
+    display = vendor_id if display_name is None or is_blank(display_name) else display_name
     name = derive_annotation_tool_name(vendor_id, tool_name_for_display_name(display))
     tool = report_tool(vendor_display_name=display, name=name)
     return AnnotationNames(display, tool.name), tool

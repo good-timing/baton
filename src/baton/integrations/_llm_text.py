@@ -73,7 +73,7 @@ _REPORT_TOOL_DESCRIPTION_TEMPLATE = (
 # Empirically measured Claude Code truncation cap for InitializeResult.instructions.
 # The cap below it leaves room for the fixed subagent sentence.
 _CLAUDE_CODE_TRUNCATION_CAP = 2087
-_INSTRUCTIONS_LENGTH_CAP = 1500
+_BATON_SENTENCE_LENGTH_CAP = 1500
 
 
 # Per-tool intent-param injection. A reserved parameter is injected into
@@ -333,12 +333,7 @@ def remove_subagent_clause(mcp: Any, write: Callable[[Any, str], None]) -> bool:
     """``drop_subagent_clause`` without its warning; whether there was one to remove."""
     ours = getattr(mcp, _OURS_ATTR, None)
     subagent = getattr(mcp, _SUBAGENT_ATTR, None)
-    vendor = getattr(mcp, _VENDOR_INSTRUCTIONS_ATTR, None)
-    if (
-        not isinstance(ours, str)
-        or not subagent
-        or mcp.instructions != join_instructions(vendor, ours)
-    ):
+    if not isinstance(ours, str) or not subagent or _vendor_text(mcp) == mcp.instructions:
         return False
     kept = ours.removesuffix(subagent).removesuffix("\n\n")
     write_ours(mcp, kept, write, subagent=None)
@@ -466,11 +461,11 @@ def build_server_instructions(
     rendered = build_report_pointer(
         vendor_display_name=vendor_display_name, annotation_tool_name=annotation_tool_name
     )
-    if len(rendered) > _INSTRUCTIONS_LENGTH_CAP:
+    if len(rendered) > _BATON_SENTENCE_LENGTH_CAP:
         raise ValueError(
-            f"Rendered server instructions are {len(rendered)} chars, which exceeds "
-            f"the {_INSTRUCTIONS_LENGTH_CAP}-char safety cap "
-            f"(Claude Code truncates at ~{_CLAUDE_CODE_TRUNCATION_CAP}). "
+            f"Baton's report sentence would be {len(rendered)} chars, over its "
+            f"{_BATON_SENTENCE_LENGTH_CAP}-char limit (Claude Code cuts server instructions "
+            f"at ~{_CLAUDE_CODE_TRUNCATION_CAP}). "
             f"Shorten vendor_display_name or annotation_tool_name."
         )
     return rendered + _INSTRUCTIONS_SUBAGENT_CLAUSE
@@ -513,12 +508,27 @@ def write_ours(
 def _vendor_text(mcp: Any) -> Any:
     current = mcp.instructions
     written = getattr(mcp, _OURS_ATTR, None)
+    if not isinstance(written, str):
+        return current
     vendor = getattr(mcp, _VENDOR_INSTRUCTIONS_ATTR, current)
-    return (
-        vendor
-        if isinstance(written, str) and current == join_instructions(vendor, written)
-        else current
-    )
+    if current == join_instructions(vendor, written):
+        return vendor
+    without = _without_ours(current, written)
+    return current if without is None else without
+
+
+def _without_ours(current: Any, ours: str) -> str | None:
+    """``current`` with our paragraphs cut out, when the vendor added
+    paragraphs around them. The last copy is ours: we write below the vendor."""
+    if not ours or not isinstance(current, str):
+        return None
+    at = current.rfind(ours)
+    if at < 0:
+        return None
+    before, after = current[:at], current[at + len(ours) :]
+    if (before and not before.endswith("\n\n")) or (after and not after.startswith("\n\n")):
+        return None
+    return join_instructions(before[:-2], after[2:])
 
 
 def with_vendor_instructions(mcp: Any, ours: str, warned: set[str] | None = None) -> str:

@@ -199,3 +199,9 @@ def test_each_tool_has_its_own_schema() -> None:
     _tool().input_schema["properties"].clear()
 
     assert _tool().input_schema["properties"]
+
+
+@pytest.mark.parametrize("display_name", ["", "  ", "\u0085"])
+def test_a_blank_display_name_is_refused(display_name: str) -> None:
+    with pytest.raises(ValueError, match="is blank"):
+        report_tool(vendor_display_name=display_name, name="acme_report")

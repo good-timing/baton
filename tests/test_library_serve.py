@@ -476,6 +476,29 @@ def test_a_vendor_tool_with_the_report_name_wins(
 
 
 @CLIENTS
+def test_a_given_tool_with_the_report_name_warns_at_install(
+    harness: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="baton"):
+        harness(tools=[Unreadable(), CLASHING])
+    assert sum("report tool's name" in r.getMessage() for r in caplog.records) == 1
+
+
+@CLIENTS
+def test_a_given_list_that_cannot_be_walked_does_not_fail_install(harness: Any) -> None:
+    class RefusingList(list[Any]):
+        def __iter__(self) -> Any:
+            raise RuntimeError("no")
+
+    harness(tools=RefusingList())
+
+
+class Unreadable:
+    def model_dump(self, **_: Any) -> Any:
+        raise RuntimeError("no")
+
+
+@CLIENTS
 def test_a_paged_list_sends_no_snapshot(harness: Any, sink: _CollectingSink) -> None:
     h = harness()
 
@@ -529,6 +552,14 @@ def test_a_server_name_with_no_tool_name_falls_back_to_the_vendor_id(
         ),
     )
     h = Harness(make, dsn="https://k@example.invalid/ten_0123abcd/fastmcp", settings="console")
+    assert "fastmcp_annotate" in _names(h.serve(_list(), Vendor()))
+    h.close()
+    h = Harness(
+        make,
+        dsn="https://k@example.invalid/ten_0123abcd/fastmcp",
+        settings="console",
+        vendor_display_name="  ",
+    )
     assert "fastmcp_annotate" in _names(h.serve(_list(), Vendor()))
     h.close()
 
@@ -687,6 +718,18 @@ def test_tools_keep_a_tools_own_user_goal_before_any_list(harness: Any, given: s
 
 
 @CLIENTS
+def test_a_tool_added_to_the_given_list_after_install_keeps_its_own_user_goal(
+    harness: Any,
+) -> None:
+    tools: list[Any] = []
+    h = harness(tools=tools)
+    tools.append(OWN_GOAL)
+    vendor = Vendor(tools)
+    h.serve(_call("own", {"user_goal": "theirs"}), vendor)
+    assert vendor.seen[-1]["params"]["arguments"] == {"user_goal": "theirs"}
+
+
+@CLIENTS
 def test_tools_send_a_call_to_the_vendors_report_named_tool_to_it(harness: Any) -> None:
     h = harness(tools=[CLASHING])
     vendor = Vendor([CLASHING])
@@ -739,9 +782,14 @@ def test_the_off_switch_never_reads_tools(
     def refuse() -> list[Any]:
         raise AssertionError("read tools")
 
-    h = Harness(make, settings="console", tools=refuse)
-    h.serve(_call("own", {}), Vendor())
-    h.close()
+    class RefusingList(list[Any]):
+        def __iter__(self) -> Any:
+            raise AssertionError("read tools")
+
+    for tools in (refuse, RefusingList()):
+        h = Harness(make, settings="console", tools=tools)
+        h.serve(_call("own", {}), Vendor())
+        h.close()
 
 
 # --- old wiring left inside serve() --------------------------------------------
