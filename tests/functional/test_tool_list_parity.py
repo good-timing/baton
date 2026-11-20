@@ -191,7 +191,6 @@ async def test_a_listing_sends_a_start_and_an_end(list_once: Driver, tmp_path: P
     assert end["payload"]["count"] == received
     assert end["payload"]["duration_ms"] >= 0
     assert set(end["payload"]) == {"count", "duration_ms", "surface_hash"}
-    assert end["payload"]["surface_hash"] is None
     assert start["session_id"] == end["session_id"]
     assert start["sequence_number"] < end["sequence_number"]
     for ev in (start, end):
@@ -398,3 +397,20 @@ async def test_the_token_is_not_read_when_no_hook_is_set(
 
     await list_once(events_path, hook=lambda context: None)
     assert reads == 1
+
+
+async def test_only_the_fastmcp_adapter_names_the_listed_snapshot(tmp_path: Path) -> None:
+    official_path = tmp_path / "official.jsonl"
+    standalone_path = tmp_path / "standalone.jsonl"
+
+    await _list_official(official_path)
+    await _list_standalone(standalone_path)
+
+    assert _listing_events(official_path)[1]["payload"]["surface_hash"] is None
+    (snapshot,) = [
+        ev for ev in read_events(standalone_path) if ev["event_type"] == "surface_snapshot"
+    ]
+    assert (
+        _listing_events(standalone_path)[1]["payload"]["surface_hash"]
+        == snapshot["payload"]["surface_hash"]
+    )

@@ -8,6 +8,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Added
+
+- **The standalone `fastmcp` adapter sends `surface_hash` on
+  `tool_list_end`**: the hash of the `surface_snapshot` that describes the
+  list the client was sent, so the Console knows which tools each session
+  saw. Every page of a paged list names the snapshot of the whole list. The
+  official `mcp` adapter still sends `null`.
+
 ## 1.3.4: the tool-list snapshot carries output schemas
 
 ### Added

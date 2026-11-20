@@ -20,6 +20,8 @@ import hashlib
 import json
 from collections import OrderedDict
 from collections.abc import Mapping
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from baton.integrations._llm_text import (
@@ -179,3 +181,14 @@ def adapter_seam_augmentations(
     if applies_overlays:
         seam["server_overlay"] = server_overlay.id if server_overlay is not None else None
     return seam
+
+
+@dataclass
+class Listing:
+    """One ``tools/list`` request, opened by the lifecycle seam. An adapter that
+    snapshots at listing sets ``surface_hash`` once that snapshot is sent."""
+
+    surface_hash: str | None = None
+
+
+current_listing: ContextVar[Listing | None] = ContextVar("baton_tool_listing", default=None)

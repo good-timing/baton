@@ -74,6 +74,7 @@ from baton.integrations._surface import (
     SentSurfaces,
     adapter_seam_augmentations,
     assemble_surface,
+    current_listing,
     surface_hash,
 )
 from baton.integrations.standalone import _auth
@@ -167,7 +168,11 @@ class BatonMiddleware(Middleware):
         rather than dropping it from the listing.
         """
         tools = await call_next(context)
-        await self._maybe_emit_surface_snapshot(tools)
+        digest = await self._maybe_emit_surface_snapshot(tools)
+        # Set even to None: a mounted server's Baton may have named this listing first.
+        listing = current_listing.get()
+        if listing is not None:
+            listing.surface_hash = digest
         out: list[Tool] = []
         for tool in tools:
             # The annotation tool takes ``user_goal`` itself — don't inject
@@ -208,11 +213,13 @@ class BatonMiddleware(Middleware):
             return tool, dispositions
         return tool.model_copy(update={"parameters": schema}), dispositions
 
-    async def _maybe_emit_surface_snapshot(self, tools: Sequence[Tool]) -> None:
+    async def _maybe_emit_surface_snapshot(self, tools: Sequence[Tool]) -> str | None:
         """Snapshot the vendor-true surface from a ``tools/list`` response and
         emit ``surface_snapshot`` unless its hash is among the last ones sent.
         Fail-open: any error is logged and the response flows on
         untouched — this must never block the vendor's tools/list.
+
+        Returns the hash once its snapshot is sent or was sent before, else ``None``.
 
         Runs on the tools ``call_next`` just returned, i.e. BEFORE this
         method's own goal-param injection loop below — so ``tools`` here is
@@ -244,7 +251,7 @@ class BatonMiddleware(Middleware):
             overlay = self._server_overlay() if self._server_overlay else None
             overlay_id = overlay.id if overlay is not None else None
             if self._sent_surfaces.was_sent(digest, overlay_id):
-                return
+                return digest
 
             seam = adapter_seam_augmentations(
                 names=self._names,
@@ -282,10 +289,12 @@ class BatonMiddleware(Middleware):
                 await write_unless_closed(self._sink, event, logger)
             except Exception:
                 logger.exception("baton: surface snapshot capture failed")
-                return
+                return None
             self._sent_surfaces.mark(digest, overlay_id)
+            return digest
         except Exception:
             logger.exception("baton: surface snapshot capture failed")
+            return None
 
     async def resolve_dispositions(self, tool_name: str, server: Any) -> dict[str, str] | None:
         """Per-name dispositions for ``tool_name`` (see ``_inject_goal_params``).

@@ -59,6 +59,7 @@ from baton.integrations._llm_text import (
 from baton.integrations._mrtr import mcp_refusal, pause_refused, paused, resumes_a_pause
 from baton.integrations._per_caller import PerCallerSurface
 from baton.integrations._session import ResolvedSession, next_sequence
+from baton.integrations._surface import Listing, current_listing
 from baton.scrub import scrub_or_none
 from baton.sinks import Sink, safe_emit
 
@@ -273,6 +274,8 @@ def install_lifecycle_capture(
                     {} if family.start_params is None else {"params": family.start_params(sent)}
                 ),
             )
+        listing = Listing() if family is _TOOL_LIST else None
+        token = current_listing.set(listing)
         started_at = monotonic()
         try:
             result = await serve(params)
@@ -288,6 +291,8 @@ def install_lifecycle_capture(
                 },
             )
             raise
+        finally:
+            current_listing.reset(token)
         duration_ms = int((monotonic() - started_at) * 1000)
         if per_caller is not None and family is _TOOL_LIST:
             result = per_caller.tools_for(result, caller)
@@ -309,7 +314,11 @@ def install_lifecycle_capture(
             lambda: (
                 {"duration_ms": duration_ms}
                 if family.count_key is None
-                else {"count": _count(result, family.count_key), "duration_ms": duration_ms}
+                else {
+                    "count": _count(result, family.count_key),
+                    "duration_ms": duration_ms,
+                    **({} if listing is None else {"surface_hash": listing.surface_hash}),
+                }
             ),
         )
         return result
