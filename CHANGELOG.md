@@ -10,6 +10,10 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## Unreleased
 
+### Added
+
+- **`tool_list_end` has an optional `surface_hash`** (SPEC §11.4.5): the hash of the `surface_snapshot` describing that listing. This package sends it as `null` for now; `@goodtiming/baton-sdk` sends it.
+
 ### Fixed
 
 - **The official `mcp` adapter's tool-list snapshot carries each tool's

@@ -190,7 +190,8 @@ async def test_a_listing_sends_a_start_and_an_end(list_once: Driver, tmp_path: P
     assert received == 2, "the vendor's tool and Baton's own"
     assert end["payload"]["count"] == received
     assert end["payload"]["duration_ms"] >= 0
-    assert set(end["payload"]) == {"count", "duration_ms"}
+    assert set(end["payload"]) == {"count", "duration_ms", "surface_hash"}
+    assert end["payload"]["surface_hash"] is None
     assert start["session_id"] == end["session_id"]
     assert start["sequence_number"] < end["sequence_number"]
     for ev in (start, end):

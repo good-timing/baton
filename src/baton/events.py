@@ -744,12 +744,15 @@ class ToolListStartPayload(BaseModel):
 
 class ToolListEndPayload(BaseModel):
     """Emitted after ``tools/list`` returns. ``count`` is the length of the
-    ``tools`` array in that one response, the producer's own tools included."""
+    ``tools`` array in that one response, the producer's own tools included.
+    ``surface_hash`` is that of the ``surface_snapshot`` describing this
+    response, when the producer captured one."""
 
     model_config = ConfigDict(extra="forbid")
 
     count: int
     duration_ms: int | None = None
+    surface_hash: str | None = None
 
 
 class ToolListErrorPayload(BaseModel):
