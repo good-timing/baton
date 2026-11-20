@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 1.3.4: the tool-list snapshot carries output schemas
 
 ### Added
 
