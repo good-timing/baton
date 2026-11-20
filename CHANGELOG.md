@@ -8,6 +8,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Fixed
+
+- **The official `mcp` adapter's tool-list snapshot carries each tool's
+  `outputSchema`**, as `tools/list` shows it, so the Console can show what a
+  tool returns. A tool without one has no `outputSchema` key. A server whose
+  tools declare output schemas gets one new snapshot version on upgrade.
+
 ## 1.3.3: your instructions kept intact, and keys in capitals hidden
 
 ### Fixed

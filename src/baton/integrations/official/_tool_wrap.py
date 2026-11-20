@@ -175,11 +175,15 @@ class _SurfaceState:
         # call — a reference here would let that mutation silently corrupt
         # the vendor-true snapshot too.
         schema = tool.parameters
-        self.raw_tools[name] = {
+        raw: dict[str, Any] = {
             "name": name,
             "description": tool.description,
             "inputSchema": copy.deepcopy(schema) if isinstance(schema, dict) else {},
         }
+        output_schema = getattr(tool, "output_schema", None)
+        if isinstance(output_schema, dict):
+            raw["outputSchema"] = copy.deepcopy(output_schema)
+        self.raw_tools[name] = raw
         self.dirty = True
 
     def build_snapshot(self) -> dict[str, Any]:

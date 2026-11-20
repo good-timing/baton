@@ -44,10 +44,10 @@ def surface_hash(surface: Mapping[str, Any]) -> str:
     dedupes to the same hash within one adapter's install. NOT guaranteed
     identical to a proxy-observed hash of the "same" surface: each producer
     serializes ``tools`` from a different shape (fastmcp's ``to_mcp_tool()``
-    dump, this adapter's hand-built ``{name, description, inputSchema}``,
-    proxy's raw wire JSON), so a vendor migrating between producers should
-    expect a fresh row in the Console's ``vendor_surfaces`` table, not a
-    continuation of the old hash's identity.
+    dump, the official adapter's hand-built ``{name, description, inputSchema,
+    outputSchema}``, proxy's raw wire JSON), so a vendor migrating between
+    producers should expect a fresh row in the Console's ``vendor_surfaces``
+    table, not a continuation of the old hash's identity.
     """
     canonical = json.dumps(surface, sort_keys=True, separators=(",", ":"), default=str)
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
