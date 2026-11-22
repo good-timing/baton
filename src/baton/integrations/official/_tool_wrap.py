@@ -183,6 +183,12 @@ class _SurfaceState:
         output_schema = getattr(tool, "output_schema", None)
         if isinstance(output_schema, dict):
             raw["outputSchema"] = copy.deepcopy(output_schema)
+        title = getattr(tool, "title", None)
+        if isinstance(title, str):
+            raw["title"] = title
+        annotations = _annotations_json(getattr(tool, "annotations", None))
+        if annotations is not None:
+            raw["annotations"] = annotations
         self.raw_tools[name] = raw
         self.dirty = True
 
@@ -190,6 +196,20 @@ class _SurfaceState:
         return assemble_surface(
             self.server_meta, [self.raw_tools[name] for name in sorted(self.raw_tools)]
         )
+
+
+def _annotations_json(annotations: Any) -> dict[str, Any] | None:
+    """``annotations`` as ``tools/list`` sends it, or None when it can't be read."""
+    if annotations is None:
+        return None
+    try:
+        dumped = annotations.model_dump(mode="json", by_alias=True, exclude_none=True)
+        if isinstance(dumped, dict):
+            return dumped
+    except Exception:
+        pass
+    logger.debug("baton: a tool's annotations could not be read", exc_info=True)
+    return None
 
 
 def install_wraps(

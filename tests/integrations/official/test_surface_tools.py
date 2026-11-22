@@ -4,22 +4,27 @@ from __future__ import annotations
 
 from typing import Any
 
+from mcp.types import ToolAnnotations
+
 from baton.integrations.official import VendorConfig, install_baton
 from baton.integrations.official._compat import MCPServerClass as FastMCP
+from baton.integrations.official._tool_wrap import _annotations_json
 from baton.sinks import FileSink
 from tests._event_helpers import read_events
 from tests._mcp_session import connected_session
 
 
-class TestSnapshotOutputSchema:
-    """The snapshot lists a tool's ``outputSchema`` as ``tools/list`` does, and
-    leaves the key out for a tool without one."""
+class TestSnapshotToolFields:
+    """The snapshot lists a tool's ``outputSchema``, ``title`` and ``annotations``
+    as ``tools/list`` does, and leaves each key out for a tool without it."""
 
-    async def test_output_schema_is_in_the_snapshot_only_when_declared(self, tmp_path: Any) -> None:
+    async def test_optional_fields_are_in_the_snapshot_only_when_declared(
+        self, tmp_path: Any
+    ) -> None:
         path = str(tmp_path / "events.jsonl")
         mcp = FastMCP("test-vendor-mcp")
 
-        @mcp.tool()
+        @mcp.tool(title="Create a ticket", annotations=ToolAnnotations(readOnlyHint=False))
         def structured(text: str) -> dict[str, str]:
             return {"text": text}
 
@@ -51,4 +56,22 @@ class TestSnapshotOutputSchema:
         tools = {t["name"]: t for t in snapshot["payload"]["tools"]}
         assert tools["structured"]["outputSchema"] == wire["structured"]["outputSchema"]
         assert tools["structured"]["outputSchema"]
-        assert "outputSchema" not in tools["plain"]
+        assert tools["structured"]["title"] == wire["structured"]["title"]
+        assert tools["structured"]["annotations"] == wire["structured"]["annotations"]
+        assert tools["structured"]["annotations"] == {"readOnlyHint": False}
+        for key in ("outputSchema", "title", "annotations"):
+            assert key not in tools["plain"]
+
+
+class TestUnreadableAnnotations:
+    def test_unreadable_annotations_are_left_out(self) -> None:
+        class Broken:
+            def model_dump(self, **_: Any) -> dict[str, Any]:
+                raise ValueError("broken")
+
+        class NotADict:
+            def model_dump(self, **_: Any) -> list[str]:
+                return ["readOnlyHint"]
+
+        assert _annotations_json(Broken()) is None
+        assert _annotations_json(NotADict()) is None

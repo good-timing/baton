@@ -18,6 +18,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
   saw. Every page of a paged list names the snapshot of the whole list. The
   official `mcp` adapter still sends `null`.
 
+### Changed
+
+- **The official `mcp` adapter's tool-list snapshot keeps each tool's `title`
+  and `annotations`** as `tools/list` sends them, so the Console can tell a
+  read-only tool from one that may write. A tool without them is unchanged. A
+  server whose tools have a title or annotations gets a new `surface_snapshot`
+  hash on upgrade, and so one new surface in the Console.
+
 ## 1.3.4: the tool-list snapshot carries output schemas
 
 ### Added
