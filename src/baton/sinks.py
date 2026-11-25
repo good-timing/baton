@@ -51,8 +51,17 @@ from types import TracebackType
 from typing import IO, TYPE_CHECKING, Any, Literal, Protocol, Self, cast
 
 from baton import _state, _uuid
+from baton._result_capture import TOO_LARGE
 from baton._state import PROCESS_DROPS, PROCESS_SEQUENCE
-from baton.events import ClientReportEvent, ClientReportPayload, Event
+from baton.events import (
+    ClientReportEvent,
+    ClientReportPayload,
+    Event,
+    ToolCallEndEvent,
+    ToolCallErrorEvent,
+    ToolCallErrorPayload,
+)
+from baton.integrations._error_result import ERROR_BODY_CAP
 
 if TYPE_CHECKING:
     import urllib3
@@ -451,9 +460,45 @@ _RETRY_AFTER_MAX_SECONDS = 60.0
 
 
 def _encode(event: Event) -> bytes:
-    return json.dumps(
-        event.model_dump(mode="json"), separators=(",", ":"), ensure_ascii=False, allow_nan=False
-    ).encode("utf-8")
+    return _dumps(event.model_dump(mode="json"))
+
+
+def _dumps(value: Any) -> bytes:
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode(
+        "utf-8"
+    )
+
+
+def _encode_to_fit(event: Event) -> bytes:
+    """``event`` encoded. A call's end or error over the batch cap is sent
+    without its ``result`` and with ``error_body`` cut, marked ``"too_large"``
+    (SPEC §11.4), so the call still ends; if that is still over, the caller
+    drops it."""
+    body = _encode(event)
+    if _body_size(1, len(body)) <= BATCH_MAX_BYTES or not isinstance(
+        event, (ToolCallEndEvent, ToolCallErrorEvent)
+    ):
+        return body
+    payload = event.payload
+    if payload.result is None or payload.result_capture is not None:
+        return body
+    result = _dumps(payload.model_dump(mode="json", include={"result"})["result"])
+    update: dict[str, Any] = {
+        "result": None,
+        "result_capture": TOO_LARGE,
+        "result_size_bytes": len(result),
+    }
+    if isinstance(payload, ToolCallErrorPayload):
+        update["error_body"] = payload.error_body[:ERROR_BODY_CAP]
+    smaller = _encode(event.model_copy(update={"payload": payload.model_copy(update=update)}))
+    if _body_size(1, len(smaller)) > BATCH_MAX_BYTES:
+        return body
+    logging.getLogger("baton").warning(
+        "baton: a %s event is over the 1 MiB batch cap; it is sent without its result (%d bytes).",
+        event.event_type,
+        len(result),
+    )
+    return smaller
 
 
 def _body_size(count: int, body_bytes: int) -> int:
@@ -916,7 +961,7 @@ class _BatchSender:
         results: list[tuple[_Pending, bytes | Exception]] = []
         for pending in todo:
             try:
-                results.append((pending, _encode(pending.event)))
+                results.append((pending, _encode_to_fit(pending.event)))
             except Exception as exc:
                 results.append((pending, exc))
         log = logging.getLogger("baton")

@@ -18,6 +18,7 @@ from collections.abc import Callable
 from typing import Any, Literal, NamedTuple, cast, get_args
 
 __all__ = [
+    "TOO_LARGE",
     "WITHHELD",
     "ResultCaptureMode",
     "ResultFields",
@@ -33,6 +34,9 @@ SPEC §11.4 registers `"off"` and reserves a second value for the content
 ladder's partial rung — which is why nothing here tests `!= "off"` to mean
 "capture", and why the member is a string rather than a boolean.
 """
+
+TOO_LARGE = "too_large"
+"""On the wire only: the sink left the result out to fit the batch cap. Not a mode."""
 
 ResultCaptureMode = Literal["full", "off"]
 """What a vendor may set: `"full"` or `WITHHELD`. Still validated where it

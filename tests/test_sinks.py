@@ -23,7 +23,14 @@ from werkzeug.wrappers import Response
 
 import baton.sinks as sinks_module
 from baton._state import PROCESS_DROPS
-from baton.events import ToolCallStartEvent
+from baton.events import (
+    ToolCallEndEvent,
+    ToolCallEndPayload,
+    ToolCallErrorEvent,
+    ToolCallErrorPayload,
+    ToolCallStartEvent,
+)
+from baton.integrations._error_result import ERROR_BODY_CAP
 from baton.sinks import BATCH_MAX_BYTES, HttpSink, _BatchSender
 from tests._http_fakes import (
     Answer,
@@ -241,6 +248,66 @@ class TestWhenABatchGoes:
         assert batches == [[2]]
         assert PROCESS_DROPS.total() == {"refused": 1}
         assert any("over the 1 MiB batch cap" in m for m in caplog.messages)
+        await sink.aclose()
+
+    @pytest.mark.parametrize("ending", ["end", "error"])
+    async def test_a_call_end_over_the_cap_is_sent_without_its_result(
+        self, httpserver: HTTPServer, caplog: pytest.LogCaptureFixture, ending: str
+    ) -> None:
+        sent = _recording_events(httpserver)
+        result = {"rows": "x" * BATCH_MAX_BYTES}
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k", flush_interval_seconds=60)
+        with caplog.at_level(logging.WARNING, logger="baton"):
+            await sink.write(_make_ending(ending, 1, result))
+            await sink.flush()
+        [event] = sent
+        assert event["payload"]["result"] is None
+        assert event["payload"]["result_capture"] == "too_large"
+        assert event["payload"]["result_size_bytes"] == len(
+            json.dumps(result, separators=(",", ":")).encode()
+        )
+        assert event["payload"]["tool_name"] == "t"
+        assert PROCESS_DROPS.total() == {}
+        assert any("sent without its result" in m for m in caplog.messages)
+        await sink.aclose()
+
+    async def test_a_call_error_over_the_cap_is_sent_with_its_error_body_cut(
+        self, httpserver: HTTPServer
+    ) -> None:
+        sent = _recording_events(httpserver)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k", flush_interval_seconds=60)
+        event = _make_ending("error", 1, {"rows": "x"})
+        event.payload.error_body = "x" * BATCH_MAX_BYTES
+        await sink.write(event)
+        await sink.flush()
+        [sent_event] = sent
+        assert sent_event["payload"]["error_body"] == "x" * ERROR_BODY_CAP
+        assert sent_event["payload"]["result_capture"] == "too_large"
+        await sink.aclose()
+
+    async def test_a_call_end_under_the_cap_keeps_its_result(self, httpserver: HTTPServer) -> None:
+        sent = _recording_events(httpserver)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k", flush_interval_seconds=60)
+        await sink.write(_make_ending("end", 1, {"rows": "x" * 1000}))
+        await sink.flush()
+        [event] = sent
+        assert event["payload"]["result"] == {"rows": "x" * 1000}
+        assert event["payload"]["result_capture"] is None
+        assert event["payload"]["result_size_bytes"] is None
+        await sink.aclose()
+
+    async def test_a_withheld_call_end_still_over_the_cap_is_refused(
+        self, httpserver: HTTPServer
+    ) -> None:
+        sent = _recording_events(httpserver)
+        sink = HttpSink(url=httpserver.url_for(""), api_key="k", flush_interval_seconds=60)
+        event = _make_ending("error", 1, {"rows": "x"})
+        event.payload.result_capture = "off"
+        event.payload.error_body = "x" * BATCH_MAX_BYTES
+        await sink.write(event)
+        await sink.flush()
+        assert sent == []
+        assert PROCESS_DROPS.total() == {"refused": 1}
         await sink.aclose()
 
     async def test_a_413_on_one_event_refuses_it(self, httpserver: HTTPServer) -> None:
@@ -1227,6 +1294,34 @@ class TestRepeatedRefusalsAreCounted:
 # =============================================================================
 # An event that cannot be encoded
 # =============================================================================
+
+
+def _make_ending(
+    ending: str, sequence_number: int, result: Any
+) -> ToolCallEndEvent | ToolCallErrorEvent:
+    start = make_event(sequence_number)
+    envelope = start.model_dump(exclude={"event_type", "payload"})
+    if ending == "end":
+        return ToolCallEndEvent(
+            **envelope, payload=ToolCallEndPayload(tool_name="t", result=result)
+        )
+    return ToolCallErrorEvent(
+        **envelope,
+        payload=ToolCallErrorPayload(
+            tool_name="t", error_type="tool_error", error_body="failed", result=result
+        ),
+    )
+
+
+def _recording_events(httpserver: HTTPServer) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+
+    def handler(request: Any) -> Response:
+        events.extend(e for e in request.get_json()["events"] if e["event_type"] != "client_report")
+        return Response("", status=200)
+
+    httpserver.expect_request(BATCH, method="POST").respond_with_handler(handler)
+    return events
 
 
 def _make_event_with_params(sequence_number: int, params: dict[str, Any]) -> ToolCallStartEvent:

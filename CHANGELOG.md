@@ -8,6 +8,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## Unreleased
+
+### Changed
+
+- **A call's end or error over the 1 MiB batch cap is sent without its
+  result** and with `error_body` cut to 2,000 characters, instead of being
+  dropped. It carries `result_capture:
+  "too_large"` and `result_size_bytes`, the result's size, so the Console
+  sees the call end and how large the reply was (SPEC §11.4). An event still
+  over the cap without its result is dropped as before.
+
 ## 1.3.5: the tool-list snapshot keeps titles and annotations
 
 ### Added
