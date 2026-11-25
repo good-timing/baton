@@ -8,7 +8,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## Unreleased
+## 1.3.6: a call end too large to send arrives without its result
 
 ### Changed
 
